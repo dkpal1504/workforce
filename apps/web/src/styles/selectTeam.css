@@ -1,0 +1,102 @@
+.transfer {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.transfer__controls {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-width: 128px;
+}
+
+.transfer__controls .btn {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.pool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 440px;
+  overflow: auto;
+}
+
+.pool-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--border-light);
+  border-radius: 8px;
+  transition: background 0.15s var(--ease);
+}
+
+.pool-list li:hover {
+  background: var(--bg-subtle);
+}
+
+.pool-list input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+}
+
+.team-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.chip:hover {
+  border-color: var(--primary);
+}
+
+.chip button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+
+.chip button:hover {
+  color: var(--danger);
+}
+
+@media (max-width: 900px) {
+  .transfer {
+    grid-template-columns: 1fr;
+  }
+
+  .transfer__controls {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .transfer__controls .btn {
+    width: auto;
+    flex: 1 1 40%;
+  }
+}

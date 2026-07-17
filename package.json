@@ -1,0 +1,18 @@
+{
+  "name": "workforce",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:api": "npm run dev -w @workforce/api",
+    "dev:web": "npm run dev -w @workforce/web",
+    "build": "npm run build --workspaces --if-present",
+    "db:generate": "npm run db:generate -w @workforce/api",
+    "db:migrate": "npm run db:migrate -w @workforce/api",
+    "db:seed": "npm run db:seed -w @workforce/api",
+    "db:setup": "npm run build -w @workforce/shared && npm run db:generate -w @workforce/api && npm run db:migrate -w @workforce/api && npm run db:seed -w @workforce/api"
+  }
+}

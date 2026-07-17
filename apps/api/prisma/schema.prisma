@@ -1,0 +1,230 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  role         String
+  employeeId   Int?     @unique @map("employee_id")
+  employee     Employee? @relation(fields: [employeeId], references: [id])
+  departmentId Int?     @map("department_id")
+  department   Department? @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  teamSelections   DailyTeamSelection[]
+  timesheetDays    TimesheetDay[]       @relation("TaggedBy")
+  timesheetEntries TimesheetEntry[]     @relation("TaggedBy")
+  approvalsGiven   Approval[]           @relation("Approver")
+  conflictsAsSup1  Conflict[]           @relation("Supervisor1")
+  conflictsAsSup2  Conflict[]           @relation("Supervisor2")
+  conflictsResolved Conflict[]          @relation("ResolvedBy")
+  auditLogs        AuditLog[]
+  manpowerRequestsRequested ManpowerRequest[] @relation("RequestedBy")
+  manpowerRequestsAssigned  ManpowerRequest[] @relation("AssignedBy")
+
+  @@map("users")
+}
+
+model Department {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  code      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  employees Employee[]
+  users     User[]
+  manpowerRequests ManpowerRequest[]
+
+  @@map("departments")
+}
+
+model Employee {
+  id           Int      @id @default(autoincrement())
+  ecNo         String   @unique @map("ec_no")
+  name         String
+  departmentId Int      @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id])
+  designation  String
+  category     String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user                User?
+  teamSelections      DailyTeamSelection[]
+  timesheetDays       TimesheetDay[]
+  timesheetEntries    TimesheetEntry[]
+  conflicts           Conflict[]
+  attendanceFeed      AttendanceFeed[]
+  manpowerAssignments ManpowerRequest[] @relation("AssignedEmployee")
+
+  @@map("employees")
+}
+
+model ProjectWbs {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  wbsCode   String   @map("wbs_code")
+  colorKey  String   @map("color_key")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  timesheetEntries TimesheetEntry[]
+
+  @@map("projects_wbs")
+}
+
+model DailyTeamSelection {
+  id           Int       @id @default(autoincrement())
+  supervisorId Int       @map("supervisor_id")
+  supervisor   User      @relation(fields: [supervisorId], references: [id])
+  employeeId   Int       @map("employee_id")
+  employee     Employee  @relation(fields: [employeeId], references: [id])
+  workDate     DateTime  @map("work_date")
+  source       String
+  createdAt    DateTime  @default(now()) @map("created_at")
+  removedAt    DateTime? @map("removed_at")
+
+  @@index([supervisorId, workDate])
+  @@index([employeeId, workDate])
+  @@map("daily_team_selection")
+}
+
+model TimesheetDay {
+  id         Int      @id @default(autoincrement())
+  employeeId Int      @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  workDate   DateTime @map("work_date")
+  taggedById Int      @map("tagged_by")
+  taggedBy   User     @relation("TaggedBy", fields: [taggedById], references: [id])
+  status     String   @default("DRAFT")
+  remarks    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  entries   TimesheetEntry[]
+  approvals Approval[]
+
+  @@unique([employeeId, workDate, taggedById])
+  @@map("timesheet_days")
+}
+
+model TimesheetEntry {
+  id             Int         @id @default(autoincrement())
+  timesheetDayId Int         @map("timesheet_day_id")
+  timesheetDay   TimesheetDay @relation(fields: [timesheetDayId], references: [id], onDelete: Cascade)
+  employeeId     Int         @map("employee_id")
+  employee       Employee    @relation(fields: [employeeId], references: [id])
+  workDate       DateTime    @map("work_date")
+  hourSlot       Int         @map("hour_slot")
+  projectWbsId   Int?        @map("project_wbs_id")
+  projectWbs     ProjectWbs? @relation(fields: [projectWbsId], references: [id])
+  taggedById     Int         @map("tagged_by")
+  taggedBy       User        @relation("TaggedBy", fields: [taggedById], references: [id])
+  status         String      @default("DRAFT")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@unique([employeeId, workDate, hourSlot, taggedById])
+  @@index([workDate, taggedById])
+  @@map("timesheet_entries")
+}
+
+model Approval {
+  id             Int         @id @default(autoincrement())
+  timesheetDayId Int         @map("timesheet_day_id")
+  timesheetDay   TimesheetDay @relation(fields: [timesheetDayId], references: [id])
+  approverId     Int         @map("approver_id")
+  approver       User        @relation("Approver", fields: [approverId], references: [id])
+  action         String
+  comment        String?
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  @@map("approvals")
+}
+
+model Conflict {
+  id            Int       @id @default(autoincrement())
+  employeeId    Int       @map("employee_id")
+  employee      Employee  @relation(fields: [employeeId], references: [id])
+  workDate      DateTime  @map("work_date")
+  supervisorId1 Int       @map("supervisor_id_1")
+  supervisor1   User      @relation("Supervisor1", fields: [supervisorId1], references: [id])
+  supervisorId2 Int       @map("supervisor_id_2")
+  supervisor2   User      @relation("Supervisor2", fields: [supervisorId2], references: [id])
+  status        String    @default("OPEN")
+  resolvedById  Int?      @map("resolved_by")
+  resolvedBy    User?     @relation("ResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt    DateTime? @map("resolved_at")
+  detectedAt    DateTime  @default(now()) @map("detected_at")
+
+  @@map("conflicts")
+}
+
+model ManpowerRequest {
+  id                 Int        @id @default(autoincrement())
+  requestingDeptId   Int        @map("requesting_dept_id")
+  requestingDept     Department @relation(fields: [requestingDeptId], references: [id])
+  requestedById      Int        @map("requested_by")
+  requestedBy        User       @relation("RequestedBy", fields: [requestedById], references: [id])
+  headcount          Int
+  workDate           DateTime   @map("work_date")
+  status             String     @default("OPEN")
+  assignedEmployeeId Int?       @map("assigned_employee_id")
+  assignedEmployee   Employee?  @relation("AssignedEmployee", fields: [assignedEmployeeId], references: [id])
+  assignedById       Int?       @map("assigned_by")
+  assignedBy         User?      @relation("AssignedBy", fields: [assignedById], references: [id])
+  notes              String?
+  createdAt          DateTime   @default(now()) @map("created_at")
+
+  @@map("manpower_requests")
+}
+
+model AttendanceFeed {
+  id         Int      @id @default(autoincrement())
+  employeeId Int      @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  workDate   DateTime @map("work_date")
+  present    Boolean
+  source     String   @default("CLMS")
+  importedAt DateTime @default(now()) @map("imported_at")
+
+  @@unique([employeeId, workDate])
+  @@map("attendance_feed")
+}
+
+model CostRate {
+  id            Int      @id @default(autoincrement())
+  category      String
+  ratePerHour   Float    @map("rate_per_hour")
+  effectiveFrom DateTime @map("effective_from")
+  effectiveTo   DateTime? @map("effective_to")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([category, effectiveFrom])
+  @@map("cost_rates")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  metadata   String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@map("audit_log")
+}
