@@ -75,6 +75,19 @@ type PendingPayload = {
   returnedByPlanning: ReturnedRow[];
 };
 
+type JobOrderConsumptionRow = {
+  id: number;
+  code: string;
+  name: string;
+  status: string; // active | closed | on_hold
+  budgetedHours: number | null;
+  projectColorKey: string;
+  projectName: string;
+  consumptionToday: number; // unapproved hours in matching project column
+  consumptionUnapproved: number;
+  consumptionApproved: number;
+};
+
 function fmtHours(n: number) {
   return n ? String(n) : "—";
 }
@@ -145,15 +158,20 @@ export function ApprovalsPage() {
   const isProjectHead = user?.role === "PM";
 
   const [tab, setTab] = useState<"pending" | "approved">("pending");
-  const [viewMode, setViewMode] = useState<"supervisor" | "employee">("supervisor");
+  const [viewMode, setViewMode] = useState<"supervisor" | "employee" | "jobOrder">(
+    "supervisor"
+  );
   const [received, setReceived] = useState<SupervisorGroup[]>([]);
   const [returned, setReturned] = useState<ReturnedRow[]>([]);
+  const [jobOrderRows, setJobOrderRows] = useState<JobOrderConsumptionRow[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [roleLabel, setRoleLabel] = useState("HOD");
   const [maxDailyHours, setMaxDailyHours] = useState(8);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [comments, setComments] = useState<Record<number, string>>({});
+  // Per-supervisor comment (for the By Supervisor view) — keyed by `${supervisorId}|${workDate}`.
+  const [supervisorComments, setSupervisorComments] = useState<Record<string, string>>({});
   const [hodNotes, setHodNotes] = useState<Record<number, string>>({});
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -184,6 +202,13 @@ export function ApprovalsPage() {
         }
         return next;
       });
+      // Also load the Job Order consumption lens in parallel — same underlying data.
+      try {
+        const jo = await api<{ rows: JobOrderConsumptionRow[] }>("/approvals/job-order-consumption");
+        setJobOrderRows(jo.rows ?? []);
+      } catch {
+        setJobOrderRows([]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load approvals");
     } finally {
@@ -354,50 +379,51 @@ export function ApprovalsPage() {
                 >
                   By Employee
                 </button>
+                <button
+                  type="button"
+                  className={viewMode === "jobOrder" ? "active" : ""}
+                  onClick={() => setViewMode("jobOrder")}
+                >
+                  Group by Job Order
+                </button>
               </div>
             </div>
 
-            <div className="bulk-bar bulk-bar--desktop">
-              <label className="bulk-bar__select">
-                <input
-                  type="checkbox"
-                  checked={allEmployeeIds.length > 0 && selected.size === allEmployeeIds.length}
-                  onChange={toggleSelectAll}
-                />
-                Select All
-              </label>
-              <div className="bulk-bar__actions">
-                <button
-                  type="button"
-                  className="btn btn-danger-outline"
-                  disabled={selected.size === 0}
-                  onClick={() => batchAct("reject", [...selected])}
-                >
-                  Reject Selected ({selected.size})
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-approve"
-                  disabled={selected.size === 0}
-                  onClick={() => batchAct("approve", [...selected])}
-                >
-                  Approve Selected ({selected.size})
-                </button>
+            {viewMode !== "jobOrder" && (
+              <div className="bulk-bar bulk-bar--desktop">
+                <label className="bulk-bar__select">
+                  <input
+                    type="checkbox"
+                    checked={allEmployeeIds.length > 0 && selected.size === allEmployeeIds.length}
+                    onChange={toggleSelectAll}
+                  />
+                  Select All
+                </label>
+                <div className="bulk-bar__actions">
+                  <button
+                    type="button"
+                    className="btn btn-approve"
+                    disabled={selected.size === 0}
+                    onClick={() => batchAct("approve", [...selected])}
+                  >
+                    Approve Selected ({selected.size})
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="hod-table-wrap hod-desktop-only">
               <table className="hod-table">
                 <thead>
                   <tr>
                     <th className="col-check" />
-                    <th>{viewMode === "supervisor" ? "Supervisor" : "Employee"}</th>
+                    <th>Supervisor</th>
                     <th>Date</th>
                     <th>Project A</th>
                     <th>Project B</th>
                     <th>Project C</th>
                     <th>Total Alloc.</th>
-                    <th>Unallocated</th>
+                    <th>Overhead</th>
                     <th>Approve</th>
                     <th>Reject</th>
                     <th>Comments</th>
@@ -410,6 +436,7 @@ export function ApprovalsPage() {
                       const isOpen = !!expanded[key];
                       const badge = statusBadge(g);
                       const groupSelected = g.employees.every((e) => selected.has(e.id));
+                      const supComment = supervisorComments[key] || "";
                       return (
                         <Fragment key={key}>
                           <tr className={`hod-row supervisor-row ${g.hasConflict ? "conflict" : ""}`}>
@@ -437,12 +464,20 @@ export function ApprovalsPage() {
                             <td>{fmtHours(g.projectHours.B)}</td>
                             <td>{fmtHours(g.projectHours.C)}</td>
                             <td className="total-cell">{fmtHours(g.totalAlloc)}</td>
-                            <td>{fmtHours(g.unallocatedHours ?? 0)}</td>
+                            <td>{fmtHours(g.overhead)}</td>
                             <td>
                               <button
                                 type="button"
                                 className="btn-sm btn-approve"
-                                onClick={() => batchAct("approve", g.employees.map((e) => e.id))}
+                                disabled={g.hasConflict}
+                                title={
+                                  g.hasConflict
+                                    ? "Cannot approve — conflicted employee below. Resolve first."
+                                    : undefined
+                                }
+                                onClick={() =>
+                                  batchAct("approve", g.employees.map((e) => e.id), supComment)
+                                }
                               >
                                 Approve
                               </button>
@@ -451,12 +486,23 @@ export function ApprovalsPage() {
                               <button
                                 type="button"
                                 className="btn-sm btn-reject"
-                                onClick={() => batchAct("reject", g.employees.map((e) => e.id))}
+                                onClick={() =>
+                                  batchAct("reject", g.employees.map((e) => e.id), supComment)
+                                }
                               >
                                 Reject
                               </button>
                             </td>
-                            <td />
+                            <td>
+                              <input
+                                className="comment-input"
+                                placeholder="Add comment…"
+                                value={supComment}
+                                onChange={(e) =>
+                                  setSupervisorComments((p) => ({ ...p, [key]: e.target.value }))
+                                }
+                              />
+                            </td>
                           </tr>
                           {isOpen &&
                             g.employees.map((emp) => (
@@ -473,6 +519,9 @@ export function ApprovalsPage() {
                                 </td>
                                 <td className="emp-indent">
                                   {emp.employee.name}
+                                  {emp.hasConflict && (
+                                    <span className="badge badge-conflict flagged-chip">⚠ Flagged</span>
+                                  )}
                                   {emp.isAmendment && (
                                     <div className="muted tiny">New hours only</div>
                                   )}
@@ -594,6 +643,84 @@ export function ApprovalsPage() {
                         No pending submissions from supervisors.
                       </td>
                     </tr>
+                  )}
+
+                  {viewMode === "jobOrder" && (
+                    <>
+                      <tr className="jo-inspection-banner-row">
+                        <td colSpan={11}>
+                          <div className="jo-inspection-banner">
+                            Inspection view — approve from &quot;By Supervisor.&quot;
+                          </div>
+                        </td>
+                      </tr>
+                      {jobOrderRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="empty-cell">
+                            No job order consumption data for this period.
+                          </td>
+                        </tr>
+                      ) : (
+                        jobOrderRows.map((jo) => {
+                          const budget = jo.budgetedHours ?? 0;
+                          const consumed = jo.consumptionApproved + jo.consumptionUnapproved;
+                          const pct = budget > 0 ? Math.round((consumed / budget) * 100) : 0;
+                          const colorClass =
+                            pct < 85 ? "jo-bar--green" : pct < 100 ? "jo-bar--amber" : "jo-bar--red";
+                          return (
+                            <tr key={jo.id} className="hod-row jo-row">
+                              <td />
+                              <td>
+                                <div className="jo-name">
+                                  <span
+                                    className="jo-color-dot"
+                                    style={{ background: `var(--project-${jo.projectColorKey.toLowerCase()})` }}
+                                  />
+                                  <strong>{jo.code}</strong> · {jo.name}
+                                  {jo.status === "closed" && (
+                                    <span className="jo-status-superscript jo-status-closed">
+                                      CLOSED
+                                    </span>
+                                  )}
+                                  {jo.status === "active" && (
+                                    <span className="jo-status-superscript jo-status-active">
+                                      ACTIVE
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="muted tiny">{jo.projectName}</div>
+                              </td>
+                              <td>{fmtHours(jo.consumptionToday)}</td>
+                              <td>—</td>
+                              <td>—</td>
+                              <td className="total-cell">{fmtHours(jo.consumptionUnapproved)}</td>
+                              <td>{fmtHours(jo.consumptionApproved)}</td>
+                              <td>{budget > 0 ? `${budget} hrs` : "—"}</td>
+                              <td colSpan={3} className="jo-bar-cell">
+                                {budget > 0 ? (
+                                  <>
+                                    <div className={`jo-bar ${colorClass}`}>
+                                      <span style={{ width: `${Math.min(100, pct)}%` }} />
+                                    </div>
+                                    <span className={`jo-bar-label jo-bar-label--${colorClass.replace("jo-bar--", "")}`}>
+                                      {pct}%
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className="muted tiny">No budget</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                      <tr>
+                        <td colSpan={11} className="jo-footnote">
+                          Figures reflect this department&apos;s submissions only — full cross-department
+                          budget status is available on Job Order Summary.
+                        </td>
+                      </tr>
+                    </>
                   )}
                 </tbody>
               </table>
@@ -800,36 +927,110 @@ export function ApprovalsPage() {
               {!loading && received.length === 0 && (
                 <p className="muted empty-card">No pending submissions from supervisors.</p>
               )}
+
+              {viewMode === "jobOrder" && (
+                <div className="jo-cards">
+                  <div className="jo-inspection-banner">
+                    Inspection view — approve from &quot;By Supervisor.&quot;
+                  </div>
+                  {jobOrderRows.length === 0 ? (
+                    <p className="muted empty-card">No job order consumption data for this period.</p>
+                  ) : (
+                    jobOrderRows.map((jo) => {
+                      const budget = jo.budgetedHours ?? 0;
+                      const consumed = jo.consumptionApproved + jo.consumptionUnapproved;
+                      const pct = budget > 0 ? Math.round((consumed / budget) * 100) : 0;
+                      const colorClass =
+                        pct < 85 ? "jo-bar--green" : pct < 100 ? "jo-bar--amber" : "jo-bar--red";
+                      return (
+                        <article key={jo.id} className="jo-card">
+                          <header className="jo-card__head">
+                            <span
+                              className="jo-color-dot"
+                              style={{
+                                background: `var(--project-${jo.projectColorKey.toLowerCase()})`,
+                              }}
+                            />
+                            <strong>
+                              {jo.code} · {jo.name}
+                            </strong>
+                            {jo.status === "active" && (
+                              <span className="jo-status-superscript jo-status-active">ACTIVE</span>
+                            )}
+                            {jo.status === "closed" && (
+                              <span className="jo-status-superscript jo-status-closed">CLOSED</span>
+                            )}
+                          </header>
+                          <div className="jo-card__meta">
+                            <span>Project: {jo.projectName}</span>
+                            <span>
+                              Unapproved: <strong>{fmtHours(jo.consumptionUnapproved)}</strong>
+                            </span>
+                            <span>
+                              Approved: <strong>{fmtHours(jo.consumptionApproved)}</strong>
+                            </span>
+                            <span>
+                              Budget: <strong>{budget > 0 ? `${budget} hrs` : "—"}</strong>
+                            </span>
+                          </div>
+                          {budget > 0 ? (
+                            <div className="jo-card__meta" style={{ marginTop: 8 }}>
+                              <div className={`jo-bar ${colorClass}`}>
+                                <span style={{ width: `${Math.min(100, pct)}%` }} />
+                              </div>
+                              <span
+                                className={`jo-bar-label jo-bar-label--${colorClass.replace("jo-bar--", "")}`}
+                              >
+                                {pct}%
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="muted tiny" style={{ marginTop: 6 }}>
+                              No budget cap
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })
+                  )}
+                  <p className="jo-footnote">
+                    Figures reflect this department&apos;s submissions only — full cross-department
+                    budget status is available on Job Order Summary.
+                  </p>
+                </div>
+              )}
             </div>
 
-            <div className="bulk-bar bulk-bar--mobile hod-mobile-only">
-              <label className="bulk-bar__select">
-                <input
-                  type="checkbox"
-                  checked={allEmployeeIds.length > 0 && selected.size === allEmployeeIds.length}
-                  onChange={toggleSelectAll}
-                />
-                Select All
-              </label>
-              <div className="bulk-bar__actions">
-                <button
-                  type="button"
-                  className="btn btn-danger-outline"
-                  disabled={selected.size === 0}
-                  onClick={() => batchAct("reject", [...selected])}
-                >
-                  Reject ({selected.size})
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-approve"
-                  disabled={selected.size === 0}
-                  onClick={() => batchAct("approve", [...selected])}
-                >
-                  Approve ({selected.size})
-                </button>
+            {viewMode !== "jobOrder" && (
+              <div className="bulk-bar bulk-bar--mobile hod-mobile-only">
+                <label className="bulk-bar__select">
+                  <input
+                    type="checkbox"
+                    checked={allEmployeeIds.length > 0 && selected.size === allEmployeeIds.length}
+                    onChange={toggleSelectAll}
+                  />
+                  Select All
+                </label>
+                <div className="bulk-bar__actions">
+                  <button
+                    type="button"
+                    className="btn btn-danger-outline"
+                    disabled={selected.size === 0}
+                    onClick={() => batchAct("reject", [...selected])}
+                  >
+                    Reject ({selected.size})
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-approve"
+                    disabled={selected.size === 0}
+                    onClick={() => batchAct("approve", [...selected])}
+                  >
+                    Approve ({selected.size})
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </section>
 
           {isHodLike && (

@@ -13,6 +13,8 @@ async function main() {
   await prisma.manpowerRequest.deleteMany();
   await prisma.attendanceFeed.deleteMany();
   await prisma.costRate.deleteMany();
+  await prisma.jobOrder.deleteMany();
+  await prisma.project.deleteMany();
   await prisma.projectWbs.deleteMany();
   await prisma.user.deleteMany();
   await prisma.employee.deleteMany();
@@ -142,6 +144,66 @@ async function main() {
 
   for (const p of projects) {
     await prisma.projectWbs.create({ data: p });
+  }
+
+  // --- New Project + JobOrder master (1900000xxx codes) ---
+  // Used by Job Order Summary tab and (in a later round) by the 4-slot Timesheet Entry.
+  const newProjects = [
+    { code: "PRJ-A", name: "Project A", colorKey: "A", sortOrder: 1 },
+    { code: "PRJ-B", name: "Project B", colorKey: "B", sortOrder: 2 },
+    { code: "PRJ-C", name: "Project C", colorKey: "C", sortOrder: 3 },
+    { code: "PRJ-D", name: "Project D", colorKey: "D", sortOrder: 4 },
+    { code: "PRJ-N", name: "Non Project", colorKey: "N", sortOrder: 5 },
+  ];
+  const projARow = await prisma.project.create({ data: newProjects[0] });
+  const projBRow = await prisma.project.create({ data: newProjects[1] });
+  const projCRow = await prisma.project.create({ data: newProjects[2] });
+  const projDRow = await prisma.project.create({ data: newProjects[3] });
+  const projNRow = await prisma.project.create({ data: newProjects[4] });
+
+  // Link ProjectWbs rows to Project rows so legacy Project Summary stays consistent.
+  // The seed_projectWbs objects were just created above; fetch by code.
+  const wbsA = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-A" } });
+  const wbsB = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-B" } });
+  const wbsC = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-C" } });
+  const wbsD = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-D" } });
+  await prisma.project.update({ where: { id: projARow.id }, data: {} });
+  // projectWbsId FK on JobOrder points into the legacy ProjectWbs row.
+
+  type JoSeed = {
+    projectId: number;
+    projectWbsId: number | null;
+    code: string;
+    name: string;
+    departmentId: number;
+    budgetedHours: number | null;
+    status: "active" | "closed" | "on_hold";
+  };
+  const joSeeds: JoSeed[] = [
+    // Project A — active vessel hull work, all active
+    { projectId: projARow.id, projectWbsId: wbsA.id, code: "1900000107", name: "Pipe Spool Installation", departmentId: hull.id, budgetedHours: 1200, status: "active" },
+    { projectId: projARow.id, projectWbsId: wbsA.id, code: "1900000108", name: "MCB Panel Installation", departmentId: hull.id, budgetedHours: 800, status: "active" },
+    { projectId: projARow.id, projectWbsId: wbsA.id, code: "1900000109", name: "Sea Chest Grating Renewal", departmentId: hull.id, budgetedHours: 1500, status: "active" },
+    // Project B — Block 223, active
+    { projectId: projBRow.id, projectWbsId: wbsB.id, code: "1900000204", name: "Block Transfer (Block 223)", departmentId: hull.id, budgetedHours: 2000, status: "active" },
+    { projectId: projBRow.id, projectWbsId: wbsB.id, code: "1900000205", name: "Block Cleaning (Block 223)", departmentId: hull.id, budgetedHours: 1500, status: "active" },
+    { projectId: projBRow.id, projectWbsId: wbsB.id, code: "1900000206", name: "Block Painting (Block 223)", departmentId: hull.id, budgetedHours: 1800, status: "active" },
+    // Project C — split across multiple departments
+    { projectId: projCRow.id, projectWbsId: wbsC.id, code: "1900000110", name: "Block Washing", departmentId: blast.id, budgetedHours: 1100, status: "active" },
+    { projectId: projCRow.id, projectWbsId: wbsC.id, code: "1900000111", name: "Propeller & Rudder Inspection", departmentId: repair.id, budgetedHours: 950, status: "active" },
+    { projectId: projCRow.id, projectWbsId: wbsC.id, code: "1900000112", name: "Hull Blasting", departmentId: blast.id, budgetedHours: 2000, status: "closed" },
+    // Project D — single active JO, demoing the "CLOSED" superscript on a peer
+    { projectId: projDRow.id, projectWbsId: wbsD.id, code: "1900000113", name: "Deck Furniture Installation", departmentId: repair.id, budgetedHours: 600, status: "active" },
+    // Non Project — Standing JOs (no budget cap)
+    { projectId: projNRow.id, projectWbsId: null, code: "1900000401", name: "General Housekeeping", departmentId: hull.id, budgetedHours: null, status: "active" },
+    { projectId: projNRow.id, projectWbsId: null, code: "1900000402", name: "Administrative / Meeting Time", departmentId: hull.id, budgetedHours: null, status: "active" },
+    { projectId: projNRow.id, projectWbsId: null, code: "1900000403", name: "Training & Induction", departmentId: hull.id, budgetedHours: null, status: "active" },
+    { projectId: projNRow.id, projectWbsId: null, code: "1900000405", name: "Equipment / Machine Maintenance", departmentId: repair.id, budgetedHours: null, status: "active" },
+  ];
+  const joByCode = new Map<string, number>();
+  for (const jo of joSeeds) {
+    const created = await prisma.jobOrder.create({ data: jo });
+    joByCode.set(jo.code, created.id);
   }
 
   const rateDate = new Date("2026-01-01");
@@ -296,6 +358,23 @@ async function main() {
 
   if (summaryEntries.length) {
     await prisma.timesheetEntry.createMany({ data: summaryEntries });
+  }
+
+  // Backfill: link legacy hour-slot entries to the first matching JobOrder per
+  // ProjectWbs so the new Job Order Summary tab has real consumption numbers.
+  // We use the first JO (sorted by code) of each project as the default mapping.
+  const wbsToFirstJo = new Map<number, number>();
+  const allJOs = await prisma.jobOrder.findMany({ orderBy: [{ projectId: "asc" }, { code: "asc" }] });
+  for (const jo of allJOs) {
+    if (jo.projectWbsId != null && !wbsToFirstJo.has(jo.projectWbsId)) {
+      wbsToFirstJo.set(jo.projectWbsId, jo.id);
+    }
+  }
+  for (const [wbsId, joId] of wbsToFirstJo) {
+    await prisma.timesheetEntry.updateMany({
+      where: { projectWbsId: wbsId, jobOrderId: null, hourSlot: { not: null } },
+      data: { jobOrderId: joId },
+    });
   }
 
   // --- HOD approval demo: structured Project A/B/C (+ overhead on D) ---

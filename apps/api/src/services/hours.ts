@@ -27,25 +27,30 @@ export async function getEmployeeDayHourTotals(
     where: {
       employeeId: { in: employeeIds },
       workDate,
-      projectWbsId: { not: null },
+      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
     },
-    select: { employeeId: true, hourSlot: true, taggedById: true },
+    select: { employeeId: true, hourSlot: true, shiftSlot: true, taggedById: true },
   });
 
-  const byEmp = new Map<number, { slots: Set<number>; bySup: Map<number, Set<number>> }>();
+  const byEmp = new Map<number, { hourSlots: Set<number>; shiftSlots: Set<string>; bySup: Map<number, { hourSlots: Set<number>; shiftSlots: Set<string> }> }>();
   for (const e of entries) {
     let bag = byEmp.get(e.employeeId);
     if (!bag) {
-      bag = { slots: new Set(), bySup: new Map() };
+      bag = { hourSlots: new Set(), shiftSlots: new Set(), bySup: new Map() };
       byEmp.set(e.employeeId, bag);
     }
-    bag.slots.add(e.hourSlot);
-    let supSlots = bag.bySup.get(e.taggedById);
-    if (!supSlots) {
-      supSlots = new Set();
-      bag.bySup.set(e.taggedById, supSlots);
+    // Bucket by taggedById; counts are per-slot kind (hour vs shift).
+    // For day total we union both kinds (an hour slot tagged by another supervisor
+    // still consumes an hour-equivalent even though this supervisor writes shift slots).
+    if (e.hourSlot != null) bag.hourSlots.add(e.hourSlot);
+    if (e.shiftSlot != null) bag.shiftSlots.add(e.shiftSlot);
+    let supBag = bag.bySup.get(e.taggedById);
+    if (!supBag) {
+      supBag = { hourSlots: new Set(), shiftSlots: new Set() };
+      bag.bySup.set(e.taggedById, supBag);
     }
-    supSlots.add(e.hourSlot);
+    if (e.hourSlot != null) supBag.hourSlots.add(e.hourSlot);
+    if (e.shiftSlot != null) supBag.shiftSlots.add(e.shiftSlot);
   }
 
   for (const id of employeeIds) {
@@ -55,19 +60,28 @@ export async function getEmployeeDayHourTotals(
       continue;
     }
 
-    const otherSlots = new Set<number>();
-    for (const [supervisorId, slots] of bag.bySup) {
+    // Union of hour slots (any supervisor) and shift slots (any supervisor).
+    const allSlots = new Set<number>();
+    for (const h of bag.hourSlots) allSlots.add(h);
+    // shiftSlots are strings — they don't share the numeric slot space; count separately.
+    const allSlotCount = allSlots.size + bag.shiftSlots.size;
+
+    const otherHourSlots = new Set<number>();
+    let otherShiftSlotCount = 0;
+    for (const [supervisorId, supBag] of bag.bySup) {
       if (excludeSupervisorId != null && supervisorId === excludeSupervisorId) continue;
-      for (const slot of slots) otherSlots.add(slot);
+      for (const h of supBag.hourSlots) otherHourSlots.add(h);
+      otherShiftSlotCount += supBag.shiftSlots.size;
     }
+    const otherSlotsCount = otherHourSlots.size + otherShiftSlotCount;
 
     result.set(id, {
-      totalHours: bag.slots.size,
-      otherHours: otherSlots.size,
-      otherSlots: Array.from(otherSlots).sort((a, b) => a - b),
-      bySupervisor: Array.from(bag.bySup.entries()).map(([supervisorId, slots]) => ({
+      totalHours: allSlotCount,
+      otherHours: otherSlotsCount,
+      otherSlots: Array.from(otherHourSlots).sort((a, b) => a - b),
+      bySupervisor: Array.from(bag.bySup.entries()).map(([supervisorId, supBag]) => ({
         supervisorId,
-        hours: slots.size,
+        hours: supBag.hourSlots.size + supBag.shiftSlots.size,
       })),
     });
   }

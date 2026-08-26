@@ -13,6 +13,17 @@ approvalsRouter.use(requireAuth);
 const APPROVER_ROLES = ["HOD", "PM", "ADMIN"] as const;
 
 type ProjectWbsRef = { colorKey: string; name: string } | null;
+type JobOrderRef = {
+  project: { colorKey: string; name: string };
+} | null;
+
+type EntryLike = {
+  projectWbsId: number | null;
+  jobOrderId: number | null;
+  status: string;
+  projectWbs: ProjectWbsRef;
+  jobOrder: JobOrderRef;
+};
 
 type DayRow = {
   id: number;
@@ -28,7 +39,7 @@ type DayRow = {
     department: { name: string };
   };
   taggedBy: { id: number; name: string; email: string };
-  entries: { projectWbsId: number | null; status: string; projectWbs: ProjectWbsRef }[];
+  entries: EntryLike[];
   approvals: {
     action: string;
     comment: string | null;
@@ -61,12 +72,19 @@ function daysPending(updatedAt: Date): number {
   return Math.max(0, Math.floor(ms / (24 * 60 * 60 * 1000)));
 }
 
-function projectHoursFromEntries(entries: { projectWbsId: number | null; projectWbs: ProjectWbsRef }[]) {
+function projectHoursFromEntries(entries: EntryLike[]) {
   const byKey: Record<string, number> = { A: 0, B: 0, C: 0 };
   let overhead = 0;
   for (const e of entries) {
-    if (!e.projectWbsId || !e.projectWbs) continue;
-    const key = String(e.projectWbs.colorKey || "").toUpperCase();
+    // A tagged entry is one with projectWbsId OR jobOrderId. The project color
+    // can come from the legacy projectWbs relation OR the new
+    // jobOrder.project relation. Without the jobOrder fallback, days tagged
+    // exclusively via the supervisor's Daily Timesheet Entry (jobOrder-only)
+    // appear as 0 project hours to HOD/PM.
+    const colorKey = e.projectWbs?.colorKey ?? e.jobOrder?.project.colorKey ?? null;
+    if (e.projectWbsId == null && e.jobOrderId == null) continue;
+    if (!colorKey) continue;
+    const key = String(colorKey).toUpperCase();
     if (key === "A" || key === "B" || key === "C") {
       byKey[key] += 1;
     } else {
@@ -79,7 +97,10 @@ function projectHoursFromEntries(entries: { projectWbsId: number | null; project
 
 /** Entries pending this approver's action (amendments keep prior approvals on other entries). */
 function pendingEntriesForRole(d: DayRow, role: string) {
-  const tagged = d.entries.filter((e) => e.projectWbsId != null);
+  // A "tagged" entry is one tagged to a project (via legacy projectWbs OR via
+  // the new jobOrder path). Filter must OR both, otherwise days tagged solely
+  // through the supervisor's Daily Timesheet Entry never appear here.
+  const tagged = d.entries.filter((e) => e.projectWbsId != null || e.jobOrderId != null);
   const hasProtected = tagged.some((e) => isProtectedEntryStatus(e.status));
   const hasPriorApprove = d.approvals.some((a) => a.action === "APPROVE");
 
@@ -111,7 +132,10 @@ async function conflictEmployeeIds(employeeIds: number[], workDates: Date[]): Pr
     where: {
       employeeId: { in: employeeIds },
       workDate: { in: workDates },
-      projectWbsId: { not: null },
+      // Conflict = two supervisors tagging the same slot (any flow). Include
+      // both projectWbsId (legacy) and jobOrderId (new) so we don't miss
+      // jobOrder-only conflicts.
+      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
     },
     select: { employeeId: true, workDate: true, taggedById: true },
   });
@@ -142,7 +166,8 @@ function mapEmployeeRow(
   const workDate = d.workDate.toISOString().slice(0, 10);
   const { entries: pendingEntries, isAmendment } = pendingEntriesForRole(d, role);
   const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries);
-  const allTagged = projectHoursFromEntries(d.entries.filter((e) => e.projectWbsId != null));
+  // "All tagged" (across the whole day, not just pending) must include both flows too.
+  const allTagged = projectHoursFromEntries(d.entries);
   const unallocatedHours = Math.max(0, maxDailyHours - dayTotalHours);
   const conflictKey = `${d.employeeId}|${workDate}`;
   return {
@@ -237,8 +262,12 @@ const dayInclude = {
   employee: { include: { department: true } },
   taggedBy: { select: { id: true, name: true, email: true } },
   entries: {
-    where: { projectWbsId: { not: null } },
-    include: { projectWbs: true },
+    // Load all entries that reference a project (legacy ProjectWbs OR new JobOrder).
+    // Without the OR, jobOrder-only days render as empty rows to HOD.
+    where: {
+      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+    },
+    include: { projectWbs: true, jobOrder: { include: { project: true } } },
   },
   approvals: {
     include: { approver: { select: { id: true, name: true, role: true } } },
@@ -270,8 +299,10 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
   const days = (await prisma.timesheetDay.findMany({
     where: {
       status: { in: statusFilter },
-      // Only days that have at least one project-tagged hour
-      entries: { some: { projectWbsId: { not: null } } },
+      // Only days that have at least one project-tagged hour (legacy WBS OR new JobOrder).
+      entries: {
+        some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
+      },
     },
     include: dayInclude,
     orderBy: [{ workDate: "desc" }, { updatedAt: "desc" }],
@@ -297,7 +328,9 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     const returned = (await prisma.timesheetDay.findMany({
       where: {
         status: "PLANNING_RETURNED",
-        entries: { some: { projectWbsId: { not: null } } },
+        entries: {
+          some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
+        },
       },
       include: dayInclude,
       orderBy: [{ updatedAt: "desc" }],
@@ -359,8 +392,8 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
           employee: { include: { department: true } },
           taggedBy: { select: { id: true, name: true, email: true } },
           entries: {
-            where: { projectWbsId: { not: null } },
-            include: { projectWbs: true },
+            where: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
+            include: { projectWbs: true, jobOrder: { include: { project: true } } },
           },
         },
       },
@@ -396,6 +429,88 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
   res.json({ items, roleLabel: roleLabel(req.user!.role) });
 });
 
+/**
+ * "Group by Job Order" lens for the Approvals page.
+ * Sums consumption across the HOD's department for the period, split by
+ * approved vs unapproved entry status, per Job Order.
+ *
+ * Note: this is scoped to the HOD's department (via supervisor + employee
+ * department), matching the doc footnote "Figures reflect this department's
+ * submissions only". Cross-department totals live on the Job Order Summary screen.
+ */
+approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), async (req, res) => {
+  const role = req.user!.role;
+  const departmentId = req.user!.departmentId;
+
+  const entries = await prisma.timesheetEntry.findMany({
+    where: {
+      jobOrderId: { not: null },
+      OR: [
+        { taggedBy: departmentId != null ? { departmentId } : undefined },
+        { employee: departmentId != null ? { departmentId } : undefined },
+      ],
+    },
+    include: {
+      jobOrder: { include: { project: true } },
+    },
+  });
+
+  const byJo = new Map<
+    number,
+    {
+      id: number;
+      code: string;
+      name: string;
+      status: string;
+      budgetedHours: number | null;
+      projectColorKey: string;
+      projectName: string;
+      consumptionApproved: number;
+      consumptionUnapproved: number;
+    }
+  >();
+
+  for (const e of entries) {
+    if (!e.jobOrder || !e.jobOrderId) continue;
+    const jo = e.jobOrder;
+    let row = byJo.get(jo.id);
+    if (!row) {
+      row = {
+        id: jo.id,
+        code: jo.code,
+        name: jo.name,
+        status: jo.status,
+        budgetedHours: jo.budgetedHours,
+        projectColorKey: jo.project.colorKey,
+        projectName: jo.project.name,
+        consumptionApproved: 0,
+        consumptionUnapproved: 0,
+      };
+      byJo.set(jo.id, row);
+    }
+    if (e.status === "HOD_APPROVED" || e.status === "PM_APPROVED") {
+      row.consumptionApproved += 1;
+    } else if (e.status === "SUBMITTED" || e.status === "DRAFT") {
+      row.consumptionUnapproved += 1;
+    } else if (e.status === "PLANNING_RETURNED" || e.status === "REJECTED") {
+      // Unapproved (these are the open ones waiting for action)
+      row.consumptionUnapproved += 1;
+    }
+  }
+
+  const rows = Array.from(byJo.values())
+    .map((r) => ({
+      ...r,
+      // For "today" column we approximate with unapproved (this is the data the
+      // HOD is about to act on). The Period column shows total unapproved
+      // (matches Consumption (Unapproved) in the screenshot).
+      consumptionToday: r.consumptionUnapproved,
+    }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+
+  res.json({ rows, role });
+});
+
 async function applyApprove(ids: number[], userId: number, role: string, comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
@@ -403,7 +518,11 @@ async function applyApprove(ids: number[], userId: number, role: string, comment
   for (const id of ids) {
     const day = await prisma.timesheetDay.findUnique({
       where: { id },
-      include: { entries: { where: { projectWbsId: { not: null } } } },
+      include: {
+        entries: {
+          where: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
+        },
+      },
     });
     if (!day) {
       errors.push({ id, error: "Not found" });
@@ -416,9 +535,14 @@ async function applyApprove(ids: number[], userId: number, role: string, comment
     }
 
     const hasProtected = day.entries.some((e) => isProtectedEntryStatus(e.status));
+    // Amendment: only the newly submitted slots go pending — keep prior approvals intact.
     const entryWhere =
       hasProtected && day.status === "SUBMITTED"
-        ? { timesheetDayId: id, status: "SUBMITTED" as const, projectWbsId: { not: null } }
+        ? {
+            timesheetDayId: id,
+            status: "SUBMITTED" as const,
+            OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+          }
         : { timesheetDayId: id };
 
     await prisma.$transaction([
@@ -450,7 +574,11 @@ async function applyReject(ids: number[], userId: number, role: string, comment:
   for (const id of ids) {
     const day = await prisma.timesheetDay.findUnique({
       where: { id },
-      include: { entries: { where: { projectWbsId: { not: null } } } },
+      include: {
+        entries: {
+          where: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
+        },
+      },
     });
     if (!day) {
       errors.push({ id, error: "Not found" });
@@ -471,10 +599,14 @@ async function applyReject(ids: number[], userId: number, role: string, comment:
     }
 
     const hasProtected = day.entries.some((e) => isProtectedEntryStatus(e.status));
-    // Amendment reject: only bounce the newly submitted slots; keep prior HOD/PM approvals intact
+    // Amendment reject: bounce only the newly submitted slots; keep prior approvals intact.
     const entryWhere =
       hasProtected && day.status === "SUBMITTED" && !isPlanningReturn
-        ? { timesheetDayId: id, status: "SUBMITTED" as const, projectWbsId: { not: null } }
+        ? {
+            timesheetDayId: id,
+            status: "SUBMITTED" as const,
+            OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+          }
         : { timesheetDayId: id };
 
     await prisma.$transaction([

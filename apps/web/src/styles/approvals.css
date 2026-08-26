@@ -388,6 +388,176 @@
   line-height: 1.35;
 }
 
+/* === Flagged chip (employee sub-row when hasConflict) === */
+.flagged-chip {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* === Group by Job Order view === */
+.jo-inspection-banner {
+  background: color-mix(in srgb, var(--primary) 12%, var(--bg-elevated));
+  color: var(--primary-ink, var(--primary));
+  padding: 10px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border-light));
+}
+
+.jo-row td {
+  vertical-align: middle;
+}
+
+.jo-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.jo-color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.jo-status-superscript {
+  font-size: 9.5px;
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  vertical-align: super;
+  margin-left: 4px;
+}
+
+.jo-status-active {
+  color: #15803d;
+  background: color-mix(in srgb, #16a34a 12%, transparent);
+}
+
+.jo-status-closed {
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+}
+
+.jo-bar-cell {
+  min-width: 220px;
+}
+
+.jo-bar {
+  position: relative;
+  display: inline-block;
+  width: 160px;
+  height: 8px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  overflow: hidden;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+.jo-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.2s var(--ease);
+}
+
+.jo-bar--green > span {
+  background: #16a34a;
+}
+
+.jo-bar--amber > span {
+  background: #d97706;
+}
+
+.jo-bar--red > span {
+  background: #dc2626;
+}
+
+.jo-bar-label {
+  font-weight: 700;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.jo-bar-label--green {
+  color: #15803d;
+}
+
+.jo-bar-label--amber {
+  color: #b45309;
+}
+
+.jo-bar-label--red {
+  color: #b91c1c;
+}
+
+.jo-footnote {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 12px !important;
+  text-align: center;
+}
+
+/* Mobile Job Order cards */
+.jo-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.jo-card {
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+}
+
+.jo-card__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.jo-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  align-items: center;
+}
+
+.jo-card__meta strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* === Group-by toggle: 3 buttons === */
+.view-toggle {
+  flex-wrap: wrap;
+}
+
+.view-toggle button {
+  white-space: nowrap;
+  border-right: 1px solid var(--border-light);
+}
+
+.view-toggle button:last-child {
+  border-right: none;
+}
+
 
 .hod-cards {
   flex-direction: column;

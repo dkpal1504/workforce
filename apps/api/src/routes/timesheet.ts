@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { timesheetDaySchema } from "@workforce/shared";
+import { SHIFT_SLOTS, bulkAssignSchema, setSlotJobOrderSchema, timesheetDaySchema } from "@workforce/shared";
+import type { ShiftSlot } from "@workforce/shared";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { parseDateOnly } from "../utils/date";
-import { getMaxDailyHours, getShifts } from "../config";
+import { getMaxDailyHours } from "../config";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
 
@@ -14,6 +15,80 @@ timesheetRouter.use(requireAuth);
 
 const RETURN_ACTIONS = ["REJECT", "SEND_BACK", "PLANNING_RETURN"];
 
+type ShiftSlotRow = {
+  shiftSlot: ShiftSlot;
+  jobOrderId: number | null;
+  /** Convenience fields flattened from the jobOrder relation. */
+  projectId: number | null;
+  projectColorKey: string | null;
+  projectName: string | null;
+  jobOrderCode: string | null;
+  jobOrderName: string | null;
+  projectWbsCode: string | null;
+  /** Entry row id (for per-slot edit) — null if no row yet. */
+  entryId: number | null;
+  status: string | null;
+  locked: boolean;
+};
+
+function buildShiftRows(
+  entries: {
+    id: number;
+    shiftSlot: string | null;
+    jobOrderId: number | null;
+    projectWbsId: number | null;
+    status: string;
+    jobOrder: {
+      id: number;
+      code: string;
+      name: string;
+      project: { id: number; name: string; colorKey: string };
+      projectWbs: { id: number; wbsCode: string } | null;
+    } | null;
+    projectWbs: { id: number; wbsCode: string; name: string; colorKey: string } | null;
+  }[]
+): ShiftSlotRow[] {
+  const byShift = new Map<string, (typeof entries)[number]>();
+  for (const e of entries) {
+    if (!e.shiftSlot) continue;
+    byShift.set(e.shiftSlot, e);
+  }
+  return SHIFT_SLOTS.map((shiftSlot) => {
+    const e = byShift.get(shiftSlot);
+    if (!e) {
+      return {
+        shiftSlot,
+        jobOrderId: null,
+        projectId: null,
+        projectColorKey: null,
+        projectName: null,
+        jobOrderCode: null,
+        jobOrderName: null,
+        projectWbsCode: null,
+        entryId: null,
+        status: null,
+        locked: false,
+      };
+    }
+    // Prefer the JobOrder relation (new model); fall back to legacy ProjectWbs.
+    const jo = e.jobOrder;
+    const pw = e.projectWbs;
+    return {
+      shiftSlot,
+      jobOrderId: e.jobOrderId,
+      projectId: jo?.project.id ?? null,
+      projectColorKey: jo?.project.colorKey ?? pw?.colorKey ?? null,
+      projectName: jo?.project.name ?? pw?.name ?? null,
+      jobOrderCode: jo?.code ?? null,
+      jobOrderName: jo?.name ?? null,
+      projectWbsCode: jo?.projectWbs?.wbsCode ?? pw?.wbsCode ?? null,
+      entryId: e.id,
+      status: e.status,
+      locked: e.projectWbsId != null && e.jobOrderId != null && isProtectedEntryStatus(e.status),
+    };
+  });
+}
+
 timesheetRouter.get("/", async (req, res) => {
   const supervisorId = Number(req.query.supervisor_id);
   const dateStr = String(req.query.date || "");
@@ -22,7 +97,6 @@ timesheetRouter.get("/", async (req, res) => {
   }
   const workDate = parseDateOnly(dateStr);
   const maxDailyHours = getMaxDailyHours();
-  const shifts = getShifts();
 
   const team = await prisma.dailyTeamSelection.findMany({
     where: { supervisorId, workDate, removedAt: null },
@@ -33,7 +107,12 @@ timesheetRouter.get("/", async (req, res) => {
   const days = await prisma.timesheetDay.findMany({
     where: { taggedById: supervisorId, workDate },
     include: {
-      entries: { include: { projectWbs: true } },
+      entries: {
+        include: {
+          projectWbs: true,
+          jobOrder: { include: { project: true, projectWbs: true } },
+        },
+      },
       employee: true,
       approvals: {
         include: { approver: { select: { id: true, name: true, role: true } } },
@@ -47,42 +126,35 @@ timesheetRouter.get("/", async (req, res) => {
   const employeeIds = team.map((t) => t.employeeId);
   const dayTotals = await getEmployeeDayHourTotals(employeeIds, workDate, supervisorId);
 
-  const projects = await prisma.projectWbs.findMany({ where: { active: true }, orderBy: { colorKey: "asc" } });
+  // Active projects + their job orders, for the Bulk Assignment block + per-row Allocation.
+  const projects = await prisma.project.findMany({
+    where: { active: true },
+    orderBy: { sortOrder: "asc" },
+    include: {
+      jobOrders: {
+        where: { status: { in: ["active"] } },
+        orderBy: { code: "asc" },
+      },
+    },
+  });
 
+  // Build per-employee rows: 4 shift slots + derived totals + edit-lock info.
   const rows = team.map((t) => {
     const day = dayByEmployee.get(t.employeeId);
-    const hours = Array.from({ length: 13 }, (_, hourSlot) => {
-      const entry = day?.entries.find((e) => e.hourSlot === hourSlot);
-      return {
-        hourSlot,
-        projectWbsId: entry?.projectWbsId ?? null,
-        locked: Boolean(
-          entry?.projectWbsId != null && entry?.status && isProtectedEntryStatus(entry.status)
-        ),
-        project: entry?.projectWbs
-          ? {
-              id: entry.projectWbs.id,
-              name: entry.projectWbs.name,
-              wbsCode: entry.projectWbs.wbsCode,
-              colorKey: entry.projectWbs.colorKey,
-            }
-          : null,
-      };
-    });
-    const filledHours = hours.filter((h) => h.projectWbsId != null).length;
-    const totals = dayTotals.get(t.employeeId);
-    const otherSlots = totals?.otherSlots ?? [];
-    const otherHours = totals?.otherHours ?? 0;
-    const dayTotalHours = new Set([
-      ...otherSlots,
-      ...hours.filter((h) => h.projectWbsId != null).map((h) => h.hourSlot),
-    ]).size;
+    const slots = buildShiftRows(day?.entries ?? []);
+    const filledSlots = slots.filter((s) => s.jobOrderId != null).length;
+    const otherSlots = dayTotals.get(t.employeeId)?.otherSlots ?? [];
+    const otherHours = dayTotals.get(t.employeeId)?.otherHours ?? 0;
+    // Day total = filled shift slots (this supervisor) + distinct hour slots tagged by other supervisors.
+    const dayTotalHours = filledSlots + otherHours;
     const exceedsLimit = dayTotalHours > maxDailyHours;
     const latestReturn = day?.approvals?.find((a) => RETURN_ACTIONS.includes(a.action)) ?? null;
     const latestApprove = day?.approvals?.find((a) => a.action === "APPROVE") ?? null;
     const status = day?.status ?? "DRAFT";
     const hasProtectedEntries = Boolean(
-      day?.entries?.some((e) => e.projectWbsId != null && isProtectedEntryStatus(e.status))
+      day?.entries?.some(
+        (e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status)
+      )
     );
     const lock = resolveEditLock(status, latestApprove?.createdAt ?? day?.updatedAt ?? null, {
       hasProtectedEntries,
@@ -93,14 +165,15 @@ timesheetRouter.get("/", async (req, res) => {
       employee: t.employee,
       remarks: day?.remarks ?? "",
       status,
-      hours,
-      filled: filledHours > 0,
-      filledHours,
+      slots,
+      filledSlots,
+      filled: filledSlots > 0,
+      fullShiftDone: filledSlots === SHIFT_SLOTS.length,
       otherHours,
       otherSlots,
       dayTotalHours,
       exceedsLimit,
-      remarksRequired: exceedsLimit && filledHours > 0,
+      remarksRequired: exceedsLimit && filledSlots > 0,
       editMode: lock.editMode,
       approvedAt: lock.approvedAt,
       lockExpiresAt: lock.lockExpiresAt,
@@ -116,7 +189,7 @@ timesheetRouter.get("/", async (req, res) => {
     };
   });
 
-  const filledCount = rows.filter((r) => r.filledHours > 0).length;
+  const filledCount = rows.filter((r) => r.filledSlots > 0).length;
   const rejectedCount = rows.filter((r) => r.status === "REJECTED").length;
 
   const openReturns = await prisma.timesheetDay.findMany({
@@ -139,9 +212,20 @@ timesheetRouter.get("/", async (req, res) => {
     filled: filledCount,
     total: rows.length,
     rejectedCount,
-    projects,
+    projects: projects.map((p) => ({
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      colorKey: p.colorKey,
+      jobOrders: p.jobOrders.map((j) => ({
+        id: j.id,
+        code: j.code,
+        name: j.name,
+        status: j.status,
+        budgetedHours: j.budgetedHours,
+      })),
+    })),
     maxDailyHours,
-    shifts,
     openReturns: openReturns.map((d) => {
       const feedback = d.approvals[0];
       return {
@@ -194,7 +278,10 @@ timesheetRouter.put("/day", async (req, res) => {
 
     const status = existing?.status ?? "DRAFT";
     const hasProtectedEntries = Boolean(
-      existing?.entries?.some((e) => e.projectWbsId != null && isProtectedEntryStatus(e.status))
+      existing?.entries?.some(
+        (e) =>
+          (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status)
+      )
     );
     const lock = resolveEditLock(status, existing?.approvals[0]?.createdAt ?? existing?.updatedAt ?? null, {
       hasProtectedEntries,
@@ -209,25 +296,27 @@ timesheetRouter.put("/day", async (req, res) => {
     }
 
     if (lock.editMode === "addOnly" && existing) {
-      const existingBySlot = new Map(existing.entries.map((e) => [e.hourSlot, e]));
-      for (const h of row.hours) {
-        const prev = existingBySlot.get(h.hourSlot);
-        if (prev?.projectWbsId != null && isProtectedEntryStatus(prev.status)) {
-          if (h.projectWbsId == null || h.projectWbsId !== prev.projectWbsId) {
+      const existingBySlot = new Map(
+        existing.entries.filter((e) => e.shiftSlot != null).map((e) => [e.shiftSlot as string, e])
+      );
+      for (const s of row.slots) {
+        const prev = existingBySlot.get(s.shiftSlot);
+        const isProtected = prev && (prev.projectWbsId != null || prev.jobOrderId != null) && isProtectedEntryStatus(prev.status);
+        if (isProtected) {
+          if (s.jobOrderId == null || s.jobOrderId !== prev.jobOrderId) {
             lockViolations.push({
               employeeId: row.employeeId,
               error:
-                "Cannot clear or change hour slots already approved by HOD/Project Head. You may only fill empty slots (or fix rejected new hours).",
+                "Cannot clear or change shift slots already approved by HOD/Project Head. You may only fill empty slots (or fix rejected new slots).",
             });
             break;
           }
-        } else if (isApprovedStatus(status) && prev?.projectWbsId != null) {
-          // Approved day: non-protected filled slots still cannot change (legacy)
-          if (h.projectWbsId == null || h.projectWbsId !== prev.projectWbsId) {
+        } else if (isApprovedStatus(status) && prev && (prev.projectWbsId != null || prev.jobOrderId != null)) {
+          if (s.jobOrderId == null || s.jobOrderId !== prev.jobOrderId) {
             lockViolations.push({
               employeeId: row.employeeId,
               error:
-                "Cannot clear or change hour slots already saved after HOD/Project Head approval. You may only fill empty slots within 24 hours.",
+                "Cannot clear or change shift slots already saved after HOD/Project Head approval. You may only fill empty slots within 24 hours.",
             });
             break;
           }
@@ -240,20 +329,20 @@ timesheetRouter.put("/day", async (req, res) => {
         data: { remarks: row.remarks ?? null },
       });
 
-      for (const h of row.hours) {
-        const prev = existingBySlot.get(h.hourSlot);
-        if (prev?.projectWbsId != null && isProtectedEntryStatus(prev.status)) continue;
+      for (const s of row.slots) {
+        const prev = existingBySlot.get(s.shiftSlot);
+        if (prev && (prev.projectWbsId != null || prev.jobOrderId != null) && isProtectedEntryStatus(prev.status)) continue;
 
         if (isApprovedStatus(status)) {
           // Only add into empty slots
-          if (prev?.projectWbsId != null) continue;
-          if (h.projectWbsId == null) continue;
+          if (prev && (prev.projectWbsId != null || prev.jobOrderId != null)) continue;
+          if (s.jobOrderId == null) continue;
           await prisma.timesheetEntry.upsert({
             where: {
-              employeeId_workDate_hourSlot_taggedById: {
+              timesheet_entry_shiftSlot_unique: {
                 employeeId: row.employeeId,
                 workDate,
-                hourSlot: h.hourSlot,
+                shiftSlot: s.shiftSlot,
                 taggedById: supervisorId,
               },
             },
@@ -261,13 +350,14 @@ timesheetRouter.put("/day", async (req, res) => {
               timesheetDayId: existing.id,
               employeeId: row.employeeId,
               workDate,
-              hourSlot: h.hourSlot,
-              projectWbsId: h.projectWbsId,
+              shiftSlot: s.shiftSlot,
+              hourSlot: null,
+              jobOrderId: s.jobOrderId,
               taggedById: supervisorId,
               status: "DRAFT",
             },
             update: {
-              projectWbsId: h.projectWbsId,
+              jobOrderId: s.jobOrderId,
               timesheetDayId: existing.id,
               status: "DRAFT",
             },
@@ -276,19 +366,17 @@ timesheetRouter.put("/day", async (req, res) => {
         }
 
         // REJECTED with protected slots: edit/clear non-protected freely
-        if (h.projectWbsId == null) {
+        if (s.jobOrderId == null) {
           if (prev) {
-            await prisma.timesheetEntry.deleteMany({
-              where: { id: prev.id },
-            });
+            await prisma.timesheetEntry.deleteMany({ where: { id: prev.id } });
           }
         } else {
           await prisma.timesheetEntry.upsert({
             where: {
-              employeeId_workDate_hourSlot_taggedById: {
+              timesheet_entry_shiftSlot_unique: {
                 employeeId: row.employeeId,
                 workDate,
-                hourSlot: h.hourSlot,
+                shiftSlot: s.shiftSlot,
                 taggedById: supervisorId,
               },
             },
@@ -296,13 +384,14 @@ timesheetRouter.put("/day", async (req, res) => {
               timesheetDayId: existing.id,
               employeeId: row.employeeId,
               workDate,
-              hourSlot: h.hourSlot,
-              projectWbsId: h.projectWbsId,
+              shiftSlot: s.shiftSlot,
+              hourSlot: null,
+              jobOrderId: s.jobOrderId,
               taggedById: supervisorId,
               status: "DRAFT",
             },
             update: {
-              projectWbsId: h.projectWbsId,
+              jobOrderId: s.jobOrderId,
               timesheetDayId: existing.id,
               status: "DRAFT",
             },
@@ -334,26 +423,22 @@ timesheetRouter.put("/day", async (req, res) => {
       },
     });
 
-    // Never force approved rows through this path (handled above); reset non-approved to DRAFT
     if (!isApprovedStatus(status) && day.status !== "DRAFT") {
       await prisma.timesheetDay.update({ where: { id: day.id }, data: { status: "DRAFT" } });
     }
 
-    for (const h of row.hours) {
-      if (h.projectWbsId == null) {
+    for (const s of row.slots) {
+      if (s.jobOrderId == null) {
         await prisma.timesheetEntry.deleteMany({
-          where: {
-            timesheetDayId: day.id,
-            hourSlot: h.hourSlot,
-          },
+          where: { timesheetDayId: day.id, shiftSlot: s.shiftSlot },
         });
       } else {
         await prisma.timesheetEntry.upsert({
           where: {
-            employeeId_workDate_hourSlot_taggedById: {
+            timesheet_entry_shiftSlot_unique: {
               employeeId: row.employeeId,
               workDate,
-              hourSlot: h.hourSlot,
+              shiftSlot: s.shiftSlot,
               taggedById: supervisorId,
             },
           },
@@ -361,13 +446,14 @@ timesheetRouter.put("/day", async (req, res) => {
             timesheetDayId: day.id,
             employeeId: row.employeeId,
             workDate,
-            hourSlot: h.hourSlot,
-            projectWbsId: h.projectWbsId,
+            shiftSlot: s.shiftSlot,
+            hourSlot: null,
+            jobOrderId: s.jobOrderId,
             taggedById: supervisorId,
             status: "DRAFT",
           },
           update: {
-            projectWbsId: h.projectWbsId,
+            jobOrderId: s.jobOrderId,
             timesheetDayId: day.id,
             status: "DRAFT",
           },
@@ -394,10 +480,10 @@ timesheetRouter.put("/day", async (req, res) => {
   const maxDailyHours = getMaxDailyHours();
   const warnings = rows
     .map((r) => {
-      const localSlots = r.hours.filter((h) => h.projectWbsId != null).map((h) => h.hourSlot);
-      if (!localSlots.length) return null;
-      const otherSlots = dayTotals.get(r.employeeId)?.otherSlots ?? [];
-      const total = new Set([...otherSlots, ...localSlots]).size;
+      const localFilled = r.slots.filter((s) => s.jobOrderId != null).length;
+      if (!localFilled) return null;
+      const otherHours = dayTotals.get(r.employeeId)?.otherHours ?? 0;
+      const total = localFilled + otherHours;
       if (total <= maxDailyHours) return null;
       return {
         employeeId: r.employeeId,
@@ -409,6 +495,173 @@ timesheetRouter.put("/day", async (req, res) => {
     .filter(Boolean);
 
   res.json({ ok: true, maxDailyHours, warnings });
+});
+
+/**
+ * Bulk-assign a single (projectId, jobOrderId) to a set of (employeeId, shiftSlot)
+ * pairs in one supervisor-day. Used by the Daily Timesheet Entry "Bulk Assignment"
+ * block. Honours the same edit-lock rules as PUT /day.
+ */
+timesheetRouter.post("/bulk-assign", async (req, res) => {
+  const parsed = bulkAssignSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  const { supervisorId, workDate: dateStr, projectId, jobOrderId, slots } = parsed.data;
+  const workDate = parseDateOnly(dateStr);
+
+  // Validate the JobOrder belongs to the Project.
+  const jo = await prisma.jobOrder.findUnique({
+    where: { id: jobOrderId },
+    include: { project: true },
+  });
+  if (!jo || jo.projectId !== projectId) {
+    return res.status(400).json({ error: "JobOrder does not belong to the selected project" });
+  }
+
+  // Group slots by employee for edit-lock check + day upsert.
+  const byEmployee = new Map<number, ShiftSlot[]>();
+  for (const s of slots) {
+    const list = byEmployee.get(s.employeeId) ?? [];
+    list.push(s.shiftSlot);
+    byEmployee.set(s.employeeId, list);
+  }
+
+  const lockViolations: { employeeId: number; error: string }[] = [];
+  let taggedSlots = 0;
+  let taggedEmployees = 0;
+
+  for (const [employeeId, shiftSlots] of byEmployee) {
+    const existing = await prisma.timesheetDay.findUnique({
+      where: {
+        employeeId_workDate_taggedById: {
+          employeeId,
+          workDate,
+          taggedById: supervisorId,
+        },
+      },
+      include: { entries: true, approvals: { where: { action: "APPROVE" }, take: 1, orderBy: { createdAt: "desc" } } },
+    });
+    const status = existing?.status ?? "DRAFT";
+    const hasProtected = Boolean(
+      existing?.entries?.some(
+        (e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status)
+      )
+    );
+    const lock = resolveEditLock(status, existing?.approvals[0]?.createdAt ?? existing?.updatedAt ?? null, { hasProtectedEntries: hasProtected });
+    if (lock.editMode === "locked") {
+      lockViolations.push({
+        employeeId,
+        error: "Timesheet is HOD/Project Head approved and the 24-hour add window has expired.",
+      });
+      continue;
+    }
+
+    const day = await prisma.timesheetDay.upsert({
+      where: {
+        employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId },
+      },
+      create: { employeeId, workDate, taggedById: supervisorId, status: "DRAFT", remarks: null },
+      update: { status: isApprovedStatus(status) ? status : "DRAFT" },
+    });
+
+    for (const shiftSlot of shiftSlots) {
+      await prisma.timesheetEntry.upsert({
+        where: {
+          timesheet_entry_shiftSlot_unique: {
+            employeeId,
+            workDate,
+            shiftSlot,
+            taggedById: supervisorId,
+          },
+        },
+        create: {
+          timesheetDayId: day.id,
+          employeeId,
+          workDate,
+          shiftSlot,
+          hourSlot: null,
+          jobOrderId,
+          taggedById: supervisorId,
+          status: "DRAFT",
+        },
+        update: {
+          jobOrderId,
+          timesheetDayId: day.id,
+          status: "DRAFT",
+        },
+      });
+      taggedSlots += 1;
+    }
+    taggedEmployees += 1;
+  }
+
+  if (lockViolations.length) {
+    return res.status(400).json({ error: lockViolations.map((v) => v.error).join(" "), violations: lockViolations });
+  }
+
+  await writeAudit(req.user!.id, "TIMESHEET_BULK_ASSIGN", "timesheet_day", dateStr, {
+    supervisorId,
+    projectId,
+    jobOrderId,
+    taggedSlots,
+    taggedEmployees,
+  });
+
+  res.json({ ok: true, taggedSlots, taggedEmployees, projectName: jo.project.name, jobOrderCode: jo.code });
+});
+
+/** Per-slot edit used by the per-row "Assign" button. Clears if jobOrderId is null. */
+timesheetRouter.put("/entry", async (req, res) => {
+  const parsed = setSlotJobOrderSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  const { supervisorId, workDate: dateStr, employeeId, shiftSlot, jobOrderId } = parsed.data;
+  const workDate = parseDateOnly(dateStr);
+
+  const existing = await prisma.timesheetDay.findUnique({
+    where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
+    include: { entries: true, approvals: { where: { action: "APPROVE" }, take: 1, orderBy: { createdAt: "desc" } } },
+  });
+  const status = existing?.status ?? "DRAFT";
+  const hasProtected = Boolean(
+    existing?.entries?.some((e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status))
+  );
+  const lock = resolveEditLock(status, existing?.approvals[0]?.createdAt ?? existing?.updatedAt ?? null, { hasProtectedEntries: hasProtected });
+  if (lock.editMode === "locked") {
+    return res.status(400).json({ error: "Timesheet is locked. Only HOD/Project Head reject unlocks it." });
+  }
+
+  const day = await prisma.timesheetDay.upsert({
+    where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
+    create: { employeeId, workDate, taggedById: supervisorId, status: "DRAFT", remarks: null },
+    update: { status: isApprovedStatus(status) ? status : "DRAFT" },
+  });
+
+  if (jobOrderId == null) {
+    await prisma.timesheetEntry.deleteMany({ where: { timesheetDayId: day.id, shiftSlot } });
+    return res.json({ ok: true, cleared: true });
+  }
+
+  await prisma.timesheetEntry.upsert({
+    where: {
+      timesheet_entry_shiftSlot_unique: { employeeId, workDate, shiftSlot, taggedById: supervisorId },
+    },
+    create: {
+      timesheetDayId: day.id,
+      employeeId,
+      workDate,
+      shiftSlot,
+      hourSlot: null,
+      jobOrderId,
+      taggedById: supervisorId,
+      status: "DRAFT",
+    },
+    update: { jobOrderId, timesheetDayId: day.id, status: "DRAFT" },
+  });
+
+  res.json({ ok: true });
 });
 
 timesheetRouter.post("/submit", async (req, res) => {
@@ -424,7 +677,15 @@ timesheetRouter.post("/submit", async (req, res) => {
     where: { taggedById: supervisorId, workDate },
     include: {
       employee: true,
-      entries: { where: { projectWbsId: { not: null } } },
+      // A tagged hour counts whether it was tagged via the legacy ProjectWbs path or the
+      // new JobOrder-only path that the supervisor's Daily Timesheet Entry writes today.
+      // Without this OR, timesheets tagged through the JobOrder flow have an empty
+      // `entries` array here and fail with "No project hours to submit".
+      entries: {
+        where: {
+          OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+        },
+      },
       approvals: {
         where: { action: "APPROVE" },
         orderBy: { createdAt: "desc" },
@@ -458,9 +719,13 @@ timesheetRouter.post("/submit", async (req, res) => {
       continue;
     }
     if (!day.entries.length) continue;
-    const localSlots = day.entries.map((e) => e.hourSlot);
+    // Union of legacy hour slots (numeric) with shift-slot entries (strings). Tag shift slots
+    // with `s:` so they don't collide with the numeric hour-slot space; Set dedupes each kind.
+    const localSlots: string[] = day.entries.map((e) =>
+      e.hourSlot != null ? `h:${e.hourSlot}` : e.shiftSlot != null ? `s:${e.shiftSlot}` : ""
+    ).filter(Boolean);
     const otherSlots = dayTotals.get(day.employeeId)?.otherSlots ?? [];
-    const total = new Set([...otherSlots, ...localSlots]).size;
+    const total = new Set([...otherSlots.map((s) => `h:${s}`), ...localSlots]).size;
     if (total <= maxDailyHours) continue;
     const item = {
       employeeId: day.employeeId,
@@ -529,7 +794,7 @@ timesheetRouter.post("/submit", async (req, res) => {
         where: {
           timesheetDayId: dayId,
           taggedById: supervisorId,
-          projectWbsId: { not: null },
+          OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
           status: { in: ["DRAFT", "REJECTED"] },
         },
         data: { status: "SUBMITTED" },
@@ -539,7 +804,7 @@ timesheetRouter.post("/submit", async (req, res) => {
         where: {
           timesheetDayId: dayId,
           taggedById: supervisorId,
-          projectWbsId: { not: null },
+          OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
         },
         data: { status: "SUBMITTED" },
       });

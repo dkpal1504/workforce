@@ -43,6 +43,7 @@ model Department {
   employees Employee[]
   users     User[]
   manpowerRequests ManpowerRequest[]
+  jobOrders        JobOrder[]
 
   @@map("departments")
 }
@@ -80,8 +81,53 @@ model ProjectWbs {
   createdAt DateTime @default(now()) @map("created_at")
 
   timesheetEntries TimesheetEntry[]
+  jobOrders        JobOrder[]
 
   @@map("projects_wbs")
+}
+
+/// Top-level Project — drives the new Job Order master (1900000xxx codes).
+/// Separate from ProjectWbs (which is the legacy Project row used by the
+/// existing Project Summary page); the two are kept in sync by hand for now.
+model Project {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique     // PRJ-A / PRJ-N
+  name      String              // Project A / Non Project
+  colorKey  String   @map("color_key")  // A / B / C / D / N
+  sortOrder Int      @default(0) @map("sort_order")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  jobOrders JobOrder[]
+
+  @@map("projects")
+}
+
+/// Numeric-coded Job Order (1900000107 Pipe Spool Installation, etc.).
+/// `status` is one of: active, closed, on_hold.
+/// `budgetedHours` is in clock hours; null for Non-Project / Standing JOs.
+model JobOrder {
+  id            Int       @id @default(autoincrement())
+  projectId     Int       @map("project_id")
+  project       Project   @relation(fields: [projectId], references: [id])
+  /// Optional pointer into the legacy ProjectWbs row so existing Project
+  /// Summary totals stay consistent. New code should use projectId directly.
+  projectWbsId  Int?      @map("project_wbs_id")
+  projectWbs    ProjectWbs? @relation(fields: [projectWbsId], references: [id])
+  code          String    @unique   // 1900000107 (all-numeric)
+  name          String               // Pipe Spool Installation
+  departmentId  Int?      @map("department_id")
+  department    Department? @relation(fields: [departmentId], references: [id])
+  budgetedHours Float?    @map("budgeted_hours")
+  status        String    @default("active")  // active | closed | on_hold
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  timesheetEntries TimesheetEntry[]
+
+  @@index([projectId, status])
+  @@index([departmentId])
+  @@map("job_orders")
 }
 
 model DailyTeamSelection {
@@ -126,17 +172,30 @@ model TimesheetEntry {
   employeeId     Int         @map("employee_id")
   employee       Employee    @relation(fields: [employeeId], references: [id])
   workDate       DateTime    @map("work_date")
-  hourSlot       Int         @map("hour_slot")
+  /// Legacy 13-hour grid (0-12). Kept for backward compat with the existing
+  /// Project Summary / seed rows. New Timesheet Entry writes should use
+  /// `shiftSlot` (am1/am2/pm1/pm2) instead.
+  hourSlot       Int?        @map("hour_slot")
+  /// New 4-shift model: am1 (9a-11a) | am2 (11a-1p) | pm1 (2p-4p) | pm2 (4p-6p).
+  shiftSlot      String?     @map("shift_slot")
   projectWbsId   Int?        @map("project_wbs_id")
   projectWbs     ProjectWbs? @relation(fields: [projectWbsId], references: [id])
+  jobOrderId     Int?        @map("job_order_id")
+  jobOrder       JobOrder?   @relation(fields: [jobOrderId], references: [id])
   taggedById     Int         @map("tagged_by")
   taggedBy       User        @relation("TaggedBy", fields: [taggedById], references: [id])
   status         String      @default("DRAFT")
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
 
-  @@unique([employeeId, workDate, hourSlot, taggedById])
+  // Legacy hour-slot rows AND new shift-slot rows are unique per (employee, date, supervisor).
+  // Both columns are nullable, but exactly one of hourSlot / shiftSlot is set per row.
+  // SQLite treats NULL as distinct in unique constraints, so the two parallel
+  // constraints don't collide. Application code enforces "exactly one" via Zod.
+  @@unique([employeeId, workDate, hourSlot, taggedById], name: "timesheet_entry_hourSlot_unique")
+  @@unique([employeeId, workDate, shiftSlot, taggedById], name: "timesheet_entry_shiftSlot_unique")
   @@index([workDate, taggedById])
+  @@index([workDate, jobOrderId])
   @@map("timesheet_entries")
 }
 

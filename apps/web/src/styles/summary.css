@@ -189,6 +189,228 @@
   font-size: 11px;
 }
 
+/* ===========================================================
+   Job Order Summary tab
+   =========================================================== */
+
+.toggle-group--inline {
+  flex-wrap: wrap;
+}
+
+.jo-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+  font-size: 13px;
+}
+
+.jo-summary-table th,
+.jo-summary-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.jo-summary-table thead th {
+  background: color-mix(in srgb, var(--bg-subtle) 80%, var(--bg-elevated));
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.jo-summary-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.jo-summary-table .jo-group-header td {
+  background: color-mix(in srgb, var(--navy) 8%, var(--bg-elevated));
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13.5px;
+  padding: 10px 14px;
+}
+
+.jo-summary-table .jo-group-header .jo-color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.jo-summary-table .jo-row td {
+  background: var(--bg-elevated);
+}
+
+.jo-summary-table .jo-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.jo-summary-table .jo-status-superscript {
+  font-size: 9.5px;
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  vertical-align: super;
+  margin-left: 4px;
+}
+
+.jo-summary-table .jo-status-active {
+  color: #15803d;
+  background: color-mix(in srgb, #16a34a 12%, transparent);
+}
+
+.jo-summary-table .jo-status-closed {
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+}
+
+.jo-summary-table .jo-bar-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.jo-summary-table .jo-bar {
+  position: relative;
+  display: inline-block;
+  width: 110px;
+  height: 8px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.jo-summary-table .jo-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.2s var(--ease);
+}
+
+.jo-summary-table .jo-bar--green > span {
+  background: #16a34a;
+}
+.jo-summary-table .jo-bar--amber > span {
+  background: #d97706;
+}
+.jo-summary-table .jo-bar--red > span {
+  background: #dc2626;
+}
+
+.jo-summary-table .jo-bar-label {
+  font-weight: 700;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  display: inline-block;
+  text-align: right;
+}
+
+.jo-summary-table .jo-bar-label--green {
+  color: #15803d;
+}
+.jo-summary-table .jo-bar-label--amber {
+  color: #b45309;
+}
+.jo-summary-table .jo-bar-label--red {
+  color: #b91c1c;
+}
+
+.jo-summary-table .jo-balance-negative {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+/* Mobile Job Order cards */
+.jo-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jo-cards-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--navy) 4%, var(--bg-elevated));
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+}
+
+.jo-cards-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.jo-cards .jo-card {
+  background: var(--bg-elevated);
+}
+
+.jo-cards .jo-card__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.jo-cards .jo-card__grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.jo-cards .jo-card__grid strong {
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.jo-cards .jo-bar {
+  width: 100%;
+  height: 8px;
+}
+
+.jo-cards .jo-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.jo-cards .jo-bar--green > span {
+  background: #16a34a;
+}
+.jo-cards .jo-bar--amber > span {
+  background: #d97706;
+}
+.jo-cards .jo-bar--red > span {
+  background: #dc2626;
+}
+
+.jo-cards .jo-balance-negative {
+  color: #b91c1c;
+}
+
 @media (max-width: 1199px) and (min-width: 768px) {
   .summary-table {
     min-width: 640px;

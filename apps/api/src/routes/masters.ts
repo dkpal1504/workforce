@@ -40,6 +40,32 @@ mastersRouter.get("/projects-wbs", async (_req, res) => {
   res.json({ projects });
 });
 
+/**
+ * New Project table (5 projects, 14 Job Orders). Used by the Timesheet
+ * Entry "Project" dropdown and the Job Order Summary "Select Projects"
+ * multi-select. Sorted by sortOrder so "Project A" comes first.
+ */
+mastersRouter.get("/projects", async (_req, res) => {
+  const projects = await prisma.project.findMany({
+    orderBy: { sortOrder: "asc" },
+    include: {
+      jobOrders: {
+        where: { status: { in: ["active", "closed"] } },
+        orderBy: { code: "asc" },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          status: true,
+          budgetedHours: true,
+          departmentId: true,
+        },
+      },
+    },
+  });
+  res.json({ projects });
+});
+
 mastersRouter.get("/supervisors", async (req, res) => {
   const departmentId = req.query.department_id
     ? Number(req.query.department_id)

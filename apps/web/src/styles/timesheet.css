@@ -1,3 +1,146 @@
+/* ===========================================================
+   Daily Timesheet Entry — TimesheetPage
+   Layout matches the 4-slot / Bulk-First spec (Timesheet
+   Entry v0.3 + revised_timesheet_entry_screen.png).
+   =========================================================== */
+
+/* ---- Bulk Assignment block (primary action area) ---- */
+
+.bulk-assign {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  background: var(--surface-glass);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.bulk-assign__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.bulk-assign__head h2 {
+  margin: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.bulk-assign__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.bulk-assign__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.bulk-assign__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--touch-min);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.bulk-assign__check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+}
+
+.bulk-assign__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+  flex: 1 1 160px;
+}
+
+.bulk-assign__field label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.bulk-assign__field select,
+.bulk-assign__field input {
+  min-height: 40px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.bulk-assign__field--readonly input {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+
+.bulk-assign__apply {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+  flex: 0 0 auto;
+}
+
+.bulk-assign__apply .btn {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.bulk-assign__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 18px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.bulk-assign__summary > span:first-child {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.bulk-assign__affected {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bulk-assign__prevday {
+  margin-top: 10px;
+}
+
+.bulk-assign__prevday .btn {
+  min-height: 40px;
+}
+
+/* ---- Timesheet grid (desktop table) ---- */
+
 .timesheet-wrap {
   overflow-x: auto;
   border: 1px solid var(--border-light);
@@ -16,13 +159,13 @@
 .timesheet-table th,
 .timesheet-table td {
   border-bottom: 1px solid var(--border-light);
-  padding: 10px 7px;
+  padding: 8px 6px;
   vertical-align: middle;
   text-align: left;
 }
 
 .timesheet-table thead th {
-  font-size: 11px;
+  font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -35,20 +178,67 @@
 }
 
 .timesheet-table .emp-col {
-  min-width: 168px;
+  min-width: 200px;
   position: sticky;
   left: 0;
   background: var(--bg-elevated);
   z-index: 2;
 }
 
-.timesheet-table thead .emp-col {
+.timesheet-table thead .emp-col,
+.timesheet-table thead .emp-col.sub {
   z-index: 3;
   background: color-mix(in srgb, var(--bg-subtle) 80%, var(--bg-elevated));
 }
 
+.timesheet-table .half-head,
+.timesheet-table .alloc-head {
+  text-align: center;
+  border-left: 1px solid var(--border-light);
+  border-right: 1px solid var(--border-light);
+}
+
+.timesheet-table .slot-head {
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text-muted);
+  min-width: 64px;
+}
+
+.timesheet-table .alloc-sub,
+.timesheet-table .ot-col.sub {
+  text-align: center;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.timesheet-table .fullshift-col,
+.timesheet-table .ot-col {
+  min-width: 72px;
+  text-align: center;
+}
+
+.timesheet-table .remarks-sub {
+  min-width: 200px;
+}
+
 .emp-name {
   font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.emp-expand {
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
 }
 
 .emp-hours-meta {
@@ -80,16 +270,13 @@
   color: #a16207;
 }
 
-.lock-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-  max-width: 200px;
-  line-height: 1.35;
+.emp-status-chip.status-assigned {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
 }
 
-.hour-cell--locked,
-.hour-cell--locked:disabled {
+.slot-cell--locked,
+.slot-cell--locked:disabled {
   opacity: 0.72;
   cursor: not-allowed;
 }
@@ -102,7 +289,6 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
-
 
 .emp-status-chip.status-submitted {
   background: color-mix(in srgb, var(--primary) 16%, transparent);
@@ -206,9 +392,11 @@
   font-weight: 600;
 }
 
-.hour-cell {
-  width: 28px;
-  height: 28px;
+/* ---- Slot cells (4 per row: 9a-11a, 11a-1p, 2p-4p, 4p-6p) ---- */
+
+.slot-cell {
+  width: 36px;
+  height: 32px;
   border: 1.5px dashed color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 7px;
   display: inline-flex;
@@ -216,68 +404,104 @@
   justify-content: center;
   cursor: pointer;
   user-select: none;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
   color: #fff;
   background: transparent;
   transition: transform 0.12s var(--ease);
+  margin: 0 auto;
 }
 
-.hour-cell:hover {
+.slot-cell:hover {
   transform: scale(1.06);
 }
 
-.hour-cell.selected {
+.slot-cell.selected {
   background: var(--orange-selected);
   border-style: solid;
   border-color: var(--orange-selected);
+  color: #fff;
 }
 
-.hour-cell.assigned-A {
-  background: var(--project-a);
-  border-color: var(--project-a);
+.slot-cell.assigned-a,
+.slot-cell.assigned-b,
+.slot-cell.assigned-c,
+.slot-cell.assigned-d,
+.slot-cell.assigned-e,
+.slot-cell.assigned-f,
+.slot-cell.assigned-n {
   border-style: solid;
+  color: #fff;
 }
-.hour-cell.assigned-B {
-  background: var(--project-b);
-  border-color: var(--project-b);
-  border-style: solid;
+
+.slot-cell.assigned-a { background: var(--project-a); border-color: var(--project-a); }
+.slot-cell.assigned-b { background: var(--project-b); border-color: var(--project-b); }
+.slot-cell.assigned-c { background: var(--project-c); border-color: var(--project-c); }
+.slot-cell.assigned-d { background: var(--project-d); border-color: var(--project-d); }
+.slot-cell.assigned-e { background: var(--project-e); border-color: var(--project-e); }
+.slot-cell.assigned-f { background: var(--project-f); border-color: var(--project-f); }
+.slot-cell.assigned-n { background: var(--text-muted); border-color: var(--text-muted); }
+
+.slot-td {
+  text-align: center;
+  padding: 4px 2px !important;
 }
-.hour-cell.assigned-C {
-  background: var(--project-c);
-  border-color: var(--project-c);
-  border-style: solid;
+
+/* ---- OT HRS column ---- */
+
+.ot-cell {
+  display: inline-block;
+  min-width: 28px;
+  padding: 2px 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--text);
 }
-.hour-cell.assigned-D {
-  background: var(--project-d);
-  border-color: var(--project-d);
-  border-style: solid;
+
+.row-over-limit .ot-cell {
+  color: var(--warning);
 }
-.hour-cell.assigned-E {
-  background: var(--project-e);
-  border-color: var(--project-e);
-  border-style: solid;
+
+/* ---- Full Shift checkbox ---- */
+
+.fullshift-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.hour-cell.assigned-F {
-  background: var(--project-f);
-  border-color: var(--project-f);
-  border-style: solid;
+
+.fullshift-check input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--primary);
+  cursor: pointer;
 }
+
+.fullshift-check input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ---- Allocation cell (Project · JobOrder · Assign) ---- */
 
 .project-select,
-.wbs-field,
+.jo-select,
 .remarks-input {
   min-width: 110px;
+  font-size: 13px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
 }
 
-.wbs-field {
-  background: var(--bg-subtle);
-  color: var(--text-muted);
-  min-width: 130px;
+.jo-select {
+  min-width: 180px;
 }
 
 .remarks-input {
-  min-width: 108px;
+  min-width: 160px;
 }
 
 .remarks-input.remarks-ot {
@@ -307,18 +531,22 @@
   border: 1px solid var(--primary);
   background: transparent;
   color: var(--primary);
+  transition: background 0.12s var(--ease);
 }
 
-.assign-btn.done {
+.assign-btn.is-ready {
+  background: var(--primary);
+  color: #fff;
+}
+
+.assign-btn.is-done {
   background: var(--success-soft);
   border-color: color-mix(in srgb, var(--success) 40%, transparent);
   color: var(--success);
 }
 
-.assign-btn.warn {
-  background: var(--warning-soft);
-  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
-  color: var(--warning);
+.assign-btn.is-idle {
+  /* default: outlined only */
 }
 
 .assign-btn:disabled {
@@ -335,6 +563,8 @@
   max-width: 300px;
   border-style: dashed;
 }
+
+/* ---- Legend ---- */
 
 .legend-row {
   display: flex;
@@ -379,10 +609,12 @@
 .help-text {
   font-size: 12px;
   color: var(--text-muted);
-  max-width: 480px;
+  max-width: 520px;
   margin: 0;
   line-height: 1.5;
 }
+
+/* ---- Add employee dropdown ---- */
 
 .add-dropdown {
   position: relative;
@@ -415,6 +647,8 @@
   background: var(--primary-soft);
 }
 
+/* ---- Mobile: card layout ---- */
+
 .ts-mobile-only {
   display: none !important;
 }
@@ -437,6 +671,11 @@
   background: color-mix(in srgb, #dc2626 6%, var(--bg-elevated));
 }
 
+.ts-card.row-done {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+  background: color-mix(in srgb, var(--success) 4%, var(--bg-elevated));
+}
+
 .ts-card--add {
   border-style: dashed;
   box-shadow: none;
@@ -450,55 +689,152 @@
   margin-bottom: 10px;
 }
 
-.ts-hour-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
-  gap: 8px;
-  margin: 10px 0 14px;
+.ts-fullshift {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--touch-min);
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
 }
 
-.ts-hour-chip {
+.ts-fullshift input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--primary);
+}
+
+.ts-shift-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.ts-shift-chip {
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   width: 100% !important;
   height: auto !important;
-  min-height: var(--touch-min);
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 4px;
-  border-radius: 8px;
+  min-height: 64px;
+  padding: 8px 6px;
+  border-radius: 10px;
+  border: 1.5px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform 0.12s var(--ease);
 }
 
-.ts-hour-chip__label {
-  font-size: 9px;
+.ts-shift-chip:hover {
+  transform: translateY(-1px);
+}
+
+.ts-shift-chip__half {
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  opacity: 0.85;
-  color: inherit;
-}
-
-.ts-hour-chip:not(.selected):not([class*="assigned-"]) .ts-hour-chip__label {
   color: var(--text-muted);
 }
 
-.ts-hour-chip:not(.selected):not([class*="assigned-"]) .ts-hour-chip__value {
-  color: var(--text-muted);
-}
-
-.ts-hour-chip__value {
-  font-size: 13px;
+.ts-shift-chip__time {
+  font-size: 12px;
   font-weight: 700;
+  color: var(--text);
+}
+
+.ts-shift-chip__value {
+  font-size: 16px;
+  font-weight: 800;
   line-height: 1;
 }
 
-.ts-card__controls {
+.ts-shift-chip.selected {
+  background: var(--orange-selected);
+  border-style: solid;
+  border-color: var(--orange-selected);
+  color: #fff;
+}
+.ts-shift-chip.selected .ts-shift-chip__half,
+.ts-shift-chip.selected .ts-shift-chip__time {
+  color: #fff;
+}
+
+.ts-shift-chip.assigned-a,
+.ts-shift-chip.assigned-b,
+.tshift-chip.assigned-c,
+.ts-shift-chip.assigned-c,
+.ts-shift-chip.assigned-d,
+.ts-shift-chip.assigned-e,
+.ts-shift-chip.assigned-f,
+.ts-shift-chip.assigned-n {
+  border-style: solid;
+  color: #fff;
+}
+.ts-shift-chip.assigned-a { background: var(--project-a); border-color: var(--project-a); }
+.ts-shift-chip.assigned-b { background: var(--project-b); border-color: var(--project-b); }
+.ts-shift-chip.assigned-c { background: var(--project-c); border-color: var(--project-c); }
+.ts-shift-chip.assigned-d { background: var(--project-d); border-color: var(--project-d); }
+.ts-shift-chip.assigned-e { background: var(--project-e); border-color: var(--project-e); }
+.ts-shift-chip.assigned-f { background: var(--project-f); border-color: var(--project-f); }
+.ts-shift-chip.assigned-n { background: var(--text-muted); border-color: var(--text-muted); }
+
+.ts-shift-chip.assigned-a .ts-shift-chip__half,
+.ts-shift-chip.assigned-a .ts-shift-chip__time,
+.ts-shift-chip.assigned-b .ts-shift-chip__half,
+.ts-shift-chip.assigned-b .ts-shift-chip__time,
+.ts-shift-chip.assigned-c .ts-shift-chip__half,
+.ts-shift-chip.assigned-c .ts-shift-chip__time,
+.ts-shift-chip.assigned-d .ts-shift-chip__half,
+.ts-shift-chip.assigned-d .ts-shift-chip__time,
+.ts-shift-chip.assigned-e .ts-shift-chip__half,
+.ts-shift-chip.assigned-e .ts-shift-chip__time,
+.ts-shift-chip.assigned-f .ts-shift-chip__half,
+.ts-shift-chip.assigned-f .ts-shift-chip__time,
+.ts-shift-chip.assigned-n .ts-shift-chip__half,
+.ts-shift-chip.assigned-n .ts-shift-chip__time {
+  color: #fff;
+  opacity: 0.9;
+}
+
+.ts-shift-chip.slot-cell--locked {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.ts-ot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ts-ot strong {
+  font-size: 18px;
+  color: var(--text);
+}
+
+.ts-alloc {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-  align-items: end;
   margin-bottom: 10px;
 }
 
-.ts-card__controls .assign-btn {
+.ts-alloc .assign-btn {
   grid-column: 1 / -1;
   min-height: var(--touch-min);
   width: 100%;
@@ -524,11 +860,11 @@
 }
 
 .ts-field .project-select,
-.ts-field .wbs-field,
+.ts-field .jo-select,
 .ts-field .remarks-input {
   min-width: 0;
   width: 100%;
-  font-size: 16px;
+  font-size: 16px; /* iOS focus zoom guard */
   min-height: var(--touch-min);
 }
 
@@ -544,51 +880,45 @@
   font-size: 16px;
 }
 
-/* Bulk 8h fill — Shift + Project + Apply (replaces Supervisor for SUPERVISOR role) */
-.bulk-fill {
+/* ---- Footer (sticky on mobile) ---- */
+
+.footer-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  align-items: flex-end;
+  gap: 12px;
+  margin-top: 18px;
+  margin-bottom: 8px;
 }
 
-.bulk-fill__apply-label {
-  visibility: hidden;
-  user-select: none;
+.footer-actions .btn {
+  min-height: 44px;
+  padding: 0 18px;
+  font-weight: 650;
 }
 
-.bulk-fill__btn {
-  white-space: nowrap;
-  min-height: 40px;
-}
+/* ---- Responsive ---- */
 
 @media (max-width: 1199px) and (min-width: 768px) {
   .timesheet-table .emp-col {
-    min-width: 150px;
+    min-width: 170px;
   }
 
-  .hour-cell {
-    width: 32px;
-    height: 32px;
+  .slot-cell {
+    width: 30px;
+    height: 28px;
   }
 
   .assign-btn {
     min-height: 36px;
   }
 
-  .bulk-fill {
-    flex: 1 1 280px;
-  }
-
-  .bulk-fill .filter-field {
-    min-width: 120px;
-    flex: 1;
+  .bulk-assign__field {
+    min-width: 130px;
   }
 }
 
 @media (min-width: 1200px) {
-  .bulk-fill .filter-field {
-    min-width: 140px;
+  .bulk-assign__field {
+    min-width: 160px;
   }
 }
 
@@ -613,23 +943,31 @@
     background: linear-gradient(180deg, transparent, var(--bg) 28%);
   }
 
-  .bulk-fill {
-    width: 100%;
+  .bulk-assign {
+    padding: 12px 12px 14px;
   }
 
-  .bulk-fill .filter-field {
+  .bulk-assign__row {
+    gap: 10px;
+  }
+
+  .bulk-assign__field {
     min-width: calc(50% - 8px);
-    flex: 1;
+    flex: 1 1 calc(50% - 8px);
   }
 
-  .bulk-fill__apply {
+  .bulk-assign__apply {
     min-width: 100%;
     flex: 1 1 100%;
   }
 
-  .bulk-fill__btn {
+  .bulk-assign__apply .btn {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
+
+  .bulk-assign__prevday .btn {
     width: 100%;
     min-height: var(--touch-min);
   }
 }
-
