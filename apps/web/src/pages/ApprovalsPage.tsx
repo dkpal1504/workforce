@@ -76,17 +76,27 @@ type PendingPayload = {
 };
 
 type JobOrderConsumptionRow = {
-  id: number;
+  jobOrderId: number;
   code: string;
   name: string;
-  status: string; // active | closed | on_hold
-  budgetedHours: number | null;
+  workDate: string; // ISO date (yyyy-mm-dd) for the Date column
   projectColorKey: string;
   projectName: string;
-  consumptionToday: number; // unapproved hours in matching project column
-  consumptionUnapproved: number;
+  budgetedHours: number | null;
+  projectA: number;
+  projectB: number;
+  projectC: number;
+  overhead: number;
   consumptionApproved: number;
+  consumptionUnapproved: number;
+  consumptionPct: number | null;
 };
+
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
 
 function fmtHours(n: number) {
   return n ? String(n) : "—";
@@ -414,21 +424,38 @@ export function ApprovalsPage() {
 
             <div className="hod-table-wrap hod-desktop-only">
               <table className="hod-table">
-                <thead>
-                  <tr>
-                    <th className="col-check" />
-                    <th>Supervisor</th>
-                    <th>Date</th>
-                    <th>Project A</th>
-                    <th>Project B</th>
-                    <th>Project C</th>
-                    <th>Total Alloc.</th>
-                    <th>Overhead</th>
-                    <th>Approve</th>
-                    <th>Reject</th>
-                    <th>Comments</th>
-                  </tr>
-                </thead>
+                {viewMode === "jobOrder" ? (
+                  <thead>
+                    <tr>
+                      <th>SR</th>
+                      <th>Job Order</th>
+                      <th>Date</th>
+                      <th>Project A</th>
+                      <th>Project B</th>
+                      <th>Project C</th>
+                      <th>Consumption (Unapproved)</th>
+                      <th>Consumption (Approved)</th>
+                      <th>Budgeted</th>
+                      <th colSpan={2}>Consumption %</th>
+                    </tr>
+                  </thead>
+                ) : (
+                  <thead>
+                    <tr>
+                      <th className="col-check" />
+                      <th>Supervisor</th>
+                      <th>Date</th>
+                      <th>Project A</th>
+                      <th>Project B</th>
+                      <th>Project C</th>
+                      <th>Total Alloc.</th>
+                      <th>Overhead</th>
+                      <th>Approve</th>
+                      <th>Reject</th>
+                      <th>Comments</th>
+                    </tr>
+                  </thead>
+                )}
                 <tbody>
                   {viewMode === "supervisor" &&
                     received.map((g) => {
@@ -661,15 +688,15 @@ export function ApprovalsPage() {
                           </td>
                         </tr>
                       ) : (
-                        jobOrderRows.map((jo) => {
+                        jobOrderRows.map((jo, i) => {
                           const budget = jo.budgetedHours ?? 0;
                           const consumed = jo.consumptionApproved + jo.consumptionUnapproved;
-                          const pct = budget > 0 ? Math.round((consumed / budget) * 100) : 0;
+                          const pct = jo.consumptionPct ?? 0;
                           const colorClass =
                             pct < 85 ? "jo-bar--green" : pct < 100 ? "jo-bar--amber" : "jo-bar--red";
                           return (
-                            <tr key={jo.id} className="hod-row jo-row">
-                              <td />
+                            <tr key={`${jo.jobOrderId}-${jo.workDate}`} className="hod-row jo-row">
+                              <td className="muted tiny">{i + 1}</td>
                               <td>
                                 <div className="jo-name">
                                   <span
@@ -677,26 +704,17 @@ export function ApprovalsPage() {
                                     style={{ background: `var(--project-${jo.projectColorKey.toLowerCase()})` }}
                                   />
                                   <strong>{jo.code}</strong> · {jo.name}
-                                  {jo.status === "closed" && (
-                                    <span className="jo-status-superscript jo-status-closed">
-                                      CLOSED
-                                    </span>
-                                  )}
-                                  {jo.status === "active" && (
-                                    <span className="jo-status-superscript jo-status-active">
-                                      ACTIVE
-                                    </span>
-                                  )}
                                 </div>
                                 <div className="muted tiny">{jo.projectName}</div>
                               </td>
-                              <td>{fmtHours(jo.consumptionToday)}</td>
-                              <td>—</td>
-                              <td>—</td>
+                              <td>{fmtDate(jo.workDate)}</td>
+                              <td>{fmtHours(jo.projectA)}</td>
+                              <td>{fmtHours(jo.projectB)}</td>
+                              <td>{fmtHours(jo.projectC)}</td>
                               <td className="total-cell">{fmtHours(jo.consumptionUnapproved)}</td>
                               <td>{fmtHours(jo.consumptionApproved)}</td>
                               <td>{budget > 0 ? `${budget} hrs` : "—"}</td>
-                              <td colSpan={3} className="jo-bar-cell">
+                              <td colSpan={2} className="jo-bar-cell">
                                 {budget > 0 ? (
                                   <>
                                     <div className={`jo-bar ${colorClass}`}>
@@ -938,12 +956,11 @@ export function ApprovalsPage() {
                   ) : (
                     jobOrderRows.map((jo) => {
                       const budget = jo.budgetedHours ?? 0;
-                      const consumed = jo.consumptionApproved + jo.consumptionUnapproved;
-                      const pct = budget > 0 ? Math.round((consumed / budget) * 100) : 0;
+                      const pct = jo.consumptionPct ?? 0;
                       const colorClass =
                         pct < 85 ? "jo-bar--green" : pct < 100 ? "jo-bar--amber" : "jo-bar--red";
                       return (
-                        <article key={jo.id} className="jo-card">
+                        <article key={`${jo.jobOrderId}-${jo.workDate}`} className="jo-card">
                           <header className="jo-card__head">
                             <span
                               className="jo-color-dot"
@@ -954,15 +971,17 @@ export function ApprovalsPage() {
                             <strong>
                               {jo.code} · {jo.name}
                             </strong>
-                            {jo.status === "active" && (
-                              <span className="jo-status-superscript jo-status-active">ACTIVE</span>
-                            )}
-                            {jo.status === "closed" && (
-                              <span className="jo-status-superscript jo-status-closed">CLOSED</span>
-                            )}
                           </header>
                           <div className="jo-card__meta">
+                            <span>Date: <strong>{fmtDate(jo.workDate)}</strong></span>
                             <span>Project: {jo.projectName}</span>
+                          </div>
+                          <div className="jo-card__meta">
+                            <span>A: {fmtHours(jo.projectA)}</span>
+                            <span>B: {fmtHours(jo.projectB)}</span>
+                            <span>C: {fmtHours(jo.projectC)}</span>
+                          </div>
+                          <div className="jo-card__meta">
                             <span>
                               Unapproved: <strong>{fmtHours(jo.consumptionUnapproved)}</strong>
                             </span>

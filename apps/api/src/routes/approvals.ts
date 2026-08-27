@@ -442,71 +442,100 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
   const role = req.user!.role;
   const departmentId = req.user!.departmentId;
 
+  // Scope: only entries in this approver's department (via supervisor OR employee),
+  // matching the pending view. If the approver has no department (e.g. PM), no
+  // department filter is applied — consistent with the existing pending view.
+  const deptWhere =
+    departmentId != null
+      ? {
+          OR: [{ taggedBy: { departmentId } }, { employee: { departmentId } }],
+        }
+      : {};
+
   const entries = await prisma.timesheetEntry.findMany({
     where: {
       jobOrderId: { not: null },
-      OR: [
-        { taggedBy: departmentId != null ? { departmentId } : undefined },
-        { employee: departmentId != null ? { departmentId } : undefined },
-      ],
+      ...deptWhere,
     },
     include: {
       jobOrder: { include: { project: true } },
     },
   });
 
-  const byJo = new Map<
-    number,
-    {
-      id: number;
-      code: string;
-      name: string;
-      status: string;
-      budgetedHours: number | null;
-      projectColorKey: string;
-      projectName: string;
-      consumptionApproved: number;
-      consumptionUnapproved: number;
-    }
-  >();
+  // Group by (job order × workDate) so each row carries a DATE and the per-project
+  // A/B/C hour breakdown for that submission, plus the approved/unapproved split.
+  type Row = {
+    jobOrderId: number;
+    code: string;
+    name: string;
+    workDate: string;
+    projectColorKey: string;
+    projectName: string;
+    budgetedHours: number | null;
+    projectA: number;
+    projectB: number;
+    projectC: number;
+    overhead: number;
+    consumptionApproved: number;
+    consumptionUnapproved: number;
+    consumptionPct: number | null;
+  };
+
+  const byKey = new Map<string, Row>();
 
   for (const e of entries) {
     if (!e.jobOrder || !e.jobOrderId) continue;
     const jo = e.jobOrder;
-    let row = byJo.get(jo.id);
+    const dateKey = e.workDate.toISOString().slice(0, 10);
+    const key = `${jo.id}|${dateKey}`;
+    let row = byKey.get(key);
     if (!row) {
       row = {
-        id: jo.id,
+        jobOrderId: jo.id,
         code: jo.code,
         name: jo.name,
-        status: jo.status,
-        budgetedHours: jo.budgetedHours,
+        workDate: dateKey,
         projectColorKey: jo.project.colorKey,
         projectName: jo.project.name,
+        budgetedHours: jo.budgetedHours,
+        projectA: 0,
+        projectB: 0,
+        projectC: 0,
+        overhead: 0,
         consumptionApproved: 0,
         consumptionUnapproved: 0,
+        consumptionPct: null,
       };
-      byJo.set(jo.id, row);
+      byKey.set(key, row);
     }
-    if (e.status === "HOD_APPROVED" || e.status === "PM_APPROVED") {
+
+    // Approved vs unapproved classification derived server-side from entry status.
+    const isApproved = e.status === "HOD_APPROVED" || e.status === "PM_APPROVED";
+    if (isApproved) {
       row.consumptionApproved += 1;
-    } else if (e.status === "SUBMITTED" || e.status === "DRAFT") {
-      row.consumptionUnapproved += 1;
-    } else if (e.status === "PLANNING_RETURNED" || e.status === "REJECTED") {
-      // Unapproved (these are the open ones waiting for action)
+    } else {
       row.consumptionUnapproved += 1;
     }
+
+    // Per-project hour breakdown (legacy ProjectWbs fallback kept for consistency).
+    const colorKey = String(jo.project.colorKey || "").toUpperCase();
+    if (colorKey === "A") row.projectA += 1;
+    else if (colorKey === "B") row.projectB += 1;
+    else if (colorKey === "C") row.projectC += 1;
+    else row.overhead += 1;
   }
 
-  const rows = Array.from(byJo.values())
-    .map((r) => ({
-      ...r,
-      // For "today" column we approximate with unapproved (this is the data the
-      // HOD is about to act on). The Period column shows total unapproved
-      // (matches Consumption (Unapproved) in the screenshot).
-      consumptionToday: r.consumptionUnapproved,
-    }))
-    .sort((a, b) => a.code.localeCompare(b.code));
+  const rows = Array.from(byKey.values())
+    .map((r) => {
+      const total = r.consumptionApproved + r.consumptionUnapproved;
+      r.consumptionPct =
+        r.budgetedHours && r.budgetedHours > 0 ? Math.round((total / r.budgetedHours) * 100) : null;
+      return r;
+    })
+    .sort((a, b) => {
+      if (a.workDate !== b.workDate) return b.workDate.localeCompare(a.workDate);
+      return a.code.localeCompare(b.code);
+    });
 
   res.json({ rows, role });
 });
