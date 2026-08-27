@@ -253,6 +253,10 @@ timesheetRouter.put("/day", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const { supervisorId, workDate: dateStr, rows } = parsed.data;
+  // Owner enforcement: only the timesheet's owner supervisor may edit it.
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
+  }
   const workDate = parseDateOnly(dateStr);
 
   const lockViolations: { employeeId: number; error: string }[] = [];
@@ -508,6 +512,10 @@ timesheetRouter.post("/bulk-assign", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const { supervisorId, workDate: dateStr, projectId, jobOrderId, slots } = parsed.data;
+  // Owner enforcement: only the timesheet's owner supervisor may edit it.
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
+  }
   const workDate = parseDateOnly(dateStr);
 
   // Validate the JobOrder belongs to the Project.
@@ -618,6 +626,10 @@ timesheetRouter.put("/entry", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const { supervisorId, workDate: dateStr, employeeId, shiftSlot, jobOrderId } = parsed.data;
+  // Owner enforcement: only the timesheet's owner supervisor may edit it.
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
+  }
   const workDate = parseDateOnly(dateStr);
 
   const existing = await prisma.timesheetDay.findUnique({
@@ -669,6 +681,10 @@ timesheetRouter.post("/submit", async (req, res) => {
   const dateStr = String(req.body.workDate || "");
   if (!supervisorId || !dateStr) {
     return res.status(400).json({ error: "supervisorId and workDate required" });
+  }
+  // Owner enforcement: only the timesheet's owner supervisor may submit it.
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only submit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
   const maxDailyHours = getMaxDailyHours();

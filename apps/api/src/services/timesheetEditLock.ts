@@ -3,6 +3,15 @@
 export const APPROVED_STATUSES = ["HOD_APPROVED", "PM_APPROVED"] as const;
 export type ApprovedStatus = (typeof APPROVED_STATUSES)[number];
 
+/**
+ * Statuses that are hard-locked: once a supervisor submits, or HOD/PM approve,
+ * the day can no longer be edited (unless rejected/returned, which unlocks it).
+ * SUBMITTED is the supervisor's submit cutoff — the user requirement is that
+ * assign/unassign is allowed only UNTIL submission.
+ */
+export const LOCKED_STATUSES = ["SUBMITTED", "HOD_APPROVED", "PM_APPROVED"] as const;
+export type LockedStatus = (typeof LOCKED_STATUSES)[number];
+
 export type EditMode = "full" | "addOnly" | "locked";
 
 export type EditLockInfo = {
@@ -42,6 +51,13 @@ export function resolveEditLock(
       approvedAt: approvedAt.toISOString(),
       lockExpiresAt: null,
     };
+  }
+
+  // Submit is the hard cutoff: once submitted (or HOD/PM approved), the day is
+  // locked until it is rejected/returned. SUBMITTED is not an "approved" status
+  // but is still hard-locked per the user requirement.
+  if ((LOCKED_STATUSES as readonly string[]).includes(status) && !isApprovedStatus(status)) {
+    return { editMode: "locked", approvedAt: null, lockExpiresAt: null };
   }
 
   if (!isApprovedStatus(status)) {

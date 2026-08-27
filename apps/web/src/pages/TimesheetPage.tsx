@@ -82,6 +82,17 @@ function rowEditMode(r: { editMode?: EditMode }): EditMode {
   return r.editMode ?? "full";
 }
 
+/**
+ * A slot may be re-selected / cleared / reassigned while the timesheet day is
+ * still in an editable (not-yet-submitted) state: DRAFT, REJECTED, or
+ * PLANNING_RETURNED. Once the supervisor has submitted for HOD approval
+ * (SUBMITTED / HOD_APPROVED / PM_APPROVED), the day is locked down and only
+ * an HOD/PM reject re-opens it.
+ */
+function isEditableForReassign(status: string) {
+  return status === "DRAFT" || status === "REJECTED" || status === "PLANNING_RETURNED";
+}
+
 function isApprovedDayStatus(status: string) {
   return status === "HOD_APPROVED" || status === "PM_APPROVED";
 }
@@ -226,8 +237,10 @@ export function TimesheetPage() {
         if (r.employeeId !== employeeId) return r;
         if (rowEditMode(r) === "locked") return r;
         const existing = r.slots.find((s) => s.shiftSlot === slot);
-        // Can't select a slot that's already filled (per screenshot: empty dashed vs amber vs colored)
-        if (existing && existing.jobOrderId != null) return r;
+        // On an editable (not-yet-submitted) day — DRAFT / REJECTED / PLANNING_RETURNED —
+        // the supervisor may re-select an already-assigned slot so they can clear or
+        // reassign it. Once submitted (SUBMITTED / approved), a filled slot is not selectable.
+        if (existing && existing.jobOrderId != null && !isEditableForReassign(r.status)) return r;
         if (existing && existing.locked) return r;
         const next = new Set(r.selectedSlots);
         if (next.has(slot)) next.delete(slot);
@@ -241,8 +254,10 @@ export function TimesheetPage() {
     setRows((prev) =>
       prev.map((r) => {
         if (r.employeeId !== employeeId) return r;
-        if (r.fullShiftDone) return r; // frozen when "done"
         if (rowEditMode(r) === "locked") return r;
+        // On an editable (not-yet-submitted) day the supervisor may uncheck "full shift"
+        // to clear/reassign hours. Otherwise it freezes once the row is fully assigned.
+        if (r.fullShiftDone && !isEditableForReassign(r.status)) return r;
         // Select all empty slots
         const next = new Set<ShiftSlot>();
         for (const s of r.slots) {
@@ -337,11 +352,13 @@ export function TimesheetPage() {
     setRows((prev) =>
       prev.map((r) => {
         if (rowEditMode(r) === "locked") return r;
-        if (r.fullShiftDone) return r; // skip "Assigned" rows
-        // Select every empty slot
+        // On an editable (not-yet-submitted) day include already-assigned slots so the
+        // supervisor can bulk-reassign them. Otherwise skip "Assigned" rows.
+        if (r.fullShiftDone && !isEditableForReassign(r.status)) return r;
+        // Select every empty slot (and assigned slots on editable days)
         const next = new Set<ShiftSlot>();
         for (const s of r.slots) {
-          if (s.jobOrderId == null && !s.locked) next.add(s.shiftSlot);
+          if (!s.locked && (s.jobOrderId == null || isEditableForReassign(r.status))) next.add(s.shiftSlot);
         }
         return { ...r, selectedSlots: next };
       })
@@ -749,7 +766,7 @@ export function TimesheetPage() {
                       <input
                         type="checkbox"
                         checked={r.fullShiftDone}
-                        disabled={r.fullShiftDone || isLocked}
+                        disabled={isLocked || (r.fullShiftDone && !isEditableForReassign(r.status))}
                         onChange={() => toggleFullShift(r.employeeId)}
                         aria-label="Full Shift (select all 4 slots)"
                       />
@@ -774,7 +791,7 @@ export function TimesheetPage() {
                         <button
                           type="button"
                           className={cls}
-                          disabled={slotLocked || s.jobOrderId != null}
+                          disabled={slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                           onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
                           aria-label={SHIFT_LABELS[s.shiftSlot].long}
                           title={SHIFT_LABELS[s.shiftSlot].long}
@@ -928,7 +945,7 @@ export function TimesheetPage() {
                   <input
                     type="checkbox"
                     checked={r.fullShiftDone}
-                    disabled={r.fullShiftDone || isLocked}
+                    disabled={isLocked || (r.fullShiftDone && !isEditableForReassign(r.status))}
                     onChange={() => toggleFullShift(r.employeeId)}
                     aria-label="Full Shift (select all 4 slots)"
                   />
@@ -955,7 +972,7 @@ export function TimesheetPage() {
                       key={s.shiftSlot}
                       type="button"
                       className={cls}
-                      disabled={slotLocked || s.jobOrderId != null}
+                      disabled={slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                       onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
                       aria-label={SHIFT_LABELS[s.shiftSlot].long}
                       title={SHIFT_LABELS[s.shiftSlot].long}
