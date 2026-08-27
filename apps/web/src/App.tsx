@@ -6,6 +6,7 @@ import { SelectTeamPage } from "./pages/SelectTeamPage";
 import { TimesheetPage } from "./pages/TimesheetPage";
 import { SummaryPage } from "./pages/SummaryPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
+import { SupervisorsPage } from "./pages/SupervisorsPage";
 
 function RequireAuth() {
   const { user } = useAuth();
@@ -24,6 +25,7 @@ export function App() {
           <Route path="/timesheet" element={<TimesheetPage />} />
           <Route path="/summary" element={<SummaryPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
+          <Route path="/supervisors" element={<SupervisorsPage />} />
           <Route path="/" element={<Navigate to="/select-team" replace />} />
           <Route path="*" element={<Navigate to="/select-team" replace />} />
         </Route>

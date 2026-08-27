@@ -13,6 +13,7 @@ function titleForPath(pathname: string, role?: string) {
     if (role === "ADMIN") return "Approvals";
     return "Approvals";
   }
+  if (pathname.startsWith("/supervisors")) return "Supervisor Registration";
   return "Select Team for Today";
 }
 
@@ -22,6 +23,7 @@ export function AppLayout() {
   const location = useLocation();
   const { openPanel } = useTheme();
   const showApprovals = user && ["HOD", "PM", "ADMIN"].includes(user.role);
+  const showSupervisors = user && ["ADMIN", "HR"].includes(user.role);
   const roleDisplay = user?.role === "PM" ? "Project Head" : user?.role;
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -73,6 +75,11 @@ export function AppLayout() {
           {showApprovals && (
             <NavLink to="/approvals" className={({ isActive }) => (isActive ? "active" : "")}>
               Approvals
+            </NavLink>
+          )}
+          {showSupervisors && (
+            <NavLink to="/supervisors" className={({ isActive }) => (isActive ? "active" : "")}>
+              Supervisors
             </NavLink>
           )}
           <span className="app-header__user">

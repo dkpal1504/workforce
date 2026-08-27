@@ -13,6 +13,10 @@ model User {
   passwordHash String   @map("password_hash")
   name         String
   role         String
+  /// 'SYNC' = read-only row upserted from BadgeView (no login); 'MANUAL' = front-end-registered login account.
+  source       String   @default("MANUAL")
+  /// Stable identity key shared with BadgeView (IDCardNo / employee code). Null for legacy seeded users.
+  idCardNo     String?  @unique @map("id_card_no")
   employeeId   Int?     @unique @map("employee_id")
   employee     Employee? @relation(fields: [employeeId], references: [id])
   departmentId Int?     @map("department_id")
@@ -69,6 +73,43 @@ model Employee {
   manpowerAssignments ManpowerRequest[] @relation("AssignedEmployee")
 
   @@map("employees")
+}
+
+/// Master data synced from the external LabourWorks BadgeView (twice daily).
+/// `source='SYNC'` rows are fully overwritten by each sync run; `source='MANUAL'`
+/// rows are front-end-managed and never touched by the sync.
+model ContractWorker {
+  id          Int      @id @default(autoincrement())
+  workmen     String   @map("workmen")
+  idCardNo    String   @unique @map("id_card_no")
+  buName      String?  @map("bu_name")
+  workmenName String   @map("workmen_name")
+  validFrom   DateTime? @map("valid_from")
+  validUpto   DateTime? @map("valid_upto")
+  bgCode      String?  @map("bg_code")
+  contractor  String?
+  isSupervisor Boolean @default(false) @map("is_supervisor")
+  source      String   @default("SYNC")
+  lastSyncedAt DateTime? @map("last_synced_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([source])
+  @@index([isSupervisor])
+  @@map("contract_workers")
+}
+
+/// Pins mark supervisor status of a PRESENT worker only — a pin never retains
+/// a departed worker. Strict-prune: if a pinned worker leaves BadgeView, their
+/// pin is deleted in the same sync transaction (no stale identity survives).
+/// Pin/unpin are audited admin actions.
+model SupervisorPin {
+  id         Int      @id @default(autoincrement())
+  idCardNo   String   @unique @map("id_card_no")
+  createdBy  Int?     @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("supervisor_pins")
 }
 
 model ProjectWbs {

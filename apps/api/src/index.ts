@@ -14,6 +14,8 @@ import { timesheetRouter } from "./routes/timesheet";
 import { summaryRouter } from "./routes/summary";
 import { adminRouter } from "./routes/admin";
 import { approvalsRouter } from "./routes/approvals";
+import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
+import { startBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 
 const app = express();
 const port = Number(process.env.API_PORT || 4000);
@@ -34,6 +36,7 @@ api.use("/timesheet", timesheetRouter);
 api.use("/summary", summaryRouter);
 api.use("/approvals", approvalsRouter);
 api.use("/admin", adminRouter);
+api.use("/supervisors", supervisorRegistrationRouter);
 app.use("/api", api);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -44,4 +47,5 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
   console.log(`LAN example: http://10.5.18.209:${port} (use Vite URL for the UI)`);
+  startBadgeViewSyncScheduler();
 });

@@ -79,6 +79,8 @@ mastersRouter.get("/supervisors", async (req, res) => {
       id: true,
       name: true,
       email: true,
+      source: true,
+      idCardNo: true,
       departmentId: true,
       department: { select: { id: true, name: true } },
     },
