@@ -394,6 +394,12 @@
   vertical-align: middle;
 }
 
+/* === Conflict reason (why a row is flagged) === */
+.conflict-reason {
+  color: var(--danger, #b91c1c);
+  margin-top: 2px;
+}
+
 /* === Group by Job Order view === */
 .jo-inspection-banner {
   background: color-mix(in srgb, var(--primary) 12%, var(--bg-elevated));

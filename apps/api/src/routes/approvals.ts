@@ -124,8 +124,8 @@ function pendingEntriesForRole(d: DayRow, role: string) {
   return { entries: tagged, isAmendment: false };
 }
 
-async function conflictEmployeeIds(employeeIds: number[], workDates: Date[]): Promise<Set<string>> {
-  const flagged = new Set<string>();
+async function conflictEmployeeIds(employeeIds: number[], workDates: Date[]): Promise<Map<string, string[]>> {
+  const flagged = new Map<string, string[]>();
   if (!employeeIds.length || !workDates.length) return flagged;
 
   const entries = await prisma.timesheetEntry.findMany({
@@ -137,21 +137,21 @@ async function conflictEmployeeIds(employeeIds: number[], workDates: Date[]): Pr
       // jobOrder-only conflicts.
       OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
     },
-    select: { employeeId: true, workDate: true, taggedById: true },
+    select: { employeeId: true, workDate: true, taggedById: true, taggedBy: { select: { name: true } } },
   });
 
-  const bag = new Map<string, Set<number>>();
+  const bag = new Map<string, Map<number, string>>();
   for (const e of entries) {
     const key = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
     let set = bag.get(key);
     if (!set) {
-      set = new Set();
+      set = new Map();
       bag.set(key, set);
     }
-    set.add(e.taggedById);
+    set.set(e.taggedById, e.taggedBy?.name ?? `#${e.taggedById}`);
   }
   for (const [key, supervisors] of bag) {
-    if (supervisors.size > 1) flagged.add(key);
+    if (supervisors.size > 1) flagged.set(key, [...supervisors.values()]);
   }
   return flagged;
 }
@@ -160,7 +160,7 @@ function mapEmployeeRow(
   d: DayRow,
   dayTotalHours: number,
   maxDailyHours: number,
-  conflictKeys: Set<string>,
+  conflictMap: Map<string, string[]>,
   role: string
 ) {
   const workDate = d.workDate.toISOString().slice(0, 10);
@@ -170,6 +170,7 @@ function mapEmployeeRow(
   const allTagged = projectHoursFromEntries(d.entries);
   const unallocatedHours = Math.max(0, maxDailyHours - dayTotalHours);
   const conflictKey = `${d.employeeId}|${workDate}`;
+  const conflictSupervisors = conflictMap.get(conflictKey) ?? null;
   return {
     id: d.id,
     workDate,
@@ -187,7 +188,9 @@ function mapEmployeeRow(
     maxDailyHours,
     exceedsLimit: dayTotalHours > maxDailyHours,
     isAmendment,
-    hasConflict: conflictKeys.has(conflictKey),
+    hasConflict: conflictSupervisors != null,
+    /** Names of the supervisors who tagged this employee on this date (the conflict reason). */
+    conflictSupervisors,
     employee: {
       id: d.employee.id,
       name: d.employee.name,
@@ -278,7 +281,7 @@ const dayInclude = {
 async function buildRows(days: DayRow[], maxDailyHours: number, role: string) {
   const employeeIds = [...new Set(days.map((d) => d.employeeId))];
   const workDates = [...new Set(days.map((d) => d.workDate.toISOString()))].map((s) => new Date(s));
-  const conflictKeys = await conflictEmployeeIds(employeeIds, workDates);
+  const conflictMap = await conflictEmployeeIds(employeeIds, workDates);
 
   const rows: EmployeeMapped[] = [];
   for (const d of days) {
@@ -286,7 +289,7 @@ async function buildRows(days: DayRow[], maxDailyHours: number, role: string) {
     if (pendingEntries.length === 0) continue;
     const totals = await getEmployeeDayHourTotals([d.employeeId], d.workDate);
     const dayTotalHours = totals.get(d.employeeId)?.totalHours ?? 0;
-    rows.push(mapEmployeeRow(d, dayTotalHours, maxDailyHours, conflictKeys, role));
+    rows.push(mapEmployeeRow(d, dayTotalHours, maxDailyHours, conflictMap, role));
   }
   return rows;
 }

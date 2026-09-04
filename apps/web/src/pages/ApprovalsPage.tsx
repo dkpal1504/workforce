@@ -20,6 +20,7 @@ type EmployeeRow = {
   exceedsLimit: boolean;
   isAmendment?: boolean;
   hasConflict: boolean;
+  conflictSupervisors?: string[] | null;
   employee: { id: number; name: string; ecNo: string; department: string };
   supervisor: { id: number; name: string; email: string };
 };
@@ -549,6 +550,11 @@ export function ApprovalsPage() {
                                   {emp.hasConflict && (
                                     <span className="badge badge-conflict flagged-chip">⚠ Flagged</span>
                                   )}
+                                  {emp.hasConflict && emp.conflictSupervisors && (
+                                    <div className="muted tiny conflict-reason">
+                                      Tagged by {emp.conflictSupervisors.join(" & ")} — resolve before approving.
+                                    </div>
+                                  )}
                                   {emp.isAmendment && (
                                     <div className="muted tiny">New hours only</div>
                                   )}
@@ -618,6 +624,11 @@ export function ApprovalsPage() {
                         <td>
                           <strong>{emp.employee.name}</strong>
                           <div className="muted tiny">Sup: {emp.supervisor.name}</div>
+                          {emp.hasConflict && emp.conflictSupervisors && (
+                            <div className="muted tiny conflict-reason">
+                              ⚠ Tagged by {emp.conflictSupervisors.join(" & ")} — resolve before approving.
+                            </div>
+                          )}
                           {emp.isAmendment && <div className="muted tiny">New hours only</div>}
                           {emp.exceedsLimit && (
                             <div className="ot-alert">
@@ -820,6 +831,11 @@ export function ApprovalsPage() {
                                 <div>
                                   <strong>{emp.employee.name}</strong>
                                   <div className="muted tiny">{emp.workDate}</div>
+                                  {emp.hasConflict && emp.conflictSupervisors && (
+                                    <div className="muted tiny conflict-reason">
+                                      ⚠ Tagged by {emp.conflictSupervisors.join(" & ")}
+                                    </div>
+                                  )}
                                 </div>
                               </header>
                               <HourChips
@@ -894,6 +910,11 @@ export function ApprovalsPage() {
                         <div className="muted tiny">
                           {emp.supervisor.name} · {emp.workDate}
                         </div>
+                        {emp.hasConflict && emp.conflictSupervisors && (
+                          <div className="muted tiny conflict-reason">
+                            ⚠ Tagged by {emp.conflictSupervisors.join(" & ")}
+                          </div>
+                        )}
                       </div>
                     </header>
                     <HourChips
