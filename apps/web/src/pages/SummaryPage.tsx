@@ -48,7 +48,10 @@ export function SummaryPage() {
   const [groupBy, setGroupBy] = useState<GroupBy>("supervisor");
   const [view, setView] = useState<View>("hours");
   const [allProjects, setAllProjects] = useState<Project[]>([]);
-  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([]);
+  // Selected project colorKey codes (A/B/C/D/…) — the unified identity across
+  // both WBS and JobOrder tagging paths. Numeric ids differ between the two
+  // models, so the filter uses colorKey codes to match the backend.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [totals, setTotals] = useState<Record<string, number>>({});
@@ -243,12 +246,12 @@ export function SummaryPage() {
                 onChange={(e) => {
                   const v = e.target.value;
                   if (v === "all") setSelectedProjectIds([]);
-                  else setSelectedProjectIds(v.split(",").map(Number));
+                  else setSelectedProjectIds(v.split(","));
                 }}
               >
                 <option value="all">All Projects</option>
                 {allProjects.map((p) => (
-                  <option key={p.id} value={String(p.id)}>
+                  <option key={p.id} value={p.colorKey}>
                     {p.name}
                   </option>
                 ))}

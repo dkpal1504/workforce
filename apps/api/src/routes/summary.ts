@@ -157,11 +157,11 @@ summaryRouter.get("/", async (req, res) => {
   const start = startOfFrequency(anchor, frequency);
   const end = endOfFrequency(anchor, frequency);
 
-  let projectIds: number[] | undefined;
+  let projectIds: string[] | undefined;
   if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
-    projectIds = req.query.projectIds.split(",").map(Number).filter(Boolean);
+    projectIds = req.query.projectIds.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
   } else if (Array.isArray(req.query.projectIds)) {
-    projectIds = (req.query.projectIds as string[]).map(Number).filter(Boolean);
+    projectIds = (req.query.projectIds as string[]).map((s) => String(s).trim().toUpperCase()).filter(Boolean);
   }
 
   const role = req.user!.role;
@@ -231,10 +231,15 @@ summaryRouter.get("/", async (req, res) => {
       }
     }
   }
-  // Only projects explicitly selected when a filter is provided.
+  // Only projects explicitly selected when a filter is provided. Filter by
+  // colorKey (code) — the unified identity across BOTH tagging paths (legacy
+  // ProjectWbs and new JobOrder→Project). Numeric ids differ between the two
+  // models (WBS ids vs Project ids), so matching on colorKey avoids the
+  // mismatch that made per-project filters return 0.
   if (projectIds?.length) {
+    const codes = new Set(projectIds);
     for (const k of [...projectMeta.keys()]) {
-      if (!projectIds.includes(projectMeta.get(k)!.id)) projectMeta.delete(k);
+      if (!codes.has(k)) projectMeta.delete(k);
     }
   }
   const projects = [...projectMeta.values()].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
