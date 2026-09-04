@@ -29,9 +29,13 @@ export function useWorkContext() {
     if (!departmentId) return;
     api<{ supervisors: Supervisor[] }>(`/supervisors?department_id=${departmentId}`).then((d) => {
       setSupervisors(d.supervisors);
+      // Only auto-select the logged-in user's OWN supervisor record. Never fall
+      // back to a hardcoded name or another supervisor's id — the backend now
+      // enforces owner (supervisorId === req.user.id), so sending someone else's
+      // id would 403 NOT_OWNER. Non-supervisors (admin/HOD) may pick the first
+      // supervisor to view.
       const me = d.supervisors.find((s) => s.id === user?.id);
-      const sharma = d.supervisors.find((s) => s.name.includes("Sharma"));
-      const pick = me || sharma || d.supervisors[0];
+      const pick = me || (user?.role === "SUPERVISOR" ? null : d.supervisors[0]);
       setSupervisorId(pick ? pick.id : "");
     });
   }, [departmentId, user?.id]);
