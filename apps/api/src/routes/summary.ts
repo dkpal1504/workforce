@@ -164,24 +164,18 @@ summaryRouter.get("/", async (req, res) => {
     projectIds = (req.query.projectIds as string[]).map(Number).filter(Boolean);
   }
 
-  const projects = await prisma.projectWbs.findMany({
-    where: {
-      active: true,
-      ...(projectIds?.length ? { id: { in: projectIds } } : {}),
-    },
-    orderBy: { colorKey: "asc" },
-  });
-
   const role = req.user!.role;
   const userId = req.user!.id;
   const departmentId = req.user!.departmentId;
 
   // Role scope: supervisors only see hours they tagged — not other supervisors' sheets.
+  // Match BOTH legacy ProjectWbs-tagged and new JobOrder-tagged entries (the daily
+  // timesheet entry writes jobOrder-only rows), so the summary isn't empty for
+  // jobOrder-tagged hours.
   const entries = await prisma.timesheetEntry.findMany({
     where: {
       workDate: { gte: start, lte: end },
-      projectWbsId: { not: null },
-      ...(projectIds?.length ? { projectWbsId: { in: projectIds } } : {}),
+      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
       ...(role === "HOD" && departmentId != null
         ? {
@@ -196,6 +190,7 @@ summaryRouter.get("/", async (req, res) => {
       employee: { include: { department: true } },
       taggedBy: { include: { department: true } },
       projectWbs: true,
+      jobOrder: { include: { project: true } },
     },
   });
 
@@ -212,19 +207,60 @@ summaryRouter.get("/", async (req, res) => {
     return r ? Number(r.ratePerHour) : 0;
   }
 
+  // Build the dynamic project-column set from the entries actually present,
+  // resolving each entry's project via legacy ProjectWbs colorKey OR the
+  // JobOrder→Project colorKey. Keyed by colorKey (code) so A/B/C/D/… all show.
+  const projectMeta = new Map<string, { id: number; code: string; name: string; colorKey: string }>();
+  for (const e of entries) {
+    if (e.projectWbsId != null && e.projectWbs) {
+      projectMeta.set(e.projectWbs.colorKey, {
+        id: e.projectWbs.id,
+        code: e.projectWbs.colorKey,
+        name: e.projectWbs.name,
+        colorKey: e.projectWbs.colorKey,
+      });
+    } else if (e.jobOrderId != null && e.jobOrder?.project) {
+      const ck = String(e.jobOrder.project.colorKey || "").toUpperCase();
+      if (ck) {
+        projectMeta.set(ck, {
+          id: e.jobOrder.project.id,
+          code: ck,
+          name: e.jobOrder.project.name,
+          colorKey: ck,
+        });
+      }
+    }
+  }
+  // Only projects explicitly selected when a filter is provided.
+  if (projectIds?.length) {
+    for (const k of [...projectMeta.keys()]) {
+      if (!projectIds.includes(projectMeta.get(k)!.id)) projectMeta.delete(k);
+    }
+  }
+  const projects = [...projectMeta.values()].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+
   type AggKey = string;
   const buckets = new Map<
     AggKey,
     {
       label: string;
       secondary: string;
-      projectHours: Record<number, number>;
-      projectCost: Record<number, number>;
+      projectHours: Record<string, number>;
+      projectCost: Record<string, number>;
     }
   >();
 
   for (const e of entries) {
-    if (!e.projectWbsId || !e.projectWbs) continue;
+    // Resolve this entry's project colorKey ONCE (never double-count an entry
+    // that carries both projectWbsId and jobOrderId).
+    let colorKey: string | null = null;
+    if (e.projectWbsId != null && e.projectWbs) {
+      colorKey = e.projectWbs.colorKey;
+    } else if (e.jobOrderId != null && e.jobOrder?.project) {
+      colorKey = String(e.jobOrder.project.colorKey || "").toUpperCase();
+    }
+    if (!colorKey || !projectMeta.has(colorKey)) continue;
+
     let key: string;
     let label: string;
     let secondary: string;
@@ -252,16 +288,16 @@ summaryRouter.get("/", async (req, res) => {
       bucket = { label, secondary, projectHours: {}, projectCost: {} };
       buckets.set(key, bucket);
     }
-    bucket.projectHours[e.projectWbsId] = (bucket.projectHours[e.projectWbsId] || 0) + 1;
+    bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + 1;
     const cost = rateFor(e.employee.category);
-    bucket.projectCost[e.projectWbsId] = (bucket.projectCost[e.projectWbsId] || 0) + cost;
+    bucket.projectCost[colorKey] = (bucket.projectCost[colorKey] || 0) + cost;
   }
 
   const rows = Array.from(buckets.values()).map((b, i) => {
     const values: Record<string, number> = {};
     let total = 0;
     for (const p of projects) {
-      const v = view === "cost" ? b.projectCost[p.id] || 0 : b.projectHours[p.id] || 0;
+      const v = view === "cost" ? b.projectCost[p.code] || 0 : b.projectHours[p.code] || 0;
       values[p.code] = v;
       total += v;
     }
