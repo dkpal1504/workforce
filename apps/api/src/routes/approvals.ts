@@ -21,6 +21,8 @@ type EntryLike = {
   projectWbsId: number | null;
   jobOrderId: number | null;
   status: string;
+  shiftSlot: string | null;
+  hourSlot: number | null;
   projectWbs: ProjectWbsRef;
   jobOrder: JobOrderRef;
 };
@@ -86,7 +88,10 @@ function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
     if (e.projectWbsId == null && e.jobOrderId == null) continue;
     if (!colorKey) continue;
     const key = String(colorKey).toUpperCase();
-    byKey[key] = (byKey[key] || 0) + 1;
+    // Convert each entry to hours by slot type: a shift slot (am1/am2/pm1/pm2)
+    // is 2h, a legacy hourSlot is 1h. Exactly one of shiftSlot/hourSlot is set.
+    const hours = e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
+    byKey[key] = (byKey[key] || 0) + hours;
   }
   const totalAlloc = Object.values(byKey).reduce((a, b) => a + b, 0);
   // Overhead = unallocated remainder (8h − allocated), clamped at 0 so an
