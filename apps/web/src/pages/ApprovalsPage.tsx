@@ -3,7 +3,14 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/approvals.css";
 
-type ProjectHours = { A: number; B: number; C: number };
+type ProjectHours = Record<string, number>;
+
+/** Sorted union of project color keys present across the given rows. */
+function projectKeys(rows: { projectHours: ProjectHours }[]): string[] {
+  const set = new Set<string>();
+  for (const r of rows) for (const k of Object.keys(r.projectHours)) set.add(k);
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
 
 type EmployeeRow = {
   id: number;
@@ -120,17 +127,14 @@ function HourChips({
   dayTotalHours?: number;
   maxDailyHours?: number;
 }) {
+  const keys = Object.keys(projectHours).sort((a, b) => a.localeCompare(b));
   return (
     <div className="hour-chips">
-      <span>
-        <em>A</em> {fmtHours(projectHours.A)}
-      </span>
-      <span>
-        <em>B</em> {fmtHours(projectHours.B)}
-      </span>
-      <span>
-        <em>C</em> {fmtHours(projectHours.C)}
-      </span>
+      {keys.map((k) => (
+        <span key={k}>
+          <em>{k}</em> {fmtHours(projectHours[k])}
+        </span>
+      ))}
       <span>
         <em>OH</em> {fmtHours(overhead)}
       </span>
@@ -194,6 +198,11 @@ export function ApprovalsPage() {
     () => received.flatMap((g) => g.employees.map((e) => e.id)),
     [received]
   );
+
+  // Dynamic project columns per table, derived from the union of color keys present.
+  const pendingProjectKeys = useMemo(() => projectKeys(received), [received]);
+  const returnedProjectKeys = useMemo(() => projectKeys(returned), [returned]);
+  const historyProjectKeys = useMemo(() => projectKeys(history), [history]);
 
   const loadPending = useCallback(async () => {
     if (!canApprove) return;
@@ -446,9 +455,9 @@ export function ApprovalsPage() {
                       <th className="col-check" />
                       <th>Supervisor</th>
                       <th>Date</th>
-                      <th>Project A</th>
-                      <th>Project B</th>
-                      <th>Project C</th>
+                      {pendingProjectKeys.map((k) => (
+                        <th key={k}>Project {k}</th>
+                      ))}
                       <th>Total Alloc.</th>
                       <th>Overhead</th>
                       <th>Approve</th>
@@ -488,9 +497,9 @@ export function ApprovalsPage() {
                               </button>
                             </td>
                             <td>{g.workDate}</td>
-                            <td>{fmtHours(g.projectHours.A)}</td>
-                            <td>{fmtHours(g.projectHours.B)}</td>
-                            <td>{fmtHours(g.projectHours.C)}</td>
+                            {pendingProjectKeys.map((k) => (
+                              <td key={k}>{fmtHours(g.projectHours[k])}</td>
+                            ))}
                             <td className="total-cell">{fmtHours(g.totalAlloc)}</td>
                             <td>{fmtHours(g.overhead)}</td>
                             <td>
@@ -569,9 +578,9 @@ export function ApprovalsPage() {
                                   )}
                                 </td>
                                 <td>{emp.workDate}</td>
-                                <td>{fmtHours(emp.projectHours.A)}</td>
-                                <td>{fmtHours(emp.projectHours.B)}</td>
-                                <td>{fmtHours(emp.projectHours.C)}</td>
+                                {pendingProjectKeys.map((k) => (
+                                  <td key={k}>{fmtHours(emp.projectHours[k])}</td>
+                                ))}
                                 <td className="total-cell">{fmtHours(emp.totalAlloc)}</td>
                                 <td>{fmtHours(emp.unallocatedHours ?? 0)}</td>
                                 <td>
@@ -641,9 +650,9 @@ export function ApprovalsPage() {
                           )}
                         </td>
                         <td>{emp.workDate}</td>
-                        <td>{fmtHours(emp.projectHours.A)}</td>
-                        <td>{fmtHours(emp.projectHours.B)}</td>
-                        <td>{fmtHours(emp.projectHours.C)}</td>
+                        {pendingProjectKeys.map((k) => (
+                          <td key={k}>{fmtHours(emp.projectHours[k])}</td>
+                        ))}
                         <td className="total-cell">{fmtHours(emp.totalAlloc)}</td>
                         <td>{fmtHours(emp.unallocatedHours ?? 0)}</td>
                         <td>
@@ -1086,9 +1095,9 @@ export function ApprovalsPage() {
                       <th>Supervisor</th>
                       <th>Employee</th>
                       <th>Date</th>
-                      <th>Project A</th>
-                      <th>Project B</th>
-                      <th>Project C</th>
+                      {returnedProjectKeys.map((k) => (
+                        <th key={k}>Project {k}</th>
+                      ))}
                       <th>Total Alloc.</th>
                       <th>Overhead</th>
                       <th>Planning’s Comment</th>
@@ -1103,9 +1112,9 @@ export function ApprovalsPage() {
                         <td>{row.supervisor.name}</td>
                         <td>{row.employee.name}</td>
                         <td>{row.workDate}</td>
-                        <td>{fmtHours(row.projectHours.A)}</td>
-                        <td>{fmtHours(row.projectHours.B)}</td>
-                        <td>{fmtHours(row.projectHours.C)}</td>
+                        {returnedProjectKeys.map((k) => (
+                          <td key={k}>{fmtHours(row.projectHours[k])}</td>
+                        ))}
                         <td className="total-cell">{fmtHours(row.totalAlloc)}</td>
                         <td>{fmtHours(row.overhead)}</td>
                         <td className="planning-comment">{row.planningComment || "—"}</td>
@@ -1198,9 +1207,9 @@ export function ApprovalsPage() {
                   <th>Employee</th>
                   <th>Supervisor</th>
                   <th>Date</th>
-                  <th>Project A</th>
-                  <th>Project B</th>
-                  <th>Project C</th>
+                  {historyProjectKeys.map((k) => (
+                    <th key={k}>Project {k}</th>
+                  ))}
                   <th>Total</th>
                   <th>Overhead</th>
                   <th>Status now</th>
@@ -1219,9 +1228,9 @@ export function ApprovalsPage() {
                     <td>{h.employee.name}</td>
                     <td>{h.supervisor.name}</td>
                     <td>{h.workDate}</td>
-                    <td>{fmtHours(h.projectHours.A)}</td>
-                    <td>{fmtHours(h.projectHours.B)}</td>
-                    <td>{fmtHours(h.projectHours.C)}</td>
+                    {historyProjectKeys.map((k) => (
+                      <td key={k}>{fmtHours(h.projectHours[k])}</td>
+                    ))}
                     <td className="total-cell">{fmtHours(h.totalAlloc)}</td>
                     <td>{fmtHours(h.overhead)}</td>
                     <td>{h.resultingStatus}</td>

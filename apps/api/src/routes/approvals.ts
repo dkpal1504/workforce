@@ -72,9 +72,10 @@ function daysPending(updatedAt: Date): number {
   return Math.max(0, Math.floor(ms / (24 * 60 * 60 * 1000)));
 }
 
-function projectHoursFromEntries(entries: EntryLike[]) {
-  const byKey: Record<string, number> = { A: 0, B: 0, C: 0 };
-  let overhead = 0;
+function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
+  // Dynamic per-project map — track ALL color keys present (A/B/C/D/…), not just
+  // A/B/C. Any project with allocations gets its own column.
+  const byKey: Record<string, number> = {};
   for (const e of entries) {
     // A tagged entry is one with projectWbsId OR jobOrderId. The project color
     // can come from the legacy projectWbs relation OR the new
@@ -85,13 +86,13 @@ function projectHoursFromEntries(entries: EntryLike[]) {
     if (e.projectWbsId == null && e.jobOrderId == null) continue;
     if (!colorKey) continue;
     const key = String(colorKey).toUpperCase();
-    if (key === "A" || key === "B" || key === "C") {
-      byKey[key] += 1;
-    } else {
-      overhead += 1;
-    }
+    byKey[key] = (byKey[key] || 0) + 1;
   }
-  const totalAlloc = byKey.A + byKey.B + byKey.C + overhead;
+  const totalAlloc = Object.values(byKey).reduce((a, b) => a + b, 0);
+  // Overhead = unallocated remainder (8h − allocated), clamped at 0 so an
+  // over-allocated day shows overhead 0 and the overage stays visible in
+  // totalAlloc rather than being masked by a negative overhead.
+  const overhead = Math.max(0, maxDailyHours - totalAlloc);
   return { projectHours: byKey, overhead, totalAlloc };
 }
 
@@ -165,9 +166,9 @@ function mapEmployeeRow(
 ) {
   const workDate = d.workDate.toISOString().slice(0, 10);
   const { entries: pendingEntries, isAmendment } = pendingEntriesForRole(d, role);
-  const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries);
+  const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries, maxDailyHours);
   // "All tagged" (across the whole day, not just pending) must include both flows too.
-  const allTagged = projectHoursFromEntries(d.entries);
+  const allTagged = projectHoursFromEntries(d.entries, maxDailyHours);
   const unallocatedHours = Math.max(0, maxDailyHours - dayTotalHours);
   const conflictKey = `${d.employeeId}|${workDate}`;
   const conflictSupervisors = conflictMap.get(conflictKey) ?? null;
@@ -233,7 +234,7 @@ function groupBySupervisor(rows: EmployeeMapped[]) {
         pendingDays: row.pendingDays,
         hasConflict: false,
         isAmendment: false,
-        projectHours: { A: 0, B: 0, C: 0 },
+        projectHours: {},
         overhead: 0,
         totalAlloc: 0,
         unallocatedHours: 0,
@@ -247,9 +248,10 @@ function groupBySupervisor(rows: EmployeeMapped[]) {
     g.hasConflict = g.hasConflict || row.hasConflict;
     g.isAmendment = g.isAmendment || row.isAmendment;
     g.exceedsLimit = g.exceedsLimit || row.exceedsLimit;
-    g.projectHours.A += row.projectHours.A;
-    g.projectHours.B += row.projectHours.B;
-    g.projectHours.C += row.projectHours.C;
+    // Merge the dynamic per-project map (A/B/C/D/…) — a row may not have every key.
+    for (const [k, v] of Object.entries(row.projectHours)) {
+      g.projectHours[k] = (g.projectHours[k] || 0) + v;
+    }
     g.overhead += row.overhead;
     g.totalAlloc += row.totalAlloc;
     g.unallocatedHours += row.unallocatedHours;
@@ -341,7 +343,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
 
     returnedByPlanning = returned
       .map((d) => {
-        const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries);
+        const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, maxDailyHours);
         if (totalAlloc === 0) return null;
         const planning = d.approvals.find(
           (a) => a.action === "PLANNING_RETURN" || (a.action === "REJECT" && a.approver.role === "PM")
@@ -407,7 +409,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
 
   const items = approvals.map((a) => {
     const d = a.timesheetDay;
-    const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries);
+    const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, getMaxDailyHours());
     return {
       approvalId: a.id,
       action: a.action,
