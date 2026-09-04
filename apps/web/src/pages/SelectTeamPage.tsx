@@ -212,7 +212,7 @@ export function SelectTeamPage() {
                       : undefined
                   }
                 >
-                  {e.name.split("—")[0].trim()}
+                  {e.name}
                   <button type="button" aria-label={`Remove ${e.name}`} onClick={() => removeChip(e.id)}>
                     ×
                   </button>
