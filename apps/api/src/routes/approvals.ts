@@ -23,6 +23,7 @@ type EntryLike = {
   status: string;
   shiftSlot: string | null;
   hourSlot: number | null;
+  otHours: number | null;
   projectWbs: ProjectWbsRef;
   jobOrder: JobOrderRef;
 };
@@ -79,6 +80,9 @@ function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
   // A/B/C. Any project with allocations gets its own column.
   const byKey: Record<string, number> = {};
   for (const e of entries) {
+    // Skip OT rows entirely — they have shiftSlot=null/hourSlot=null and must
+    // never seed a phantom project column or count toward totalAlloc/overhead.
+    if (e.otHours != null) continue;
     // A tagged entry is one with projectWbsId OR jobOrderId. The project color
     // can come from the legacy projectWbs relation OR the new
     // jobOrder.project relation. Without the jobOrder fallback, days tagged
@@ -177,6 +181,8 @@ function mapEmployeeRow(
   const unallocatedHours = Math.max(0, maxDailyHours - dayTotalHours);
   const conflictKey = `${d.employeeId}|${workDate}`;
   const conflictSupervisors = conflictMap.get(conflictKey) ?? null;
+  // OT: the stored OT row for this employee/day (additive, separate from allocation).
+  const otEntry = d.entries.find((e) => e.otHours != null);
   return {
     id: d.id,
     workDate,
@@ -193,6 +199,10 @@ function mapEmployeeRow(
     allTotalAlloc: allTagged.totalAlloc,
     maxDailyHours,
     exceedsLimit: dayTotalHours > maxDailyHours,
+    /** Stored OT hours for this employee/day (null if none). */
+    otHours: otEntry?.otHours ?? null,
+    /** The work order the OT is charged to (null if no OT). */
+    otJobOrderId: otEntry?.jobOrderId ?? null,
     isAmendment,
     hasConflict: conflictSupervisors != null,
     /** Names of the supervisors who tagged this employee on this date (the conflict reason). */

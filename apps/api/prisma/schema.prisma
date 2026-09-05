@@ -219,6 +219,12 @@ model TimesheetEntry {
   hourSlot       Int?        @map("hour_slot")
   /// New 4-shift model: am1 (9a-11a) | am2 (11a-1p) | pm1 (2p-4p) | pm2 (4p-6p).
   shiftSlot      String?     @map("shift_slot")
+  /// Overtime hours (1-12) for this employee/day. An OT row has shiftSlot=null,
+  /// hourSlot=null, otHours=N, and a jobOrderId. OT is additive and separate from
+  /// the 8h allocation — it never counts toward totalAlloc/overhead. One OT row
+  /// per (employee, workDate, taggedById) is enforced in application code (SQLite
+  /// treats NULL as distinct in unique constraints, so the schema can't enforce it).
+  otHours        Int?        @map("ot_hours")
   projectWbsId   Int?        @map("project_wbs_id")
   projectWbs     ProjectWbs? @relation(fields: [projectWbsId], references: [id])
   jobOrderId     Int?        @map("job_order_id")

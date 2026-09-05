@@ -676,6 +676,108 @@ timesheetRouter.put("/entry", async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Add/update/clear overtime (OT) hours for an employee on a day.
+ * OT is additive and separate from the 8h allocation — it never counts toward
+ * totalAlloc/overhead. One OT row per (employee, workDate, taggedById) is
+ * enforced here (SQLite treats NULL as distinct in unique constraints, so the
+ * schema can't). Owner-checked + status-locked + audited, same as assign/unassign.
+ */
+timesheetRouter.put("/ot", async (req, res) => {
+  const supervisorId = Number(req.body.supervisorId);
+  const dateStr = String(req.body.workDate || "");
+  const employeeId = Number(req.body.employeeId);
+  const jobOrderId = req.body.jobOrderId == null ? null : Number(req.body.jobOrderId);
+  const otHours = req.body.otHours == null ? null : Number(req.body.otHours);
+
+  if (!supervisorId || !dateStr || !employeeId) {
+    return res.status(400).json({ error: "supervisorId, workDate and employeeId required" });
+  }
+  // Owner enforcement: only the timesheet's owner supervisor may add OT.
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
+  }
+  const workDate = parseDateOnly(dateStr);
+
+  // Validate OT hours: integer 1-12 (configurable cap), or null to clear.
+  const maxOt = Number(process.env.MAX_OT_HOURS || 12);
+  if (otHours != null) {
+    if (!Number.isInteger(otHours) || otHours < 1 || otHours > maxOt) {
+      return res.status(400).json({
+        error: `OT hours must be a whole number between 1 and ${maxOt}.`,
+        code: "INVALID_OT_HOURS",
+      });
+    }
+    if (jobOrderId == null) {
+      return res.status(400).json({ error: "A project / work order is required when adding OT hours.", code: "OT_REQUIRES_JOBORDER" });
+    }
+    // Validate the job order exists.
+    const jo = await prisma.jobOrder.findUnique({ where: { id: jobOrderId } });
+    if (!jo) return res.status(400).json({ error: "Invalid work order.", code: "INVALID_JOBORDER" });
+  }
+
+  // Status lock: OT can only be added while the day is editable (DRAFT/REJECTED).
+  const existing = await prisma.timesheetDay.findUnique({
+    where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
+    include: { entries: true, approvals: { where: { action: "APPROVE" }, take: 1, orderBy: { createdAt: "desc" } } },
+  });
+  const status = existing?.status ?? "DRAFT";
+  const hasProtected = Boolean(
+    existing?.entries?.some((e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status))
+  );
+  const lock = resolveEditLock(status, existing?.approvals[0]?.createdAt ?? existing?.updatedAt ?? null, { hasProtectedEntries: hasProtected });
+  if (lock.editMode === "locked") {
+    return res.status(400).json({ error: "Timesheet is locked. Only HOD/Project Head reject unlocks it.", code: "TIMESHEET_EDIT_LOCKED" });
+  }
+
+  // Ensure the day exists.
+  const day = await prisma.timesheetDay.upsert({
+    where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
+    create: { employeeId, workDate, taggedById: supervisorId, status: "DRAFT", remarks: null },
+    update: { status: isApprovedStatus(status) ? status : "DRAFT" },
+  });
+
+  // One OT row per (employee, workDate, taggedById) — find the existing OT row.
+  const existingOt = await prisma.timesheetEntry.findFirst({
+    where: { timesheetDayId: day.id, otHours: { not: null } },
+  });
+
+  if (otHours == null) {
+    // Clear OT.
+    if (existingOt) await prisma.timesheetEntry.delete({ where: { id: existingOt.id } });
+  } else if (existingOt) {
+    // Update existing OT row.
+    await prisma.timesheetEntry.update({
+      where: { id: existingOt.id },
+      data: { jobOrderId, otHours, status: "DRAFT" },
+    });
+  } else {
+    // Create OT row (shiftSlot=null, hourSlot=null, otHours=N).
+    await prisma.timesheetEntry.create({
+      data: {
+        timesheetDayId: day.id,
+        employeeId,
+        workDate,
+        shiftSlot: null,
+        hourSlot: null,
+        jobOrderId,
+        otHours,
+        taggedById: supervisorId,
+        status: "DRAFT",
+      },
+    });
+  }
+
+  await writeAudit(req.user!.id, "TIMESHEET_OT", "timesheet_day", day.id, {
+    employeeId,
+    workDate: dateStr,
+    jobOrderId,
+    otHours,
+  });
+
+  res.json({ ok: true, otHours, jobOrderId });
+});
+
 timesheetRouter.post("/submit", async (req, res) => {
   const supervisorId = Number(req.body.supervisorId);
   const dateStr = String(req.body.workDate || "");

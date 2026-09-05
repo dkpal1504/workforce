@@ -53,6 +53,8 @@ type Row = {
   otherSlots?: number[];
   dayTotalHours?: number;
   exceedsLimit?: boolean;
+  otHours?: number | null;
+  otJobOrderId?: number | null;
   remarksRequired?: boolean;
   editMode?: EditMode;
   approvedAt?: string | null;
@@ -137,6 +139,12 @@ export function TimesheetPage() {
   // Bulk Assignment block state
   const [bulkProjectId, setBulkProjectId] = useState<number | "">("");
   const [bulkJobOrderId, setBulkJobOrderId] = useState<number | "">("");
+  // OT entry modal state — which employee's OT cell was clicked
+  const [otTarget, setOtTarget] = useState<{ employeeId: number; name: string } | null>(null);
+  const [otProjectId, setOtProjectId] = useState<number | "">("");
+  const [otJobOrderId, setOtJobOrderId] = useState<number | "">("");
+  const [otHours, setOtHours] = useState<string>("");
+  const [otSaving, setOtSaving] = useState(false);
   // Expand/collapse state for the per-row grid (default: collapsed)
   const [expandedEmployees, setExpandedEmployees] = useState<Set<number>>(new Set());
   // For the "Select from Previous Day" carryover
@@ -290,6 +298,73 @@ export function TimesheetPage() {
         r.employeeId === employeeId && rowEditMode(r) !== "locked" ? { ...r, remarks } : r
       )
     );
+  }
+
+  function openOtModal(employeeId: number, name: string) {
+    const row = rows.find((r) => r.employeeId === employeeId);
+    setOtTarget({ employeeId, name });
+    setOtProjectId("");
+    setOtJobOrderId("");
+    setOtHours(row?.otHours != null ? String(row.otHours) : "");
+  }
+
+  async function saveOt() {
+    if (!otTarget) return;
+    const hours = Number(otHours);
+    if (!Number.isInteger(hours) || hours < 1 || hours > 12) {
+      setError("OT hours must be a whole number between 1 and 12.");
+      return;
+    }
+    if (!otJobOrderId) {
+      setError("Select a Project and Work Order for the OT hours.");
+      return;
+    }
+    setOtSaving(true);
+    setError("");
+    try {
+      await api("/timesheet/ot", {
+        method: "PUT",
+        body: JSON.stringify({
+          supervisorId: ctx.supervisorId,
+          workDate: ctx.date,
+          employeeId: otTarget.employeeId,
+          otHours: hours,
+          jobOrderId: otJobOrderId,
+        }),
+      });
+      setMessage(`Added ${hours}h OT for ${otTarget.name}.`);
+      setOtTarget(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save OT hours");
+    } finally {
+      setOtSaving(false);
+    }
+  }
+
+  async function clearOt() {
+    if (!otTarget) return;
+    setOtSaving(true);
+    setError("");
+    try {
+      await api("/timesheet/ot", {
+        method: "PUT",
+        body: JSON.stringify({
+          supervisorId: ctx.supervisorId,
+          workDate: ctx.date,
+          employeeId: otTarget.employeeId,
+          otHours: null,
+          jobOrderId: null,
+        }),
+      });
+      setMessage(`Cleared OT for ${otTarget.name}.`);
+      setOtTarget(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to clear OT hours");
+    } finally {
+      setOtSaving(false);
+    }
   }
 
   async function assignRowToSelected(employeeId: number) {
@@ -802,9 +877,15 @@ export function TimesheetPage() {
                     );
                   })}
                   <td className="ot-col">
-                    <span className="ot-cell">
-                      {r.exceedsLimit ? Math.max(0, (r.dayTotalHours ?? 0) - maxDailyHours) : 0}
-                    </span>
+                    <button
+                      type="button"
+                      className={`ot-cell ot-cell--btn ${r.otHours != null ? "ot-cell--set" : ""}`}
+                      disabled={isLocked}
+                      onClick={() => openOtModal(r.employeeId, r.employee.name)}
+                      title={r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
+                    >
+                      {r.otHours != null ? `${r.otHours}h` : "+"}
+                    </button>
                   </td>
                   <td>
                     <select
@@ -990,9 +1071,15 @@ export function TimesheetPage() {
               </div>
               <div className="ts-ot">
                 <span className="muted tiny">OT HRS</span>
-                <strong>
-                  {r.exceedsLimit ? Math.max(0, (r.dayTotalHours ?? 0) - maxDailyHours) : 0}
-                </strong>
+                <button
+                  type="button"
+                  className={`ot-cell ot-cell--btn ${r.otHours != null ? "ot-cell--set" : ""}`}
+                  disabled={isLocked}
+                  onClick={() => openOtModal(r.employeeId, r.employee.name)}
+                  title={r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
+                >
+                  {r.otHours != null ? `${r.otHours}h` : "+"}
+                </button>
               </div>
               <div className="ts-alloc">
                 <label className="ts-field">
@@ -1131,6 +1218,85 @@ export function TimesheetPage() {
           Submit for Approval
         </button>
       </div>
+
+      {/* OT entry modal */}
+      {otTarget && (
+        <div className="modal-backdrop" onClick={() => setOtTarget(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal__header">
+              <h2>Add OT Hours — {otTarget.name}</h2>
+              <button type="button" className="modal__close" aria-label="Close" onClick={() => setOtTarget(null)}>
+                ×
+              </button>
+            </div>
+            <div className="modal__body">
+              <div className="sup-form">
+                <div className="sup-field">
+                  <label>Project</label>
+                  <select
+                    value={otProjectId}
+                    onChange={(e) => {
+                      setOtProjectId(e.target.value ? Number(e.target.value) : "");
+                      setOtJobOrderId("");
+                    }}
+                  >
+                    <option value="">Select project…</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="sup-field">
+                  <label>Work Order</label>
+                  <select
+                    value={otJobOrderId}
+                    disabled={!otProjectId}
+                    onChange={(e) => setOtJobOrderId(e.target.value ? Number(e.target.value) : "")}
+                  >
+                    <option value="">{otProjectId ? "Select work order…" : "Pick a project first"}</option>
+                    {(projects.find((p) => p.id === otProjectId)?.jobOrders ?? []).map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {j.code} - {j.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="sup-field">
+                  <label>OT Hours (1–12)</label>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={12}
+                    value={otHours}
+                    onChange={(e) => setOtHours(e.target.value)}
+                    placeholder="e.g. 2"
+                  />
+                </div>
+                <p className="sup-form__note">
+                  OT is added on top of the {maxDailyHours}h shift and is separate from regular
+                  allocation. It will be visible to HOD / Project Head in light red.
+                </p>
+                <div className="modal__footer" style={{ padding: 0, borderTop: "none" }}>
+                  {otHours && Number(otHours) >= 1 && (
+                    <button type="button" className="btn btn-ghost" disabled={otSaving} onClick={clearOt}>
+                      {otSaving ? "Saving…" : "Clear OT"}
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-ghost" onClick={() => setOtTarget(null)}>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn btn-primary" disabled={otSaving} onClick={saveOt}>
+                    {otSaving ? "Saving…" : "Save OT"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -28,6 +28,7 @@ type EmployeeRow = {
   isAmendment?: boolean;
   hasConflict: boolean;
   conflictSupervisors?: string[] | null;
+  otHours?: number | null;
   employee: { id: number; name: string; ecNo: string; department: string };
   supervisor: { id: number; name: string; email: string };
 };
@@ -203,6 +204,12 @@ export function ApprovalsPage() {
   const pendingProjectKeys = useMemo(() => projectKeys(received), [received]);
   const returnedProjectKeys = useMemo(() => projectKeys(returned), [returned]);
   const historyProjectKeys = useMemo(() => projectKeys(history), [history]);
+
+  // OT column is dynamic — only shown when at least one row carries OT hours.
+  const hasOt = useMemo(
+    () => received.some((g) => g.employees.some((e) => (e.otHours ?? 0) > 0)),
+    [received]
+  );
 
   const loadPending = useCallback(async () => {
     if (!canApprove) return;
@@ -460,6 +467,7 @@ export function ApprovalsPage() {
                       ))}
                       <th>Total Alloc.</th>
                       <th>Overhead</th>
+                      {hasOt && <th className="ot-col">OT</th>}
                       <th>Approve</th>
                       <th>Reject</th>
                       <th>Comments</th>
@@ -502,6 +510,17 @@ export function ApprovalsPage() {
                             ))}
                             <td className="total-cell">{fmtHours(g.totalAlloc)}</td>
                             <td>{fmtHours(g.overhead)}</td>
+                            {hasOt && (
+                              <td className="ot-col">
+                                {g.employees.some((e) => (e.otHours ?? 0) > 0) ? (
+                                  <span className="ot-badge">
+                                    {g.employees.reduce((s, e) => s + (e.otHours ?? 0), 0)}h
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            )}
                             <td>
                               <button
                                 type="button"
@@ -583,6 +602,15 @@ export function ApprovalsPage() {
                                 ))}
                                 <td className="total-cell">{fmtHours(emp.totalAlloc)}</td>
                                 <td>{fmtHours(emp.unallocatedHours ?? 0)}</td>
+                                {hasOt && (
+                                  <td className="ot-col">
+                                    {(emp.otHours ?? 0) > 0 ? (
+                                      <span className="ot-badge">{emp.otHours}h</span>
+                                    ) : (
+                                      "—"
+                                    )}
+                                  </td>
+                                )}
                                 <td>
                                   <button
                                     type="button"
@@ -655,6 +683,15 @@ export function ApprovalsPage() {
                         ))}
                         <td className="total-cell">{fmtHours(emp.totalAlloc)}</td>
                         <td>{fmtHours(emp.unallocatedHours ?? 0)}</td>
+                        {hasOt && (
+                          <td className="ot-col">
+                            {(emp.otHours ?? 0) > 0 ? (
+                              <span className="ot-badge">{emp.otHours}h</span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        )}
                         <td>
                           <button
                             type="button"
@@ -856,6 +893,9 @@ export function ApprovalsPage() {
                                 dayTotalHours={emp.dayTotalHours}
                                 maxDailyHours={emp.maxDailyHours}
                               />
+                              {(emp.otHours ?? 0) > 0 && (
+                                <div className="ot-badge ot-badge--card">OT {emp.otHours}h</div>
+                              )}
                               {emp.isAmendment && (
                                 <div className="muted tiny">New hours only (prior approval kept)</div>
                               )}
@@ -935,6 +975,9 @@ export function ApprovalsPage() {
                       dayTotalHours={emp.dayTotalHours}
                       maxDailyHours={emp.maxDailyHours}
                     />
+                    {(emp.otHours ?? 0) > 0 && (
+                      <div className="ot-badge ot-badge--card">OT {emp.otHours}h</div>
+                    )}
                     {emp.isAmendment && (
                       <div className="muted tiny">New hours only (prior approval kept)</div>
                     )}

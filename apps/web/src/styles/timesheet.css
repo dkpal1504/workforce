@@ -458,6 +458,39 @@
   color: var(--text);
 }
 
+/* OT cell as an interactive button (supervisor entry) */
+.ot-cell--btn {
+  appearance: none;
+  border: 1px dashed var(--border);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  min-height: 30px;
+  min-width: 40px;
+  cursor: pointer;
+  text-align: center;
+  color: var(--text-muted);
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.ot-cell--btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.ot-cell--btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ot-cell--btn.ot-cell--set {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .row-over-limit .ot-cell {
   color: var(--warning);
 }
