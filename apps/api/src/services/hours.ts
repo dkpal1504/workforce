@@ -13,6 +13,11 @@ export type DayHourTotals = {
 /**
  * Distinct clock-hour slots tagged for employees on a work date (all supervisors/projects).
  * Pass `excludeSupervisorId` so callers can recompute totals as the current supervisor edits locally.
+ *
+ * Totals are returned in TRUE HOURS: a legacy hourSlot is 1h, a shift slot (am1/am2/pm1/pm2)
+ * is 2h. This keeps day totals, the daily-max gate, and OT-excess consistent with
+ * MAX_DAILY_HOURS=8 (a fully-allocated 4-shift-slot day = 8h). `otherSlots` still carries the
+ * raw slot keys for legacy client-side union math.
  */
 export async function getEmployeeDayHourTotals(
   employeeIds: number[],
@@ -40,8 +45,6 @@ export async function getEmployeeDayHourTotals(
       byEmp.set(e.employeeId, bag);
     }
     // Bucket by taggedById; counts are per-slot kind (hour vs shift).
-    // For day total we union both kinds (an hour slot tagged by another supervisor
-    // still consumes an hour-equivalent even though this supervisor writes shift slots).
     if (e.hourSlot != null) bag.hourSlots.add(e.hourSlot);
     if (e.shiftSlot != null) bag.shiftSlots.add(e.shiftSlot);
     let supBag = bag.bySup.get(e.taggedById);
@@ -60,20 +63,19 @@ export async function getEmployeeDayHourTotals(
       continue;
     }
 
-    // Union of hour slots (any supervisor) and shift slots (any supervisor).
-    const allSlots = new Set<number>();
-    for (const h of bag.hourSlots) allSlots.add(h);
-    // shiftSlots are strings — they don't share the numeric slot space; count separately.
-    const allSlotCount = allSlots.size + bag.shiftSlots.size;
+    // TRUE-HOUR conversion: legacy hourSlot = 1h, shift slot = 2h.
+    const allSlotCount = bag.hourSlots.size + bag.shiftSlots.size * 2;
 
     const otherHourSlots = new Set<number>();
     let otherShiftSlotCount = 0;
+    let otherHourSlotCount = 0;
     for (const [supervisorId, supBag] of bag.bySup) {
       if (excludeSupervisorId != null && supervisorId === excludeSupervisorId) continue;
       for (const h of supBag.hourSlots) otherHourSlots.add(h);
       otherShiftSlotCount += supBag.shiftSlots.size;
     }
-    const otherSlotsCount = otherHourSlots.size + otherShiftSlotCount;
+    otherHourSlotCount = otherHourSlots.size;
+    const otherSlotsCount = otherHourSlotCount + otherShiftSlotCount * 2;
 
     result.set(id, {
       totalHours: allSlotCount,
@@ -81,7 +83,7 @@ export async function getEmployeeDayHourTotals(
       otherSlots: Array.from(otherHourSlots).sort((a, b) => a - b),
       bySupervisor: Array.from(bag.bySup.entries()).map(([supervisorId, supBag]) => ({
         supervisorId,
-        hours: supBag.hourSlots.size + supBag.shiftSlots.size,
+        hours: supBag.hourSlots.size + supBag.shiftSlots.size * 2,
       })),
     });
   }

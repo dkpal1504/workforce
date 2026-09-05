@@ -263,23 +263,25 @@ summaryRouter.get("/", async (req, res) => {
   // count toward Summary OT (the reconciliation guard — a supervisor's draft/submitted
   // OT must not inflate liability before an approver signs off). Manual and auto are
   // mutually exclusive, never summed — identical rule to the approvals screen.
-  const empDayOT = new Map<string, { hasApproved: boolean; dayTotal: number; manualOt: number | null; slots: Set<string> }>();
+  const empDayOT = new Map<string, { hasApproved: boolean; dayTotal: number; manualOt: number | null; hourSlots: Set<number>; shiftSlots: Set<string> }>();
   for (const e of entries) {
     const k = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
     let agg = empDayOT.get(k);
     if (!agg) {
-      agg = { hasApproved: false, dayTotal: 0, manualOt: null, slots: new Set() };
+      agg = { hasApproved: false, dayTotal: 0, manualOt: null, hourSlots: new Set(), shiftSlots: new Set() };
       empDayOT.set(k, agg);
     }
-    if (e.hourSlot != null) agg.slots.add(`h:${e.hourSlot}`);
-    if (e.shiftSlot != null) agg.slots.add(`s:${e.shiftSlot}`);
+    if (e.hourSlot != null) agg.hourSlots.add(e.hourSlot);
+    if (e.shiftSlot != null) agg.shiftSlots.add(e.shiftSlot);
     if (e.status === "HOD_APPROVED" || e.status === "PM_APPROVED") {
       agg.hasApproved = true;
       if (e.otHours != null) agg.manualOt = agg.manualOt ?? e.otHours;
     }
   }
   const maxDailyHours = getMaxDailyHours();
-  for (const agg of empDayOT.values()) agg.dayTotal = agg.slots.size;
+  // TRUE-HOUR day total: legacy hourSlot = 1h, shift slot (am1/am2/pm1/pm2) = 2h,
+  // so a fully-allocated 4-shift-slot day = 8h — keeps OT-excess consistent with MAX_DAILY_HOURS=8.
+  for (const agg of empDayOT.values()) agg.dayTotal = agg.hourSlots.size + agg.shiftSlots.size * 2;
 
   // Helper: attribute OT hours to a bucket (effective OT for an approved employee-day).
   const addOtToBucket = (key: string, label: string, secondary: string, otHours: number, category: string) => {
