@@ -4,6 +4,7 @@ import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { parseDateOnly, previousWorkDate } from "../utils/date";
+import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
 
 export const teamsRouter = Router();
 
@@ -178,19 +179,56 @@ teamsRouter.delete("/today/:employeeId", async (req, res) => {
   if (!supervisorId || !dateStr || !employeeId) {
     return res.status(400).json({ error: "supervisor_id, date, employeeId required" });
   }
+  // Owner enforcement: only the timesheet's owner supervisor may remove an employee.
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
+  }
   const workDate = parseDateOnly(dateStr);
   const row = await prisma.dailyTeamSelection.findFirst({
     where: { supervisorId, workDate, employeeId, removedAt: null },
   });
   if (!row) return res.status(404).json({ error: "Not on team" });
 
-  await prisma.dailyTeamSelection.update({
-    where: { id: row.id },
-    data: { removedAt: new Date(), source: "REMOVED" },
+  // Status lock: removing an employee (and clearing their allocations) is only
+  // allowed on an editable day — never on a SUBMITTED/approved day, which would
+  // silently delete already-submitted hours and corrupt the HOD/PM view.
+  const day = await prisma.timesheetDay.findUnique({
+    where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
+    include: { entries: true, approvals: { where: { action: "APPROVE" }, take: 1, orderBy: { createdAt: "desc" } } },
   });
+  const status = day?.status ?? "DRAFT";
+  const hasProtected = Boolean(
+    day?.entries?.some((e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status))
+  );
+  const lock = resolveEditLock(status, day?.approvals[0]?.createdAt ?? day?.updatedAt ?? null, { hasProtectedEntries: hasProtected });
+  if (lock.editMode === "locked") {
+    return res.status(400).json({ error: "Timesheet is locked. Only HOD/Project Head reject unlocks it.", code: "TIMESHEET_EDIT_LOCKED" });
+  }
+
+  // Soft-remove the team row AND hard-delete the employee's timesheet entries for
+  // this day, so re-adding the employee starts with fresh allocations.
+  const deleted = await prisma.$transaction(async (tx) => {
+    await tx.dailyTeamSelection.update({
+      where: { id: row.id },
+      data: { removedAt: new Date(), source: "REMOVED" },
+    });
+    const res = await tx.timesheetEntry.deleteMany({
+      where: { employeeId, workDate, taggedById: supervisorId },
+    });
+    // Clean up the orphaned timesheet day if no entries remain.
+    if (day) {
+      const remaining = await tx.timesheetEntry.count({ where: { timesheetDayId: day.id } });
+      if (remaining === 0) {
+        await tx.timesheetDay.delete({ where: { id: day.id } });
+      }
+    }
+    return res.count;
+  });
+
   await writeAudit(req.user!.id, "TEAM_REMOVE", "daily_team_selection", row.id, {
     employeeId,
     workDate: dateStr,
+    entriesDeleted: deleted,
   });
-  res.json({ ok: true });
+  res.json({ ok: true, entriesDeleted: deleted });
 });
