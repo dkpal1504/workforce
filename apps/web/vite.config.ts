@@ -14,9 +14,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // Proxy only /api/* — never steal SPA routes like /timesheet or /summary
-      // Port 4000 is OS-occupied (svchost); the API runs on 4100 for dev/live tests.
+      // The API runs on 4000 (default from .env). Keep proxy + API on the SAME port.
       "/api": {
-        target: "http://localhost:4100",
+        target: "http://localhost:4000",
         changeOrigin: true,
       },
     },
