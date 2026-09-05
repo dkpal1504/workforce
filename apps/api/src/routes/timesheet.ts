@@ -123,7 +123,32 @@ timesheetRouter.get("/", async (req, res) => {
   });
   const dayByEmployee = new Map(days.map((d) => [d.employeeId, d]));
 
-  const employeeIds = team.map((t) => t.employeeId);
+  // Supervisor self-row (CR#2): surface the supervisor's OWN linked Employee as a
+  // non-removable default row so they can allocate their manhours to projects.
+  // The employeeId is server-derived from the supervisor's User<->Employee link —
+  // never client-supplied (owner/attribution guard).
+  const supUser = await prisma.user.findUnique({
+    where: { id: supervisorId },
+    select: { employeeId: true },
+  });
+  let selfEmployee: (typeof team)[number]["employee"] | null = null;
+  if (supUser?.employeeId != null) {
+    const emp = await prisma.employee.findUnique({
+      where: { id: supUser.employeeId },
+      include: { department: true },
+    });
+    if (emp && emp.active && !team.some((t) => t.employeeId === emp.id)) {
+      selfEmployee = emp;
+    }
+  }
+  const teamWithSelf: { employeeId: number; employee: (typeof team)[number]["employee"]; isSelf: boolean }[] = [
+    ...(selfEmployee
+      ? [{ employeeId: selfEmployee.id, employee: selfEmployee, isSelf: true }]
+      : []),
+    ...team.map((t) => ({ employeeId: t.employeeId, employee: t.employee, isSelf: false })),
+  ];
+
+  const employeeIds = teamWithSelf.map((t) => t.employeeId);
   const dayTotals = await getEmployeeDayHourTotals(employeeIds, workDate, supervisorId);
 
   // Active projects + their job orders, for the Bulk Assignment block + per-row Allocation.
@@ -139,7 +164,7 @@ timesheetRouter.get("/", async (req, res) => {
   });
 
   // Build per-employee rows: 4 shift slots + derived totals + edit-lock info.
-  const rows = team.map((t) => {
+  const rows = teamWithSelf.map((t) => {
     const day = dayByEmployee.get(t.employeeId);
     const slots = buildShiftRows(day?.entries ?? []);
     const filledSlots = slots.filter((s) => s.jobOrderId != null).length;
@@ -163,6 +188,7 @@ timesheetRouter.get("/", async (req, res) => {
     return {
       employeeId: t.employeeId,
       employee: t.employee,
+      isSelf: t.isSelf,
       remarks: day?.remarks ?? "",
       status,
       slots,
