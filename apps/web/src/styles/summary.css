@@ -468,3 +468,26 @@
   }
 }
 
+/* OT badge + column (Summary) — light red, per the HOD/PM objective to minimize OT */
+.ot-col {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.ot-badge {
+  display: inline-block;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ot-badge--card {
+  margin-top: 6px;
+}
+
+

@@ -10,6 +10,7 @@ type Row = {
   department: string;
   values: Record<string, number>;
   total: number;
+  otHours?: number;
 };
 
 type GroupBy = "employee" | "supervisor" | "department" | "totals";
@@ -56,6 +57,7 @@ export function SummaryPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [totals, setTotals] = useState<Record<string, number>>({});
   const [grandTotal, setGrandTotal] = useState(0);
+  const [otTotal, setOtTotal] = useState(0);
   const [sortKey, setSortKey] = useState<string>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [error, setError] = useState("");
@@ -104,11 +106,13 @@ export function SummaryPage() {
         rows: Row[];
         totals: Record<string, number>;
         grandTotal: number;
+        otTotalHours?: number;
       }>(`/summary?${qs.toString()}`);
       setProjects(data.projects);
       setRows(data.rows);
       setTotals(data.totals);
       setGrandTotal(data.grandTotal);
+      setOtTotal(data.otTotalHours ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load summary");
     }
@@ -147,6 +151,9 @@ export function SummaryPage() {
         : groupBy === "totals"
           ? "Group"
           : "Supervisor";
+
+  // OT column is dynamic — only shown when at least one row (or the total) has OT.
+  const hasOt = otTotal > 0 || rows.some((r) => (r.otHours ?? 0) > 0);
 
   const sortedRows = useMemo(() => {
     const copy = [...rows];
@@ -316,6 +323,7 @@ export function SummaryPage() {
                   <th className="num total-col" onClick={() => toggleSort("total")}>
                     Total
                   </th>
+                  {hasOt && <th className="num ot-col">OT</th>}
                 </tr>
               </thead>
               <tbody>
@@ -337,6 +345,11 @@ export function SummaryPage() {
                         </td>
                       ))}
                       <td className="num total-col">{formatVal(r.total)}</td>
+                      {hasOt && (
+                        <td className="num ot-col">
+                          {(r.otHours ?? 0) > 0 ? <span className="ot-badge">{r.otHours}h</span> : "—"}
+                        </td>
+                      )}
                     </tr>
                   ))
                 )}
@@ -350,6 +363,7 @@ export function SummaryPage() {
                     </td>
                   ))}
                   <td className="num total-col">{formatVal(grandTotal)}</td>
+                  {hasOt && <td className="num ot-col"><span className="ot-badge">{otTotal}h</span></td>}
                 </tr>
               </tfoot>
             </table>
@@ -394,6 +408,9 @@ export function SummaryPage() {
                       <span className="muted tiny">No project hours</span>
                     )}
                   </div>
+                  {(r.otHours ?? 0) > 0 && (
+                    <div className="ot-badge ot-badge--card">OT {r.otHours}h</div>
+                  )}
                 </article>
               ))
             )}
@@ -410,6 +427,7 @@ export function SummaryPage() {
                     </span>
                   ))}
                 </div>
+                {hasOt && <div className="ot-badge ot-badge--card">OT {otTotal}h</div>}
                 <div className="summary-card__total">
                   <strong>{formatVal(grandTotal)}</strong>
                 </div>
