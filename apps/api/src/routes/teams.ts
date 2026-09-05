@@ -212,10 +212,21 @@ teamsRouter.delete("/today/:employeeId", async (req, res) => {
       where: { id: row.id },
       data: { removedAt: new Date(), source: "REMOVED" },
     });
+    // Scope the delete to NON-approved entries only — a Remove must never destroy
+    // already-approved hours, even on a DRAFT day that holds an approved entry
+    // (possible via the amendment flow, where prior approvals persist on other
+    // entries). Approved entries survive; the day stays if they remain.
     const res = await tx.timesheetEntry.deleteMany({
-      where: { employeeId, workDate, taggedById: supervisorId },
+      where: {
+        employeeId,
+        workDate,
+        taggedById: supervisorId,
+        status: { notIn: ["HOD_APPROVED", "PM_APPROVED"] },
+      },
     });
-    // Clean up the orphaned timesheet day if no entries remain.
+    // Clean up the orphaned timesheet day ONLY if no entries at all remain
+    // (approved included). Deleting the day cascades to its entries, so if any
+    // approved entry survives, the day must stay to preserve it.
     if (day) {
       const remaining = await tx.timesheetEntry.count({ where: { timesheetDayId: day.id } });
       if (remaining === 0) {
