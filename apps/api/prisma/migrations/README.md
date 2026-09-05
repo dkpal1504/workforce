@@ -1,2 +1,0 @@
--- SQLite init via prisma db push (migration placeholder for Postgres docker path)
--- Prefer: npx prisma db push && npm run db:seed
