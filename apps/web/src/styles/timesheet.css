@@ -449,6 +449,20 @@
 
 /* ---- OT HRS column ---- */
 
+/* Supervisor self-row badge */
+.self-badge {
+  display: inline-block;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .ot-cell {
   display: inline-block;
   min-width: 28px;

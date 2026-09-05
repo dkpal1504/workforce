@@ -14,6 +14,9 @@ function titleForPath(pathname: string, role?: string) {
     return "Approvals";
   }
   if (pathname.startsWith("/supervisors")) return "Supervisor Registration";
+  if (pathname.startsWith("/allocations")) return "Manhour Allocation";
+  if (pathname.startsWith("/departments")) return "Departments";
+  if (pathname.startsWith("/csv-upload")) return "Employee CSV Upload";
   return "Select Team for Today";
 }
 
@@ -24,6 +27,10 @@ export function AppLayout() {
   const { openPanel } = useTheme();
   const showApprovals = user && ["HOD", "PM", "ADMIN"].includes(user.role);
   const showSupervisors = user && ["ADMIN", "HR"].includes(user.role);
+  const showAdminData = user && ["ADMIN", "HR"].includes(user.role);
+  // Payroll self-allocation is available to any account with a linked Employee
+  // record; the page itself scopes and shows a clear notice if not linked.
+  const showAllocations = Boolean(user);
   const roleDisplay = user?.role === "PM" ? "Project Head" : user?.role;
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -80,6 +87,21 @@ export function AppLayout() {
           {showSupervisors && (
             <NavLink to="/supervisors" className={({ isActive }) => (isActive ? "active" : "")}>
               Supervisors
+            </NavLink>
+          )}
+          {showAllocations && (
+            <NavLink to="/allocations" className={({ isActive }) => (isActive ? "active" : "")}>
+              My Hours
+            </NavLink>
+          )}
+          {showAdminData && (
+            <NavLink to="/departments" className={({ isActive }) => (isActive ? "active" : "")}>
+              Departments
+            </NavLink>
+          )}
+          {showAdminData && (
+            <NavLink to="/csv-upload" className={({ isActive }) => (isActive ? "active" : "")}>
+              CSV Upload
             </NavLink>
           )}
           <span className="app-header__user">

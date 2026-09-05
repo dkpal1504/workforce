@@ -49,6 +49,7 @@ type Row = {
   slots: ShiftSlotRow[];
   filledSlots: number;
   fullShiftDone: boolean;
+  isSelf?: boolean;
   otherHours?: number;
   otherSlots?: number[];
   dayTotalHours?: number;
@@ -823,6 +824,7 @@ export function TimesheetPage() {
                         {expanded ? "▾" : "▸"}
                       </button>
                       {fullName(r.employee.name)}
+                      {r.isSelf && <span className="badge self-badge">You</span>}
                     </div>
                     <div className={`emp-status-chip status-${r.status.toLowerCase()}`}>
                       {statusLabel(r.status)}
@@ -835,20 +837,22 @@ export function TimesheetPage() {
                       {r.exceedsLimit ? ` · over ${maxDailyHours}h limit` : ""}
                     </div>
                     <div className="emp-actions">
-                      <button
-                        type="button"
-                        onClick={() => removeEmployee(r.employeeId)}
-                        disabled={!isOwner || isApprovedDayStatus(r.status)}
-                        title={
-                          !isOwner
-                            ? "Read-only — you are viewing another supervisor's timesheet."
-                            : isApprovedDayStatus(r.status)
-                              ? "Cannot remove — this day is HOD/Project Head approved."
-                              : undefined
-                        }
-                      >
-                        Remove
-                      </button>
+                      {!r.isSelf && (
+                        <button
+                          type="button"
+                          onClick={() => removeEmployee(r.employeeId)}
+                          disabled={!isOwner || isApprovedDayStatus(r.status)}
+                          title={
+                            !isOwner
+                              ? "Read-only — you are viewing another supervisor's timesheet."
+                              : isApprovedDayStatus(r.status)
+                                ? "Cannot remove — this day is HOD/Project Head approved."
+                                : undefined
+                          }
+                        >
+                          Remove
+                        </button>
+                      )}
                     </div>
                   </td>
                   <td className="fullshift-col">
@@ -1026,7 +1030,10 @@ export function TimesheetPage() {
             >
               <header className="ts-card__head">
                 <div>
-                  <div className="emp-name">{fullName(r.employee.name)}</div>
+                  <div className="emp-name">
+                    {fullName(r.employee.name)}
+                    {r.isSelf && <span className="badge self-badge">You</span>}
+                  </div>
                   <div className={`emp-status-chip status-${r.status.toLowerCase()}`}>
                     {statusLabel(r.status)}
                   </div>

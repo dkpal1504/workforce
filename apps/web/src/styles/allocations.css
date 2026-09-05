@@ -1,0 +1,282 @@
+/* ============================================================
+   Payroll Manhour Allocations — mobile-first, theme tokens
+   Breakpoints: phone <=767px, tablet 768-1199px, desktop >=1024px
+   ============================================================ */
+
+.alloc-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+
+.alloc-card__head h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.alloc-card__head p {
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+
+.alloc-note {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.alloc-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.alloc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.alloc-field > span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.alloc-field select,
+.alloc-field input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  min-height: var(--touch-min);
+  width: 100%;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.alloc-field select:focus,
+.alloc-field input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.alloc-field--error select,
+.alloc-field--error input {
+  border-color: var(--danger);
+}
+
+.alloc-field .field-error {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.alloc-form__action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- List head --------------------------------------------- */
+.alloc-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+
+.alloc-list-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  flex: 1;
+}
+
+.alloc-date-filter {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  min-height: var(--touch-min);
+}
+
+/* ---- Desktop table ------------------------------------------ */
+.alloc-table {
+  display: none;
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.alloc-table th,
+.alloc-table td {
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.alloc-table thead th {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-subtle) 70%, var(--bg-elevated));
+  border-bottom: 1px solid var(--border-light);
+}
+
+.alloc-table tbody tr {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.alloc-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.alloc-table tbody tr:hover {
+  background: var(--bg-subtle);
+}
+
+.alloc-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.alloc-proj-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+/* ---- Mobile cards -------------------------------------------- */
+.alloc-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.alloc-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.alloc-item header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.alloc-item header strong {
+  font-size: 14.5px;
+}
+
+.alloc-item__body {
+  font-size: 13px;
+}
+
+.alloc-item .btn {
+  align-self: flex-start;
+}
+
+/* Shared states (reuse look from supervisors) */
+.loading-state {
+  text-align: center;
+  padding: 30px;
+  color: var(--text-muted);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 36px 20px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+}
+
+/* CSV dropzone */
+.csv-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 110px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.csv-dropzone:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.csv-error-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.csv-error-list li {
+  margin-bottom: 4px;
+}
+
+/* ---- Breakpoints --------------------------------------------- */
+@media (min-width: 768px) {
+  .alloc-form {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .alloc-form__action {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1024px) {
+  .alloc-form {
+    grid-template-columns: repeat(4, auto) 1fr;
+    align-items: end;
+  }
+  .alloc-field {
+    min-width: 170px;
+  }
+  .alloc-table {
+    display: table;
+  }
+  .alloc-cards {
+    display: none;
+  }
+}
