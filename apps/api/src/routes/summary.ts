@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { endOfFrequency, parseDateOnly, startOfFrequency } from "../utils/date";
+import { getMaxDailyHours } from "../config";
 
 export const summaryRouter = Router();
 
@@ -257,40 +258,45 @@ summaryRouter.get("/", async (req, res) => {
     }
   >();
 
+  // Effective OT per (employee, workDate) — manual OT wins; else auto-calc excess
+  // over the daily max from the multi-supervisor union. Only APPROVED employee-days
+  // count toward Summary OT (the reconciliation guard — a supervisor's draft/submitted
+  // OT must not inflate liability before an approver signs off). Manual and auto are
+  // mutually exclusive, never summed — identical rule to the approvals screen.
+  const empDayOT = new Map<string, { hasApproved: boolean; dayTotal: number; manualOt: number | null; slots: Set<string> }>();
   for (const e of entries) {
-    // OT rows are additive and separate — never count toward regular project
-    // hours/cost (an OT row has shiftSlot/hourSlot null, so +1 would miscount it
-    // as a regular hour). Accumulate OT into a dedicated otHours/otCost instead.
-    if (e.otHours != null) {
-      let key: string;
-      let label: string;
-      let secondary: string;
-      if (groupBy === "employee") {
-        key = `emp-${e.employeeId}`;
-        label = e.employee.name;
-        secondary = e.employee.department.name;
-      } else if (groupBy === "department") {
-        key = `dept-${e.employee.departmentId}`;
-        label = e.employee.department.name;
-        secondary = "";
-      } else if (groupBy === "totals") {
-        key = "totals";
-        label = "All";
-        secondary = "";
-      } else {
-        key = `sup-${e.taggedById}`;
-        label = e.taggedBy.name;
-        secondary = e.taggedBy.department?.name ?? "";
-      }
-      let bucket = buckets.get(key);
-      if (!bucket) {
-        bucket = { label, secondary, projectHours: {}, projectCost: {}, otHours: 0, otCost: 0 };
-        buckets.set(key, bucket);
-      }
-      bucket.otHours += e.otHours;
-      bucket.otCost += e.otHours * rateFor(e.employee.category);
-      continue;
+    const k = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
+    let agg = empDayOT.get(k);
+    if (!agg) {
+      agg = { hasApproved: false, dayTotal: 0, manualOt: null, slots: new Set() };
+      empDayOT.set(k, agg);
     }
+    if (e.hourSlot != null) agg.slots.add(`h:${e.hourSlot}`);
+    if (e.shiftSlot != null) agg.slots.add(`s:${e.shiftSlot}`);
+    if (e.status === "HOD_APPROVED" || e.status === "PM_APPROVED") {
+      agg.hasApproved = true;
+      if (e.otHours != null) agg.manualOt = agg.manualOt ?? e.otHours;
+    }
+  }
+  const maxDailyHours = getMaxDailyHours();
+  for (const agg of empDayOT.values()) agg.dayTotal = agg.slots.size;
+
+  // Helper: attribute OT hours to a bucket (effective OT for an approved employee-day).
+  const addOtToBucket = (key: string, label: string, secondary: string, otHours: number, category: string) => {
+    if (otHours <= 0) return;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { label, secondary, projectHours: {}, projectCost: {}, otHours: 0, otCost: 0 };
+      buckets.set(key, bucket);
+    }
+    bucket.otHours += otHours;
+    bucket.otCost += otHours * rateFor(category);
+  };
+
+  for (const e of entries) {
+    // Skip OT rows from regular bucketing below — they only contribute effective
+    // OT in Pass 3, never regular project hours/cost.
+    if (e.otHours != null) continue;
 
     // Resolve this entry's project colorKey ONCE (never double-count an entry
     // that carries both projectWbsId and jobOrderId).
@@ -332,6 +338,41 @@ summaryRouter.get("/", async (req, res) => {
     bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + 1;
     const cost = rateFor(e.employee.category);
     bucket.projectCost[colorKey] = (bucket.projectCost[colorKey] || 0) + cost;
+  }
+
+  // Pass 3: attribute effective OT for approved employee-days to buckets.
+  // Each employee-day maps to exactly one bucket via its (current) entry row.
+  const otBucketed = new Set<string>();
+  for (const e of entries) {
+    const k = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
+    if (otBucketed.has(k)) continue;
+    const agg = empDayOT.get(k);
+    if (!agg || !agg.hasApproved) continue;
+    const effectiveOT = agg.manualOt ?? Math.max(0, agg.dayTotal - maxDailyHours);
+    if (effectiveOT <= 0) continue;
+
+    let key: string;
+    let label: string;
+    let secondary: string;
+    if (groupBy === "employee") {
+      key = `emp-${e.employeeId}`;
+      label = e.employee.name;
+      secondary = e.employee.department.name;
+    } else if (groupBy === "department") {
+      key = `dept-${e.employee.departmentId}`;
+      label = e.employee.department.name;
+      secondary = "";
+    } else if (groupBy === "totals") {
+      key = "totals";
+      label = "All";
+      secondary = "";
+    } else {
+      key = `sup-${e.taggedById}`;
+      label = e.taggedBy.name;
+      secondary = e.taggedBy.department?.name ?? "";
+    }
+    addOtToBucket(key, label, secondary, effectiveOT, e.employee.category);
+    otBucketed.add(k);
   }
 
   const rows = Array.from(buckets.values()).map((b, i) => {
