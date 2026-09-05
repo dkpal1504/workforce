@@ -15,6 +15,7 @@ import { summaryRouter } from "./routes/summary";
 import { adminRouter } from "./routes/admin";
 import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
+import { employeeAllocationRouter } from "./routes/employeeAllocation";
 import { startBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 
 const app = express();
@@ -37,6 +38,7 @@ api.use("/summary", summaryRouter);
 api.use("/approvals", approvalsRouter);
 api.use("/admin", adminRouter);
 api.use("/supervisors", supervisorRegistrationRouter);
+api.use("/allocations", employeeAllocationRouter);
 app.use("/api", api);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

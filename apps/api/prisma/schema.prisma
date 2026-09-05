@@ -161,7 +161,7 @@ model EmployeeAllocation {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  @@unique([employeeId, workDate, projectId, jobOrderId, allocatedById])
+  @@unique([employeeId, workDate, projectId, allocatedById])
   @@index([employeeId, workDate])
   @@map("employee_allocations")
 }
