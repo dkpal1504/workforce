@@ -183,6 +183,13 @@ function mapEmployeeRow(
   const conflictSupervisors = conflictMap.get(conflictKey) ?? null;
   // OT: the stored OT row for this employee/day (additive, separate from allocation).
   const otEntry = d.entries.find((e) => e.otHours != null);
+  const manualOt = otEntry?.otHours ?? null;
+  // Effective OT for the HOD/PM column: manual OT wins when entered; otherwise
+  // auto-calculate the excess over the daily max (multi-supervisor union).
+  // Manual and auto are mutually exclusive per employee/day — never summed.
+  const autoOt = manualOt == null ? Math.max(0, dayTotalHours - maxDailyHours) : 0;
+  const effectiveOT = manualOt ?? autoOt;
+  const otSource = manualOt != null ? "manual" : autoOt > 0 ? "auto" : null;
   return {
     id: d.id,
     workDate,
@@ -200,7 +207,11 @@ function mapEmployeeRow(
     maxDailyHours,
     exceedsLimit: dayTotalHours > maxDailyHours,
     /** Stored OT hours for this employee/day (null if none). */
-    otHours: otEntry?.otHours ?? null,
+    otHours: manualOt,
+    /** Effective OT shown to HOD/PM: manual if entered, else auto excess. */
+    effectiveOT,
+    /** 'manual' | 'auto' | null — how the effective OT was derived. */
+    otSource,
     /** The work order the OT is charged to (null if no OT). */
     otJobOrderId: otEntry?.jobOrderId ?? null,
     isAmendment,
