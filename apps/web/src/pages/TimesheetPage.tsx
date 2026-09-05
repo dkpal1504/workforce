@@ -831,7 +831,16 @@ export function TimesheetPage() {
                       {r.exceedsLimit ? ` · over ${maxDailyHours}h limit` : ""}
                     </div>
                     <div className="emp-actions">
-                      <button type="button" onClick={() => removeEmployee(r.employeeId)}>
+                      <button
+                        type="button"
+                        onClick={() => removeEmployee(r.employeeId)}
+                        disabled={isApprovedDayStatus(r.status)}
+                        title={
+                          isApprovedDayStatus(r.status)
+                            ? "Cannot remove — this day is HOD/Project Head approved."
+                            : undefined
+                        }
+                      >
                         Remove
                       </button>
                     </div>
