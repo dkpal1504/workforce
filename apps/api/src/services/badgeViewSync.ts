@@ -2,23 +2,34 @@ import sql from "mssql";
 import { prisma } from "../db";
 
 /**
- * BadgeView master-data sync (LabourWorks SQL Server) — strict-prune model.
+ * BadgeView master-data sync (LabourWorks SQL Server) — unified Employee, soft-depart.
  *
  * Reads the external BadgeView (columns: Workmen, IDCardNo, BuName, WorkmenName,
- * ValidFrom, ValidUpto, BgCode, contractor) filtered to IsTerminated = '0' at the
- * SOURCE query (never post-fetch), then performs a SCOPED atomic overwrite inside
- * ONE transaction so a failed run leaves prior data intact.
+ * ValidFrom, ValidUpto, BgCode, contractor, NatureOfWork) filtered to IsTerminated='0'
+ * AND Card Type IN (ASSOCIATES, ASSOCIATE SEZ) at the SOURCE query, then UPSERTS into
+ * the unified `Employee` master table (CR#2). Contract workers + supervisors land in
+ * `Employee` alongside seeded/payroll rows, distinguished by `source`.
  *
- * Locked semantics (no stale data; pins mark PRESENT workers only, never retain):
- *   1. DELETE FROM contract_workers WHERE source = 'SYNC'
- *   2. INSERT fresh BadgeView rows with source = 'SYNC' (isSupervisor = idCardNo in pins)
- *   3. Upsert pinned supervisors into `User` as read-only SYNC rows (no password).
- *      Partial write: never overwrites password/role on a MANUAL row.
- *   4. Prune: delete SYNC User rows whose idCardNo ∉ current BadgeView.
- *   5. Prune: delete orphaned pins whose idCardNo ∉ current BadgeView.
+ * CR#2 locked semantics (option A — soft-depart):
+ *   1. Upsert an `Employee` row for EVERY source row (all 555, supervisors included),
+ *      keyed by `idCardNo`. Sync sets section (Workmen Section), plant (Workmen Division),
+ *      grade (Nature of Work), source='SYNC', active=true on SYNC rows only.
+ *   2. Auto-create Departments from distinct BuName values (idempotent on stable code;
+ *      default "Unassigned" department for empty/unmappable BuName so the FK insert succeeds).
+ *   3. Derive `ecNo` from `idCardNo` (deterministic; unique requirement).
+ *   4. Link each SYNC supervisor's User row to their Employee.id via idCardNo (so the
+ *      supervisor self-row resolves the correct employeeId).
+ *   5. Soft-depart: SYNC rows absent from the source snapshot -> active=false (NEVER delete,
+ *      so FK Restrict on historical timesheets won't break the sync and the liability trail
+ *      survives). Picker filters on active.
+ *   6. Prune orphaned pins whose idCardNo ∉ current BadgeView.
  *
- * Steps 4 and 5 key on PRESENCE IN THE CURRENT BadgeView ALONE (not pin state),
- * so a pinned-but-departed worker falls out of both — no stale picker entry.
+ * Guards:
+ *   - Partial-write: sync only ever touches source='SYNC' Employee rows (keyed by idCardNo).
+ *     Seeded/payroll rows (no idCardNo or source != 'SYNC') are NEVER upserted, soft-departed
+ *     (active flipped), or field-mutated by a sync run.
+ *   - supervisor `User ↔ Employee` linkage is set on the User row but never grants a login
+ *     (SYNC users keep empty passwordHash); grade/role changes stay audited admin actions.
  */
 
 export type BadgeViewRow = {
@@ -30,13 +41,16 @@ export type BadgeViewRow = {
   BgCode: string | null;
   contractor: string | null;
   NatureOfWork: string | null;
+  Section: string | null;
+  Division: string | null;
 };
 
 export type SyncResult = {
   ok: boolean;
-  workersInserted: number;
-  supervisorsUpserted: number;
-  usersPruned: number;
+  workersUpserted: number;
+  supervisorsLinked: number;
+  departmentsCreated: number;
+  softDeparted: number;
   pinsPruned: number;
   startedAt: Date;
   finishedAt: Date;
@@ -55,6 +69,16 @@ function parseDate(v: Date | string | null | undefined): Date | null {
   if (v == null) return null;
   const d = v instanceof Date ? v : new Date(v);
   return isNaN(d.getTime()) ? null : d;
+}
+
+/** Stable department code from a BuName (uppercased, non-alphanumeric -> underscore). */
+function deptCode(buName: string): string {
+  return buName.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "UNASSIGNED";
+}
+
+/** Deterministic ecNo derived from idCardNo (unique requirement on Employee). */
+function deriveEcNo(idCardNo: string): string {
+  return `SYNC_${idCardNo}`;
 }
 
 /** Read the BadgeView rows from the external SQL Server (read-only, parameterized). */
@@ -82,8 +106,6 @@ async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
   }).connect();
 
   try {
-    // Parameterized query — view name validated against a safe allowlist to
-    // prevent injection even though it comes from env.
     const safeView = /^[A-Za-z0-9_.]+$/.test(view) ? view : "BadgeView";
     const request = pool.request();
     request.input("isTerminated", sql.NVarChar, "0");
@@ -96,7 +118,9 @@ async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
         [ValidUpto Date] AS ValidUpto,
         BgCode,
         contractor,
-        [Nature Of Work] AS NatureOfWork
+        [Nature Of Work] AS NatureOfWork,
+        [Workmen Section] AS Section,
+        [Workmen Division] AS Division
       FROM [${safeView}]
       WHERE IsTerminated = @isTerminated
         AND [Card Type] IN ('ASSOCIATES', 'ASSOCIATE SEZ')
@@ -115,9 +139,10 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
   const startedAt = new Date();
   const result: SyncResult = {
     ok: false,
-    workersInserted: 0,
-    supervisorsUpserted: 0,
-    usersPruned: 0,
+    workersUpserted: 0,
+    supervisorsLinked: 0,
+    departmentsCreated: 0,
+    softDeparted: 0,
     pinsPruned: 0,
     startedAt,
     finishedAt: startedAt,
@@ -125,72 +150,111 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
 
   try {
     const rows = await fetchBadgeViewRows();
-
-    // idCardNo set of the CURRENT source state — the single source of truth
-    // for both the upsert and the prune (never pin state).
     const currentIdCardNos = new Set(rows.map((r) => r.IDCardNo));
-
     const now = new Date();
+    const maxDailyHours = 0; // unused here
 
     await prisma.$transaction(async (tx) => {
-      // 1. Scoped delete — only SYNC rows. Manual rows survive by construction.
-      await tx.contractWorker.deleteMany({ where: { source: "SYNC" } });
+      // --- Auto-create Departments from distinct BuName (idempotent on stable code) ---
+      const buNames = new Set<string>();
+      for (const r of rows) buNames.add((r.BuName || "").trim());
+      // Ensure a default "Unassigned" department exists for empty/unmappable BuName.
+      const allDeptNames = new Set(["Unassigned"]);
+      for (const n of buNames) if (n) allDeptNames.add(n);
+      for (const name of allDeptNames) {
+        const code = deptCode(name || "Unassigned");
+        const existing = await tx.department.findUnique({ where: { code } });
+        if (!existing) {
+          // Sync-owned department: source='SYNC' so the UI can tag it and manual
+          // edits are never clobbered (sync only create-missing).
+          await tx.department.create({ data: { name, code, source: "SYNC" } });
+          result.departmentsCreated++;
+        }
+      }
+      // Build a name->id map for BuName -> departmentId.
+      const depts = await tx.department.findMany();
+      const deptByName = new Map<string, number>();
+      for (const d of depts) deptByName.set(d.name, d.id);
 
-      // Pins = the current supervisor set. A pin marks a PRESENT worker only.
+      const unassignedDept = deptByName.get("Unassigned")!;
+
+      // --- Upsert every source row into unified `Employee` (source='SYNC', keyed by idCardNo) ---
+      for (const r of rows) {
+        const idCardNo = r.IDCardNo;
+        const deptId = (r.BuName && r.BuName.trim() && deptByName.get(r.BuName.trim())) || unassignedDept;
+
+        const existingEmp = await tx.employee.findUnique({ where: { idCardNo } });
+        if (existingEmp) {
+          // Partial-write guard: only touch SYNC rows. NEVER mutate MANUAL/PAYROLL rows.
+          if (existingEmp.source === "SYNC") {
+            await tx.employee.update({
+              where: { id: existingEmp.id },
+              data: {
+                name: r.WorkmenName,
+                departmentId: deptId,
+                section: r.Section,
+                plant: r.Division,
+                grade: r.NatureOfWork,
+                active: true,
+                designation: r.NatureOfWork || existingEmp.designation,
+              },
+            });
+          }
+          // MANUAL/PAYROLL row with a matching idCardNo: skip (sync never clobbers them).
+          result.workersUpserted++;
+          continue;
+        }
+
+        // New SYNC employee row.
+        await tx.employee.create({
+          data: {
+            ecNo: deriveEcNo(idCardNo),
+            idCardNo,
+            name: r.WorkmenName,
+            departmentId: deptId,
+            designation: r.NatureOfWork || "",
+            category: "CONTRACTOR",
+            source: "SYNC",
+            section: r.Section,
+            plant: r.Division,
+            grade: r.NatureOfWork,
+            active: true,
+          },
+        });
+        result.workersUpserted++;
+      }
+
+      // --- Soft-depart: SYNC rows absent from source -> active=false (never delete) ---
+      const softDepart = await tx.employee.updateMany({
+        where:
+          currentIdCardNos.size === 0
+            ? { source: "SYNC" }
+            : { source: "SYNC", idCardNo: { notIn: [...currentIdCardNos] } },
+        data: { active: false },
+      });
+      result.softDeparted = softDepart.count;
+
+      // --- Link each SYNC supervisor's User.employeeId to their Employee row ---
+      // Supervisor = source-marked (Nature of Work = 'Supervisor') OR pinned.
       const pins = await tx.supervisorPin.findMany({ select: { idCardNo: true } });
       const pinnedIds = new Set(pins.map((p) => p.idCardNo));
+      const supervisors = rows.filter((r) => r.NatureOfWork === "Supervisor" || pinnedIds.has(r.IDCardNo));
 
-      // 2. Insert fresh BadgeView rows.
-      if (rows.length) {
-        await tx.contractWorker.createMany({
-          data: rows.map((r) => ({
-            // BadgeView exposes a single [Workmen Name] column; the model keeps
-            // workmen (legacy code-style) and workmenName, both sourced from it.
-            workmen: r.WorkmenName,
-            idCardNo: r.IDCardNo,
-            buName: r.BuName,
-            workmenName: r.WorkmenName,
-            validFrom: parseDate(r.ValidFrom),
-            validUpto: parseDate(r.ValidUpto),
-            // mssql returns BgCode/contractor as integers; Prisma fields are String.
-            bgCode: r.BgCode != null ? String(r.BgCode) : null,
-            contractor: r.contractor != null ? String(r.contractor) : null,
-            // Combined supervisor predicate: source marks (Nature Of Work='Supervisor')
-            // as baseline, pin/convert stays as audited manual override.
-            isSupervisor: r.NatureOfWork === "Supervisor" || pinnedIds.has(r.IDCardNo),
-            source: "SYNC",
-            lastSyncedAt: now,
-          })),
-        });
-      }
-      result.workersInserted = rows.length;
-
-      // 3. Upsert supervisors into User as read-only SYNC rows (partial write).
-      //    A row is a supervisor if source-marked (Nature Of Work='Supervisor')
-      //    OR pinned (manual override). Both are promoted into the picker.
-      for (const r of rows) {
-        const isSup = r.NatureOfWork === "Supervisor" || pinnedIds.has(r.IDCardNo);
-        if (!isSup) continue;
-        const existing = await tx.user.findUnique({
-          where: { idCardNo: r.IDCardNo },
-          select: { id: true, source: true },
-        });
-        if (existing) {
-          // Partial write: only update identity/source fields. Never touch
-          // passwordHash, role, or MANUAL-only fields on a colliding row.
-          if (existing.source === "SYNC") {
+      for (const r of supervisors) {
+        const emp = await tx.employee.findUnique({ where: { idCardNo: r.IDCardNo }, select: { id: true } });
+        if (!emp) continue;
+        // Update/create the SYNC supervisor's User row (read-only, no login) and link employeeId.
+        const existingUser = await tx.user.findUnique({ where: { idCardNo: r.IDCardNo }, select: { id: true, source: true } });
+        if (existingUser) {
+          if (existingUser.source === "SYNC") {
             await tx.user.update({
-              where: { id: existing.id },
-              data: { name: r.WorkmenName, source: "SYNC" },
+              where: { id: existingUser.id },
+              data: { name: r.WorkmenName, source: "SYNC", employeeId: emp.id },
             });
-            result.supervisorsUpserted++;
+            result.supervisorsLinked++;
           }
-          // If existing.source === 'MANUAL', skip entirely — sync never clobbers a manual supervisor.
+          // MANUAL user: skip, never clobber.
         } else {
-          // New SYNC supervisor: no password, cannot log in. The email is a
-          // placeholder never used for login, so on the (rare) collision with a
-          // MANUAL user who holds `${idCardNo}@sync.local`, fall back to a
-          // guaranteed-unique suffix rather than failing the whole transaction.
           const baseEmail = `${r.IDCardNo}@sync.local`;
           let email = baseEmail;
           let suffix = 1;
@@ -201,33 +265,28 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
           await tx.user.create({
             data: {
               email,
-              passwordHash: "", // empty — cannot authenticate
+              passwordHash: "", // no login for SYNC supervisors
               name: r.WorkmenName,
               role: "SUPERVISOR",
               source: "SYNC",
               idCardNo: r.IDCardNo,
+              employeeId: emp.id,
             },
           });
-          result.supervisorsUpserted++;
+          result.supervisorsLinked++;
         }
       }
 
-      // 4. Prune SYNC User rows whose idCardNo is NOT in the current supervisor
-      //    set (source-marked OR pinned). This drops BOTH departed workers (not
-      //    in source) AND present-but-unpinned workers (no longer supervisors),
-      //    so the picker never carries a stale SYNC supervisor. Empty source ⇒ prune all.
-      const supervisorIdCardNos = new Set(
-        rows.filter((r) => r.NatureOfWork === "Supervisor" || pinnedIds.has(r.IDCardNo)).map((r) => r.IDCardNo)
-      );
-      const pruneResult = await tx.user.deleteMany({
+      // --- Prune SYNC User rows no longer in the current supervisor set ---
+      const supervisorIdCardNos = new Set(supervisors.map((r) => r.IDCardNo));
+      await tx.user.deleteMany({
         where:
           supervisorIdCardNos.size === 0
             ? { source: "SYNC" }
             : { source: "SYNC", idCardNo: { notIn: [...supervisorIdCardNos] } },
       });
-      result.usersPruned = pruneResult.count;
 
-      // 5. Prune orphaned pins whose idCardNo ∉ current BadgeView.
+      // --- Prune orphaned pins ---
       const pinPrune = await tx.supervisorPin.deleteMany({
         where: currentIdCardNos.size === 0 ? {} : { idCardNo: { notIn: [...currentIdCardNos] } },
       });

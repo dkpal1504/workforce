@@ -32,6 +32,7 @@ model User {
   conflictsAsSup2  Conflict[]           @relation("Supervisor2")
   conflictsResolved Conflict[]          @relation("ResolvedBy")
   auditLogs        AuditLog[]
+  allocationsGiven  EmployeeAllocation[] @relation("EmployeeAllocationAllocatedBy")
   manpowerRequestsRequested ManpowerRequest[] @relation("RequestedBy")
   manpowerRequestsAssigned  ManpowerRequest[] @relation("AssignedBy")
 
@@ -42,6 +43,9 @@ model Department {
   id        Int      @id @default(autoincrement())
   name      String   @unique
   code      String   @unique
+  /// 'SYNC' = auto-created from BadgeView BuName (sync owns these, create-missing
+  /// only, never overwrites manual edits); 'MANUAL' = admin-managed (editable).
+  source    String   @default("MANUAL")
   createdAt DateTime @default(now()) @map("created_at")
 
   employees Employee[]
@@ -60,6 +64,22 @@ model Employee {
   department   Department @relation(fields: [departmentId], references: [id])
   designation  String
   category     String
+  /// Master-data identity shared with the source (IDCardNo / employee code).
+  idCardNo     String?  @unique @map("id_card_no")
+  /// 'SYNC' (from BadgeView) | 'MANUAL' | 'PAYROLL' (front-end managed / on payroll).
+  source       String   @default("MANUAL")
+  /// Workmen Section (from source). Partial-write guard: sync sets this on SYNC
+  /// rows only; never overwrites MANUAL/PAYROLL rows.
+  section      String?  @map("section")
+  /// Workmen Division -> Plant (from source).
+  plant        String?  @map("plant")
+  /// Nature of Work -> Grade (Supervisor/Technician/Plumber...). Privilege field:
+  /// grade changes that grant supervisor/approver capability are audited admin
+  /// actions, not sync or self-service side-effects.
+  grade        String?  @map("grade")
+  /// Active = present in the current source snapshot (for SYNC rows) or manually
+  /// active. Soft-depart: departed workers are active=false (hidden from pickers)
+  /// but retained so approved OT/allocations stay on record (liability trail).
   active       Boolean  @default(true)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -71,7 +91,10 @@ model Employee {
   conflicts           Conflict[]
   attendanceFeed      AttendanceFeed[]
   manpowerAssignments ManpowerRequest[] @relation("AssignedEmployee")
+  employeeAllocations EmployeeAllocation[]
 
+  @@index([source])
+  @@index([active])
   @@map("employees")
 }
 
@@ -112,6 +135,37 @@ model SupervisorPin {
   @@map("supervisor_pins")
 }
 
+/// Payroll employee manhour allocation (CR#2).
+/// Project is mandatory; Work Order is optional. OT is NOT applicable to payroll
+/// employees, so this model has NO OT field — structurally incapable of OT.
+/// Owner + role enforced: an employee allocates only to self (NOT_OWNER guard);
+/// HOD/Project Planning allocates for others via requireRoles.
+model EmployeeAllocation {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int      @map("employee_id")
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  workDate     DateTime @map("work_date")
+  /// Project is mandatory for employee manhour assignment.
+  projectId    Int      @map("project_id")
+  project      Project  @relation(fields: [projectId], references: [id])
+  /// Work Order is OPTIONAL for employees (unlike contract workers where it's required).
+  jobOrderId   Int?     @map("job_order_id")
+  jobOrder     JobOrder? @relation(fields: [jobOrderId], references: [id])
+  /// Who allocated these hours (the employee self, or an HOD/PM acting for them).
+  projectWbsId Int?     @map("project_wbs_id")
+  projectWbs   ProjectWbs? @relation(fields: [projectWbsId], references: [id])
+  allocatedById Int     @map("allocated_by")
+  allocatedBy  User     @relation("EmployeeAllocationAllocatedBy", fields: [allocatedById], references: [id])
+  status       String   @default("DRAFT")
+  remarks      String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([employeeId, workDate, projectId, jobOrderId, allocatedById])
+  @@index([employeeId, workDate])
+  @@map("employee_allocations")
+}
+
 model ProjectWbs {
   id        Int      @id @default(autoincrement())
   code      String   @unique
@@ -123,6 +177,7 @@ model ProjectWbs {
 
   timesheetEntries TimesheetEntry[]
   jobOrders        JobOrder[]
+  employeeAllocations EmployeeAllocation[]
 
   @@map("projects_wbs")
 }
@@ -140,6 +195,7 @@ model Project {
   createdAt DateTime @default(now()) @map("created_at")
 
   jobOrders JobOrder[]
+  employeeAllocations EmployeeAllocation[]
 
   @@map("projects")
 }
@@ -165,6 +221,7 @@ model JobOrder {
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
   timesheetEntries TimesheetEntry[]
+  employeeAllocations EmployeeAllocation[]
 
   @@index([projectId, status])
   @@index([departmentId])

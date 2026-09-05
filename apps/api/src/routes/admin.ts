@@ -44,11 +44,47 @@ adminRouter.get("/departments", async (_req, res) => {
   res.json({ departments });
 });
 
+// Manual department management (ADMIN/HR router gated). The sync auto-creates
+// departments as source='SYNC'; manual adds are source='MANUAL'. The sync only
+// create-missing (never overwrites manual edits), and manual edits must not
+// collide with auto-created codes.
 adminRouter.post("/departments", async (req, res) => {
   const { name, code } = req.body;
-  const department = await prisma.department.create({ data: { name, code } });
-  await writeAudit(req.user!.id, "ADMIN_CREATE_DEPT", "department", department.id);
+  if (!name || !code) {
+    return res.status(400).json({ error: "name and code are required" });
+  }
+  const existing = await prisma.department.findUnique({ where: { code: code.trim().toUpperCase() } });
+  if (existing) {
+    return res.status(409).json({ error: "A department with this code already exists.", code: "DEPT_CODE_EXISTS" });
+  }
+  const department = await prisma.department.create({
+    data: { name: name.trim(), code: code.trim().toUpperCase(), source: "MANUAL" },
+  });
+  await writeAudit(req.user!.id, "ADMIN_CREATE_DEPT", "department", department.id, { name, code, source: "MANUAL" });
   res.status(201).json({ department });
+});
+
+// Update a MANUAL department. Sync-owned (source='SYNC') rows are also editable by
+// an admin here (promotes them to manual, so the sync stops owning them) — this is
+// the explicit path by which a manually-edited auto-created dept survives re-runs.
+adminRouter.put("/departments/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const { name, code } = req.body;
+  const existing = await prisma.department.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: "Department not found" });
+  const data: { name?: string; code?: string; source?: string } = {};
+  if (name !== undefined) data.name = name.trim();
+  if (code !== undefined) {
+    const newCode = code.trim().toUpperCase();
+    const collides = await prisma.department.findFirst({ where: { code: newCode, id: { not: id } } });
+    if (collides) return res.status(409).json({ error: "Department code already in use.", code: "DEPT_CODE_EXISTS" });
+    data.code = newCode;
+  }
+  // Editing an auto-created (SYNC) dept flips it to MANUAL so the sync no longer owns it.
+  data.source = "MANUAL";
+  const department = await prisma.department.update({ where: { id }, data });
+  await writeAudit(req.user!.id, "ADMIN_UPDATE_DEPT", "department", department.id, { name, code });
+  res.json({ department });
 });
 
 adminRouter.get("/projects-wbs", async (_req, res) => {

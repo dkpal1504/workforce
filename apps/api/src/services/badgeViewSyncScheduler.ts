@@ -32,7 +32,8 @@ async function runOnce(): Promise<void> {
     const result = await runBadgeViewSync();
     if (result.ok) {
       console.log(
-        `[badgeViewSync] OK — workers=${result.workersInserted} supervisors=${result.supervisorsUpserted} ` +
+        `[badgeViewSync] OK — workers=${result.workersUpserted} supervisorsLinked=${result.supervisorsLinked} ` +
+          `departments=${result.departmentsCreated} softDeparted=${result.softDeparted} ` +
           `(${result.startedAt.toISOString()} → ${result.finishedAt.toISOString()})`
       );
     } else {
