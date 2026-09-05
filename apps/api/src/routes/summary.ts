@@ -252,10 +252,46 @@ summaryRouter.get("/", async (req, res) => {
       secondary: string;
       projectHours: Record<string, number>;
       projectCost: Record<string, number>;
+      otHours: number;
+      otCost: number;
     }
   >();
 
   for (const e of entries) {
+    // OT rows are additive and separate — never count toward regular project
+    // hours/cost (an OT row has shiftSlot/hourSlot null, so +1 would miscount it
+    // as a regular hour). Accumulate OT into a dedicated otHours/otCost instead.
+    if (e.otHours != null) {
+      let key: string;
+      let label: string;
+      let secondary: string;
+      if (groupBy === "employee") {
+        key = `emp-${e.employeeId}`;
+        label = e.employee.name;
+        secondary = e.employee.department.name;
+      } else if (groupBy === "department") {
+        key = `dept-${e.employee.departmentId}`;
+        label = e.employee.department.name;
+        secondary = "";
+      } else if (groupBy === "totals") {
+        key = "totals";
+        label = "All";
+        secondary = "";
+      } else {
+        key = `sup-${e.taggedById}`;
+        label = e.taggedBy.name;
+        secondary = e.taggedBy.department?.name ?? "";
+      }
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = { label, secondary, projectHours: {}, projectCost: {}, otHours: 0, otCost: 0 };
+        buckets.set(key, bucket);
+      }
+      bucket.otHours += e.otHours;
+      bucket.otCost += e.otHours * rateFor(e.employee.category);
+      continue;
+    }
+
     // Resolve this entry's project colorKey ONCE (never double-count an entry
     // that carries both projectWbsId and jobOrderId).
     let colorKey: string | null = null;
@@ -290,7 +326,7 @@ summaryRouter.get("/", async (req, res) => {
 
     let bucket = buckets.get(key);
     if (!bucket) {
-      bucket = { label, secondary, projectHours: {}, projectCost: {} };
+      bucket = { label, secondary, projectHours: {}, projectCost: {}, otHours: 0, otCost: 0 };
       buckets.set(key, bucket);
     }
     bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + 1;
@@ -312,6 +348,10 @@ summaryRouter.get("/", async (req, res) => {
       department: b.secondary,
       values,
       total,
+      // OT is additive and separate — shown as its own value, never folded into
+      // the regular project totals.
+      otHours: b.otHours,
+      otCost: b.otCost,
     };
   });
 
@@ -322,12 +362,16 @@ summaryRouter.get("/", async (req, res) => {
     totals[p.code] = sum;
     grand += sum;
   }
+  const otTotalHours = rows.reduce((acc, r) => acc + (r.otHours || 0), 0);
+  const otTotalCost = rows.reduce((acc, r) => acc + (r.otCost || 0), 0);
 
   res.json({
     projects: projects.map((p) => ({ id: p.id, code: p.code, name: p.name, colorKey: p.colorKey })),
     rows,
     totals,
     grandTotal: grand,
+    otTotalHours,
+    otTotalCost,
     groupBy,
     view,
     frequency,
