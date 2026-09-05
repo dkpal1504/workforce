@@ -124,6 +124,10 @@ export function TimesheetPage() {
   const ctx = useWorkContext();
   const { user } = useAuth();
   const [params] = useSearchParams();
+  // A non-owner viewer (HOD/PM/ADMIN, or another supervisor) may VIEW a
+  // supervisor's timesheet read-only, but must not be offered write actions —
+  // the backend independently enforces NOT_OWNER. Gate all write controls on this.
+  const isOwner = user?.id === ctx.supervisorId;
   const [rows, setRows] = useState<LocalRow[]>([]);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [poolCandidates, setPoolCandidates] = useState<{ id: number; name: string }[]>([]);
@@ -660,7 +664,7 @@ export function TimesheetPage() {
       {loading && <p className="muted">Loading…</p>}
 
       {/* Bulk Assignment block — primary action area */}
-      {user?.role === "SUPERVISOR" && (
+      {user?.role === "SUPERVISOR" && isOwner && (
         <section className="bulk-assign">
           <header className="bulk-assign__head">
             <h2>Bulk Assignment</h2>
@@ -834,11 +838,13 @@ export function TimesheetPage() {
                       <button
                         type="button"
                         onClick={() => removeEmployee(r.employeeId)}
-                        disabled={isApprovedDayStatus(r.status)}
+                        disabled={!isOwner || isApprovedDayStatus(r.status)}
                         title={
-                          isApprovedDayStatus(r.status)
-                            ? "Cannot remove — this day is HOD/Project Head approved."
-                            : undefined
+                          !isOwner
+                            ? "Read-only — you are viewing another supervisor's timesheet."
+                            : isApprovedDayStatus(r.status)
+                              ? "Cannot remove — this day is HOD/Project Head approved."
+                              : undefined
                         }
                       >
                         Remove
@@ -850,7 +856,7 @@ export function TimesheetPage() {
                       <input
                         type="checkbox"
                         checked={r.fullShiftDone}
-                        disabled={isLocked || (r.fullShiftDone && !isEditableForReassign(r.status))}
+                        disabled={!isOwner || isLocked || (r.fullShiftDone && !isEditableForReassign(r.status))}
                         onChange={() => toggleFullShift(r.employeeId)}
                         aria-label="Full Shift (select all 4 slots)"
                       />
@@ -875,7 +881,7 @@ export function TimesheetPage() {
                         <button
                           type="button"
                           className={cls}
-                          disabled={slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
+                          disabled={!isOwner || slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                           onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
                           aria-label={SHIFT_LABELS[s.shiftSlot].long}
                           title={SHIFT_LABELS[s.shiftSlot].long}
@@ -889,9 +895,9 @@ export function TimesheetPage() {
                     <button
                       type="button"
                       className={`ot-cell ot-cell--btn ${r.otHours != null ? "ot-cell--set" : ""}`}
-                      disabled={isLocked}
+                      disabled={!isOwner || isLocked}
                       onClick={() => openOtModal(r.employeeId, r.employee.name)}
-                      title={r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
+                      title={!isOwner ? "Read-only — viewing another supervisor's timesheet." : r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
                     >
                       {r.otHours != null ? `${r.otHours}h` : "+"}
                     </button>
@@ -934,7 +940,7 @@ export function TimesheetPage() {
                     <button
                       type="button"
                       className={`assign-btn ${r.selectedSlots.size === 0 ? "is-idle" : r.fullShiftDone ? "is-done" : "is-ready"}`}
-                      disabled={isLocked || r.selectedSlots.size === 0 || !r.jobOrderId}
+                      disabled={!isOwner || isLocked || r.selectedSlots.size === 0 || !r.jobOrderId}
                       onClick={() => assignRowToSelected(r.employeeId)}
                     >
                       Assign
@@ -979,6 +985,7 @@ export function TimesheetPage() {
                     className="add-emp-input"
                     placeholder="+ Add employee… (search department roster)"
                     value={addQuery}
+                    disabled={!isOwner}
                     onChange={(e) => {
                       setAddQuery(e.target.value);
                       setShowAdd(true);
@@ -1062,7 +1069,7 @@ export function TimesheetPage() {
                       key={s.shiftSlot}
                       type="button"
                       className={cls}
-                      disabled={slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
+                      disabled={!isOwner || slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                       onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
                       aria-label={SHIFT_LABELS[s.shiftSlot].long}
                       title={SHIFT_LABELS[s.shiftSlot].long}
@@ -1083,9 +1090,9 @@ export function TimesheetPage() {
                 <button
                   type="button"
                   className={`ot-cell ot-cell--btn ${r.otHours != null ? "ot-cell--set" : ""}`}
-                  disabled={isLocked}
+                  disabled={!isOwner || isLocked}
                   onClick={() => openOtModal(r.employeeId, r.employee.name)}
-                  title={r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
+                  title={!isOwner ? "Read-only — viewing another supervisor's timesheet." : r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
                 >
                   {r.otHours != null ? `${r.otHours}h` : "+"}
                 </button>
@@ -1130,7 +1137,7 @@ export function TimesheetPage() {
                 <button
                   type="button"
                   className="assign-btn"
-                  disabled={isLocked || r.selectedSlots.size === 0 || !r.jobOrderId}
+                  disabled={!isOwner || isLocked || r.selectedSlots.size === 0 || !r.jobOrderId}
                   onClick={() => assignRowToSelected(r.employeeId)}
                 >
                   Assign
@@ -1170,6 +1177,7 @@ export function TimesheetPage() {
               className="add-emp-input"
               placeholder="+ Add employee… (search department roster)"
               value={addQuery}
+              disabled={!isOwner}
               onChange={(e) => {
                 setAddQuery(e.target.value);
                 setShowAdd(true);
@@ -1220,10 +1228,10 @@ export function TimesheetPage() {
       </div>
 
       <div className="footer-actions">
-        <button className="btn btn-secondary" onClick={saveDraft}>
+        <button className="btn btn-secondary" onClick={saveDraft} disabled={!isOwner}>
           Save Draft
         </button>
-        <button className="btn btn-primary" onClick={submit}>
+        <button className="btn btn-primary" onClick={submit} disabled={!isOwner}>
           Submit for Approval
         </button>
       </div>
