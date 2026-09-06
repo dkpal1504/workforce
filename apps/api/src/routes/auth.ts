@@ -43,6 +43,10 @@ authRouter.get("/me", requireAuth, async (req, res) => {
       name: true,
       role: true,
       departmentId: true,
+      // Surface the linked Employee id so the frontend can drive self-service
+      // allocation (payroll employees) and supervisor self-row in the timesheet.
+      employeeId: true,
+      source: true,
       department: { select: { id: true, name: true, code: true } },
     },
   });
