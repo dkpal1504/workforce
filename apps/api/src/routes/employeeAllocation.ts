@@ -257,13 +257,31 @@ employeeAllocationRouter.post("/submit", async (req, res) => {
   res.json({ day: updated });
 });
 
-/** GET /api/allocations/pending — list submitted days awaiting approval (HOD/PM/ADMIN). */
+/** GET /api/allocations/pending — role-aware, department-scoped approval queue.
+ *   HOD: SUBMITTED days in their own department.
+ *   PM: HOD_APPROVED days across all departments (PM is a single central authority).
+ *   ADMIN: both stages, all departments.
+ *   HR: read-only on their own department (no approve/reject unless explicitly intended).
+ * Null department fails closed: HOD/HR with departmentId=null see an empty queue.
+ */
 employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+  const role = req.user!.role;
   const departmentId = req.user!.departmentId;
-  const where: Record<string, unknown> = { status: "SUBMITTED" };
-  if (req.user!.role === "HOD" && departmentId != null) {
+
+  // Role-aware status filter.
+  const statuses = role === "PM" ? ["HOD_APPROVED"] : ["SUBMITTED", "HOD_APPROVED"];
+  const where: Record<string, unknown> = { status: { in: statuses } };
+
+  // Department scope for HOD and HR; PM/ADMIN are global.
+  if (role === "HOD" || role === "HR") {
+    if (departmentId == null) {
+      // Fail closed: a department-less HOD/HR sees nothing rather than all records.
+      return res.json({ days: [] });
+    }
     where.employee = { departmentId };
   }
+  // PM, ADMIN: no department filter.
+
   const days = await prisma.employeeAllocationDay.findMany({
     where,
     include: {
@@ -281,18 +299,32 @@ employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"
 });
 
 /**
- * POST /api/allocations/:dayId/approve — staged approval.
- *   HOD/ADMIN approves SUBMITTED -> HOD_APPROVED.
- *   PM/ADMIN approves HOD_APPROVED -> PM_APPROVED.
- *   ADMIN may perform the stage appropriate to the current status.
- *   Reject is a separate endpoint (see /reject below).
+ * POST /api/allocations/:dayId/approve — staged approval, role + department guarded.
+ *   HOD/ADMIN approves SUBMITTED -> HOD_APPROVED (within own department for HOD).
+ *   PM/ADMIN approves HOD_APPROVED -> PM_APPROVED (PM is global).
+ *   Wrong-stage role or cross-department HOD attempts return 403 (FORBIDDEN/WRONG_STAGE).
+ *   Null department fails closed.
  */
 employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
   const dayId = Number(req.params.dayId);
   const userId = req.user!.id;
   const role = req.user!.role;
-  const day = await prisma.employeeAllocationDay.findUnique({ where: { id: dayId } });
+  const departmentId = req.user!.departmentId;
+  const day = await prisma.employeeAllocationDay.findUnique({
+    where: { id: dayId },
+    include: { employee: { select: { departmentId: true } } },
+  });
   if (!day) return res.status(404).json({ error: "Day not found" });
+
+  // Department isolation for HOD: must match the day's employee department.
+  if (role === "HOD") {
+    if (departmentId == null) {
+      return res.status(403).json({ error: "HOD has no department assigned.", code: "FORBIDDEN" });
+    }
+    if (day.employee.departmentId !== departmentId) {
+      return res.status(403).json({ error: "Day belongs to another department.", code: "FORBIDDEN" });
+    }
+  }
 
   // Staged transitions: HOD -> SUBMITTED->HOD_APPROVED, PM -> HOD_APPROVED->PM_APPROVED.
   let nextStatus: string | null = null;
@@ -321,19 +353,50 @@ employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMI
 });
 
 /**
- * POST /api/allocations/:dayId/reject — reject at any stage.
- * HOD/PM/ADMIN/HR can reject SUBMITTED, HOD_APPROVED, or REJECTED.
- * Rejecting a REJECTED day is a no-op (returns the current state).
+ * POST /api/allocations/:dayId/reject — stage-scoped, role + department guarded.
+ *   HOD rejects SUBMITTED only (within own department).
+ *   PM rejects HOD_APPROVED only (global).
+ *   ADMIN may reject either stage.
+ *   HR is not allowed to reject (it's listed in requireRoles above for read-only
+ *   consistency, but the per-stage check below rejects HR attempts on either stage).
+ *   Null department fails closed.
  */
 employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
   const dayId = Number(req.params.dayId);
   const userId = req.user!.id;
+  const role = req.user!.role;
+  const departmentId = req.user!.departmentId;
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
 
-  const day = await prisma.employeeAllocationDay.findUnique({ where: { id: dayId } });
+  const day = await prisma.employeeAllocationDay.findUnique({
+    where: { id: dayId },
+    include: { employee: { select: { departmentId: true } } },
+  });
   if (!day) return res.status(404).json({ error: "Day not found" });
   if (day.status !== "SUBMITTED" && day.status !== "HOD_APPROVED") {
     return res.status(400).json({ error: `Day status is ${day.status}; cannot reject.` });
+  }
+
+  // Department isolation for HOD.
+  if (role === "HOD") {
+    if (departmentId == null) {
+      return res.status(403).json({ error: "HOD has no department assigned.", code: "FORBIDDEN" });
+    }
+    if (day.employee.departmentId !== departmentId) {
+      return res.status(403).json({ error: "Day belongs to another department.", code: "FORBIDDEN" });
+    }
+  }
+
+  // Stage-scoped reject: HOD can only reject SUBMITTED, PM can only reject HOD_APPROVED.
+  // HR cannot reject at any stage (read-only on this lifecycle).
+  if (day.status === "SUBMITTED") {
+    if (role !== "HOD" && role !== "ADMIN") {
+      return res.status(403).json({ error: "Only HOD/ADMIN can reject a SUBMITTED day.", code: "WRONG_STAGE" });
+    }
+  } else if (day.status === "HOD_APPROVED") {
+    if (role !== "PM" && role !== "ADMIN") {
+      return res.status(403).json({ error: "Only PM/ADMIN can reject a HOD_APPROVED day.", code: "WRONG_STAGE" });
+    }
   }
 
   const updated = await prisma.employeeAllocationDay.update({
