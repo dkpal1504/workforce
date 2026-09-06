@@ -5,177 +5,310 @@ import { writeAudit } from "../audit";
 import { parseDateOnly } from "../utils/date";
 
 /**
- * Payroll employee manhour allocation (CR#2).
+ * Payroll employee manhour allocation (CR#2) — slot-based, parent day + slot rows.
  *
- * Project is MANDATORY; Work Order is OPTIONAL (unlike contract-worker timesheets
- * where WO is required). OT is NOT applicable to payroll employees — this model has
- * no OT field, so OT is structurally impossible here.
+ * 4 shift slots per day (am1/am2/pm1/pm2, each 2h, total 8h). Project is MANDATORY,
+ * Work Order is OPTIONAL. OT is NOT applicable to payroll employees — no OT field,
+ * and the 8h daily cap is strict (no OT excess).
  *
- * Owner + role enforcement:
- *   - An employee allocates only to SELF (403 NOT_OWNER if employeeId !== req.user's
- *     linked employee).
- *   - HOD / Project Planning allocate for others via requireRoles("HOD","PM","ADMIN").
+ * Lifecycle: DRAFT (assigning slots) -> SUBMITTED (after "Submit for HOD approval")
+ * -> HOD_APPROVED / REJECTED. Status-locked: when the parent day is SUBMITTED/
+ * APPROVED, slot edits are rejected at the API.
  *
- * The `employeeId` is server-derived from the authenticated user (via the User<->Employee
- * link) for the self-service path — never trusted from the client without the role check.
+ * Owner + role: an employee allocates only to SELF via the linked Employee
+ * (NOT_OWNER guard); HOD/PM/ADMIN/HR allocate for others via requireRoles.
+ * `employeeId` is server-derived for self-service (never trusted from the body).
  */
 
 export const employeeAllocationRouter = Router();
 
 employeeAllocationRouter.use(requireAuth);
 
-/** Derive the Employee id linked to an authenticated User, if any. */
+const VALID_SLOTS = new Set(["am1", "am2", "pm1", "pm2"]);
+const SHIFT_HOURS: Record<string, number> = { am1: 2, am2: 2, pm1: 2, pm2: 2 };
+
 async function employeeIdForUser(userId: number): Promise<number | null> {
   const u = await prisma.user.findUnique({ where: { id: userId }, select: { employeeId: true } });
   return u?.employeeId ?? null;
 }
 
-/** List allocations — owner sees their own; HOD/PM/ADMIN see department-scoped or all. */
+/** GET /api/allocations?employeeId&date — list days + slots for the scope. */
 employeeAllocationRouter.get("/", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
   const departmentId = req.user!.departmentId;
 
+  const queryEmpId = req.query.employeeId ? Number(req.query.employeeId) : null;
+  const queryDate = typeof req.query.date === "string" ? req.query.date : null;
+
   const where: Record<string, unknown> = {};
-  // Non-approver accounts (supervisors, and any payroll employee with a login) see
-  // only their own allocations; approvers see department-scoped or org-wide.
+  if (queryEmpId) where.employeeId = queryEmpId;
+  if (queryDate && /^\d{4}-\d{2}-\d{2}$/.test(queryDate)) {
+    where.workDate = parseDateOnly(queryDate);
+  }
   if (!["HOD", "PM", "ADMIN", "HR"].includes(role)) {
-    const empId = await employeeIdForUser(userId);
-    if (empId == null) {
-      return res.json({ allocations: [], error: null, note: "No linked employee record for this account." });
+    const ownEmpId = await employeeIdForUser(userId);
+    if (ownEmpId == null) {
+      return res.json({ days: [], allocations: [], note: "No linked employee record for this account." });
     }
-    where.employeeId = empId;
+    where.employeeId = ownEmpId;
   } else if (role === "HOD" && departmentId != null) {
-    // HOD sees allocations for their department's employees.
     where.employee = { departmentId };
   }
-  // ADMIN / PM without the role filter see all (organization scope).
 
-  const allocations = await prisma.employeeAllocation.findMany({
+  const days = await prisma.employeeAllocationDay.findMany({
     where,
     include: {
+      allocations: {
+        include: {
+          project: { select: { id: true, name: true, colorKey: true } },
+          jobOrder: { select: { id: true, code: true, name: true } },
+          allocatedBy: { select: { id: true, name: true } },
+        },
+        orderBy: [{ shiftSlot: "asc" }],
+      },
       employee: { select: { id: true, name: true, ecNo: true, grade: true, department: true } },
-      project: { select: { id: true, name: true, colorKey: true } },
-      jobOrder: { select: { id: true, code: true, name: true } },
-      allocatedBy: { select: { id: true, name: true } },
     },
     orderBy: [{ workDate: "desc" }, { id: "desc" }],
     take: 200,
   });
 
-  res.json({ allocations });
+  res.json({ days });
 });
 
-/**
- * Create/update an employee's manhour allocation for a date.
- * Employee self-service: employeeId must equal the caller's linked Employee (NOT_OWNER).
- * HOD/PM/ADMIN may allocate for any employee (role-gated).
- */
-employeeAllocationRouter.put("/", async (req, res) => {
+/** POST /api/allocations/slot — atomic upsert of one slot on the parent day. */
+employeeAllocationRouter.post("/slot", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
-  const { employeeId, workDate, projectId, jobOrderId } = req.body ?? {};
 
-  const parsedEmpId = Number(employeeId);
-  const parsedDate = typeof workDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(workDate) ? workDate : null;
-  const parsedProjectId = Number(projectId);
-  const parsedJobOrderId = jobOrderId == null ? null : Number(jobOrderId);
+  const { employeeId: bodyEmpId, workDate: bodyDate, shiftSlot, projectId: bodyProjectId, jobOrderId: bodyJobOrderId, remarks } = req.body ?? {};
 
-  if (!parsedEmpId || !parsedDate || !parsedProjectId) {
-    return res.status(400).json({ error: "employeeId, workDate and projectId are required" });
+  if (!bodyDate || !/^\d{4}-\d{2}-\d{2}$/.test(bodyDate)) {
+    return res.status(400).json({ error: "workDate required (YYYY-MM-DD)" });
+  }
+  if (!shiftSlot || !VALID_SLOTS.has(shiftSlot)) {
+    return res.status(400).json({ error: "shiftSlot must be one of am1, am2, pm1, pm2" });
+  }
+  if (!bodyProjectId) {
+    return res.status(400).json({ error: "projectId is required" });
   }
 
-  // Owner / role enforcement:
+  // Resolve employee: for self-service, server-derive from req.user; for approvers,
+  // accept the body value.
   const canAllocateOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
+  let employeeId = bodyEmpId;
   if (!canAllocateOthers) {
-    // Employee self-service: only allocate to self via linked Employee.
     const ownEmpId = await employeeIdForUser(userId);
-    if (ownEmpId == null || ownEmpId !== parsedEmpId) {
+    if (ownEmpId == null) return res.status(403).json({ error: "No linked employee record for this account.", code: "NO_LINKED_EMPLOYEE" });
+    if (employeeId != null && employeeId !== ownEmpId) {
       return res.status(403).json({ error: "You can only allocate hours to yourself.", code: "NOT_OWNER" });
     }
+    employeeId = ownEmpId;
   }
+  if (!employeeId) return res.status(400).json({ error: "employeeId is required" });
 
-  // Validate the employee exists and is active.
-  const employee = await prisma.employee.findUnique({ where: { id: parsedEmpId } });
-  if (!employee) return res.status(400).json({ error: "Employee not found." });
+  const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
+  if (!employee) return res.status(400).json({ error: "Employee not found" });
   if (!employee.active) return res.status(400).json({ error: "Employee is not active.", code: "EMPLOYEE_INACTIVE" });
 
-  // Project is mandatory and must exist.
-  const project = await prisma.project.findUnique({ where: { id: parsedProjectId } });
-  if (!project) return res.status(400).json({ error: "Project not found." });
-
-  // Work Order is OPTIONAL; if provided, must exist and belong to the project.
-  if (parsedJobOrderId != null) {
-    const jo = await prisma.jobOrder.findUnique({ where: { id: parsedJobOrderId } });
-    if (!jo) return res.status(400).json({ error: "Work order not found." });
-    if (jo.projectId !== parsedProjectId) {
+  const project = await prisma.project.findUnique({ where: { id: Number(bodyProjectId) } });
+  if (!project) return res.status(400).json({ error: "Project not found" });
+  if (bodyJobOrderId != null) {
+    const jo = await prisma.jobOrder.findUnique({ where: { id: Number(bodyJobOrderId) } });
+    if (!jo) return res.status(400).json({ error: "Work order not found" });
+    if (jo.projectId !== project.id) {
       return res.status(400).json({ error: "Work order does not belong to the selected project." });
     }
   }
 
-  const wd = parseDateOnly(parsedDate);
+  const wd = parseDateOnly(bodyDate);
 
-  // Find-or-update on the allocation's natural key (employee, date, project, allocator).
-  // Project is the mandatory unit; jobOrderId is an optional attribute that updates on
-  // collision. The unique constraint covers these four, NOT jobOrderId.
-  const existing = await prisma.employeeAllocation.findFirst({
-    where: {
-      employeeId: parsedEmpId,
-      workDate: wd,
-      projectId: parsedProjectId,
-      allocatedById: userId,
-    },
-  });
-
-  let allocation;
-  if (existing) {
-    allocation = await prisma.employeeAllocation.update({
-      where: { id: existing.id },
-      data: { status: "DRAFT", jobOrderId: parsedJobOrderId },
-    });
-  } else {
-    allocation = await prisma.employeeAllocation.create({
-      data: {
-        employeeId: parsedEmpId,
+  const result = await prisma.$transaction(async (tx) => {
+    const day = await tx.employeeAllocationDay.upsert({
+      where: { employeeId_workDate: { employeeId, workDate: wd } },
+      create: {
+        employeeId,
         workDate: wd,
-        projectId: parsedProjectId,
-        jobOrderId: parsedJobOrderId,
-        allocatedById: userId,
         status: "DRAFT",
+        remarks: remarks ?? null,
+      },
+      update: remarks != null ? { remarks } : {},
+    });
+    if (day.status !== "DRAFT" && day.status !== "REJECTED") {
+      throw Object.assign(new Error("Day is locked (submitted/approved); slot edits rejected."), { code: "DAY_LOCKED" });
+    }
+    // Upsert the slot on this day.
+    const slot = await tx.employeeAllocation.upsert({
+      where: { allocationDayId_shiftSlot: { allocationDayId: day.id, shiftSlot } },
+      create: {
+        allocationDayId: day.id,
+        employeeId,
+        workDate: wd,
+        shiftSlot,
+        projectId: project.id,
+        jobOrderId: bodyJobOrderId != null ? Number(bodyJobOrderId) : null,
+        allocatedById: userId,
+      },
+      update: {
+        projectId: project.id,
+        jobOrderId: bodyJobOrderId != null ? Number(bodyJobOrderId) : null,
+        allocatedById: userId,
       },
     });
-  }
-
-  await writeAudit(userId, "EMPLOYEE_ALLOCATION", "employee_allocation", allocation.id, {
-    employeeId: parsedEmpId,
-    workDate: parsedDate,
-    projectId: parsedProjectId,
-    jobOrderId: parsedJobOrderId,
+    return { day, slot };
+  }).catch((e) => {
+    if (e.code === "DAY_LOCKED") return { __error: e };
+    throw e;
   });
 
-  res.status(201).json({ allocation });
+  if ("__error" in result) {
+    return res.status(400).json({ error: result.__error.message, code: result.__error.code });
+  }
+
+  await writeAudit(userId, "EMPLOYEE_ALLOCATION_SLOT", "employee_allocation", result.slot.id, {
+    employeeId, workDate: bodyDate, shiftSlot, projectId: project.id, jobOrderId: bodyJobOrderId ?? null,
+  });
+  res.status(201).json({ day: result.day, slot: result.slot });
 });
 
-/** Delete an allocation — owner deletes own; HOD/PM/ADMIN/HR delete scoped. */
-employeeAllocationRouter.delete("/:id", async (req, res) => {
+/** DELETE /api/allocations/slot/:id — clear a single slot (only on DRAFT/REJECTED). */
+employeeAllocationRouter.delete("/slot/:id", async (req, res) => {
   const id = Number(req.params.id);
   const role = req.user!.role;
   const userId = req.user!.id;
 
-  const allocation = await prisma.employeeAllocation.findUnique({ where: { id } });
-  if (!allocation) return res.status(404).json({ error: "Allocation not found" });
+  const slot = await prisma.employeeAllocation.findUnique({ where: { id }, include: { allocationDay: true } });
+  if (!slot) return res.status(404).json({ error: "Slot not found" });
 
   const canDeleteOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
   if (!canDeleteOthers) {
     const ownEmpId = await employeeIdForUser(userId);
-    if (ownEmpId == null || ownEmpId !== allocation.employeeId) {
-      return res.status(403).json({ error: "You can only delete your own allocations.", code: "NOT_OWNER" });
+    if (ownEmpId == null || ownEmpId !== slot.employeeId) {
+      return res.status(403).json({ error: "You can only delete your own slots.", code: "NOT_OWNER" });
     }
   }
-
+  if (slot.allocationDay.status !== "DRAFT" && slot.allocationDay.status !== "REJECTED") {
+    return res.status(400).json({ error: "Day is locked (submitted/approved); slots cannot be removed.", code: "DAY_LOCKED" });
+  }
   await prisma.employeeAllocation.delete({ where: { id } });
-  await writeAudit(userId, "EMPLOYEE_ALLOCATION_DELETE", "employee_allocation", id, {
-    employeeId: allocation.employeeId,
+  await writeAudit(userId, "EMPLOYEE_ALLOCATION_SLOT_DELETE", "employee_allocation", id, {
+    employeeId: slot.employeeId, workDate: slot.workDate.toISOString().slice(0, 10), shiftSlot: slot.shiftSlot,
   });
   res.json({ ok: true });
+});
+
+/** POST /api/allocations/submit — submit a day for HOD approval. */
+employeeAllocationRouter.post("/submit", async (req, res) => {
+  const role = req.user!.role;
+  const userId = req.user!.id;
+
+  const { employeeId: bodyEmpId, workDate: bodyDate, remarks } = req.body ?? {};
+  if (!bodyDate || !/^\d{4}-\d{2}-\d{2}$/.test(bodyDate)) {
+    return res.status(400).json({ error: "workDate required" });
+  }
+
+  const canSubmitOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
+  let employeeId = bodyEmpId;
+  if (!canSubmitOthers) {
+    const ownEmpId = await employeeIdForUser(userId);
+    if (ownEmpId == null) return res.status(403).json({ error: "No linked employee record for this account.", code: "NO_LINKED_EMPLOYEE" });
+    if (employeeId != null && employeeId !== ownEmpId) {
+      return res.status(403).json({ error: "You can only submit your own allocations.", code: "NOT_OWNER" });
+    }
+    employeeId = ownEmpId;
+  }
+  if (!employeeId) return res.status(400).json({ error: "employeeId is required" });
+
+  const wd = parseDateOnly(bodyDate);
+
+  const day = await prisma.employeeAllocationDay.findUnique({
+    where: { employeeId_workDate: { employeeId, workDate: wd } },
+    include: { allocations: true },
+  });
+  if (!day || day.allocations.length === 0) {
+    return res.status(400).json({ error: "No slots assigned for this day." });
+  }
+  if (day.status !== "DRAFT" && day.status !== "REJECTED") {
+    return res.status(400).json({ error: `Day is already ${day.status}; cannot submit.` });
+  }
+
+  // Compute total hours (slot count * 2h) — must be ≤ MAX_DAILY_HOURS (default 8).
+  // Payroll: no OT, so strictly ≤ 8h; over-allocation is rejected.
+  const totalHours = day.allocations.length * 2;
+  if (totalHours > 8) {
+    return res.status(400).json({
+      error: `Daily total ${totalHours}h exceeds the 8h cap for payroll (no OT allowed).`,
+      code: "OVERALLOCATION",
+    });
+  }
+
+  const updated = await prisma.employeeAllocationDay.update({
+    where: { id: day.id },
+    data: { status: "SUBMITTED", submittedAt: new Date(), remarks: remarks ?? day.remarks },
+  });
+  await writeAudit(userId, "EMPLOYEE_ALLOCATION_SUBMIT", "employee_allocation_day", day.id, {
+    employeeId, workDate: bodyDate, slotCount: day.allocations.length,
+  });
+  res.json({ day: updated });
+});
+
+/** GET /api/allocations/pending — list submitted days awaiting approval (HOD/PM/ADMIN). */
+employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+  const departmentId = req.user!.departmentId;
+  const where: Record<string, unknown> = { status: "SUBMITTED" };
+  if (req.user!.role === "HOD" && departmentId != null) {
+    where.employee = { departmentId };
+  }
+  const days = await prisma.employeeAllocationDay.findMany({
+    where,
+    include: {
+      employee: { include: { department: true } },
+      allocations: {
+        include: {
+          project: { select: { id: true, name: true, colorKey: true } },
+          jobOrder: { select: { id: true, code: true, name: true } },
+        },
+      },
+    },
+    orderBy: [{ submittedAt: "asc" }],
+  });
+  res.json({ days });
+});
+
+/** POST /api/allocations/:dayId/approve — HOD/PM approves a submitted day. */
+employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+  const dayId = Number(req.params.dayId);
+  const userId = req.user!.id;
+  const day = await prisma.employeeAllocationDay.findUnique({ where: { id: dayId } });
+  if (!day) return res.status(404).json({ error: "Day not found" });
+  if (day.status !== "SUBMITTED") return res.status(400).json({ error: `Day status is ${day.status}; cannot approve.` });
+
+  const updated = await prisma.employeeAllocationDay.update({
+    where: { id: dayId },
+    data: { status: "HOD_APPROVED", approvedAt: new Date(), approverId: userId },
+  });
+  await writeAudit(userId, "EMPLOYEE_ALLOCATION_APPROVE", "employee_allocation_day", dayId, {
+    employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10),
+  });
+  res.json({ day: updated });
+});
+
+/** POST /api/allocations/:dayId/reject — HOD/PM rejects a submitted day. */
+employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+  const dayId = Number(req.params.dayId);
+  const userId = req.user!.id;
+  const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
+
+  const day = await prisma.employeeAllocationDay.findUnique({ where: { id: dayId } });
+  if (!day) return res.status(404).json({ error: "Day not found" });
+  if (day.status !== "SUBMITTED") return res.status(400).json({ error: `Day status is ${day.status}; cannot reject.` });
+
+  const updated = await prisma.employeeAllocationDay.update({
+    where: { id: dayId },
+    data: { status: "REJECTED", approverId: userId, remarks: comment ?? day.remarks },
+  });
+  await writeAudit(userId, "EMPLOYEE_ALLOCATION_REJECT", "employee_allocation_day", dayId, {
+    employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), comment,
+  });
+  res.json({ day: updated });
 });

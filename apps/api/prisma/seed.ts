@@ -5,6 +5,8 @@ const prisma = new PrismaClient();
 
 async function main() {
   await prisma.auditLog.deleteMany();
+  await prisma.employeeAllocation.deleteMany();
+  await prisma.employeeAllocationDay.deleteMany();
   await prisma.timesheetEntry.deleteMany();
   await prisma.approval.deleteMany();
   await prisma.timesheetDay.deleteMany();
@@ -13,6 +15,7 @@ async function main() {
   await prisma.manpowerRequest.deleteMany();
   await prisma.attendanceFeed.deleteMany();
   await prisma.costRate.deleteMany();
+  await prisma.supervisorPin.deleteMany();
   await prisma.jobOrder.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectWbs.deleteMany();

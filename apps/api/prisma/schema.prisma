@@ -33,6 +33,7 @@ model User {
   conflictsResolved Conflict[]          @relation("ResolvedBy")
   auditLogs        AuditLog[]
   allocationsGiven  EmployeeAllocation[] @relation("EmployeeAllocationAllocatedBy")
+  allocationDaysApproved EmployeeAllocationDay[] @relation("EmployeeAllocationApprover")
   manpowerRequestsRequested ManpowerRequest[] @relation("RequestedBy")
   manpowerRequestsAssigned  ManpowerRequest[] @relation("AssignedBy")
 
@@ -92,6 +93,7 @@ model Employee {
   attendanceFeed      AttendanceFeed[]
   manpowerAssignments ManpowerRequest[] @relation("AssignedEmployee")
   employeeAllocations EmployeeAllocation[]
+  employeeAllocationDays EmployeeAllocationDay[]
 
   @@index([source])
   @@index([active])
@@ -135,33 +137,58 @@ model SupervisorPin {
   @@map("supervisor_pins")
 }
 
-/// Payroll employee manhour allocation (CR#2).
+/// Payroll employee manhour allocation (CR#2) — parent day + slot rows.
+///
 /// Project is mandatory; Work Order is optional. OT is NOT applicable to payroll
-/// employees, so this model has NO OT field — structurally incapable of OT.
-/// Owner + role enforced: an employee allocates only to self (NOT_OWNER guard);
-/// HOD/Project Planning allocates for others via requireRoles.
-model EmployeeAllocation {
+/// employees — no OT field exists (structurally incapable of OT).
+///
+/// Lifecycle: DRAFT (assigning slots) -> SUBMITTED (after employee clicks
+/// "Submit for HOD approval") -> HOD_APPROVED / REJECTED. Status-locked: when the
+/// parent day is SUBMITTED/APPROVED, slot edits are rejected at the API.
+///
+/// Owner + role enforcement: an employee allocates only to SELF via the linked
+/// Employee (NOT_OWNER guard); HOD/PM/ADMIN/HR allocate for others via requireRoles.
+model EmployeeAllocationDay {
   id           Int      @id @default(autoincrement())
   employeeId   Int      @map("employee_id")
   employee     Employee @relation(fields: [employeeId], references: [id])
   workDate     DateTime @map("work_date")
-  /// Project is mandatory for employee manhour assignment.
-  projectId    Int      @map("project_id")
-  project      Project  @relation(fields: [projectId], references: [id])
-  /// Work Order is OPTIONAL for employees (unlike contract workers where it's required).
-  jobOrderId   Int?     @map("job_order_id")
-  jobOrder     JobOrder? @relation(fields: [jobOrderId], references: [id])
-  /// Who allocated these hours (the employee self, or an HOD/PM acting for them).
-  projectWbsId Int?     @map("project_wbs_id")
-  projectWbs   ProjectWbs? @relation(fields: [projectWbsId], references: [id])
-  allocatedById Int     @map("allocated_by")
-  allocatedBy  User     @relation("EmployeeAllocationAllocatedBy", fields: [allocatedById], references: [id])
-  status       String   @default("DRAFT")
+  status       String   @default("DRAFT")  // DRAFT | SUBMITTED | HOD_APPROVED | REJECTED
   remarks      String?
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  submittedAt  DateTime? @map("submitted_at")
+  approvedAt   DateTime? @map("approved_at")
+  approverId   Int?      @map("approver_id")
+  approver     User?     @relation("EmployeeAllocationApprover", fields: [approverId], references: [id])
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  @@unique([employeeId, workDate, projectId, allocatedById])
+  allocations  EmployeeAllocation[]
+
+  @@unique([employeeId, workDate])
+  @@map("employee_allocation_days")
+}
+
+/// One slot row per (employee, day, shift slot). shiftSlot = am1|am2|pm1|pm2 (each 2h).
+/// projectId is mandatory; jobOrderId is optional. No OT field (payroll cannot have OT).
+/// Status lives on the parent day, not on individual slots.
+model EmployeeAllocation {
+  id                 Int                 @id @default(autoincrement())
+  allocationDayId    Int                 @map("allocation_day_id")
+  allocationDay      EmployeeAllocationDay @relation(fields: [allocationDayId], references: [id], onDelete: Cascade)
+  employeeId         Int                 @map("employee_id")
+  employee           Employee            @relation(fields: [employeeId], references: [id])
+  workDate           DateTime            @map("work_date")
+  shiftSlot          String              @map("shift_slot")  // am1 | am2 | pm1 | pm2
+  projectId          Int                 @map("project_id")
+  project            Project             @relation(fields: [projectId], references: [id])
+  jobOrderId         Int?                @map("job_order_id")
+  jobOrder           JobOrder?           @relation(fields: [jobOrderId], references: [id])
+  allocatedById      Int                 @map("allocated_by")
+  allocatedBy        User                @relation("EmployeeAllocationAllocatedBy", fields: [allocatedById], references: [id])
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+
+  @@unique([allocationDayId, shiftSlot])
   @@index([employeeId, workDate])
   @@map("employee_allocations")
 }
@@ -177,7 +204,6 @@ model ProjectWbs {
 
   timesheetEntries TimesheetEntry[]
   jobOrders        JobOrder[]
-  employeeAllocations EmployeeAllocation[]
 
   @@map("projects_wbs")
 }
