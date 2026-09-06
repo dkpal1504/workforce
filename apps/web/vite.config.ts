@@ -16,7 +16,7 @@ export default defineConfig({
       // Proxy only /api/* — never steal SPA routes like /timesheet or /summary
       // The API runs on 4000 (default from .env). Keep proxy + API on the SAME port.
       "/api": {
-        target: "http://localhost:4000",
+        target: "http://localhost:4100",
         changeOrigin: true,
       },
     },
