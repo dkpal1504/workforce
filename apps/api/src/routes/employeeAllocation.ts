@@ -3,17 +3,21 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { parseDateOnly } from "../utils/date";
+import { getMaxDailyHours } from "../config";
 
 /**
  * Payroll employee manhour allocation (CR#2) — slot-based, parent day + slot rows.
  *
- * 4 shift slots per day (am1/am2/pm1/pm2, each 2h, total 8h). Project is MANDATORY,
+ * 4 shift slots per day (am1/am2/pm1/pm2, each 2h). Project is MANDATORY,
  * Work Order is OPTIONAL. OT is NOT applicable to payroll employees — no OT field,
- * and the 8h daily cap is strict (no OT excess).
+ * and the daily cap (env-configured via MAX_DAILY_HOURS, default 8h) is strict
+ * (no OT excess for payroll).
  *
  * Lifecycle: DRAFT (assigning slots) -> SUBMITTED (after "Submit for HOD approval")
- * -> HOD_APPROVED / REJECTED. Status-locked: when the parent day is SUBMITTED/
- * APPROVED, slot edits are rejected at the API.
+ * -> HOD_APPROVED -> PM_APPROVED. Reject at any stage transitions to REJECTED.
+ * Status-locked: when the parent day is SUBMITTED/APPROVED, slot edits are rejected
+ * at the API. Staged approval: HOD approves SUBMITTED -> HOD_APPROVED; PM
+ * (Project Planning) approves HOD_APPROVED -> PM_APPROVED.
  *
  * Owner + role: an employee allocates only to SELF via the linked Employee
  * (NOT_OWNER guard); HOD/PM/ADMIN/HR allocate for others via requireRoles.
@@ -233,11 +237,12 @@ employeeAllocationRouter.post("/submit", async (req, res) => {
   }
 
   // Compute total hours (slot count * 2h) — must be ≤ MAX_DAILY_HOURS (default 8).
-  // Payroll: no OT, so strictly ≤ 8h; over-allocation is rejected.
+  // Payroll: no OT, so strictly ≤ cap; over-allocation is rejected.
+  const maxDailyHours = getMaxDailyHours();
   const totalHours = day.allocations.length * 2;
-  if (totalHours > 8) {
+  if (totalHours > maxDailyHours) {
     return res.status(400).json({
-      error: `Daily total ${totalHours}h exceeds the 8h cap for payroll (no OT allowed).`,
+      error: `Daily total ${totalHours}h exceeds the ${maxDailyHours}h cap for payroll (no OT allowed).`,
       code: "OVERALLOCATION",
     });
   }
@@ -275,25 +280,51 @@ employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"
   res.json({ days });
 });
 
-/** POST /api/allocations/:dayId/approve — HOD/PM approves a submitted day. */
+/**
+ * POST /api/allocations/:dayId/approve — staged approval.
+ *   HOD/ADMIN approves SUBMITTED -> HOD_APPROVED.
+ *   PM/ADMIN approves HOD_APPROVED -> PM_APPROVED.
+ *   ADMIN may perform the stage appropriate to the current status.
+ *   Reject is a separate endpoint (see /reject below).
+ */
 employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
   const dayId = Number(req.params.dayId);
   const userId = req.user!.id;
+  const role = req.user!.role;
   const day = await prisma.employeeAllocationDay.findUnique({ where: { id: dayId } });
   if (!day) return res.status(404).json({ error: "Day not found" });
-  if (day.status !== "SUBMITTED") return res.status(400).json({ error: `Day status is ${day.status}; cannot approve.` });
+
+  // Staged transitions: HOD -> SUBMITTED->HOD_APPROVED, PM -> HOD_APPROVED->PM_APPROVED.
+  let nextStatus: string | null = null;
+  if (day.status === "SUBMITTED") {
+    if (role !== "HOD" && role !== "ADMIN") {
+      return res.status(403).json({ error: "Only HOD/ADMIN can approve a SUBMITTED day.", code: "WRONG_STAGE" });
+    }
+    nextStatus = "HOD_APPROVED";
+  } else if (day.status === "HOD_APPROVED") {
+    if (role !== "PM" && role !== "ADMIN") {
+      return res.status(403).json({ error: "Only PM/ADMIN can advance HOD_APPROVED to PM_APPROVED.", code: "WRONG_STAGE" });
+    }
+    nextStatus = "PM_APPROVED";
+  } else {
+    return res.status(400).json({ error: `Day status is ${day.status}; cannot approve.` });
+  }
 
   const updated = await prisma.employeeAllocationDay.update({
     where: { id: dayId },
-    data: { status: "HOD_APPROVED", approvedAt: new Date(), approverId: userId },
+    data: { status: nextStatus, approvedAt: new Date(), approverId: userId },
   });
   await writeAudit(userId, "EMPLOYEE_ALLOCATION_APPROVE", "employee_allocation_day", dayId, {
-    employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10),
+    employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), from: day.status, to: nextStatus,
   });
   res.json({ day: updated });
 });
 
-/** POST /api/allocations/:dayId/reject — HOD/PM rejects a submitted day. */
+/**
+ * POST /api/allocations/:dayId/reject — reject at any stage.
+ * HOD/PM/ADMIN/HR can reject SUBMITTED, HOD_APPROVED, or REJECTED.
+ * Rejecting a REJECTED day is a no-op (returns the current state).
+ */
 employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
   const dayId = Number(req.params.dayId);
   const userId = req.user!.id;
@@ -301,14 +332,16 @@ employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN
 
   const day = await prisma.employeeAllocationDay.findUnique({ where: { id: dayId } });
   if (!day) return res.status(404).json({ error: "Day not found" });
-  if (day.status !== "SUBMITTED") return res.status(400).json({ error: `Day status is ${day.status}; cannot reject.` });
+  if (day.status !== "SUBMITTED" && day.status !== "HOD_APPROVED") {
+    return res.status(400).json({ error: `Day status is ${day.status}; cannot reject.` });
+  }
 
   const updated = await prisma.employeeAllocationDay.update({
     where: { id: dayId },
     data: { status: "REJECTED", approverId: userId, remarks: comment ?? day.remarks },
   });
   await writeAudit(userId, "EMPLOYEE_ALLOCATION_REJECT", "employee_allocation_day", dayId, {
-    employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), comment,
+    employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), from: day.status, comment,
   });
   res.json({ day: updated });
 });
