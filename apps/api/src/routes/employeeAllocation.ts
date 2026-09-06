@@ -268,8 +268,15 @@ employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"
   const role = req.user!.role;
   const departmentId = req.user!.departmentId;
 
-  // Role-aware status filter.
-  const statuses = role === "PM" ? ["HOD_APPROVED"] : ["SUBMITTED", "HOD_APPROVED"];
+  // Role-aware status filter (strict per-stage):
+  //   HOD: SUBMITTED only (their queue; HOD_APPROVED has already moved to PM).
+  //   PM: HOD_APPROVED only (waiting for PM final approval).
+  //   ADMIN/HR: both stages for visibility (HR is read-only — approve/reject is
+  //   stage-scoped on the mutation endpoints).
+  const statuses =
+    role === "HOD" ? ["SUBMITTED"] :
+    role === "PM" ? ["HOD_APPROVED"] :
+    ["SUBMITTED", "HOD_APPROVED"];
   const where: Record<string, unknown> = { status: { in: statuses } };
 
   // Department scope for HOD and HR; PM/ADMIN are global.
