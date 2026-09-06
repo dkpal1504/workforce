@@ -53,7 +53,7 @@ employeeAllocationRouter.get("/", async (req, res) => {
   if (!["HOD", "PM", "ADMIN", "HR"].includes(role)) {
     const ownEmpId = await employeeIdForUser(userId);
     if (ownEmpId == null) {
-      return res.json({ days: [], allocations: [], note: "No linked employee record for this account." });
+      return res.json({ days: [], note: "No linked employee record for this account." });
     }
     where.employeeId = ownEmpId;
   } else if (role === "HOD" && departmentId != null) {

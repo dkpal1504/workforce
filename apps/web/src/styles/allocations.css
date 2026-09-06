@@ -280,3 +280,170 @@
     display: none;
   }
 }
+
+
+/* ---- Slot-based payroll allocation -------------------------- */
+.alloc-form--day {
+  margin-bottom: 16px;
+}
+
+.alloc-day-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: var(--touch-min);
+}
+
+.alloc-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.alloc-slot {
+  display: flex;
+  min-height: 104px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.alloc-slot:hover:not(:disabled),
+.alloc-slot.is-selected {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.alloc-slot.is-filled {
+  background: var(--primary-soft);
+}
+
+.alloc-slot:disabled {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.alloc-slot > span,
+.alloc-day-slots span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.alloc-slot small,
+.alloc-day-slots small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.alloc-form--assign {
+  padding-top: 2px;
+}
+
+.alloc-action-group {
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.alloc-empty-compact {
+  padding: 22px 16px;
+}
+
+.alloc-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.alloc-status--draft,
+.alloc-status--rejected {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.alloc-status--submitted,
+.alloc-status--hod_approved {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.alloc-status--pm_approved {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.alloc-day-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.alloc-day-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.alloc-day-slots > div {
+  display: flex;
+  min-height: 58px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.alloc-day-slots > div.is-filled {
+  background: var(--primary-soft);
+}
+
+@media (min-width: 768px) {
+  .alloc-slot-grid,
+  .alloc-day-slots {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .alloc-form--day {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .alloc-form--assign {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .alloc-day-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .alloc-form--day,
+  .alloc-form--assign {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .alloc-form--day .alloc-field,
+  .alloc-form--assign .alloc-field {
+    min-width: 0;
+  }
+  .alloc-form--assign .alloc-form__action {
+    grid-column: auto;
+    align-items: end;
+  }
+}
