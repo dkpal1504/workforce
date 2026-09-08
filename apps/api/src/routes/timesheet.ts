@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { SHIFT_SLOTS, bulkAssignSchema, setSlotJobOrderSchema, timesheetDaySchema } from "@workforce/shared";
 import type { ShiftSlot } from "@workforce/shared";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { writeAudit } from "../audit";
-import { parseDateOnly } from "../utils/date";
+import { formatDateOnly, parseDateOnly, previousWorkDate } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
@@ -13,7 +13,173 @@ export const timesheetRouter = Router();
 
 timesheetRouter.use(requireAuth);
 
+// Serialize allocation writes in this API process. This makes submission a
+// first-writer-wins operation instead of allowing two overlapping submits to
+// pass the conflict check at the same time.
+let mutationTail: Promise<void> = Promise.resolve();
+function serializeTimesheetMutation(req: Request, res: Response, next: NextFunction) {
+  let release!: () => void;
+  const turn = new Promise<void>((resolve) => { release = resolve; });
+  const previous = mutationTail;
+  mutationTail = previous.then(() => turn);
+  previous.then(() => {
+    let released = false;
+    const unlock = () => {
+      if (released) return;
+      released = true;
+      release();
+    };
+    res.once("finish", unlock);
+    res.once("close", unlock);
+    next();
+  }).catch(next);
+}
+
 const RETURN_ACTIONS = ["REJECT", "SEND_BACK", "PLANNING_RETURN"];
+
+const SHIFT_TO_HOUR_SLOTS: Record<ShiftSlot, readonly number[]> = {
+  am1: [1, 2],
+  am2: [3, 4],
+  pm1: [6, 7],
+  pm2: [8, 9],
+};
+
+const BOOKED_ENTRY_STATUSES = ["SUBMITTED", "SUP_APPROVED", "HOD_APPROVED", "PM_APPROVED"];
+
+function entryOverlapsShift(entry: { shiftSlot: string | null; hourSlot: number | null }, shiftSlot: ShiftSlot) {
+  if (entry.shiftSlot != null) return entry.shiftSlot === shiftSlot;
+  return entry.hourSlot != null && SHIFT_TO_HOUR_SLOTS[shiftSlot].includes(entry.hourSlot);
+}
+
+function entriesOverlap(
+  left: { shiftSlot: string | null; hourSlot: number | null },
+  right: { shiftSlot: string | null; hourSlot: number | null }
+) {
+  if (left.shiftSlot != null) return entryOverlapsShift(right, left.shiftSlot as ShiftSlot);
+  if (right.shiftSlot != null) return entryOverlapsShift(left, right.shiftSlot as ShiftSlot);
+  return left.hourSlot != null && left.hourSlot === right.hourSlot;
+}
+
+type SlotClaim = {
+  employeeId: number;
+  shiftSlot: string | null;
+  hourSlot: number | null;
+};
+
+type ExternalSlotConflict = SlotClaim & {
+  employeeName: string;
+  supervisorId: number;
+  supervisorName: string;
+};
+
+async function findExternalBookedConflicts(
+  supervisorId: number,
+  workDate: Date,
+  claims: SlotClaim[]
+): Promise<ExternalSlotConflict[]> {
+  const employeeIds = [...new Set(claims.map((claim) => claim.employeeId))];
+  if (!employeeIds.length) return [];
+  const booked = await prisma.timesheetEntry.findMany({
+    where: {
+      employeeId: { in: employeeIds },
+      workDate,
+      taggedById: { not: supervisorId },
+      status: { in: BOOKED_ENTRY_STATUSES },
+      otHours: null,
+      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+    },
+    include: {
+      employee: { select: { name: true } },
+      taggedBy: { select: { id: true, name: true } },
+    },
+  });
+  const conflicts: ExternalSlotConflict[] = [];
+  for (const claim of claims) {
+    for (const other of booked) {
+      if (other.employeeId !== claim.employeeId || !entriesOverlap(claim, other)) continue;
+      conflicts.push({
+        ...claim,
+        employeeName: other.employee.name,
+        supervisorId: other.taggedById,
+        supervisorName: other.taggedBy.name,
+      });
+    }
+  }
+  return conflicts.filter(
+    (conflict, index, all) =>
+      all.findIndex(
+        (item) =>
+          item.employeeId === conflict.employeeId &&
+          item.shiftSlot === conflict.shiftSlot &&
+          item.hourSlot === conflict.hourSlot &&
+          item.supervisorId === conflict.supervisorId
+      ) === index
+  );
+}
+
+function bookedConflictPayload(conflicts: ExternalSlotConflict[]) {
+  const messages = [...new Map(
+    conflicts.map((item) => [
+      `${item.employeeId}|${item.supervisorId}`,
+      `Slot of Mr ${item.employeeName} is already booked by Supervisor ${item.supervisorName}`,
+    ])
+  ).values()];
+  return {
+    error: messages.join(". "),
+    code: "SLOT_ALREADY_BOOKED",
+    conflicts,
+  };
+}
+
+async function discardLosingDraftSlots(
+  supervisorId: number,
+  workDate: Date,
+  conflicts: SlotClaim[]
+) {
+  if (!conflicts.length) return;
+  await prisma.timesheetEntry.deleteMany({
+    where: {
+      taggedById: supervisorId,
+      workDate,
+      status: { in: ["DRAFT", "REJECTED"] },
+      OR: conflicts.map((item) => ({
+        employeeId: item.employeeId,
+        shiftSlot: item.shiftSlot,
+        hourSlot: item.hourSlot,
+      })),
+    },
+  });
+}
+
+async function discardCompetingExternalDrafts(
+  supervisorId: number,
+  workDate: Date,
+  winningClaims: SlotClaim[]
+) {
+  const employeeIds = [...new Set(winningClaims.map((claim) => claim.employeeId))];
+  if (!employeeIds.length) return 0;
+  const drafts = await prisma.timesheetEntry.findMany({
+    where: {
+      employeeId: { in: employeeIds },
+      workDate,
+      taggedById: { not: supervisorId },
+      status: { in: ["DRAFT", "REJECTED"] },
+      otHours: null,
+      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+    },
+    select: { id: true, employeeId: true, shiftSlot: true, hourSlot: true },
+  });
+  const losingIds = drafts
+    .filter((draft) =>
+      winningClaims.some(
+        (claim) => claim.employeeId === draft.employeeId && entriesOverlap(claim, draft)
+      )
+    )
+    .map((draft) => draft.id);
+  if (!losingIds.length) return 0;
+  const result = await prisma.timesheetEntry.deleteMany({ where: { id: { in: losingIds } } });
+  return result.count;
+}
 
 type ShiftSlotRow = {
   shiftSlot: ShiftSlot;
@@ -84,10 +250,227 @@ function buildShiftRows(
       projectWbsCode: jo?.projectWbs?.wbsCode ?? pw?.wbsCode ?? null,
       entryId: e.id,
       status: e.status,
-      locked: e.projectWbsId != null && e.jobOrderId != null && isProtectedEntryStatus(e.status),
+      locked: (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status),
     };
   });
 }
+
+/**
+ * Copy the previous calendar day's roster and assignments into an editable draft.
+ * Source approval status is intentionally ignored. The source day is never changed.
+ */
+timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, res) => {
+  const supervisorId = Number(req.body.supervisorId);
+  const dateStr = String(req.body.workDate || "");
+  if (!supervisorId || !dateStr) {
+    return res.status(400).json({ error: "supervisorId and workDate required" });
+  }
+  if (supervisorId !== req.user!.id || req.user!.role !== "SUPERVISOR") {
+    return res.status(403).json({ error: "You can only carry forward your own timesheet.", code: "NOT_OWNER" });
+  }
+
+  const workDate = parseDateOnly(dateStr);
+  const sourceDate = previousWorkDate(workDate);
+  const sourceDays = await prisma.timesheetDay.findMany({
+    where: { taggedById: supervisorId, workDate: sourceDate },
+    include: {
+      employee: { select: { id: true, active: true } },
+      entries: { include: { jobOrder: { select: { id: true, status: true, project: { select: { active: true } } } } } },
+    },
+  });
+  const sourceTeam = await prisma.dailyTeamSelection.findMany({
+    where: { supervisorId, workDate: sourceDate, removedAt: null },
+    select: { employeeId: true },
+  });
+
+  if (!sourceDays.length && !sourceTeam.length) {
+    return res.status(404).json({
+      error: `No roster or assignments found on ${formatDateOnly(sourceDate)}.`,
+      code: "NO_PREVIOUS_DAY_DATA",
+    });
+  }
+
+  // Match the rows visible on the previous-day screen: active roster plus the
+  // supervisor's own linked Employee row.
+  const supervisor = await prisma.user.findUnique({
+    where: { id: supervisorId },
+    select: { employeeId: true },
+  });
+  const visibleEmployeeIds = new Set(sourceTeam.map((row) => row.employeeId));
+  if (supervisor?.employeeId != null) visibleEmployeeIds.add(supervisor.employeeId);
+  const activeSourceDays = sourceDays.filter(
+    (day) => day.employee.active && visibleEmployeeIds.has(day.employeeId)
+  );
+  const regularClaims: SlotClaim[] = activeSourceDays.flatMap((day) =>
+    day.entries
+      .filter(
+        (entry) =>
+          entry.otHours == null &&
+          entry.shiftSlot != null &&
+          entry.jobOrder?.status === "active" &&
+          entry.jobOrder.project.active
+      )
+      .map((entry) => ({
+        employeeId: day.employeeId,
+        shiftSlot: entry.shiftSlot,
+        hourSlot: entry.hourSlot,
+      }))
+  );
+  const conflicts = await findExternalBookedConflicts(supervisorId, workDate, regularClaims);
+  const conflictKeys = new Set(
+    conflicts.map((item) => `${item.employeeId}|${item.shiftSlot ?? ""}|${item.hourSlot ?? ""}`)
+  );
+
+  const result = await prisma.$transaction(async (tx) => {
+    let rosterCopied = 0;
+    let daysCopied = 0;
+    let regularSlotsCopied = 0;
+    let otRowsSkipped = 0;
+    let closedJobOrderSlots = 0;
+    let unsupportedLegacyEntries = 0;
+    let conflictedSlots = 0;
+    const lockedEmployeeIds: number[] = [];
+
+    for (const employeeId of new Set(sourceTeam.map((row) => row.employeeId))) {
+      const employee = await tx.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
+      if (!employee?.active) continue;
+      const existing = await tx.dailyTeamSelection.findFirst({
+        where: { supervisorId, employeeId, workDate },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existing) {
+        await tx.dailyTeamSelection.update({
+          where: { id: existing.id },
+          data: { removedAt: null, source: "CARRIED_OVER" },
+        });
+      } else {
+        await tx.dailyTeamSelection.create({
+          data: { supervisorId, employeeId, workDate, source: "CARRIED_OVER" },
+        });
+      }
+      rosterCopied += 1;
+    }
+
+    for (const sourceDay of activeSourceDays) {
+      const target = await tx.timesheetDay.findUnique({
+        where: {
+          employeeId_workDate_taggedById: {
+            employeeId: sourceDay.employeeId,
+            workDate,
+            taggedById: supervisorId,
+          },
+        },
+        include: { entries: true },
+      });
+      const targetIsLocked =
+        target != null &&
+        (["SUBMITTED", "HOD_APPROVED", "PM_APPROVED"].includes(target.status) ||
+          target.entries.some((entry) => isProtectedEntryStatus(entry.status)));
+      if (targetIsLocked) {
+        lockedEmployeeIds.push(sourceDay.employeeId);
+        continue;
+      }
+
+      const targetDay = await tx.timesheetDay.upsert({
+        where: {
+          employeeId_workDate_taggedById: {
+            employeeId: sourceDay.employeeId,
+            workDate,
+            taggedById: supervisorId,
+          },
+        },
+        create: {
+          employeeId: sourceDay.employeeId,
+          workDate,
+          taggedById: supervisorId,
+          status: "DRAFT",
+          remarks: sourceDay.remarks,
+        },
+        update: { status: "DRAFT", remarks: sourceDay.remarks },
+      });
+      daysCopied += 1;
+
+      for (const entry of sourceDay.entries) {
+        // OT is intentionally never carried forward. It must be entered manually
+        // for the current day so overtime remains controlled and deliberate.
+        if (entry.otHours != null) {
+          otRowsSkipped += 1;
+          continue;
+        }
+        if (
+          entry.jobOrderId != null &&
+          (entry.jobOrder?.status !== "active" || !entry.jobOrder.project.active)
+        ) {
+          closedJobOrderSlots += 1;
+          continue;
+        }
+        // The current screen uses four 2-hour shift slots. Old hourly/WBS-only
+        // rows cannot be converted without changing their meaning, so report them.
+        if (entry.hourSlot != null || entry.jobOrderId == null) {
+          unsupportedLegacyEntries += 1;
+          continue;
+        }
+
+        const conflictKey = `${sourceDay.employeeId}|${entry.shiftSlot ?? ""}|${entry.hourSlot ?? ""}`;
+        if (entry.otHours == null && conflictKeys.has(conflictKey)) {
+          conflictedSlots += 1;
+          continue;
+        }
+
+        if (entry.shiftSlot != null) {
+          await tx.timesheetEntry.upsert({
+            where: {
+              timesheet_entry_shiftSlot_unique: {
+                employeeId: sourceDay.employeeId,
+                workDate,
+                shiftSlot: entry.shiftSlot,
+                taggedById: supervisorId,
+              },
+            },
+            create: {
+              timesheetDayId: targetDay.id,
+              employeeId: sourceDay.employeeId,
+              workDate,
+              shiftSlot: entry.shiftSlot,
+              hourSlot: null,
+              projectWbsId: entry.projectWbsId,
+              jobOrderId: entry.jobOrderId,
+              taggedById: supervisorId,
+              status: "DRAFT",
+            },
+            update: {
+              timesheetDayId: targetDay.id,
+              projectWbsId: entry.projectWbsId,
+              jobOrderId: entry.jobOrderId,
+              status: "DRAFT",
+            },
+          });
+          regularSlotsCopied += 1;
+        }
+      }
+    }
+
+    return {
+      rosterCopied,
+      daysCopied,
+      regularSlotsCopied,
+      otRowsSkipped,
+      closedJobOrderSlots,
+      unsupportedLegacyEntries,
+      conflictedSlots,
+      lockedEmployeeIds,
+    };
+  });
+
+  await writeAudit(req.user!.id, "TIMESHEET_CARRY_FORWARD", "timesheet_day", dateStr, {
+    supervisorId,
+    sourceDate: formatDateOnly(sourceDate),
+    targetDate: dateStr,
+    ...result,
+  });
+
+  res.json({ ok: true, sourceDate: formatDateOnly(sourceDate), ...result });
+});
 
 timesheetRouter.get("/", async (req, res) => {
   const supervisorId = Number(req.query.supervisor_id);
@@ -150,6 +533,31 @@ timesheetRouter.get("/", async (req, res) => {
 
   const employeeIds = teamWithSelf.map((t) => t.employeeId);
   const dayTotals = await getEmployeeDayHourTotals(employeeIds, workDate, supervisorId);
+  // Only submitted/approved allocations from other supervisors are globally
+  // visible. Their drafts remain private until they win the submission claim.
+  const otherEntries = employeeIds.length
+    ? await prisma.timesheetEntry.findMany({
+        where: {
+          employeeId: { in: employeeIds },
+          workDate,
+          taggedById: { not: supervisorId },
+          status: { in: BOOKED_ENTRY_STATUSES },
+          otHours: null,
+          OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+        },
+        include: {
+          taggedBy: { select: { id: true, name: true } },
+          projectWbs: true,
+          jobOrder: { include: { project: true, projectWbs: true } },
+        },
+      })
+    : [];
+  const otherEntriesByEmployee = new Map<number, typeof otherEntries>();
+  for (const entry of otherEntries) {
+    const list = otherEntriesByEmployee.get(entry.employeeId) ?? [];
+    list.push(entry);
+    otherEntriesByEmployee.set(entry.employeeId, list);
+  }
 
   // Active projects + their job orders, for the Bulk Assignment block + per-row Allocation.
   const projects = await prisma.project.findMany({
@@ -166,12 +574,30 @@ timesheetRouter.get("/", async (req, res) => {
   // Build per-employee rows: 4 shift slots + derived totals + edit-lock info.
   const rows = teamWithSelf.map((t) => {
     const day = dayByEmployee.get(t.employeeId);
-    const slots = buildShiftRows(day?.entries ?? []);
+    const ownSlots = buildShiftRows(day?.entries ?? []);
+    const external = otherEntriesByEmployee.get(t.employeeId) ?? [];
+    const slots = ownSlots.map((slot) => {
+      const bookings = external.filter((entry) => entryOverlapsShift(entry, slot.shiftSlot));
+      const displayBooking =
+        bookings.find((entry) => BOOKED_ENTRY_STATUSES.includes(entry.status)) ?? bookings[0] ?? null;
+      return {
+        ...slot,
+        bookedByOther: bookings.length > 0,
+        bookedBySupervisorNames: [...new Set(bookings.map((entry) => entry.taggedBy.name))],
+        otherBookingSubmitted: bookings.some((entry) => BOOKED_ENTRY_STATUSES.includes(entry.status)),
+        otherBookingStatus: displayBooking?.status ?? null,
+        otherProjectColorKey:
+          displayBooking?.projectWbs?.colorKey ?? displayBooking?.jobOrder?.project.colorKey ?? null,
+      };
+    });
+    const otEntry = day?.entries.find((e) => e.otHours != null) ?? null;
     const filledSlots = slots.filter((s) => s.jobOrderId != null).length;
-    const otherSlots = dayTotals.get(t.employeeId)?.otherSlots ?? [];
-    const otherHours = dayTotals.get(t.employeeId)?.otherHours ?? 0;
-    // Day total = filled shift slots (this supervisor) + distinct hour slots tagged by other supervisors.
-    const dayTotalHours = filledSlots + otherHours;
+    const employeeDayTotals = dayTotals.get(t.employeeId);
+    const otherSlots = employeeDayTotals?.otherSlots ?? [];
+    const otherHours = employeeDayTotals?.otherHours ?? 0;
+    // Service totals are true hours across this supervisor plus eligible bookings
+    // from other supervisors (shift slot = 2h; legacy hour slot = 1h).
+    const dayTotalHours = employeeDayTotals?.totalHours ?? filledSlots * 2;
     const exceedsLimit = dayTotalHours > maxDailyHours;
     const latestReturn = day?.approvals?.find((a) => RETURN_ACTIONS.includes(a.action)) ?? null;
     const latestApprove = day?.approvals?.find((a) => a.action === "APPROVE") ?? null;
@@ -192,6 +618,11 @@ timesheetRouter.get("/", async (req, res) => {
       remarks: day?.remarks ?? "",
       status,
       slots,
+      otHours: otEntry?.otHours ?? null,
+      otJobOrderId: otEntry?.jobOrderId ?? null,
+      otProjectId: otEntry?.jobOrder?.project.id ?? null,
+      otProjectColorKey: otEntry?.jobOrder?.project.colorKey ?? null,
+      otLocked: otEntry != null && isProtectedEntryStatus(otEntry.status),
       filledSlots,
       filled: filledSlots > 0,
       fullShiftDone: filledSlots === SHIFT_SLOTS.length,
@@ -199,7 +630,7 @@ timesheetRouter.get("/", async (req, res) => {
       otherSlots,
       dayTotalHours,
       exceedsLimit,
-      remarksRequired: exceedsLimit && filledSlots > 0,
+      remarksRequired: (exceedsLimit && filledSlots > 0) || (otEntry?.otHours ?? 0) > 0,
       editMode: lock.editMode,
       approvedAt: lock.approvedAt,
       lockExpiresAt: lock.lockExpiresAt,
@@ -273,7 +704,7 @@ timesheetRouter.get("/", async (req, res) => {
   });
 });
 
-timesheetRouter.put("/day", async (req, res) => {
+timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
   const parsed = timesheetDaySchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -284,6 +715,16 @@ timesheetRouter.put("/day", async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  const requestedClaims: SlotClaim[] = rows.flatMap((row) =>
+    row.slots
+      .filter((slot) => slot.jobOrderId != null)
+      .map((slot) => ({ employeeId: row.employeeId, shiftSlot: slot.shiftSlot, hourSlot: null }))
+  );
+  const externalConflicts = await findExternalBookedConflicts(supervisorId, workDate, requestedClaims);
+  if (externalConflicts.length) {
+    await discardLosingDraftSlots(supervisorId, workDate, externalConflicts);
+    return res.status(409).json(bookedConflictPayload(externalConflicts));
+  }
 
   const lockViolations: { employeeId: number; error: string }[] = [];
 
@@ -318,9 +759,21 @@ timesheetRouter.put("/day", async (req, res) => {
     });
 
     if (lock.editMode === "locked") {
+      // The daily grid submits all visible employees together. Ignore a locked
+      // row when the client merely echoes its current values; only reject an
+      // actual attempt to change protected data.
+      const existingByShift = new Map(
+        existing!.entries.filter((e) => e.shiftSlot != null).map((e) => [e.shiftSlot as string, e])
+      );
+      const remarksChanged = (row.remarks ?? "") !== (existing!.remarks ?? "");
+      const slotsChanged = row.slots.some(
+        (slot) => (existingByShift.get(slot.shiftSlot)?.jobOrderId ?? null) !== slot.jobOrderId
+      );
+      if (!remarksChanged && !slotsChanged) continue;
+
       lockViolations.push({
         employeeId: row.employeeId,
-        error: "Timesheet is HOD/Project Head approved and the 24-hour add window has expired. Only HOD reject unlocks it.",
+        error: "Timesheet has been submitted and cannot be edited. Only HOD/Project Head rejection unlocks it.",
       });
       continue;
     }
@@ -346,7 +799,7 @@ timesheetRouter.put("/day", async (req, res) => {
             lockViolations.push({
               employeeId: row.employeeId,
               error:
-                "Cannot clear or change shift slots already saved after HOD/Project Head approval. You may only fill empty slots within 24 hours.",
+                "Cannot clear or change slots that were already submitted or approved.",
             });
             break;
           }
@@ -532,7 +985,7 @@ timesheetRouter.put("/day", async (req, res) => {
  * pairs in one supervisor-day. Used by the Daily Timesheet Entry "Bulk Assignment"
  * block. Honours the same edit-lock rules as PUT /day.
  */
-timesheetRouter.post("/bulk-assign", async (req, res) => {
+timesheetRouter.post("/bulk-assign", serializeTimesheetMutation, async (req, res) => {
   const parsed = bulkAssignSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -543,6 +996,16 @@ timesheetRouter.post("/bulk-assign", async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  const requestedClaims: SlotClaim[] = slots.map((slot) => ({
+    employeeId: slot.employeeId,
+    shiftSlot: slot.shiftSlot,
+    hourSlot: null,
+  }));
+  const externalConflicts = await findExternalBookedConflicts(supervisorId, workDate, requestedClaims);
+  if (externalConflicts.length) {
+    await discardLosingDraftSlots(supervisorId, workDate, externalConflicts);
+    return res.status(409).json(bookedConflictPayload(externalConflicts));
+  }
 
   // Validate the JobOrder belongs to the Project.
   const jo = await prisma.jobOrder.findUnique({
@@ -586,7 +1049,7 @@ timesheetRouter.post("/bulk-assign", async (req, res) => {
     if (lock.editMode === "locked") {
       lockViolations.push({
         employeeId,
-        error: "Timesheet is HOD/Project Head approved and the 24-hour add window has expired.",
+        error: "Timesheet has been submitted and cannot be edited.",
       });
       continue;
     }
@@ -646,7 +1109,7 @@ timesheetRouter.post("/bulk-assign", async (req, res) => {
 });
 
 /** Per-slot edit used by the per-row "Assign" button. Clears if jobOrderId is null. */
-timesheetRouter.put("/entry", async (req, res) => {
+timesheetRouter.put("/entry", serializeTimesheetMutation, async (req, res) => {
   const parsed = setSlotJobOrderSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -657,6 +1120,16 @@ timesheetRouter.put("/entry", async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+
+  if (jobOrderId != null) {
+    const externalConflicts = await findExternalBookedConflicts(supervisorId, workDate, [
+      { employeeId, shiftSlot, hourSlot: null },
+    ]);
+    if (externalConflicts.length) {
+      await discardLosingDraftSlots(supervisorId, workDate, externalConflicts);
+      return res.status(409).json(bookedConflictPayload(externalConflicts));
+    }
+  }
 
   const existing = await prisma.timesheetDay.findUnique({
     where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
@@ -709,7 +1182,7 @@ timesheetRouter.put("/entry", async (req, res) => {
  * enforced here (SQLite treats NULL as distinct in unique constraints, so the
  * schema can't). Owner-checked + status-locked + audited, same as assign/unassign.
  */
-timesheetRouter.put("/ot", async (req, res) => {
+timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
   const supervisorId = Number(req.body.supervisorId);
   const dateStr = String(req.body.workDate || "");
   const employeeId = Number(req.body.employeeId);
@@ -768,6 +1241,16 @@ timesheetRouter.put("/ot", async (req, res) => {
     where: { timesheetDayId: day.id, otHours: { not: null } },
   });
 
+  if (existingOt && existingOt.otHours === otHours && existingOt.jobOrderId === jobOrderId) {
+    return res.json({ ok: true, otHours, jobOrderId });
+  }
+  if (existingOt && isProtectedEntryStatus(existingOt.status)) {
+    return res.status(400).json({
+      error: "Approved OT cannot be changed. HOD/Project Head must reject it first.",
+      code: "TIMESHEET_ENTRY_LOCKED",
+    });
+  }
+
   if (otHours == null) {
     // Clear OT.
     if (existingOt) await prisma.timesheetEntry.delete({ where: { id: existingOt.id } });
@@ -804,7 +1287,7 @@ timesheetRouter.put("/ot", async (req, res) => {
   res.json({ ok: true, otHours, jobOrderId });
 });
 
-timesheetRouter.post("/submit", async (req, res) => {
+timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => {
   const supervisorId = Number(req.body.supervisorId);
   const dateStr = String(req.body.workDate || "");
   if (!supervisorId || !dateStr) {
@@ -840,6 +1323,83 @@ timesheetRouter.post("/submit", async (req, res) => {
 
   const employeeIds = days.map((d) => d.employeeId);
   const dayTotals = await getEmployeeDayHourTotals(employeeIds, workDate, supervisorId);
+  const bookedByOther = employeeIds.length
+    ? await prisma.timesheetEntry.findMany({
+        where: {
+          employeeId: { in: employeeIds },
+          workDate,
+          taggedById: { not: supervisorId },
+          status: { in: BOOKED_ENTRY_STATUSES },
+          otHours: null,
+          OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+        },
+        include: { taggedBy: { select: { id: true, name: true } } },
+      })
+    : [];
+
+  const slotConflicts: {
+    employeeId: number;
+    employeeName: string;
+    supervisorId: number;
+    supervisorName: string;
+    shiftSlot: string | null;
+    hourSlot: number | null;
+  }[] = [];
+  for (const day of days) {
+    const hasProtectedEntries = day.entries.some(
+      (entry) => (entry.projectWbsId != null || entry.jobOrderId != null) && isProtectedEntryStatus(entry.status)
+    );
+    const lock = resolveEditLock(day.status, day.approvals[0]?.createdAt ?? day.updatedAt, {
+      hasProtectedEntries,
+    });
+    if (lock.editMode === "locked") continue;
+
+    const pendingEntries = day.entries.filter(
+      (entry) =>
+        entry.otHours == null &&
+        (entry.shiftSlot != null || entry.hourSlot != null) &&
+        ["DRAFT", "REJECTED"].includes(entry.status)
+    );
+    for (const entry of pendingEntries) {
+      for (const other of bookedByOther) {
+        if (other.employeeId !== day.employeeId || !entriesOverlap(entry, other)) continue;
+        if (
+          slotConflicts.some(
+            (item) =>
+              item.employeeId === day.employeeId &&
+              item.supervisorId === other.taggedById &&
+              item.shiftSlot === entry.shiftSlot &&
+              item.hourSlot === entry.hourSlot
+          )
+        ) continue;
+        slotConflicts.push({
+          employeeId: day.employeeId,
+          employeeName: day.employee.name,
+          supervisorId: other.taggedById,
+          supervisorName: other.taggedBy.name,
+          shiftSlot: entry.shiftSlot,
+          hourSlot: entry.hourSlot,
+        });
+      }
+    }
+  }
+  if (slotConflicts.length) {
+    await discardLosingDraftSlots(supervisorId, workDate, slotConflicts);
+    return res.status(409).json(bookedConflictPayload(slotConflicts));
+  }
+
+  const missingOtRemarks = days
+    .filter((day) => day.entries.some((entry) => (entry.otHours ?? 0) > 0) && !day.remarks?.trim())
+    .map((day) => ({ employeeId: day.employeeId, employeeName: day.employee.name }));
+  if (missingOtRemarks.length) {
+    return res.status(400).json({
+      error: `Remarks are mandatory when overtime is entered for: ${missingOtRemarks
+        .map((item) => item.employeeName)
+        .join(", ")}.`,
+      code: "OT_REMARKS_REQUIRED",
+      employees: missingOtRemarks,
+    });
+  }
 
   const violations: {
     employeeId: number;
@@ -853,7 +1413,7 @@ timesheetRouter.post("/submit", async (req, res) => {
 
   for (const day of days) {
     const hasProtectedEntries = day.entries.some(
-      (e) => e.projectWbsId != null && isProtectedEntryStatus(e.status)
+      (e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status)
     );
     const lock = resolveEditLock(day.status, day.approvals[0]?.createdAt ?? day.updatedAt, {
       hasProtectedEntries,
@@ -863,13 +1423,9 @@ timesheetRouter.post("/submit", async (req, res) => {
       continue;
     }
     if (!day.entries.length) continue;
-    // Union of legacy hour slots (numeric) with shift-slot entries (strings). Tag shift slots
-    // with `s:` so they don't collide with the numeric hour-slot space; Set dedupes each kind.
-    const localSlots: string[] = day.entries.map((e) =>
-      e.hourSlot != null ? `h:${e.hourSlot}` : e.shiftSlot != null ? `s:${e.shiftSlot}` : ""
-    ).filter(Boolean);
-    const otherSlots = dayTotals.get(day.employeeId)?.otherSlots ?? [];
-    const total = new Set([...otherSlots.map((s) => `h:${s}`), ...localSlots]).size;
+    // Use the shared true-hour total so four 2-hour shift slots equal 8h and
+    // eligible bookings from other supervisors are included consistently.
+    const total = dayTotals.get(day.employeeId)?.totalHours ?? 0;
     if (total <= maxDailyHours) continue;
     const item = {
       employeeId: day.employeeId,
@@ -899,7 +1455,7 @@ timesheetRouter.post("/submit", async (req, res) => {
     if (!d.entries.length) return false;
     if (lockedIds.includes(d.id)) return false;
     const hasProtectedEntries = d.entries.some(
-      (e) => e.projectWbsId != null && isProtectedEntryStatus(e.status)
+      (e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status)
     );
     const lock = resolveEditLock(d.status, d.approvals[0]?.createdAt ?? d.updatedAt, {
       hasProtectedEntries,
@@ -913,18 +1469,52 @@ timesheetRouter.post("/submit", async (req, res) => {
   const dayIds = submittable.map((d) => d.id);
 
   if (!dayIds.length) {
+    // A winning concurrent submit may already have removed this supervisor's
+    // overlapping draft rows. Return the winning booking, not a misleading
+    // "no project hours" response, so the client reloads the replacement.
+    const replacementConflicts: ExternalSlotConflict[] = bookedByOther.map((other) => ({
+      employeeId: other.employeeId,
+      employeeName: days.find((day) => day.employeeId === other.employeeId)?.employee.name ?? `#${other.employeeId}`,
+      supervisorId: other.taggedById,
+      supervisorName: other.taggedBy.name,
+      shiftSlot: other.shiftSlot,
+      hourSlot: other.hourSlot,
+    }));
+    if (!lockedIds.length && replacementConflicts.length) {
+      return res.status(409).json(bookedConflictPayload(replacementConflicts));
+    }
     return res.status(400).json({
       error: lockedIds.length
-        ? "No editable timesheets to submit. Approved sheets outside the 24-hour window cannot be modified."
+        ? "No editable timesheets to submit. Submitted and approved timesheets cannot be modified."
         : "No project hours to submit. Tag at least one hour before submitting for approval.",
     });
   }
+
+  const winningClaims: SlotClaim[] = submittable.flatMap((day) =>
+    day.entries
+      .filter(
+        (entry) =>
+          entry.otHours == null &&
+          (entry.shiftSlot != null || entry.hourSlot != null) &&
+          ["DRAFT", "REJECTED"].includes(entry.status)
+      )
+      .map((entry) => ({
+        employeeId: day.employeeId,
+        shiftSlot: entry.shiftSlot,
+        hourSlot: entry.hourSlot,
+      }))
+  );
+  const replacedDraftSlots = await discardCompetingExternalDrafts(
+    supervisorId,
+    workDate,
+    winningClaims
+  );
 
   let submittedCount = 0;
   for (const dayId of dayIds) {
     const day = days.find((d) => d.id === dayId)!;
     const hasProtectedEntries = day.entries.some(
-      (e) => e.projectWbsId != null && isProtectedEntryStatus(e.status)
+      (e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status)
     );
 
     await prisma.timesheetDay.update({
@@ -960,12 +1550,14 @@ timesheetRouter.post("/submit", async (req, res) => {
     supervisorId,
     updated: submittedCount,
     overtimeWarnings: warnings.length,
+    replacedDraftSlots,
   });
 
   res.json({
     ok: true,
     submitted: submittedCount,
     maxDailyHours,
+    replacedDraftSlots,
     warnings: warnings.map((w) => ({
       ...w,
       message: `${w.employeeName} has ${w.dayTotalHours}h (limit ${w.maxDailyHours}h). Overtime reason recorded for HOD: "${w.remarks}"`,

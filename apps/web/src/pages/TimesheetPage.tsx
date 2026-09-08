@@ -32,6 +32,11 @@ type ShiftSlotRow = {
   entryId: number | null;
   status: string | null;
   locked: boolean;
+  bookedByOther?: boolean;
+  bookedBySupervisorNames?: string[];
+  otherBookingSubmitted?: boolean;
+  otherBookingStatus?: string | null;
+  otherProjectColorKey?: string | null;
 };
 type ReturnFeedback = {
   action: string;
@@ -56,6 +61,9 @@ type Row = {
   exceedsLimit?: boolean;
   otHours?: number | null;
   otJobOrderId?: number | null;
+  otProjectId?: number | null;
+  otProjectColorKey?: string | null;
+  otLocked?: boolean;
   remarksRequired?: boolean;
   editMode?: EditMode;
   approvedAt?: string | null;
@@ -79,6 +87,9 @@ type LocalRow = Row & {
   projectId: number | "";
   // Per-row selected Job Order for the Assign button.
   jobOrderId: number | "";
+  // OT uses the same row Project / Job Order controls as regular shift slots.
+  otSelected: boolean;
+  otHoursInput: string;
 };
 
 function rowEditMode(r: { editMode?: EditMode }): EditMode {
@@ -144,16 +155,15 @@ export function TimesheetPage() {
   // Bulk Assignment block state
   const [bulkProjectId, setBulkProjectId] = useState<number | "">("");
   const [bulkJobOrderId, setBulkJobOrderId] = useState<number | "">("");
-  // OT entry modal state — which employee's OT cell was clicked
-  const [otTarget, setOtTarget] = useState<{ employeeId: number; name: string } | null>(null);
-  const [otProjectId, setOtProjectId] = useState<number | "">("");
-  const [otJobOrderId, setOtJobOrderId] = useState<number | "">("");
-  const [otHours, setOtHours] = useState<string>("");
-  const [otSaving, setOtSaving] = useState(false);
   // Expand/collapse state for the per-row grid (default: collapsed)
   const [expandedEmployees, setExpandedEmployees] = useState<Set<number>>(new Set());
   // For the "Select from Previous Day" carryover
   const [carryBanner, setCarryBanner] = useState("");
+  const [carryLoading, setCarryLoading] = useState(false);
+
+  useEffect(() => {
+    setCarryBanner("");
+  }, [ctx.date, ctx.supervisorId]);
 
   useEffect(() => {
     const d = params.get("date");
@@ -189,8 +199,10 @@ export function TimesheetPage() {
             ...r,
             editMode: r.editMode ?? "full",
             selectedSlots: new Set<ShiftSlot>(),
-            projectId: firstFilled?.projectId ?? "",
-            jobOrderId: firstFilled?.jobOrderId ?? "",
+            projectId: firstFilled?.projectId ?? r.otProjectId ?? "",
+            jobOrderId: firstFilled?.jobOrderId ?? r.otJobOrderId ?? "",
+            otSelected: false,
+            otHoursInput: String(r.otHours ?? 0),
           };
         })
       );
@@ -208,6 +220,13 @@ export function TimesheetPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function reloadIfAnotherSupervisorWon(error: unknown) {
+    if (!(error instanceof ApiError)) return false;
+    if ((error.payload as { code?: string })?.code !== "SLOT_ALREADY_BOOKED") return false;
+    await load();
+    return true;
+  }
 
   const filled = useMemo(() => rows.filter((r) => r.filledSlots > 0).length, [rows]);
 
@@ -305,77 +324,51 @@ export function TimesheetPage() {
     );
   }
 
-  function openOtModal(employeeId: number, name: string) {
-    const row = rows.find((r) => r.employeeId === employeeId);
-    setOtTarget({ employeeId, name });
-    setOtProjectId("");
-    setOtJobOrderId("");
-    setOtHours(row?.otHours != null ? String(row.otHours) : "");
+  function toggleOtSelection(employeeId: number) {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.employeeId !== employeeId || rowEditMode(r) === "locked" || r.otLocked) return r;
+        const selecting = !r.otSelected;
+        return {
+          ...r,
+          otSelected: selecting,
+          projectId: selecting && r.otProjectId ? r.otProjectId : r.projectId,
+          jobOrderId: selecting && r.otJobOrderId ? r.otJobOrderId : r.jobOrderId,
+        };
+      })
+    );
   }
 
-  async function saveOt() {
-    if (!otTarget) return;
-    const hours = Number(otHours);
-    if (!Number.isInteger(hours) || hours < 1 || hours > 12) {
-      setError("OT hours must be a whole number between 1 and 12.");
-      return;
-    }
-    if (!otJobOrderId) {
-      setError("Select a Project and Work Order for the OT hours.");
-      return;
-    }
-    setOtSaving(true);
-    setError("");
-    try {
-      await api("/timesheet/ot", {
-        method: "PUT",
-        body: JSON.stringify({
-          supervisorId: ctx.supervisorId,
-          workDate: ctx.date,
-          employeeId: otTarget.employeeId,
-          otHours: hours,
-          jobOrderId: otJobOrderId,
-        }),
-      });
-      setMessage(`Added ${hours}h OT for ${otTarget.name}.`);
-      setOtTarget(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save OT hours");
-    } finally {
-      setOtSaving(false);
-    }
-  }
-
-  async function clearOt() {
-    if (!otTarget) return;
-    setOtSaving(true);
-    setError("");
-    try {
-      await api("/timesheet/ot", {
-        method: "PUT",
-        body: JSON.stringify({
-          supervisorId: ctx.supervisorId,
-          workDate: ctx.date,
-          employeeId: otTarget.employeeId,
-          otHours: null,
-          jobOrderId: null,
-        }),
-      });
-      setMessage(`Cleared OT for ${otTarget.name}.`);
-      setOtTarget(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to clear OT hours");
-    } finally {
-      setOtSaving(false);
-    }
+  function setOtHoursInput(employeeId: number, value: string) {
+    if (value !== "" && !/^\d{0,2}$/.test(value)) return;
+    setRows((prev) =>
+      prev.map((r) =>
+        r.employeeId === employeeId && rowEditMode(r) !== "locked" && !r.otLocked
+          ? { ...r, otHoursInput: value }
+          : r
+      )
+    );
   }
 
   async function assignRowToSelected(employeeId: number) {
     const row = rows.find((r) => r.employeeId === employeeId);
-    if (!row || !row.jobOrderId || row.selectedSlots.size === 0) return;
+    if (!row || (row.selectedSlots.size === 0 && !row.otSelected)) return;
     if (rowEditMode(row) === "locked") return;
+
+    const hours = Number(row.otHoursInput);
+    if (row.otSelected && (!Number.isInteger(hours) || hours < 0 || hours > 12)) {
+      setError("OT hours must be a whole number between 0 and 12 (use 0 to clear existing OT).");
+      return;
+    }
+    if (row.otSelected && hours === 0 && row.otHours == null) {
+      setError("Enter OT hours between 1 and 12.");
+      return;
+    }
+    if (!row.jobOrderId && (row.selectedSlots.size > 0 || (row.otSelected && hours > 0))) {
+      setError("Select a Project and Job Order before assigning.");
+      return;
+    }
+
     const employeeIdVal = row.employeeId;
     const jobOrderId = row.jobOrderId as number;
     const slots = Array.from(row.selectedSlots);
@@ -394,10 +387,126 @@ export function TimesheetPage() {
           }),
         });
       }
-      setMessage(`Assigned ${slots.length} slot(s) for ${row.employee.name}.`);
+      if (row.otSelected) {
+        await api("/timesheet/ot", {
+          method: "PUT",
+          body: JSON.stringify({
+            supervisorId: ctx.supervisorId,
+            workDate: ctx.date,
+            employeeId: employeeIdVal,
+            otHours: hours === 0 ? null : hours,
+            jobOrderId: hours === 0 ? null : jobOrderId,
+          }),
+        });
+      }
+      const assigned = [
+        slots.length ? `${slots.length} regular slot(s)` : "",
+        row.otSelected ? (hours === 0 ? "OT cleared" : `${hours}h OT`) : "",
+      ].filter(Boolean).join(" and ");
+      setMessage(`${assigned} for ${row.employee.name}.`);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Assign failed");
+      await reloadIfAnotherSupervisorWon(e);
+    }
+  }
+
+  async function clearDraftSlot(employeeId: number, shiftSlot: ShiftSlot) {
+    const row = rows.find((item) => item.employeeId === employeeId);
+    const slot = row?.slots.find((item) => item.shiftSlot === shiftSlot);
+    if (
+      !row ||
+      !slot ||
+      slot.jobOrderId == null ||
+      rowEditMode(row) === "locked" ||
+      slot.locked ||
+      slot.otherBookingSubmitted ||
+      !isEditableForReassign(row.status)
+    ) return;
+
+    setError("");
+    try {
+      await api("/timesheet/entry", {
+        method: "PUT",
+        body: JSON.stringify({
+          supervisorId: ctx.supervisorId,
+          workDate: ctx.date,
+          employeeId,
+          shiftSlot,
+          jobOrderId: null,
+        }),
+      });
+      setMessage(`${SHIFT_LABELS[shiftSlot].short} allocation removed for ${row.employee.name}.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove allocation");
+      if (e instanceof ApiError && (e.payload as { code?: string })?.code === "SLOT_ALREADY_BOOKED") {
+        await load();
+      }
+    }
+  }
+
+  async function clearDraftOt(employeeId: number) {
+    const row = rows.find((item) => item.employeeId === employeeId);
+    if (
+      !row ||
+      row.otHours == null ||
+      rowEditMode(row) === "locked" ||
+      row.otLocked ||
+      !isEditableForReassign(row.status)
+    ) return;
+
+    setError("");
+    try {
+      await api("/timesheet/ot", {
+        method: "PUT",
+        body: JSON.stringify({
+          supervisorId: ctx.supervisorId,
+          workDate: ctx.date,
+          employeeId,
+          otHours: null,
+          jobOrderId: null,
+        }),
+      });
+      setMessage(`OT allocation removed for ${row.employee.name}.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove OT allocation");
+    }
+  }
+
+  async function clearSelectedDraftSlots(employeeId: number) {
+    const row = rows.find((item) => item.employeeId === employeeId);
+    if (!row || rowEditMode(row) === "locked") return;
+    const selectedAssigned = row.slots.filter(
+      (slot) =>
+        row.selectedSlots.has(slot.shiftSlot) &&
+        slot.jobOrderId != null &&
+        !slot.locked &&
+        !slot.otherBookingSubmitted &&
+        isEditableForReassign(row.status)
+    );
+    if (!selectedAssigned.length) return;
+
+    setError("");
+    try {
+      for (const slot of selectedAssigned) {
+        await api("/timesheet/entry", {
+          method: "PUT",
+          body: JSON.stringify({
+            supervisorId: ctx.supervisorId,
+            workDate: ctx.date,
+            employeeId,
+            shiftSlot: slot.shiftSlot,
+            jobOrderId: null,
+          }),
+        });
+      }
+      setMessage(`Removed ${selectedAssigned.length} draft allocation(s) for ${row.employee.name}.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove allocations");
+      await reloadIfAnotherSupervisorWon(e);
     }
   }
 
@@ -432,13 +541,11 @@ export function TimesheetPage() {
     setRows((prev) =>
       prev.map((r) => {
         if (rowEditMode(r) === "locked") return r;
-        // On an editable (not-yet-submitted) day include already-assigned slots so the
-        // supervisor can bulk-reassign them. Otherwise skip "Assigned" rows.
-        if (r.fullShiftDone && !isEditableForReassign(r.status)) return r;
-        // Select every empty slot (and assigned slots on editable days)
+        // Bulk Select All is intentionally limited to empty editable slots.
+        // Assigned slots can still be selected one at a time for reassignment.
         const next = new Set<ShiftSlot>();
         for (const s of r.slots) {
-          if (!s.locked && (s.jobOrderId == null || isEditableForReassign(r.status))) next.add(s.shiftSlot);
+          if (!s.locked && !s.bookedByOther && s.jobOrderId == null) next.add(s.shiftSlot);
         }
         return { ...r, selectedSlots: next };
       })
@@ -489,6 +596,7 @@ export function TimesheetPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Bulk assign failed");
+      await reloadIfAnotherSupervisorWon(e);
     }
   }
 
@@ -498,7 +606,9 @@ export function TimesheetPage() {
     return {
       supervisorId: ctx.supervisorId,
       workDate: ctx.date,
-      rows: rows.map((r) => ({
+      // Locked rows are read-only context, not save targets. Sending them made
+      // an unrelated approved employee block a rejected employee's resubmission.
+      rows: rows.filter((r) => rowEditMode(r) !== "locked").map((r) => ({
         employeeId: r.employeeId,
         remarks: r.remarks,
         slots: SHIFT_SLOTS.map((shiftSlot) => {
@@ -522,6 +632,7 @@ export function TimesheetPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
+      await reloadIfAnotherSupervisorWon(e);
     }
   }
 
@@ -549,9 +660,13 @@ export function TimesheetPage() {
     } catch (e) {
       if (e instanceof ApiError) {
         const payload = e.payload as {
+          code?: string;
           violations?: { employeeName: string; dayTotalHours: number }[];
         };
-        if (payload?.violations?.length) {
+        if (payload?.code === "SLOT_ALREADY_BOOKED") {
+          setError(e.message);
+          await load();
+        } else if (payload?.code === "MAX_DAILY_HOURS_REMARKS_REQUIRED" && payload.violations?.length) {
           setError(
             `${e.message} Missing remarks: ${payload.violations
               .map((v) => `${v.employeeName} (${v.dayTotalHours}h)`)
@@ -567,36 +682,51 @@ export function TimesheetPage() {
   }
 
   async function selectFromPreviousDay() {
-    if (!ctx.supervisorId) return;
+    if (!ctx.supervisorId || carryLoading) return;
     setError("");
+    setCarryBanner("");
+    setCarryLoading(true);
     try {
-      const prev = await api<{
-        rows: { employeeId: number; slots: { shiftSlot: ShiftSlot; jobOrderId: number | null }[] }[];
-        closedJobOrderSlots: { employeeId: number; shiftSlot: ShiftSlot }[];
-      }>(`/timesheet/previous-day?supervisor_id=${ctx.supervisorId}&date=${ctx.date}`);
-      // Apply via bulk-assign per employee
-      for (const r of prev.rows) {
-        for (const s of r.slots) {
-          if (s.jobOrderId == null) continue;
-          await api("/timesheet/entry", {
-            method: "PUT",
-            body: JSON.stringify({
-              supervisorId: ctx.supervisorId,
-              workDate: ctx.date,
-              employeeId: r.employeeId,
-              shiftSlot: s.shiftSlot,
-              jobOrderId: s.jobOrderId,
-            }),
-          });
-        }
-      }
-      const closedNote = prev.closedJobOrderSlots?.length
-        ? ` ${prev.closedJobOrderSlots.length} carried slot(s) reference Job Orders that are no longer active and were skipped.`
-        : "";
-      setCarryBanner(`Carried over allocations from previous day.${closedNote}`);
+      const carried = await api<{
+        sourceDate: string;
+        rosterCopied: number;
+        daysCopied: number;
+        regularSlotsCopied: number;
+        otRowsSkipped: number;
+        closedJobOrderSlots: number;
+        unsupportedLegacyEntries: number;
+        conflictedSlots: number;
+        lockedEmployeeIds: number[];
+      }>("/timesheet/carry-forward", {
+        method: "POST",
+        body: JSON.stringify({
+          supervisorId: ctx.supervisorId,
+          workDate: ctx.date,
+        }),
+      });
+      const warnings = [
+        carried.closedJobOrderSlots > 0
+          ? `${carried.closedJobOrderSlots} assignment(s) with closed Job Orders were skipped`
+          : "",
+        carried.unsupportedLegacyEntries > 0
+          ? `${carried.unsupportedLegacyEntries} legacy assignment(s) could not be mapped to the current shift grid`
+          : "",
+        carried.conflictedSlots > 0
+          ? `${carried.conflictedSlots} slot(s) already booked by another supervisor were skipped`
+          : "",
+        carried.lockedEmployeeIds.length > 0
+          ? `${carried.lockedEmployeeIds.length} locked current-day sheet(s) were not changed`
+          : "",
+      ].filter(Boolean);
+      setCarryBanner(
+        `Copied ${carried.regularSlotsCopied} regular slot(s) from ${carried.sourceDate} as Draft. ` +
+          `OT was left unassigned for manual entry.${warnings.length ? ` ${warnings.join("; ")}.` : ""}`
+      );
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Carry-over failed");
+    } finally {
+      setCarryLoading(false);
     }
   }
 
@@ -606,8 +736,18 @@ export function TimesheetPage() {
       (e.name.toLowerCase().includes(addQuery.toLowerCase()) || String(e.id).includes(addQuery))
   );
 
-  const allUnassigned = rows.filter((r) => !r.fullShiftDone && rowEditMode(r) !== "locked");
-  const allFullyAssigned = rows.length > 0 && rows.every((r) => r.fullShiftDone);
+  const eligibleBulkSlots = rows.flatMap((r) =>
+    rowEditMode(r) === "locked"
+      ? []
+      : r.slots
+          .filter((s) => !s.locked && !s.bookedByOther && s.jobOrderId == null)
+          .map((s) => ({ employeeId: r.employeeId, shiftSlot: s.shiftSlot }))
+  );
+  const allEligibleBulkSlotsSelected =
+    eligibleBulkSlots.length > 0 &&
+    eligibleBulkSlots.every(({ employeeId, shiftSlot }) =>
+      rows.find((r) => r.employeeId === employeeId)?.selectedSlots.has(shiftSlot)
+    );
 
   return (
     <>
@@ -677,9 +817,9 @@ export function TimesheetPage() {
             <label className="bulk-assign__check">
               <input
                 type="checkbox"
-                checked={totalSelectedSlots > 0 && !allFullyAssigned}
+                checked={allEligibleBulkSlotsSelected}
                 onChange={(e) => (e.target.checked ? selectAllUnassigned() : clearAllSelection())}
-                disabled={allUnassigned.length === 0}
+                disabled={eligibleBulkSlots.length === 0}
               />
               <span>Select All</span>
             </label>
@@ -745,8 +885,13 @@ export function TimesheetPage() {
             </span>
           </div>
           <div className="bulk-assign__prevday">
-            <button type="button" className="btn btn-secondary" onClick={selectFromPreviousDay}>
-              Select from Previous Day
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={selectFromPreviousDay}
+              disabled={carryLoading}
+            >
+              {carryLoading ? "Copying Previous Day…" : "Select from Previous Day"}
             </button>
           </div>
         </section>
@@ -765,7 +910,7 @@ export function TimesheetPage() {
               <th colSpan={2} className="half-head">
                 2nd Half
               </th>
-              <th className="ot-col">OT HRS</th>
+              <th colSpan={2} className="ot-col">Overtime</th>
               <th colSpan={3} className="alloc-head">
                 Allocation
               </th>
@@ -778,7 +923,8 @@ export function TimesheetPage() {
               <th className="slot-head">11a–1p</th>
               <th className="slot-head">2p–4p</th>
               <th className="slot-head">4p–6p</th>
-              <th className="ot-col sub"></th>
+              <th className="ot-col sub">Slot</th>
+              <th className="ot-hours-col sub">Hrs</th>
               <th className="alloc-sub">Project</th>
               <th className="alloc-sub">WBS / Job Order</th>
               <th className="alloc-sub">Assign</th>
@@ -869,16 +1015,21 @@ export function TimesheetPage() {
                   {r.slots.map((s) => {
                     const selected = r.selectedSlots.has(s.shiftSlot);
                     const colorKey = s.projectColorKey;
-                    const slotLocked = isLocked || s.locked;
+                    const slotLocked = isLocked || s.locked || Boolean(s.otherBookingSubmitted);
                     let cls = "slot-cell";
                     let label = "";
-                    if (s.jobOrderId != null) {
-                      cls += ` assigned-${(colorKey || "n").toLowerCase()}`;
-                      label = (colorKey || "•").toUpperCase();
-                    } else if (selected) {
+                    if (selected) {
                       cls += " selected";
                       label = "✓";
+                    } else if (s.jobOrderId != null) {
+                      cls += ` assigned-${(colorKey || "n").toLowerCase()}`;
+                      label = (colorKey || "•").toUpperCase();
+                    } else if (s.bookedByOther) {
+                      cls += ` booked-other assigned-${(s.otherProjectColorKey || "n").toLowerCase()}`;
+                      label = (s.otherProjectColorKey || "•").toUpperCase();
                     }
+                    if (s.bookedByOther && s.jobOrderId != null) cls += " slot-cell--conflict";
+                    if (s.otherBookingSubmitted) cls += " booked-other--submitted";
                     if (slotLocked) cls += " slot-cell--locked";
                     return (
                       <td key={s.shiftSlot} className="slot-td">
@@ -887,8 +1038,13 @@ export function TimesheetPage() {
                           className={cls}
                           disabled={!isOwner || slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                           onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
+                          onDoubleClick={() => clearDraftSlot(r.employeeId, s.shiftSlot)}
                           aria-label={SHIFT_LABELS[s.shiftSlot].long}
-                          title={SHIFT_LABELS[s.shiftSlot].long}
+                          title={
+                            s.bookedByOther
+                              ? `${SHIFT_LABELS[s.shiftSlot].long} · Allocated by Supervisor ${s.bookedBySupervisorNames?.join(" & ")}`
+                              : SHIFT_LABELS[s.shiftSlot].long
+                          }
                         >
                           {label}
                         </button>
@@ -898,19 +1054,45 @@ export function TimesheetPage() {
                   <td className="ot-col">
                     <button
                       type="button"
-                      className={`ot-cell ot-cell--btn ${r.otHours != null ? "ot-cell--set" : ""}`}
-                      disabled={!isOwner || isLocked}
-                      onClick={() => openOtModal(r.employeeId, r.employee.name)}
-                      title={!isOwner ? "Read-only — viewing another supervisor's timesheet." : r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
+                      className={`slot-cell ot-slot ${
+                        r.otSelected
+                          ? "selected"
+                          : r.otHours != null
+                            ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
+                            : ""
+                      } ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
+                      disabled={!isOwner || isLocked || r.otLocked}
+                      onClick={() => toggleOtSelection(r.employeeId)}
+                      onDoubleClick={() => clearDraftOt(r.employeeId)}
+                      title={
+                        r.otHours != null
+                          ? `OT ${r.otHours}h — click to select; double-click to remove`
+                          : "Select OT for assignment"
+                      }
                     >
-                      {r.otHours != null ? `${r.otHours}h` : "+"}
+                      {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
                     </button>
+                  </td>
+                  <td className="ot-hours-col">
+                    <input
+                      className="ot-hours-input"
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={12}
+                      step={1}
+                      value={r.otHoursInput}
+                      disabled={!isOwner || isLocked || r.otLocked || !r.otSelected}
+                      onChange={(e) => setOtHoursInput(r.employeeId, e.target.value)}
+                      aria-label={`OT hours for ${r.employee.name}`}
+                      title="Whole OT hours from 1 to 12; enter 0 to clear existing OT"
+                    />
                   </td>
                   <td>
                     <select
                       className="project-select"
                       value={r.projectId}
-                      disabled={isLocked}
+                      disabled={!isOwner || isLocked}
                       onChange={(e) =>
                         setRowProject(r.employeeId, e.target.value ? Number(e.target.value) : "")
                       }
@@ -927,7 +1109,7 @@ export function TimesheetPage() {
                     <select
                       className="jo-select"
                       value={r.jobOrderId}
-                      disabled={isLocked || !r.projectId}
+                      disabled={!isOwner || isLocked || !r.projectId}
                       onChange={(e) =>
                         setRowJobOrder(r.employeeId, e.target.value ? Number(e.target.value) : "")
                       }
@@ -943,8 +1125,13 @@ export function TimesheetPage() {
                   <td>
                     <button
                       type="button"
-                      className={`assign-btn ${r.selectedSlots.size === 0 ? "is-idle" : r.fullShiftDone ? "is-done" : "is-ready"}`}
-                      disabled={!isOwner || isLocked || r.selectedSlots.size === 0 || !r.jobOrderId}
+                      className={`assign-btn ${r.selectedSlots.size === 0 && !r.otSelected ? "is-idle" : r.fullShiftDone ? "is-done" : "is-ready"}`}
+                      disabled={
+                        !isOwner ||
+                        isLocked ||
+                        (r.selectedSlots.size === 0 && !r.otSelected) ||
+                        (!r.jobOrderId && !(r.otSelected && Number(r.otHoursInput) === 0 && r.otHours != null))
+                      }
                       onClick={() => assignRowToSelected(r.employeeId)}
                     >
                       Assign
@@ -952,17 +1139,19 @@ export function TimesheetPage() {
                   </td>
                   <td>
                     <input
-                      className="remarks-input"
+                      className={`remarks-input ${r.remarksRequired && !r.remarks.trim() ? "remarks-input--required" : ""}`}
                       value={r.remarks}
-                      disabled={isLocked}
-                      placeholder="Add note…"
+                      disabled={!isOwner || isLocked}
+                      placeholder={r.remarksRequired ? "Remarks required for OT…" : "Add note…"}
+                      required={r.remarksRequired}
+                      aria-required={r.remarksRequired}
                       onChange={(e) => setRemarks(r.employeeId, e.target.value)}
                     />
                   </td>
                 </tr>
                 {expanded && r.returnFeedback && (
                   <tr className="row-feedback">
-                    <td colSpan={11}>
+                    <td colSpan={12}>
                       <div className="return-feedback">
                         <div className="return-feedback__label">
                           Feedback from {r.returnFeedback.by}
@@ -983,7 +1172,7 @@ export function TimesheetPage() {
               );
             })}
             <tr className="add-emp-row">
-              <td colSpan={11}>
+              <td colSpan={12}>
                 <div className="add-dropdown">
                   <input
                     className="add-emp-input"
@@ -1060,16 +1249,21 @@ export function TimesheetPage() {
                 {r.slots.map((s) => {
                   const selected = r.selectedSlots.has(s.shiftSlot);
                   const colorKey = s.projectColorKey;
-                  const slotLocked = isLocked || s.locked;
+                  const slotLocked = isLocked || s.locked || Boolean(s.otherBookingSubmitted);
                   let cls = "ts-shift-chip";
                   let label = "";
-                  if (s.jobOrderId != null) {
-                    cls += ` assigned-${(colorKey || "n").toLowerCase()}`;
-                    label = (colorKey || "•").toUpperCase();
-                  } else if (selected) {
+                  if (selected) {
                     cls += " selected";
                     label = "✓";
+                  } else if (s.jobOrderId != null) {
+                    cls += ` assigned-${(colorKey || "n").toLowerCase()}`;
+                    label = (colorKey || "•").toUpperCase();
+                  } else if (s.bookedByOther) {
+                    cls += ` booked-other assigned-${(s.otherProjectColorKey || "n").toLowerCase()}`;
+                    label = (s.otherProjectColorKey || "•").toUpperCase();
                   }
+                  if (s.bookedByOther && s.jobOrderId != null) cls += " slot-cell--conflict";
+                  if (s.otherBookingSubmitted) cls += " booked-other--submitted";
                   if (slotLocked) cls += " slot-cell--locked";
                   return (
                     <button
@@ -1078,8 +1272,13 @@ export function TimesheetPage() {
                       className={cls}
                       disabled={!isOwner || slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                       onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
+                      onDoubleClick={() => clearDraftSlot(r.employeeId, s.shiftSlot)}
                       aria-label={SHIFT_LABELS[s.shiftSlot].long}
-                      title={SHIFT_LABELS[s.shiftSlot].long}
+                      title={
+                        s.bookedByOther
+                          ? `${SHIFT_LABELS[s.shiftSlot].long} · Allocated by Supervisor ${s.bookedBySupervisorNames?.join(" & ")}`
+                          : SHIFT_LABELS[s.shiftSlot].long
+                      }
                     >
                       <span className="ts-shift-chip__half">
                         {SHIFT_LABELS[s.shiftSlot].half}
@@ -1093,16 +1292,42 @@ export function TimesheetPage() {
                 })}
               </div>
               <div className="ts-ot">
-                <span className="muted tiny">OT HRS</span>
+                <span className="muted tiny">Overtime</span>
                 <button
                   type="button"
-                  className={`ot-cell ot-cell--btn ${r.otHours != null ? "ot-cell--set" : ""}`}
-                  disabled={!isOwner || isLocked}
-                  onClick={() => openOtModal(r.employeeId, r.employee.name)}
-                  title={!isOwner ? "Read-only — viewing another supervisor's timesheet." : r.otHours != null ? `OT ${r.otHours}h — click to edit` : "Click to add OT hours"}
+                  className={`slot-cell ot-slot ${
+                    r.otSelected
+                      ? "selected"
+                      : r.otHours != null
+                        ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
+                        : ""
+                  } ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
+                  disabled={!isOwner || isLocked || r.otLocked}
+                  onClick={() => toggleOtSelection(r.employeeId)}
+                  onDoubleClick={() => clearDraftOt(r.employeeId)}
+                  title={
+                    r.otHours != null
+                      ? `OT ${r.otHours}h — click to select; double-click to remove`
+                      : "Select OT for assignment"
+                  }
                 >
-                  {r.otHours != null ? `${r.otHours}h` : "+"}
+                  {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
                 </button>
+                <label className="ts-ot__hours">
+                  <span>Hrs</span>
+                  <input
+                    className="ot-hours-input"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={12}
+                    step={1}
+                    value={r.otHoursInput}
+                    disabled={!isOwner || isLocked || r.otLocked || !r.otSelected}
+                    onChange={(e) => setOtHoursInput(r.employeeId, e.target.value)}
+                    aria-label={`OT hours for ${r.employee.name}`}
+                  />
+                </label>
               </div>
               <div className="ts-alloc">
                 <label className="ts-field">
@@ -1110,7 +1335,7 @@ export function TimesheetPage() {
                   <select
                     className="project-select"
                     value={r.projectId}
-                    disabled={isLocked}
+                    disabled={!isOwner || isLocked}
                     onChange={(e) =>
                       setRowProject(r.employeeId, e.target.value ? Number(e.target.value) : "")
                     }
@@ -1128,7 +1353,7 @@ export function TimesheetPage() {
                   <select
                     className="jo-select"
                     value={r.jobOrderId}
-                    disabled={isLocked || !r.projectId}
+                    disabled={!isOwner || isLocked || !r.projectId}
                     onChange={(e) =>
                       setRowJobOrder(r.employeeId, e.target.value ? Number(e.target.value) : "")
                     }
@@ -1141,10 +1366,27 @@ export function TimesheetPage() {
                     ))}
                   </select>
                 </label>
+                {r.slots.some(
+                  (slot) => r.selectedSlots.has(slot.shiftSlot) && slot.jobOrderId != null && !slot.locked
+                ) && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost ts-clear-selected"
+                    disabled={!isOwner || isLocked}
+                    onClick={() => clearSelectedDraftSlots(r.employeeId)}
+                  >
+                    Clear selected
+                  </button>
+                )}
                 <button
                   type="button"
                   className="assign-btn"
-                  disabled={!isOwner || isLocked || r.selectedSlots.size === 0 || !r.jobOrderId}
+                  disabled={
+                    !isOwner ||
+                    isLocked ||
+                    (r.selectedSlots.size === 0 && !r.otSelected) ||
+                    (!r.jobOrderId && !(r.otSelected && Number(r.otHoursInput) === 0 && r.otHours != null))
+                  }
                   onClick={() => assignRowToSelected(r.employeeId)}
                 >
                   Assign
@@ -1153,9 +1395,9 @@ export function TimesheetPage() {
               <label className="ts-field ts-field--full">
                 <span>Remarks</span>
                 <input
-                  className="remarks-input"
+                  className={`remarks-input ${r.remarksRequired && !r.remarks.trim() ? "remarks-input--required" : ""}`}
                   value={r.remarks}
-                  disabled={isLocked}
+                  disabled={!isOwner || isLocked}
                   placeholder="Add note…"
                   onChange={(e) => setRemarks(r.employeeId, e.target.value)}
                 />
@@ -1224,13 +1466,17 @@ export function TimesheetPage() {
             </span>
             Selected, unassigned
           </span>
+          <span className="legend-item">
+            <span className="legend-swatch other-booking-swatch">↗</span>
+            Allocated by another supervisor
+          </span>
         </div>
         <p className="help-text">
           Bulk Assignment applies the chosen Project + Job Order to all amber (selected) slots in
           one click. The 4 slots per day are 1st Half (9a–11a, 11a–1p) and 2nd Half (2p–4p, 4p–6p).
           Full Shift selects all 4 empty slots for that employee; it freezes once the row is fully
-          assigned. Click any cell to toggle its selection. Max {maxDailyHours}h/day; overtime
-          requires a Remarks reason.
+          assigned. Click any cell to toggle its selection. Double-click a draft allocation to clear it.
+          Max {maxDailyHours}h/day; overtime requires a Remarks reason.
         </p>
       </div>
 
@@ -1243,84 +1489,6 @@ export function TimesheetPage() {
         </button>
       </div>
 
-      {/* OT entry modal */}
-      {otTarget && (
-        <div className="modal-backdrop" onClick={() => setOtTarget(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal__header">
-              <h2>Add OT Hours — {otTarget.name}</h2>
-              <button type="button" className="modal__close" aria-label="Close" onClick={() => setOtTarget(null)}>
-                ×
-              </button>
-            </div>
-            <div className="modal__body">
-              <div className="sup-form">
-                <div className="sup-field">
-                  <label>Project</label>
-                  <select
-                    value={otProjectId}
-                    onChange={(e) => {
-                      setOtProjectId(e.target.value ? Number(e.target.value) : "");
-                      setOtJobOrderId("");
-                    }}
-                  >
-                    <option value="">Select project…</option>
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="sup-field">
-                  <label>Work Order</label>
-                  <select
-                    value={otJobOrderId}
-                    disabled={!otProjectId}
-                    onChange={(e) => setOtJobOrderId(e.target.value ? Number(e.target.value) : "")}
-                  >
-                    <option value="">{otProjectId ? "Select work order…" : "Pick a project first"}</option>
-                    {(projects.find((p) => p.id === otProjectId)?.jobOrders ?? []).map((j) => (
-                      <option key={j.id} value={j.id}>
-                        {j.code} - {j.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="sup-field">
-                  <label>OT Hours (1–12)</label>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={12}
-                    value={otHours}
-                    onChange={(e) => setOtHours(e.target.value)}
-                    placeholder="e.g. 2"
-                  />
-                </div>
-                <p className="sup-form__note">
-                  OT is added on top of the {maxDailyHours}h shift and is separate from regular
-                  allocation. It will be visible to HOD / Project Head in light red.
-                </p>
-                <div className="modal__footer" style={{ padding: 0, borderTop: "none" }}>
-                  {otHours && Number(otHours) >= 1 && (
-                    <button type="button" className="btn btn-ghost" disabled={otSaving} onClick={clearOt}>
-                      {otSaving ? "Saving…" : "Clear OT"}
-                    </button>
-                  )}
-                  <button type="button" className="btn btn-ghost" onClick={() => setOtTarget(null)}>
-                    Cancel
-                  </button>
-                  <button type="button" className="btn btn-primary" disabled={otSaving} onClick={saveOt}>
-                    {otSaving ? "Saving…" : "Save OT"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

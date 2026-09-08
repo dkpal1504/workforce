@@ -246,175 +246,145 @@ summaryRouter.get("/", async (req, res) => {
   const projects = [...projectMeta.values()].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
 
   type AggKey = string;
-  const buckets = new Map<
-    AggKey,
-    {
-      label: string;
-      secondary: string;
-      projectHours: Record<string, number>;
-      projectCost: Record<string, number>;
-      otHours: number;
-      otCost: number;
-    }
-  >();
+  type Bucket = {
+    label: string;
+    secondary: string;
+    projectHours: Record<string, number>;
+    projectCost: Record<string, number>;
+    projectOtHours: Record<string, number>;
+    projectOtCost: Record<string, number>;
+    overheadHours: number;
+    overheadCost: number;
+  };
+  const buckets = new Map<AggKey, Bucket>();
 
-  // Effective OT per (employee, workDate) — manual OT wins; else auto-calc excess
-  // over the daily max from the multi-supervisor union. Only APPROVED employee-days
-  // count toward Summary OT (the reconciliation guard — a supervisor's draft/submitted
-  // OT must not inflate liability before an approver signs off). Manual and auto are
-  // mutually exclusive, never summed — identical rule to the approvals screen.
-  const empDayOT = new Map<string, { hasApproved: boolean; dayTotal: number; manualOt: number | null; hourSlots: Set<number>; shiftSlots: Set<string> }>();
-  for (const e of entries) {
-    const k = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
-    let agg = empDayOT.get(k);
-    if (!agg) {
-      agg = { hasApproved: false, dayTotal: 0, manualOt: null, hourSlots: new Set(), shiftSlots: new Set() };
-      empDayOT.set(k, agg);
+  const groupIdentity = (e: (typeof entries)[number]) => {
+    if (groupBy === "employee") {
+      return { key: `emp-${e.employeeId}`, label: e.employee.name, secondary: e.employee.department.name };
     }
-    if (e.hourSlot != null) agg.hourSlots.add(e.hourSlot);
-    if (e.shiftSlot != null) agg.shiftSlots.add(e.shiftSlot);
-    if (e.status === "HOD_APPROVED" || e.status === "PM_APPROVED") {
-      agg.hasApproved = true;
-      if (e.otHours != null) agg.manualOt = agg.manualOt ?? e.otHours;
+    if (groupBy === "department") {
+      return { key: `dept-${e.employee.departmentId}`, label: e.employee.department.name, secondary: "" };
     }
-  }
-  const maxDailyHours = getMaxDailyHours();
-  // TRUE-HOUR day total: legacy hourSlot = 1h, shift slot (am1/am2/pm1/pm2) = 2h,
-  // so a fully-allocated 4-shift-slot day = 8h — keeps OT-excess consistent with MAX_DAILY_HOURS=8.
-  for (const agg of empDayOT.values()) agg.dayTotal = agg.hourSlots.size + agg.shiftSlots.size * 2;
-
-  // Helper: attribute OT hours to a bucket (effective OT for an approved employee-day).
-  const addOtToBucket = (key: string, label: string, secondary: string, otHours: number, category: string) => {
-    if (otHours <= 0) return;
-    let bucket = buckets.get(key);
-    if (!bucket) {
-      bucket = { label, secondary, projectHours: {}, projectCost: {}, otHours: 0, otCost: 0 };
-      buckets.set(key, bucket);
+    if (groupBy === "totals") {
+      return { key: "totals", label: "All", secondary: "" };
     }
-    bucket.otHours += otHours;
-    bucket.otCost += otHours * rateFor(category);
+    return {
+      key: `sup-${e.taggedById}`,
+      label: e.taggedBy.name,
+      secondary: e.taggedBy.department?.name ?? "",
+    };
   };
 
-  for (const e of entries) {
-    // Skip OT rows from regular bucketing below — they only contribute effective
-    // OT in Pass 3, never regular project hours/cost.
-    if (e.otHours != null) continue;
+  const getBucket = (e: (typeof entries)[number]) => {
+    const identity = groupIdentity(e);
+    let bucket = buckets.get(identity.key);
+    if (!bucket) {
+      bucket = {
+        label: identity.label,
+        secondary: identity.secondary,
+        projectHours: {},
+        projectCost: {},
+        projectOtHours: {},
+        projectOtCost: {},
+        overheadHours: 0,
+        overheadCost: 0,
+      };
+      buckets.set(identity.key, bucket);
+    }
+    return bucket;
+  };
 
-    // Resolve this entry's project colorKey ONCE (never double-count an entry
-    // that carries both projectWbsId and jobOrderId).
+  // Regular and OT hours both remain associated with their booked project.
+  // Summary OT is approved-only, matching the approval/reporting contract.
+  for (const e of entries) {
     let colorKey: string | null = null;
     if (e.projectWbsId != null && e.projectWbs) {
-      colorKey = e.projectWbs.colorKey;
+      colorKey = String(e.projectWbs.colorKey || "").toUpperCase();
     } else if (e.jobOrderId != null && e.jobOrder?.project) {
       colorKey = String(e.jobOrder.project.colorKey || "").toUpperCase();
     }
     if (!colorKey || !projectMeta.has(colorKey)) continue;
 
-    let key: string;
-    let label: string;
-    let secondary: string;
-
-    if (groupBy === "employee") {
-      key = `emp-${e.employeeId}`;
-      label = e.employee.name;
-      secondary = e.employee.department.name;
-    } else if (groupBy === "department") {
-      key = `dept-${e.employee.departmentId}`;
-      label = e.employee.department.name;
-      secondary = "";
-    } else if (groupBy === "totals") {
-      key = "totals";
-      label = "All";
-      secondary = "";
-    } else {
-      key = `sup-${e.taggedById}`;
-      label = e.taggedBy.name;
-      secondary = e.taggedBy.department?.name ?? "";
+    const bucket = getBucket(e);
+    if (e.otHours != null) {
+      if (e.status !== "HOD_APPROVED" && e.status !== "PM_APPROVED") continue;
+      bucket.projectOtHours[colorKey] = (bucket.projectOtHours[colorKey] || 0) + e.otHours;
+      bucket.projectOtCost[colorKey] =
+        (bucket.projectOtCost[colorKey] || 0) + e.otHours * rateFor(e.employee.category);
+      continue;
     }
 
-    let bucket = buckets.get(key);
-    if (!bucket) {
-      bucket = { label, secondary, projectHours: {}, projectCost: {}, otHours: 0, otCost: 0 };
-      buckets.set(key, bucket);
-    }
-    bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + 1;
-    const cost = rateFor(e.employee.category);
-    bucket.projectCost[colorKey] = (bucket.projectCost[colorKey] || 0) + cost;
+    const regularHours = e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
+    bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + regularHours;
+    bucket.projectCost[colorKey] =
+      (bucket.projectCost[colorKey] || 0) + regularHours * rateFor(e.employee.category);
   }
 
-  // Pass 3: attribute effective OT for approved employee-days to buckets.
-  // Each employee-day maps to exactly one bucket via its (current) entry row.
-  const otBucketed = new Set<string>();
+  // Overhead is unused regular capacity for a timesheet day. It is deliberately
+  // kept outside every project and shown only in the final Overhead Total column.
+  const dayRegular = new Map<number, { sample: (typeof entries)[number]; hours: number }>();
   for (const e of entries) {
-    const k = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
-    if (otBucketed.has(k)) continue;
-    const agg = empDayOT.get(k);
-    if (!agg || !agg.hasApproved) continue;
-    const effectiveOT = agg.manualOt ?? Math.max(0, agg.dayTotal - maxDailyHours);
-    if (effectiveOT <= 0) continue;
-
-    let key: string;
-    let label: string;
-    let secondary: string;
-    if (groupBy === "employee") {
-      key = `emp-${e.employeeId}`;
-      label = e.employee.name;
-      secondary = e.employee.department.name;
-    } else if (groupBy === "department") {
-      key = `dept-${e.employee.departmentId}`;
-      label = e.employee.department.name;
-      secondary = "";
-    } else if (groupBy === "totals") {
-      key = "totals";
-      label = "All";
-      secondary = "";
-    } else {
-      key = `sup-${e.taggedById}`;
-      label = e.taggedBy.name;
-      secondary = e.taggedBy.department?.name ?? "";
+    let day = dayRegular.get(e.timesheetDayId);
+    if (!day) {
+      day = { sample: e, hours: 0 };
+      dayRegular.set(e.timesheetDayId, day);
     }
-    addOtToBucket(key, label, secondary, effectiveOT, e.employee.category);
-    otBucketed.add(k);
+    if (e.otHours == null) {
+      day.hours += e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
+    }
+  }
+  const maxDailyHours = getMaxDailyHours();
+  for (const day of dayRegular.values()) {
+    const identity = groupIdentity(day.sample);
+    const bucket = buckets.get(identity.key);
+    if (!bucket) continue;
+    const overhead = Math.max(0, maxDailyHours - day.hours);
+    bucket.overheadHours += overhead;
+    bucket.overheadCost += overhead * rateFor(day.sample.employee.category);
   }
 
   const rows = Array.from(buckets.values()).map((b, i) => {
     const values: Record<string, number> = {};
+    const projectOtValues: Record<string, number> = {};
     let total = 0;
     for (const p of projects) {
-      const v = view === "cost" ? b.projectCost[p.code] || 0 : b.projectHours[p.code] || 0;
-      values[p.code] = v;
-      total += v;
+      const regular = view === "cost" ? b.projectCost[p.code] || 0 : b.projectHours[p.code] || 0;
+      const ot = view === "cost" ? b.projectOtCost[p.code] || 0 : b.projectOtHours[p.code] || 0;
+      values[p.code] = regular;
+      projectOtValues[p.code] = ot;
+      total += regular + ot;
     }
     return {
       srNo: i + 1,
       name: b.label,
       department: b.secondary,
       values,
+      projectOtValues,
       total,
-      // OT is additive and separate — shown as its own value, never folded into
-      // the regular project totals.
-      otHours: b.otHours,
-      otCost: b.otCost,
+      overheadHours: b.overheadHours,
+      overheadCost: b.overheadCost,
     };
   });
 
   const totals: Record<string, number> = {};
+  const projectOtTotals: Record<string, number> = {};
   let grand = 0;
   for (const p of projects) {
-    const sum = rows.reduce((acc, r) => acc + (r.values[p.code] || 0), 0);
-    totals[p.code] = sum;
-    grand += sum;
+    totals[p.code] = rows.reduce((acc, r) => acc + (r.values[p.code] || 0), 0);
+    projectOtTotals[p.code] = rows.reduce((acc, r) => acc + (r.projectOtValues[p.code] || 0), 0);
+    grand += totals[p.code] + projectOtTotals[p.code];
   }
-  const otTotalHours = rows.reduce((acc, r) => acc + (r.otHours || 0), 0);
-  const otTotalCost = rows.reduce((acc, r) => acc + (r.otCost || 0), 0);
+  const overheadTotalHours = rows.reduce((acc, r) => acc + r.overheadHours, 0);
+  const overheadTotalCost = rows.reduce((acc, r) => acc + r.overheadCost, 0);
 
   res.json({
     projects: projects.map((p) => ({ id: p.id, code: p.code, name: p.name, colorKey: p.colorKey })),
     rows,
     totals,
+    projectOtTotals,
     grandTotal: grand,
-    otTotalHours,
-    otTotalCost,
+    overheadTotalHours,
+    overheadTotalCost,
     groupBy,
     view,
     frequency,

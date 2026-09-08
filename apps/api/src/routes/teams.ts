@@ -224,14 +224,18 @@ teamsRouter.delete("/today/:employeeId", async (req, res) => {
         status: { notIn: ["HOD_APPROVED", "PM_APPROVED"] },
       },
     });
-    // Clean up the orphaned timesheet day ONLY if no entries at all remain
-    // (approved included). Deleting the day cascades to its entries, so if any
-    // approved entry survives, the day must stay to preserve it.
+    // Clean up the orphaned timesheet day only when it has no entries or
+    // approval history. Approval rows use a restrictive foreign key, so deleting
+    // their parent would fail with P2003. The relation filters also make this a
+    // single atomic check-and-delete if another child row appears concurrently.
     if (day) {
-      const remaining = await tx.timesheetEntry.count({ where: { timesheetDayId: day.id } });
-      if (remaining === 0) {
-        await tx.timesheetDay.delete({ where: { id: day.id } });
-      }
+      await tx.timesheetDay.deleteMany({
+        where: {
+          id: day.id,
+          entries: { none: {} },
+          approvals: { none: {} },
+        },
+      });
     }
     return res.count;
   });

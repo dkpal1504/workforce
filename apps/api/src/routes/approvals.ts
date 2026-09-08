@@ -76,33 +76,28 @@ function daysPending(updatedAt: Date): number {
 }
 
 function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
-  // Dynamic per-project map — track ALL color keys present (A/B/C/D/…), not just
-  // A/B/C. Any project with allocations gets its own column.
-  const byKey: Record<string, number> = {};
+  // Keep regular and overtime hours under the project they are charged to.
+  const projectHours: Record<string, number> = {};
+  const projectOtHours: Record<string, number> = {};
   for (const e of entries) {
-    // Skip OT rows entirely — they have shiftSlot=null/hourSlot=null and must
-    // never seed a phantom project column or count toward totalAlloc/overhead.
-    if (e.otHours != null) continue;
-    // A tagged entry is one with projectWbsId OR jobOrderId. The project color
-    // can come from the legacy projectWbs relation OR the new
-    // jobOrder.project relation. Without the jobOrder fallback, days tagged
-    // exclusively via the supervisor's Daily Timesheet Entry (jobOrder-only)
-    // appear as 0 project hours to HOD/PM.
-    const colorKey = e.projectWbs?.colorKey ?? e.jobOrder?.project.colorKey ?? null;
     if (e.projectWbsId == null && e.jobOrderId == null) continue;
+    const colorKey = e.projectWbs?.colorKey ?? e.jobOrder?.project.colorKey ?? null;
     if (!colorKey) continue;
     const key = String(colorKey).toUpperCase();
-    // Convert each entry to hours by slot type: a shift slot (am1/am2/pm1/pm2)
-    // is 2h, a legacy hourSlot is 1h. Exactly one of shiftSlot/hourSlot is set.
+    if (e.otHours != null) {
+      projectOtHours[key] = (projectOtHours[key] || 0) + e.otHours;
+      continue;
+    }
+    // A shift slot is 2h; a legacy hour slot is 1h.
     const hours = e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
-    byKey[key] = (byKey[key] || 0) + hours;
+    projectHours[key] = (projectHours[key] || 0) + hours;
   }
-  const totalAlloc = Object.values(byKey).reduce((a, b) => a + b, 0);
-  // Overhead = unallocated remainder (8h − allocated), clamped at 0 so an
-  // over-allocated day shows overhead 0 and the overage stays visible in
-  // totalAlloc rather than being masked by a negative overhead.
-  const overhead = Math.max(0, maxDailyHours - totalAlloc);
-  return { projectHours: byKey, overhead, totalAlloc };
+  const regularTotalAlloc = Object.values(projectHours).reduce((a, b) => a + b, 0);
+  const totalOtHours = Object.values(projectOtHours).reduce((a, b) => a + b, 0);
+  // OT is additive and does not consume the regular 8-hour capacity.
+  const overhead = Math.max(0, maxDailyHours - regularTotalAlloc);
+  const totalAlloc = regularTotalAlloc + totalOtHours;
+  return { projectHours, projectOtHours, overhead, totalAlloc, regularTotalAlloc, totalOtHours };
 }
 
 /** Entries pending this approver's action (amendments keep prior approvals on other entries). */
@@ -134,6 +129,19 @@ function pendingEntriesForRole(d: DayRow, role: string) {
   return { entries: tagged, isAmendment: false };
 }
 
+const SHIFT_CLOCK_HOURS: Record<string, readonly number[]> = {
+  am1: [9, 10],
+  am2: [11, 12],
+  pm1: [14, 15],
+  pm2: [16, 17],
+};
+
+function entryClockHours(entry: { shiftSlot: string | null; hourSlot: number | null }): number[] {
+  if (entry.shiftSlot != null) return [...(SHIFT_CLOCK_HOURS[entry.shiftSlot] ?? [])];
+  // Legacy slot 0 is 8am, slot 1 is 9am, and so on.
+  return entry.hourSlot != null ? [entry.hourSlot + 8] : [];
+}
+
 async function conflictEmployeeIds(employeeIds: number[], workDates: Date[]): Promise<Map<string, string[]>> {
   const flagged = new Map<string, string[]>();
   if (!employeeIds.length || !workDates.length) return flagged;
@@ -142,26 +150,37 @@ async function conflictEmployeeIds(employeeIds: number[], workDates: Date[]): Pr
     where: {
       employeeId: { in: employeeIds },
       workDate: { in: workDates },
-      // Conflict = two supervisors tagging the same slot (any flow). Include
-      // both projectWbsId (legacy) and jobOrderId (new) so we don't miss
-      // jobOrder-only conflicts.
+      status: { in: ["SUBMITTED", "SUP_APPROVED", "HOD_APPROVED", "PM_APPROVED"] },
       OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
     },
-    select: { employeeId: true, workDate: true, taggedById: true, taggedBy: { select: { name: true } } },
+    select: {
+      employeeId: true,
+      workDate: true,
+      shiftSlot: true,
+      hourSlot: true,
+      taggedById: true,
+      taggedBy: { select: { name: true } },
+    },
   });
 
-  const bag = new Map<string, Map<number, string>>();
-  for (const e of entries) {
-    const key = `${e.employeeId}|${e.workDate.toISOString().slice(0, 10)}`;
-    let set = bag.get(key);
-    if (!set) {
-      set = new Map();
-      bag.set(key, set);
+  // Flag only actual clock-hour overlap. Different supervisors may allocate
+  // different slots for the same employee without creating a conflict.
+  const occupied = new Map<string, Map<number, string>>();
+  for (const entry of entries) {
+    const dayKey = `${entry.employeeId}|${entry.workDate.toISOString().slice(0, 10)}`;
+    for (const hour of entryClockHours(entry)) {
+      const key = `${dayKey}|${hour}`;
+      const supervisors = occupied.get(key) ?? new Map<number, string>();
+      supervisors.set(entry.taggedById, entry.taggedBy?.name ?? `#${entry.taggedById}`);
+      occupied.set(key, supervisors);
     }
-    set.set(e.taggedById, e.taggedBy?.name ?? `#${e.taggedById}`);
   }
-  for (const [key, supervisors] of bag) {
-    if (supervisors.size > 1) flagged.set(key, [...supervisors.values()]);
+  for (const [slotKey, supervisors] of occupied) {
+    if (supervisors.size < 2) continue;
+    const dayKey = slotKey.split("|").slice(0, 2).join("|");
+    const existing = new Set(flagged.get(dayKey) ?? []);
+    for (const name of supervisors.values()) existing.add(name);
+    flagged.set(dayKey, [...existing]);
   }
   return flagged;
 }
@@ -175,7 +194,7 @@ function mapEmployeeRow(
 ) {
   const workDate = d.workDate.toISOString().slice(0, 10);
   const { entries: pendingEntries, isAmendment } = pendingEntriesForRole(d, role);
-  const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries, maxDailyHours);
+  const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries, maxDailyHours);
   // "All tagged" (across the whole day, not just pending) must include both flows too.
   const allTagged = projectHoursFromEntries(d.entries, maxDailyHours);
   const unallocatedHours = Math.max(0, maxDailyHours - dayTotalHours);
@@ -197,6 +216,7 @@ function mapEmployeeRow(
     remarks: d.remarks,
     pendingDays: daysPending(d.updatedAt),
     projectHours,
+    projectOtHours,
     overhead,
     totalAlloc,
     /** Remaining capacity vs daily max (empty / untagged hours). */
@@ -241,6 +261,7 @@ function groupBySupervisor(rows: EmployeeMapped[]) {
       hasConflict: boolean;
       isAmendment: boolean;
       projectHours: Record<string, number>;
+      projectOtHours: Record<string, number>;
       overhead: number;
       totalAlloc: number;
       unallocatedHours: number;
@@ -261,6 +282,7 @@ function groupBySupervisor(rows: EmployeeMapped[]) {
         hasConflict: false,
         isAmendment: false,
         projectHours: {},
+        projectOtHours: {},
         overhead: 0,
         totalAlloc: 0,
         unallocatedHours: 0,
@@ -277,6 +299,9 @@ function groupBySupervisor(rows: EmployeeMapped[]) {
     // Merge the dynamic per-project map (A/B/C/D/…) — a row may not have every key.
     for (const [k, v] of Object.entries(row.projectHours)) {
       g.projectHours[k] = (g.projectHours[k] || 0) + v;
+    }
+    for (const [k, v] of Object.entries(row.projectOtHours)) {
+      g.projectOtHours[k] = (g.projectOtHours[k] || 0) + v;
     }
     g.overhead += row.overhead;
     g.totalAlloc += row.totalAlloc;
@@ -348,6 +373,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     supervisor: { id: number; name: string; email: string };
     employee: { id: number; name: string; ecNo: string; department: string };
     projectHours: Record<string, number>;
+    projectOtHours: Record<string, number>;
     overhead: number;
     totalAlloc: number;
     planningComment: string | null;
@@ -369,7 +395,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
 
     returnedByPlanning = returned
       .map((d) => {
-        const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, maxDailyHours);
+        const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, maxDailyHours);
         if (totalAlloc === 0) return null;
         const planning = d.approvals.find(
           (a) => a.action === "PLANNING_RETURN" || (a.action === "REJECT" && a.approver.role === "PM")
@@ -385,6 +411,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
             department: d.employee.department.name,
           },
           projectHours,
+          projectOtHours,
           overhead,
           totalAlloc,
           planningComment: planning?.comment ?? d.remarks,
@@ -435,7 +462,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
 
   const items = approvals.map((a) => {
     const d = a.timesheetDay;
-    const { projectHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, getMaxDailyHours());
+    const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, getMaxDailyHours());
     return {
       approvalId: a.id,
       action: a.action,
@@ -445,6 +472,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
       id: d.id,
       workDate: d.workDate.toISOString().slice(0, 10),
       projectHours,
+      projectOtHours,
       overhead,
       totalAlloc,
       employee: {

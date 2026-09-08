@@ -409,6 +409,26 @@
   text-align: center;
 }
 
+
+.project-subhead-row th {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  text-align: center;
+  font-size: 10px;
+}
+
+.hod-table th.ot-col,
+.hod-table td.ot-col {
+  background: color-mix(in srgb, var(--danger-soft) 55%, transparent);
+  color: var(--danger);
+}
+
+.project-ot-inline {
+  margin-left: 5px;
+  color: var(--danger);
+  font-size: 11px;
+}
+
 /* === Flagged chip (employee sub-row when hasConflict) === */
 .flagged-chip {
   margin-left: 8px;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { todayDateString } from "../utils/date";
 import "../styles/summary.css";
@@ -9,8 +9,10 @@ type Row = {
   name: string;
   department: string;
   values: Record<string, number>;
+  projectOtValues: Record<string, number>;
   total: number;
-  otHours?: number;
+  overheadHours?: number;
+  overheadCost?: number;
 };
 
 type GroupBy = "employee" | "supervisor" | "department" | "totals";
@@ -56,8 +58,9 @@ export function SummaryPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [totals, setTotals] = useState<Record<string, number>>({});
+  const [projectOtTotals, setProjectOtTotals] = useState<Record<string, number>>({});
   const [grandTotal, setGrandTotal] = useState(0);
-  const [otTotal, setOtTotal] = useState(0);
+  const [overheadTotal, setOverheadTotal] = useState(0);
   const [sortKey, setSortKey] = useState<string>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [error, setError] = useState("");
@@ -105,14 +108,17 @@ export function SummaryPage() {
         projects: Project[];
         rows: Row[];
         totals: Record<string, number>;
+        projectOtTotals: Record<string, number>;
         grandTotal: number;
-        otTotalHours?: number;
+        overheadTotalHours?: number;
+        overheadTotalCost?: number;
       }>(`/summary?${qs.toString()}`);
       setProjects(data.projects);
       setRows(data.rows);
       setTotals(data.totals);
+      setProjectOtTotals(data.projectOtTotals ?? {});
       setGrandTotal(data.grandTotal);
-      setOtTotal(data.otTotalHours ?? 0);
+      setOverheadTotal(view === "cost" ? data.overheadTotalCost ?? 0 : data.overheadTotalHours ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load summary");
     }
@@ -152,9 +158,6 @@ export function SummaryPage() {
           ? "Group"
           : "Supervisor";
 
-  // OT column is dynamic — only shown when at least one row (or the total) has OT.
-  const hasOt = otTotal > 0 || rows.some((r) => (r.otHours ?? 0) > 0);
-
   const sortedRows = useMemo(() => {
     const copy = [...rows];
     copy.sort((a, b) => {
@@ -170,6 +173,10 @@ export function SummaryPage() {
         const code = sortKey.slice(5);
         av = a.values[code] || 0;
         bv = b.values[code] || 0;
+      } else if (sortKey.startsWith("projectOt:")) {
+        const code = sortKey.slice(10);
+        av = a.projectOtValues[code] || 0;
+        bv = b.projectOtValues[code] || 0;
       }
       if (typeof av === "number" && typeof bv === "number") {
         return sortDir === "asc" ? av - bv : bv - av;
@@ -306,30 +313,42 @@ export function SummaryPage() {
             <table className="summary-table">
               <thead>
                 <tr>
-                  <th onClick={() => toggleSort("srNo")}>Sr. No.</th>
-                  <th onClick={() => toggleSort("name")}>
+                  <th rowSpan={2} onClick={() => toggleSort("srNo")}>Sr. No.</th>
+                  <th rowSpan={2} onClick={() => toggleSort("name")}>
                     {nameHeader} {sortKey === "name" ? (sortDir === "asc" ? "↓" : "↑") : ""}
                   </th>
                   {groupBy !== "department" && groupBy !== "totals" && (
-                    <th onClick={() => toggleSort("department")}>
+                    <th rowSpan={2} onClick={() => toggleSort("department")}>
                       Department {sortKey === "department" ? (sortDir === "asc" ? "↓" : "↑") : ""}
                     </th>
                   )}
-                  {projects.map((p) => (
-                    <th key={p.id} className="num" onClick={() => toggleSort(`proj:${p.code}`)}>
-                      {p.name}
+                  {projects.map((project) => (
+                    <th key={project.id} colSpan={2} className="num project-group-head">
+                      {project.name}
                     </th>
                   ))}
-                  <th className="num total-col" onClick={() => toggleSort("total")}>
+                  <th rowSpan={2} className="num total-col" onClick={() => toggleSort("total")}>
                     Total
                   </th>
-                  {hasOt && <th className="num ot-col">OT</th>}
+                  <th rowSpan={2} className="num overhead-total-col">Overhead Total</th>
+                </tr>
+                <tr className="project-subhead-row">
+                  {projects.map((project) => (
+                    <Fragment key={project.id}>
+                      <th className="num" onClick={() => toggleSort(`proj:${project.code}`)}>
+                        Regular
+                      </th>
+                      <th className="num project-ot-col" onClick={() => toggleSort(`projectOt:${project.code}`)}>
+                        OT
+                      </th>
+                    </Fragment>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {sortedRows.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="muted">
+                    <td colSpan={(groupBy === "department" || groupBy === "totals" ? 2 : 3) + projects.length * 2 + 2} className="muted">
                       No submitted / tagged hours for this period. Enter timesheet data first.
                     </td>
                   </tr>
@@ -339,17 +358,22 @@ export function SummaryPage() {
                       <td>{r.srNo}</td>
                       <td>{r.name}</td>
                       {groupBy !== "department" && groupBy !== "totals" && <td>{r.department}</td>}
-                      {projects.map((p) => (
-                        <td key={p.id} className="num">
-                          {formatVal(r.values[p.code] || 0)}
-                        </td>
+                      {projects.map((project) => (
+                        <Fragment key={project.id}>
+                          <td className="num">{formatVal(r.values[project.code] || 0)}</td>
+                          <td className="num project-ot-col">
+                            {(r.projectOtValues[project.code] || 0) > 0 ? (
+                              <span className="project-ot-badge">
+                                {formatVal(r.projectOtValues[project.code])}
+                              </span>
+                            ) : "—"}
+                          </td>
+                        </Fragment>
                       ))}
                       <td className="num total-col">{formatVal(r.total)}</td>
-                      {hasOt && (
-                        <td className="num ot-col">
-                          {(r.otHours ?? 0) > 0 ? <span className="ot-badge">{r.otHours}h</span> : "—"}
-                        </td>
-                      )}
+                      <td className="num overhead-total-col">
+                        {formatVal(view === "cost" ? r.overheadCost ?? 0 : r.overheadHours ?? 0)}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -357,13 +381,20 @@ export function SummaryPage() {
               <tfoot>
                 <tr>
                   <td colSpan={groupBy === "department" || groupBy === "totals" ? 2 : 3}>Total</td>
-                  {projects.map((p) => (
-                    <td key={p.id} className="num">
-                      {formatVal(totals[p.code] || 0)}
-                    </td>
+                  {projects.map((project) => (
+                    <Fragment key={project.id}>
+                      <td className="num">{formatVal(totals[project.code] || 0)}</td>
+                      <td className="num project-ot-col">
+                        {(projectOtTotals[project.code] || 0) > 0 ? (
+                          <span className="project-ot-badge">
+                            {formatVal(projectOtTotals[project.code])}
+                          </span>
+                        ) : "—"}
+                      </td>
+                    </Fragment>
                   ))}
                   <td className="num total-col">{formatVal(grandTotal)}</td>
-                  {hasOt && <td className="num ot-col"><span className="ot-badge">{otTotal}h</span></td>}
+                  <td className="num overhead-total-col">{formatVal(overheadTotal)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -392,24 +423,29 @@ export function SummaryPage() {
                     </div>
                   </header>
                   <div className="summary-chips">
-                    {projects.map((p) => {
-                      const val = r.values[p.code] || 0;
-                      if (!val) return null;
+                    {projects.map((project) => {
+                      const regular = r.values[project.code] || 0;
+                      const ot = r.projectOtValues[project.code] || 0;
+                      if (!regular && !ot) return null;
                       return (
-                        <span key={p.id} className="summary-chip">
-                          <em style={{ background: `var(--project-${p.colorKey.toLowerCase()})` }}>
-                            {p.colorKey}
+                        <span key={project.id} className="summary-chip summary-chip--split">
+                          <em style={{ background: `var(--project-${project.colorKey.toLowerCase()})` }}>
+                            {project.colorKey}
                           </em>
-                          {p.name.replace(/^Project\s+/i, "")}: {formatVal(val)}
+                          {project.name.replace(/^Project\s+/i, "")}: Regular {formatVal(regular)} · OT{" "}
+                          {ot > 0 ? <span className="project-ot-badge">{formatVal(ot)}</span> : "—"}
                         </span>
                       );
                     })}
-                    {projects.every((p) => !(r.values[p.code] || 0)) && (
-                      <span className="muted tiny">No project hours</span>
-                    )}
+                    {projects.every(
+                      (project) =>
+                        !(r.values[project.code] || 0) && !(r.projectOtValues[project.code] || 0)
+                    ) && <span className="muted tiny">No project hours</span>}
                   </div>
-                  {(r.otHours ?? 0) > 0 && (
-                    <div className="ot-badge ot-badge--card">OT {r.otHours}h</div>
+                  {(r.overheadHours ?? 0) > 0 && (
+                    <div className="summary-card__overhead">
+                      Overhead {formatVal(view === "cost" ? r.overheadCost ?? 0 : r.overheadHours ?? 0)}
+                    </div>
                   )}
                 </article>
               ))
@@ -418,16 +454,19 @@ export function SummaryPage() {
               <footer className="summary-card summary-card--footer">
                 <strong>Grand total</strong>
                 <div className="summary-chips">
-                  {projects.map((p) => (
-                    <span key={p.id} className="summary-chip">
-                      <em style={{ background: `var(--project-${p.colorKey.toLowerCase()})` }}>
-                        {p.colorKey}
+                  {projects.map((project) => (
+                    <span key={project.id} className="summary-chip summary-chip--split">
+                      <em style={{ background: `var(--project-${project.colorKey.toLowerCase()})` }}>
+                        {project.colorKey}
                       </em>
-                      {formatVal(totals[p.code] || 0)}
+                      Regular {formatVal(totals[project.code] || 0)} · OT{" "}
+                      {(projectOtTotals[project.code] || 0) > 0 ? (
+                        <span className="project-ot-badge">{formatVal(projectOtTotals[project.code])}</span>
+                      ) : "—"}
                     </span>
                   ))}
                 </div>
-                {hasOt && <div className="ot-badge ot-badge--card">OT {otTotal}h</div>}
+                <div className="summary-card__overhead">Overhead {formatVal(overheadTotal)}</div>
                 <div className="summary-card__total">
                   <strong>{formatVal(grandTotal)}</strong>
                 </div>

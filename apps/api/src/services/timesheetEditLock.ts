@@ -20,8 +20,6 @@ export type EditLockInfo = {
   lockExpiresAt: string | null;
 };
 
-const MS_24H = 24 * 60 * 60 * 1000;
-
 export function isApprovedStatus(status: string): status is ApprovedStatus {
   return (APPROVED_STATUSES as readonly string[]).includes(status);
 }
@@ -31,12 +29,10 @@ export function isProtectedEntryStatus(status: string): boolean {
 }
 
 /**
- * 24h window starts at the latest APPROVE action for this timesheet day
- * (HOD approve for HOD_APPROVED, PM approve for PM_APPROVED).
- *
- * REJECTED days that still have previously approved entry slots stay in
- * addOnly mode so supervisors can fix/resubmit new hours without touching
- * already-approved slots.
+ * Submission is the edit cutoff. SUBMITTED and approved days are read-only in
+ * every supervisor view until HOD/Project Head rejects or returns them.
+ * REJECTED amendments keep previously approved slots protected while allowing
+ * the rejected/new slots to be corrected and resubmitted.
  */
 export function resolveEditLock(
   status: string,
@@ -53,24 +49,13 @@ export function resolveEditLock(
     };
   }
 
-  // Submit is the hard cutoff: once submitted (or HOD/PM approved), the day is
-  // locked until it is rejected/returned. SUBMITTED is not an "approved" status
-  // but is still hard-locked per the user requirement.
-  if ((LOCKED_STATUSES as readonly string[]).includes(status) && !isApprovedStatus(status)) {
-    return { editMode: "locked", approvedAt: null, lockExpiresAt: null };
+  if ((LOCKED_STATUSES as readonly string[]).includes(status)) {
+    return {
+      editMode: "locked",
+      approvedAt: isApprovedStatus(status) ? (latestApproveAt ?? now).toISOString() : null,
+      lockExpiresAt: null,
+    };
   }
 
-  if (!isApprovedStatus(status)) {
-    return { editMode: "full", approvedAt: null, lockExpiresAt: null };
-  }
-
-  const approvedAt = latestApproveAt ?? now;
-  const lockExpiresAt = new Date(approvedAt.getTime() + MS_24H);
-  const withinWindow = now.getTime() < lockExpiresAt.getTime();
-
-  return {
-    editMode: withinWindow ? "addOnly" : "locked",
-    approvedAt: approvedAt.toISOString(),
-    lockExpiresAt: lockExpiresAt.toISOString(),
-  };
+  return { editMode: "full", approvedAt: null, lockExpiresAt: null };
 }

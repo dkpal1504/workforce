@@ -6,9 +6,12 @@ import "../styles/approvals.css";
 type ProjectHours = Record<string, number>;
 
 /** Sorted union of project color keys present across the given rows. */
-function projectKeys(rows: { projectHours: ProjectHours }[]): string[] {
+function projectKeys(rows: { projectHours: ProjectHours; projectOtHours?: ProjectHours }[]): string[] {
   const set = new Set<string>();
-  for (const r of rows) for (const k of Object.keys(r.projectHours)) set.add(k);
+  for (const r of rows) {
+    for (const k of Object.keys(r.projectHours)) set.add(k);
+    for (const k of Object.keys(r.projectOtHours ?? {})) set.add(k);
+  }
   return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
 
@@ -19,6 +22,7 @@ type EmployeeRow = {
   remarks: string | null;
   pendingDays: number;
   projectHours: ProjectHours;
+  projectOtHours: ProjectHours;
   overhead: number;
   totalAlloc: number;
   unallocatedHours?: number;
@@ -42,6 +46,7 @@ type SupervisorGroup = {
   isAmendment?: boolean;
   exceedsLimit?: boolean;
   projectHours: ProjectHours;
+  projectOtHours: ProjectHours;
   overhead: number;
   totalAlloc: number;
   unallocatedHours?: number;
@@ -54,6 +59,7 @@ type ReturnedRow = {
   supervisor: { id: number; name: string; email: string };
   employee: { id: number; name: string; ecNo: string; department: string };
   projectHours: ProjectHours;
+  projectOtHours: ProjectHours;
   overhead: number;
   totalAlloc: number;
   planningComment: string | null;
@@ -70,6 +76,7 @@ type HistoryItem = {
   id: number;
   workDate: string;
   projectHours: ProjectHours;
+  projectOtHours: ProjectHours;
   overhead: number;
   totalAlloc: number;
   employee: { id: number; name: string; ecNo: string; department: string };
@@ -113,6 +120,7 @@ function fmtHours(n: number) {
 
 function HourChips({
   projectHours,
+  projectOtHours = {},
   overhead,
   totalAlloc,
   unallocatedHours,
@@ -121,6 +129,7 @@ function HourChips({
   maxDailyHours,
 }: {
   projectHours: ProjectHours;
+  projectOtHours?: ProjectHours;
   overhead: number;
   totalAlloc: number;
   unallocatedHours?: number;
@@ -128,12 +137,15 @@ function HourChips({
   dayTotalHours?: number;
   maxDailyHours?: number;
 }) {
-  const keys = Object.keys(projectHours).sort((a, b) => a.localeCompare(b));
+  const keys = [...new Set([...Object.keys(projectHours), ...Object.keys(projectOtHours)])].sort((a, b) =>
+    a.localeCompare(b)
+  );
   return (
     <div className="hour-chips">
       {keys.map((k) => (
         <span key={k}>
           <em>{k}</em> {fmtHours(projectHours[k])}
+          {(projectOtHours[k] ?? 0) > 0 && <strong className="project-ot-inline"> OT {projectOtHours[k]}h</strong>}
         </span>
       ))}
       <span>
@@ -205,11 +217,31 @@ export function ApprovalsPage() {
   const returnedProjectKeys = useMemo(() => projectKeys(returned), [returned]);
   const historyProjectKeys = useMemo(() => projectKeys(history), [history]);
 
-  // OT column is dynamic — only shown when at least one row carries OT hours.
-  const hasOt = useMemo(
-    () => received.some((g) => g.employees.some((e) => (e.otHours ?? 0) > 0)),
-    [received]
-  );
+  // Each project gets an OT subcolumn only when that project has OT anywhere
+  // on the HOD page (Received or Sent Back by Planning).
+  const projectOtKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const group of received) {
+      for (const [key, hours] of Object.entries(group.projectOtHours ?? {})) {
+        if (hours > 0) keys.add(key);
+      }
+    }
+    for (const row of returned) {
+      for (const [key, hours] of Object.entries(row.projectOtHours ?? {})) {
+        if (hours > 0) keys.add(key);
+      }
+    }
+    return keys;
+  }, [received, returned]);
+  const historyProjectOtKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of history) {
+      for (const [key, hours] of Object.entries(row.projectOtHours ?? {})) {
+        if (hours > 0) keys.add(key);
+      }
+    }
+    return keys;
+  }, [history]);
 
   const loadPending = useCallback(async () => {
     if (!canApprove) return;
@@ -459,18 +491,25 @@ export function ApprovalsPage() {
                 ) : (
                   <thead>
                     <tr>
-                      <th className="col-check" />
-                      <th>Supervisor</th>
-                      <th>Date</th>
+                      <th className="col-check" rowSpan={2} />
+                      <th rowSpan={2}>Supervisor</th>
+                      <th rowSpan={2}>Date</th>
                       {pendingProjectKeys.map((k) => (
-                        <th key={k}>Project {k}</th>
+                        <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
                       ))}
-                      <th>Total Alloc.</th>
-                      <th>Overhead</th>
-                      {hasOt && <th className="ot-col">OT</th>}
-                      <th>Approve</th>
-                      <th>Reject</th>
-                      <th>Comments</th>
+                      <th rowSpan={2}>Total Alloc.</th>
+                      <th rowSpan={2}>Overhead</th>
+                      <th rowSpan={2}>Approve</th>
+                      <th rowSpan={2}>Reject</th>
+                      <th rowSpan={2}>Comments</th>
+                    </tr>
+                    <tr className="project-subhead-row">
+                      {pendingProjectKeys.map((k) => (
+                        <Fragment key={k}>
+                          <th>Regular</th>
+                          {projectOtKeys.has(k) && <th className="ot-col">OT</th>}
+                        </Fragment>
+                      ))}
                     </tr>
                   </thead>
                 )}
@@ -506,21 +545,17 @@ export function ApprovalsPage() {
                             </td>
                             <td>{g.workDate}</td>
                             {pendingProjectKeys.map((k) => (
-                              <td key={k}>{fmtHours(g.projectHours[k])}</td>
+                              <Fragment key={k}>
+                                <td>{fmtHours(g.projectHours[k])}</td>
+                                {projectOtKeys.has(k) && (
+                                  <td className="ot-col">
+                                    {(g.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{g.projectOtHours[k]}h</span> : "—"}
+                                  </td>
+                                )}
+                              </Fragment>
                             ))}
                             <td className="total-cell">{fmtHours(g.totalAlloc)}</td>
                             <td>{fmtHours(g.overhead)}</td>
-                            {hasOt && (
-                              <td className="ot-col">
-                                {g.employees.some((e) => (e.otHours ?? 0) > 0) ? (
-                                  <span className="ot-badge">
-                                    {g.employees.reduce((s, e) => s + (e.otHours ?? 0), 0)}h
-                                  </span>
-                                ) : (
-                                  "—"
-                                )}
-                              </td>
-                            )}
                             <td>
                               <button
                                 type="button"
@@ -598,19 +633,17 @@ export function ApprovalsPage() {
                                 </td>
                                 <td>{emp.workDate}</td>
                                 {pendingProjectKeys.map((k) => (
-                                  <td key={k}>{fmtHours(emp.projectHours[k])}</td>
+                                  <Fragment key={k}>
+                                    <td>{fmtHours(emp.projectHours[k])}</td>
+                                    {projectOtKeys.has(k) && (
+                                      <td className="ot-col">
+                                        {(emp.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{emp.projectOtHours[k]}h</span> : "—"}
+                                      </td>
+                                    )}
+                                  </Fragment>
                                 ))}
                                 <td className="total-cell">{fmtHours(emp.totalAlloc)}</td>
                                 <td>{fmtHours(emp.unallocatedHours ?? 0)}</td>
-                                {hasOt && (
-                                  <td className="ot-col">
-                                    {(emp.otHours ?? 0) > 0 ? (
-                                      <span className="ot-badge">{emp.otHours}h</span>
-                                    ) : (
-                                      "—"
-                                    )}
-                                  </td>
-                                )}
                                 <td>
                                   <button
                                     type="button"
@@ -679,19 +712,17 @@ export function ApprovalsPage() {
                         </td>
                         <td>{emp.workDate}</td>
                         {pendingProjectKeys.map((k) => (
-                          <td key={k}>{fmtHours(emp.projectHours[k])}</td>
+                          <Fragment key={k}>
+                            <td>{fmtHours(emp.projectHours[k])}</td>
+                            {projectOtKeys.has(k) && (
+                              <td className="ot-col">
+                                {(emp.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{emp.projectOtHours[k]}h</span> : "—"}
+                              </td>
+                            )}
+                          </Fragment>
                         ))}
                         <td className="total-cell">{fmtHours(emp.totalAlloc)}</td>
                         <td>{fmtHours(emp.unallocatedHours ?? 0)}</td>
-                        {hasOt && (
-                          <td className="ot-col">
-                            {(emp.otHours ?? 0) > 0 ? (
-                              <span className="ot-badge">{emp.otHours}h</span>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                        )}
                         <td>
                           <button
                             type="button"
@@ -723,7 +754,14 @@ export function ApprovalsPage() {
 
                   {!loading && received.length === 0 && (
                     <tr>
-                      <td colSpan={11} className="empty-cell">
+                      <td
+                        colSpan={
+                          viewMode === "jobOrder"
+                            ? 11
+                            : 8 + pendingProjectKeys.reduce((sum, key) => sum + (projectOtKeys.has(key) ? 2 : 1), 0)
+                        }
+                        className="empty-cell"
+                      >
                         No pending submissions from supervisors.
                       </td>
                     </tr>
@@ -838,6 +876,7 @@ export function ApprovalsPage() {
                       </header>
                       <HourChips
                         projectHours={g.projectHours as ProjectHours}
+                        projectOtHours={g.projectOtHours}
                         overhead={g.overhead}
                         totalAlloc={g.totalAlloc}
                         unallocatedHours={g.unallocatedHours}
@@ -886,6 +925,7 @@ export function ApprovalsPage() {
                               </header>
                               <HourChips
                                 projectHours={emp.projectHours}
+                                projectOtHours={emp.projectOtHours}
                                 overhead={emp.overhead}
                                 totalAlloc={emp.totalAlloc}
                                 unallocatedHours={emp.unallocatedHours}
@@ -893,9 +933,6 @@ export function ApprovalsPage() {
                                 dayTotalHours={emp.dayTotalHours}
                                 maxDailyHours={emp.maxDailyHours}
                               />
-                              {(emp.otHours ?? 0) > 0 && (
-                                <div className="ot-badge ot-badge--card">OT {emp.otHours}h</div>
-                              )}
                               {emp.isAmendment && (
                                 <div className="muted tiny">New hours only (prior approval kept)</div>
                               )}
@@ -968,6 +1005,7 @@ export function ApprovalsPage() {
                     </header>
                     <HourChips
                       projectHours={emp.projectHours}
+                      projectOtHours={emp.projectOtHours}
                       overhead={emp.overhead}
                       totalAlloc={emp.totalAlloc}
                       unallocatedHours={emp.unallocatedHours}
@@ -975,9 +1013,6 @@ export function ApprovalsPage() {
                       dayTotalHours={emp.dayTotalHours}
                       maxDailyHours={emp.maxDailyHours}
                     />
-                    {(emp.otHours ?? 0) > 0 && (
-                      <div className="ot-badge ot-badge--card">OT {emp.otHours}h</div>
-                    )}
                     {emp.isAmendment && (
                       <div className="muted tiny">New hours only (prior approval kept)</div>
                     )}
@@ -1134,18 +1169,26 @@ export function ApprovalsPage() {
                 <table className="hod-table">
                   <thead>
                     <tr>
-                      <th>Sr.</th>
-                      <th>Supervisor</th>
-                      <th>Employee</th>
-                      <th>Date</th>
+                      <th rowSpan={2}>Sr.</th>
+                      <th rowSpan={2}>Supervisor</th>
+                      <th rowSpan={2}>Employee</th>
+                      <th rowSpan={2}>Date</th>
                       {returnedProjectKeys.map((k) => (
-                        <th key={k}>Project {k}</th>
+                        <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
                       ))}
-                      <th>Total Alloc.</th>
-                      <th>Overhead</th>
-                      <th>Planning’s Comment</th>
-                      <th>Action</th>
-                      <th>HOD Note</th>
+                      <th rowSpan={2}>Total Alloc.</th>
+                      <th rowSpan={2}>Overhead</th>
+                      <th rowSpan={2}>Planning’s Comment</th>
+                      <th rowSpan={2}>Action</th>
+                      <th rowSpan={2}>HOD Note</th>
+                    </tr>
+                    <tr className="project-subhead-row">
+                      {returnedProjectKeys.map((k) => (
+                        <Fragment key={k}>
+                          <th>Regular</th>
+                          {projectOtKeys.has(k) && <th className="ot-col">OT</th>}
+                        </Fragment>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -1156,7 +1199,14 @@ export function ApprovalsPage() {
                         <td>{row.employee.name}</td>
                         <td>{row.workDate}</td>
                         {returnedProjectKeys.map((k) => (
-                          <td key={k}>{fmtHours(row.projectHours[k])}</td>
+                          <Fragment key={k}>
+                            <td>{fmtHours(row.projectHours[k])}</td>
+                            {projectOtKeys.has(k) && (
+                              <td className="ot-col">
+                                {(row.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{row.projectOtHours[k]}h</span> : "—"}
+                              </td>
+                            )}
+                          </Fragment>
                         ))}
                         <td className="total-cell">{fmtHours(row.totalAlloc)}</td>
                         <td>{fmtHours(row.overhead)}</td>
@@ -1182,7 +1232,10 @@ export function ApprovalsPage() {
                     ))}
                     {!loading && returned.length === 0 && (
                       <tr>
-                        <td colSpan={12} className="empty-cell">
+                        <td
+                          colSpan={9 + returnedProjectKeys.reduce((sum, key) => sum + (projectOtKeys.has(key) ? 2 : 1), 0)}
+                          className="empty-cell"
+                        >
                           No sheets returned by Project Head / Planning.
                         </td>
                       </tr>
@@ -1203,6 +1256,7 @@ export function ApprovalsPage() {
                     </header>
                     <HourChips
                       projectHours={row.projectHours}
+                      projectOtHours={row.projectOtHours}
                       overhead={row.overhead}
                       totalAlloc={row.totalAlloc}
                     />
@@ -1245,18 +1299,26 @@ export function ApprovalsPage() {
             <table className="hod-table">
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>Action</th>
-                  <th>Employee</th>
-                  <th>Supervisor</th>
-                  <th>Date</th>
+                  <th rowSpan={2}>When</th>
+                  <th rowSpan={2}>Action</th>
+                  <th rowSpan={2}>Employee</th>
+                  <th rowSpan={2}>Supervisor</th>
+                  <th rowSpan={2}>Date</th>
                   {historyProjectKeys.map((k) => (
-                    <th key={k}>Project {k}</th>
+                    <th key={k} colSpan={historyProjectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
                   ))}
-                  <th>Total</th>
-                  <th>Overhead</th>
-                  <th>Status now</th>
-                  <th>Comment</th>
+                  <th rowSpan={2}>Total</th>
+                  <th rowSpan={2}>Overhead</th>
+                  <th rowSpan={2}>Status now</th>
+                  <th rowSpan={2}>Comment</th>
+                </tr>
+                <tr className="project-subhead-row">
+                  {historyProjectKeys.map((k) => (
+                    <Fragment key={k}>
+                      <th>Regular</th>
+                      {historyProjectOtKeys.has(k) && <th className="ot-col">OT</th>}
+                    </Fragment>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -1272,7 +1334,14 @@ export function ApprovalsPage() {
                     <td>{h.supervisor.name}</td>
                     <td>{h.workDate}</td>
                     {historyProjectKeys.map((k) => (
-                      <td key={k}>{fmtHours(h.projectHours[k])}</td>
+                      <Fragment key={k}>
+                        <td>{fmtHours(h.projectHours[k])}</td>
+                        {historyProjectOtKeys.has(k) && (
+                          <td className="ot-col">
+                            {(h.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{h.projectOtHours[k]}h</span> : "—"}
+                          </td>
+                        )}
+                      </Fragment>
                     ))}
                     <td className="total-cell">{fmtHours(h.totalAlloc)}</td>
                     <td>{fmtHours(h.overhead)}</td>
@@ -1282,7 +1351,10 @@ export function ApprovalsPage() {
                 ))}
                 {!loading && history.length === 0 && (
                   <tr>
-                    <td colSpan={12} className="empty-cell">
+                    <td
+                      colSpan={9 + historyProjectKeys.reduce((sum, key) => sum + (historyProjectOtKeys.has(key) ? 2 : 1), 0)}
+                      className="empty-cell"
+                    >
                       No approvals recorded yet for your account.
                     </td>
                   </tr>
@@ -1306,6 +1378,7 @@ export function ApprovalsPage() {
                 </header>
                 <HourChips
                   projectHours={h.projectHours}
+                  projectOtHours={h.projectOtHours}
                   overhead={h.overhead}
                   totalAlloc={h.totalAlloc}
                 />

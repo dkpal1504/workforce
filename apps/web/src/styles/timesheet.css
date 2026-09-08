@@ -509,6 +509,72 @@
   color: var(--warning);
 }
 
+
+.ot-hours-col {
+  width: 58px;
+  min-width: 58px;
+  text-align: center;
+}
+
+.ot-hours-input {
+  width: 48px;
+  min-height: 32px;
+  padding: 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  text-align: center;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.ot-hours-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  background: var(--bg-subtle);
+}
+
+.ot-slot.selected {
+  background: var(--orange-selected);
+  border-color: var(--orange-selected);
+}
+
+.ts-ot__hours {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+
+/* Allocation owned by another supervisor remains visible in every grid. */
+.slot-cell.booked-other,
+.ts-shift-chip.booked-other {
+  outline: 2px dashed color-mix(in srgb, var(--primary) 65%, #fff);
+  outline-offset: 2px;
+}
+
+.slot-cell.booked-other--submitted,
+.ts-shift-chip.booked-other--submitted,
+.slot-cell.slot-cell--conflict,
+.ts-shift-chip.slot-cell--conflict {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.remarks-input--required {
+  border-color: var(--danger) !important;
+  background: color-mix(in srgb, var(--danger-soft) 55%, var(--bg-elevated));
+}
+
+.other-booking-swatch {
+  background: repeating-linear-gradient(135deg, var(--primary-soft) 0 4px, var(--bg-elevated) 4px 8px);
+  color: var(--primary);
+  outline: 2px dashed color-mix(in srgb, var(--primary) 65%, #fff);
+}
+
 /* ---- Full Shift checkbox ---- */
 
 .fullshift-check {
@@ -900,6 +966,12 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
+}
+
+.ts-clear-selected {
+  width: 100%;
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 
 .ts-field--full {

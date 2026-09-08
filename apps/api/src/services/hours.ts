@@ -28,11 +28,27 @@ export async function getEmployeeDayHourTotals(
 
   if (!employeeIds.length) return result;
 
+  const allocationFilter = { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] };
   const entries = await prisma.timesheetEntry.findMany({
     where: {
       employeeId: { in: employeeIds },
       workDate,
-      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
+      ...(excludeSupervisorId != null
+        ? {
+            AND: [
+              allocationFilter,
+              {
+                OR: [
+                  { taggedById: excludeSupervisorId },
+                  {
+                    taggedById: { not: excludeSupervisorId },
+                    status: { in: ["SUBMITTED", "SUP_APPROVED", "HOD_APPROVED", "PM_APPROVED"] },
+                  },
+                ],
+              },
+            ],
+          }
+        : allocationFilter),
     },
     select: { employeeId: true, hourSlot: true, shiftSlot: true, taggedById: true },
   });
