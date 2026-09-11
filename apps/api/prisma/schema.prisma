@@ -74,6 +74,8 @@ model Employee {
   section      String?  @map("section")
   /// Workmen Division -> Plant (from source).
   plant        String?  @map("plant")
+  /// Raw Nature Of Work value from LabourWorks BadgeView.
+  natureOfWork String?  @map("nature_of_work")
   /// Nature of Work -> Grade (Supervisor/Technician/Plumber...). Privilege field:
   /// grade changes that grant supervisor/approver capability are audited admin
   /// actions, not sync or self-service side-effects.

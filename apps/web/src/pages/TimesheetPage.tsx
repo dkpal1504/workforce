@@ -64,6 +64,9 @@ type Row = {
   otProjectId?: number | null;
   otProjectColorKey?: string | null;
   otLocked?: boolean;
+  otBookedByOther?: boolean;
+  otBookedBySupervisorNames?: string[];
+  otOtherBookingStatus?: string | null;
   remarksRequired?: boolean;
   editMode?: EditMode;
   approvedAt?: string | null;
@@ -223,7 +226,8 @@ export function TimesheetPage() {
 
   async function reloadIfAnotherSupervisorWon(error: unknown) {
     if (!(error instanceof ApiError)) return false;
-    if ((error.payload as { code?: string })?.code !== "SLOT_ALREADY_BOOKED") return false;
+    const code = (error.payload as { code?: string })?.code;
+    if (code !== "SLOT_ALREADY_BOOKED" && code !== "OT_ALREADY_BOOKED") return false;
     await load();
     return true;
   }
@@ -364,6 +368,10 @@ export function TimesheetPage() {
       setError("Enter OT hours between 1 and 12.");
       return;
     }
+    if (row.otSelected && hours > 0 && !row.remarks.trim()) {
+      setError(`Enter mandatory OT remarks for ${row.employee.name} before assigning.`);
+      return;
+    }
     if (!row.jobOrderId && (row.selectedSlots.size > 0 || (row.otSelected && hours > 0))) {
       setError("Select a Project and Job Order before assigning.");
       return;
@@ -396,6 +404,7 @@ export function TimesheetPage() {
             employeeId: employeeIdVal,
             otHours: hours === 0 ? null : hours,
             jobOrderId: hours === 0 ? null : jobOrderId,
+            remarks: row.remarks,
           }),
         });
       }
@@ -753,6 +762,7 @@ export function TimesheetPage() {
     <>
       <FilterBar
         {...ctx}
+        departmentLabel="Section"
         trailing={
           <div className="status-pill">
             ● Filled: {filled} / {rows.length} · Max {maxDailyHours}h/day
@@ -947,6 +957,8 @@ export function TimesheetPage() {
                 .join(" ");
               const rowProject = projects.find((p) => p.id === r.projectId);
               const rowJobOrders = rowProject?.jobOrders ?? [];
+              const otRemarksRequired =
+                Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
               const expanded = expandedEmployees.has(r.employeeId) || r.fullShiftDone;
               return (
                 <>
@@ -1060,14 +1072,16 @@ export function TimesheetPage() {
                           : r.otHours != null
                             ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
                             : ""
-                      } ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
+                      } ${r.otBookedByOther ? "booked-other booked-other--submitted" : ""} ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
                       disabled={!isOwner || isLocked || r.otLocked}
                       onClick={() => toggleOtSelection(r.employeeId)}
                       onDoubleClick={() => clearDraftOt(r.employeeId)}
                       title={
-                        r.otHours != null
-                          ? `OT ${r.otHours}h — click to select; double-click to remove`
-                          : "Select OT for assignment"
+                        r.otBookedByOther
+                          ? `OT ${r.otHours ?? 0}h booked by Supervisor ${(r.otBookedBySupervisorNames ?? []).join(", ")} (${r.otOtherBookingStatus ?? "submitted"}) — read only`
+                          : r.otHours != null
+                            ? `OT ${r.otHours}h — click to select; double-click to remove`
+                            : "Select OT for assignment"
                       }
                     >
                       {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
@@ -1139,12 +1153,12 @@ export function TimesheetPage() {
                   </td>
                   <td>
                     <input
-                      className={`remarks-input ${r.remarksRequired && !r.remarks.trim() ? "remarks-input--required" : ""}`}
+                      className={`remarks-input ${otRemarksRequired && !r.remarks.trim() ? "remarks-input--required" : ""}`}
                       value={r.remarks}
                       disabled={!isOwner || isLocked}
-                      placeholder={r.remarksRequired ? "Remarks required for OT…" : "Add note…"}
-                      required={r.remarksRequired}
-                      aria-required={r.remarksRequired}
+                      placeholder={otRemarksRequired ? "Remarks required for OT…" : "Add note…"}
+                      required={otRemarksRequired}
+                      aria-required={otRemarksRequired}
                       onChange={(e) => setRemarks(r.employeeId, e.target.value)}
                     />
                   </td>
@@ -1208,6 +1222,8 @@ export function TimesheetPage() {
           const filledCount = r.slots.filter((s) => s.jobOrderId != null).length;
           const rowProject = projects.find((p) => p.id === r.projectId);
           const rowJobOrders = rowProject?.jobOrders ?? [];
+          const otRemarksRequired =
+            Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
           return (
             <article
               key={r.employeeId}
@@ -1301,14 +1317,16 @@ export function TimesheetPage() {
                       : r.otHours != null
                         ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
                         : ""
-                  } ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
+                  } ${r.otBookedByOther ? "booked-other booked-other--submitted" : ""} ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
                   disabled={!isOwner || isLocked || r.otLocked}
                   onClick={() => toggleOtSelection(r.employeeId)}
                   onDoubleClick={() => clearDraftOt(r.employeeId)}
                   title={
-                    r.otHours != null
-                      ? `OT ${r.otHours}h — click to select; double-click to remove`
-                      : "Select OT for assignment"
+                    r.otBookedByOther
+                      ? `OT ${r.otHours ?? 0}h booked by Supervisor ${(r.otBookedBySupervisorNames ?? []).join(", ")} (${r.otOtherBookingStatus ?? "submitted"}) — read only`
+                      : r.otHours != null
+                        ? `OT ${r.otHours}h — click to select; double-click to remove`
+                        : "Select OT for assignment"
                   }
                 >
                   {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
@@ -1395,10 +1413,12 @@ export function TimesheetPage() {
               <label className="ts-field ts-field--full">
                 <span>Remarks</span>
                 <input
-                  className={`remarks-input ${r.remarksRequired && !r.remarks.trim() ? "remarks-input--required" : ""}`}
+                  className={`remarks-input ${otRemarksRequired && !r.remarks.trim() ? "remarks-input--required" : ""}`}
                   value={r.remarks}
                   disabled={!isOwner || isLocked}
-                  placeholder="Add note…"
+                  placeholder={otRemarksRequired ? "Remarks required for OT…" : "Add note…"}
+                  required={otRemarksRequired}
+                  aria-required={otRemarksRequired}
                   onChange={(e) => setRemarks(r.employeeId, e.target.value)}
                 />
               </label>

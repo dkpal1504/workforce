@@ -13,7 +13,8 @@ import { prisma } from "../db";
  * CR#2 locked semantics (option A — soft-depart):
  *   1. Upsert an `Employee` row for EVERY source row (all 555, supervisors included),
  *      keyed by `idCardNo`. Sync sets section (Workmen Section), plant (Workmen Division),
- *      grade (Nature of Work), source='SYNC', active=true on SYNC rows only.
+ *      natureOfWork (raw Nature Of Work), grade (compatibility mapping),
+ *      source='SYNC', active=true on SYNC rows only.
  *   2. Auto-create Departments from distinct BuName values (idempotent on stable code;
  *      default "Unassigned" department for empty/unmappable BuName so the FK insert succeeds).
  *   3. Derive `ecNo` from `idCardNo` (deterministic; unique requirement).
@@ -194,6 +195,7 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
                 departmentId: deptId,
                 section: r.Section,
                 plant: r.Division,
+                natureOfWork: r.NatureOfWork,
                 grade: r.NatureOfWork,
                 active: true,
                 designation: r.NatureOfWork || existingEmp.designation,
@@ -217,6 +219,7 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
             source: "SYNC",
             section: r.Section,
             plant: r.Division,
+            natureOfWork: r.NatureOfWork,
             grade: r.NatureOfWork,
             active: true,
           },

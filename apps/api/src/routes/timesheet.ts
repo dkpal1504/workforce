@@ -542,7 +542,6 @@ timesheetRouter.get("/", async (req, res) => {
           workDate,
           taggedById: { not: supervisorId },
           status: { in: BOOKED_ENTRY_STATUSES },
-          otHours: null,
           OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
         },
         include: {
@@ -577,7 +576,9 @@ timesheetRouter.get("/", async (req, res) => {
     const ownSlots = buildShiftRows(day?.entries ?? []);
     const external = otherEntriesByEmployee.get(t.employeeId) ?? [];
     const slots = ownSlots.map((slot) => {
-      const bookings = external.filter((entry) => entryOverlapsShift(entry, slot.shiftSlot));
+      const bookings = external.filter(
+        (entry) => entry.otHours == null && entryOverlapsShift(entry, slot.shiftSlot)
+      );
       const displayBooking =
         bookings.find((entry) => BOOKED_ENTRY_STATUSES.includes(entry.status)) ?? bookings[0] ?? null;
       return {
@@ -590,7 +591,12 @@ timesheetRouter.get("/", async (req, res) => {
           displayBooking?.projectWbs?.colorKey ?? displayBooking?.jobOrder?.project.colorKey ?? null,
       };
     });
-    const otEntry = day?.entries.find((e) => e.otHours != null) ?? null;
+    const ownOtEntry = day?.entries.find((e) => e.otHours != null) ?? null;
+    const externalOtEntries = external.filter((e) => e.otHours != null);
+    const externalOtEntry = externalOtEntries[0] ?? null;
+    // A submitted/approved OT booking from another supervisor wins the display
+    // and is read-only, matching cross-supervisor regular-slot behavior.
+    const otEntry = externalOtEntry ?? ownOtEntry;
     const filledSlots = slots.filter((s) => s.jobOrderId != null).length;
     const employeeDayTotals = dayTotals.get(t.employeeId);
     const otherSlots = employeeDayTotals?.otherSlots ?? [];
@@ -622,7 +628,13 @@ timesheetRouter.get("/", async (req, res) => {
       otJobOrderId: otEntry?.jobOrderId ?? null,
       otProjectId: otEntry?.jobOrder?.project.id ?? null,
       otProjectColorKey: otEntry?.jobOrder?.project.colorKey ?? null,
-      otLocked: otEntry != null && isProtectedEntryStatus(otEntry.status),
+      otLocked:
+        externalOtEntry != null || (ownOtEntry != null && isProtectedEntryStatus(ownOtEntry.status)),
+      otBookedByOther: externalOtEntry != null,
+      otBookedBySupervisorNames: [
+        ...new Set(externalOtEntries.map((entry) => entry.taggedBy.name)),
+      ],
+      otOtherBookingStatus: externalOtEntry?.status ?? null,
       filledSlots,
       filled: filledSlots > 0,
       fullShiftDone: filledSlots === SHIFT_SLOTS.length,
@@ -630,7 +642,7 @@ timesheetRouter.get("/", async (req, res) => {
       otherSlots,
       dayTotalHours,
       exceedsLimit,
-      remarksRequired: (exceedsLimit && filledSlots > 0) || (otEntry?.otHours ?? 0) > 0,
+      remarksRequired: (exceedsLimit && filledSlots > 0) || (ownOtEntry?.otHours ?? 0) > 0,
       editMode: lock.editMode,
       approvedAt: lock.approvedAt,
       lockExpiresAt: lock.lockExpiresAt,
@@ -1188,6 +1200,8 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
   const employeeId = Number(req.body.employeeId);
   const jobOrderId = req.body.jobOrderId == null ? null : Number(req.body.jobOrderId);
   const otHours = req.body.otHours == null ? null : Number(req.body.otHours);
+  const remarksProvided = typeof req.body.remarks === "string";
+  const remarks = remarksProvided ? String(req.body.remarks).trim() : null;
 
   if (!supervisorId || !dateStr || !employeeId) {
     return res.status(400).json({ error: "supervisorId, workDate and employeeId required" });
@@ -1213,6 +1227,27 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     // Validate the job order exists.
     const jo = await prisma.jobOrder.findUnique({ where: { id: jobOrderId } });
     if (!jo) return res.status(400).json({ error: "Invalid work order.", code: "INVALID_JOBORDER" });
+
+    const externalOt = await prisma.timesheetEntry.findFirst({
+      where: {
+        employeeId,
+        workDate,
+        taggedById: { not: supervisorId },
+        status: { in: BOOKED_ENTRY_STATUSES },
+        otHours: { not: null },
+      },
+      include: { taggedBy: { select: { id: true, name: true } } },
+    });
+    if (externalOt) {
+      return res.status(409).json({
+        error: `OT of this employee is already booked by Supervisor ${externalOt.taggedBy.name}.`,
+        code: "OT_ALREADY_BOOKED",
+        employeeId,
+        supervisorId: externalOt.taggedById,
+        supervisorName: externalOt.taggedBy.name,
+        status: externalOt.status,
+      });
+    }
   }
 
   // Status lock: OT can only be added while the day is editable (DRAFT/REJECTED).
@@ -1220,6 +1255,13 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
     include: { entries: true, approvals: { where: { action: "APPROVE" }, take: 1, orderBy: { createdAt: "desc" } } },
   });
+  const effectiveRemarks = remarksProvided ? remarks : existing?.remarks?.trim() || null;
+  if (otHours != null && !effectiveRemarks) {
+    return res.status(400).json({
+      error: "Remarks are mandatory when assigning OT hours.",
+      code: "OT_REMARKS_REQUIRED",
+    });
+  }
   const status = existing?.status ?? "DRAFT";
   const hasProtected = Boolean(
     existing?.entries?.some((e) => (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status))
@@ -1232,8 +1274,17 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
   // Ensure the day exists.
   const day = await prisma.timesheetDay.upsert({
     where: { employeeId_workDate_taggedById: { employeeId, workDate, taggedById: supervisorId } },
-    create: { employeeId, workDate, taggedById: supervisorId, status: "DRAFT", remarks: null },
-    update: { status: isApprovedStatus(status) ? status : "DRAFT" },
+    create: {
+      employeeId,
+      workDate,
+      taggedById: supervisorId,
+      status: "DRAFT",
+      remarks: effectiveRemarks,
+    },
+    update: {
+      status: isApprovedStatus(status) ? status : "DRAFT",
+      ...(remarksProvided ? { remarks: effectiveRemarks } : {}),
+    },
   });
 
   // One OT row per (employee, workDate, taggedById) — find the existing OT row.
@@ -1330,7 +1381,6 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
           workDate,
           taggedById: { not: supervisorId },
           status: { in: BOOKED_ENTRY_STATUSES },
-          otHours: null,
           OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
         },
         include: { taggedBy: { select: { id: true, name: true } } },
@@ -1362,6 +1412,7 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
     );
     for (const entry of pendingEntries) {
       for (const other of bookedByOther) {
+        if (other.otHours != null) continue;
         if (other.employeeId !== day.employeeId || !entriesOverlap(entry, other)) continue;
         if (
           slotConflicts.some(
@@ -1386,6 +1437,33 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
   if (slotConflicts.length) {
     await discardLosingDraftSlots(supervisorId, workDate, slotConflicts);
     return res.status(409).json(bookedConflictPayload(slotConflicts));
+  }
+
+  const otConflict = days
+    .flatMap((day) =>
+      day.entries
+        .filter((entry) => (entry.otHours ?? 0) > 0 && ["DRAFT", "REJECTED"].includes(entry.status))
+        .map(() => bookedByOther.find((other) => other.employeeId === day.employeeId && other.otHours != null))
+    )
+    .find((entry) => entry != null);
+  if (otConflict) {
+    await prisma.timesheetEntry.deleteMany({
+      where: {
+        taggedById: supervisorId,
+        workDate,
+        employeeId: otConflict.employeeId,
+        status: { in: ["DRAFT", "REJECTED"] },
+        otHours: { not: null },
+      },
+    });
+    return res.status(409).json({
+      error: `OT of this employee is already booked by Supervisor ${otConflict.taggedBy.name}.`,
+      code: "OT_ALREADY_BOOKED",
+      employeeId: otConflict.employeeId,
+      supervisorId: otConflict.taggedById,
+      supervisorName: otConflict.taggedBy.name,
+      status: otConflict.status,
+    });
   }
 
   const missingOtRemarks = days
@@ -1509,6 +1587,24 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
     workDate,
     winningClaims
   );
+  const winningOtEmployeeIds = submittable
+    .filter((day) =>
+      day.entries.some(
+        (entry) => (entry.otHours ?? 0) > 0 && ["DRAFT", "REJECTED"].includes(entry.status)
+      )
+    )
+    .map((day) => day.employeeId);
+  const replacedDraftOt = winningOtEmployeeIds.length
+    ? await prisma.timesheetEntry.deleteMany({
+        where: {
+          employeeId: { in: winningOtEmployeeIds },
+          workDate,
+          taggedById: { not: supervisorId },
+          status: { in: ["DRAFT", "REJECTED"] },
+          otHours: { not: null },
+        },
+      })
+    : { count: 0 };
 
   let submittedCount = 0;
   for (const dayId of dayIds) {
@@ -1551,6 +1647,7 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
     updated: submittedCount,
     overtimeWarnings: warnings.length,
     replacedDraftSlots,
+    replacedDraftOt: replacedDraftOt.count,
   });
 
   res.json({
@@ -1558,6 +1655,7 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
     submitted: submittedCount,
     maxDailyHours,
     replacedDraftSlots,
+    replacedDraftOt: replacedDraftOt.count,
     warnings: warnings.map((w) => ({
       ...w,
       message: `${w.employeeName} has ${w.dayTotalHours}h (limit ${w.maxDailyHours}h). Overtime reason recorded for HOD: "${w.remarks}"`,

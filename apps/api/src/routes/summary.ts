@@ -13,17 +13,19 @@ type JoStatus = "all" | "active" | "closed";
 summaryRouter.get("/job-order", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
-  const departmentId = req.user!.departmentId;
 
   // Optional filters
   const status = (String(req.query.status || "all") as JoStatus);
   if (!["all", "active", "closed"].includes(status)) {
     return res.status(400).json({ error: "status must be one of all|active|closed" });
   }
-  const filterDeptId =
+  const requestedDeptId =
     typeof req.query.departmentId === "string" && req.query.departmentId.length
       ? Number(req.query.departmentId)
-      : departmentId ?? undefined;
+      : undefined;
+  // "All Departments" must remain organization-wide. Apply department
+  // filtering only when the user explicitly selects a department in the report.
+  const filterDeptId = requestedDeptId;
 
   let projectIds: number[] | undefined;
   if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
@@ -47,21 +49,19 @@ summaryRouter.get("/job-order", async (req, res) => {
     return res.json({
       groups: [],
       role,
-      scope: role === "SUPERVISOR" ? "own" : role === "HOD" ? "department" : "organization",
+      scope: role === "SUPERVISOR" ? "own" : "organization",
     });
   }
 
   const jobOrderIds = jobOrders.map((j) => j.id);
 
-  // Pull consumption entries for those JOs, role-scoped to match Project Summary.
-  // Each shift-slot row counts as 1 hour-equivalent; each legacy hourSlot row also 1.
+  // Pull final-approved consumption entries for those JOs. Supervisors see
+  // their own tagging; reporting roles see organization-wide data unless filtered.
   const entries = await prisma.timesheetEntry.findMany({
     where: {
       jobOrderId: { in: jobOrderIds },
-      OR: [
-        { projectWbsId: { not: null } },
-        { jobOrderId: { not: null } },
-      ],
+      // Consumption is recognized only after the final Project Manager approval.
+      status: "PM_APPROVED",
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
       ...(role === "HOD" && filterDeptId != null
         ? {
@@ -72,14 +72,41 @@ summaryRouter.get("/job-order", async (req, res) => {
           }
         : {}),
     },
+    select: { jobOrderId: true, shiftSlot: true, hourSlot: true, otHours: true },
+  });
+
+  // Payroll/My Hours allocations use a separate parent-day model. Include
+  // their slots only after the same final PM approval stage.
+  const linkedUser =
+    role === "SUPERVISOR"
+      ? await prisma.user.findUnique({ where: { id: userId }, select: { employeeId: true } })
+      : null;
+  const allocations = await prisma.employeeAllocation.findMany({
+    where: {
+      jobOrderId: { in: jobOrderIds },
+      allocationDay: { status: "PM_APPROVED" },
+      ...(filterDeptId != null ? { employee: { departmentId: filterDeptId } } : {}),
+      ...(role === "SUPERVISOR"
+        ? { employeeId: linkedUser?.employeeId ?? -1 }
+        : {}),
+    },
     select: { jobOrderId: true },
   });
 
-  // Group consumption counts by JobOrder.
+  // Group true approved hours by JobOrder: shift slots are 2h, legacy slots
+  // are 1h, an OT row contributes its explicit hours, and each payroll slot is 2h.
   const consumptionByJo = new Map<number, number>();
   for (const e of entries) {
     if (e.jobOrderId == null) continue;
-    consumptionByJo.set(e.jobOrderId, (consumptionByJo.get(e.jobOrderId) ?? 0) + 1);
+    const hours = e.otHours ?? (e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0);
+    consumptionByJo.set(e.jobOrderId, (consumptionByJo.get(e.jobOrderId) ?? 0) + hours);
+  }
+  for (const allocation of allocations) {
+    if (allocation.jobOrderId == null) continue;
+    consumptionByJo.set(
+      allocation.jobOrderId,
+      (consumptionByJo.get(allocation.jobOrderId) ?? 0) + 2
+    );
   }
 
   // Group Job Orders by Project (preserves the projects' sortOrder).
@@ -139,7 +166,7 @@ summaryRouter.get("/job-order", async (req, res) => {
   res.json({
     groups,
     role,
-    scope: role === "SUPERVISOR" ? "own" : role === "HOD" ? "department" : "organization",
+    scope: role === "SUPERVISOR" ? "own" : "organization",
   });
 });
 

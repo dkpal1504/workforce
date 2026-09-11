@@ -73,6 +73,7 @@ export function FilterBar(props: {
   setSupervisorId: (v: number | "") => void;
   /** Replaces Supervisor dropdown for SUPERVISOR role (e.g. bulk-fill controls). */
   bulkFill?: ReactNode;
+  departmentLabel?: string;
   trailing?: ReactNode;
 }) {
   const { user } = useAuth();
@@ -85,7 +86,7 @@ export function FilterBar(props: {
         <input type="date" value={props.date} onChange={(e) => props.setDate(e.target.value)} />
       </div>
       <div className="filter-field">
-        <label>Department</label>
+        <label>{props.departmentLabel ?? "Department"}</label>
         <select
           value={props.departmentId}
           onChange={(e) => props.setDepartmentId(e.target.value ? Number(e.target.value) : "")}
