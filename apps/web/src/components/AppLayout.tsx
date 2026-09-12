@@ -15,7 +15,8 @@ function titleForPath(pathname: string, role?: string) {
   }
   if (pathname.startsWith("/supervisors")) return "Supervisor Registration";
   if (pathname.startsWith("/allocations")) return "Manhour Allocation";
-  if (pathname.startsWith("/departments")) return "Departments";
+  if (pathname.startsWith("/employees")) return "Employee Registration";
+  if (pathname.startsWith("/departments")) return "Organisation Masters";
   if (pathname.startsWith("/csv-upload")) return "Employee CSV Upload";
   return "Select Team for Today";
 }
@@ -25,12 +26,7 @@ export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { openPanel } = useTheme();
-  const showApprovals = user && ["HOD", "PM", "ADMIN"].includes(user.role);
-  const showSupervisors = user && ["ADMIN", "HR"].includes(user.role);
-  const showAdminData = user && ["ADMIN", "HR"].includes(user.role);
-  // Payroll self-allocation is available to any account with a linked Employee
-  // record; the page itself scopes and shows a clear notice if not linked.
-  const showAllocations = Boolean(user);
+  const capabilities = user?.capabilities;
   const roleDisplay = user?.role === "PM" ? "Project Head" : user?.role;
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -70,36 +66,41 @@ export function AppLayout() {
           id="app-primary-nav"
           className={`app-header__nav ${menuOpen ? "is-open" : ""}`}
         >
-          <NavLink to="/select-team" className={({ isActive }) => (isActive ? "active" : "")}>
+          {capabilities?.selectTeam && <NavLink to="/select-team" className={({ isActive }) => (isActive ? "active" : "")}>
             Select Team
-          </NavLink>
-          <NavLink to="/timesheet" className={({ isActive }) => (isActive ? "active" : "")}>
+          </NavLink>}
+          {capabilities?.editTimesheet && <NavLink to="/timesheet" className={({ isActive }) => (isActive ? "active" : "")}>
             Timesheet
-          </NavLink>
-          <NavLink to="/summary" className={({ isActive }) => (isActive ? "active" : "")}>
+          </NavLink>}
+          {capabilities?.viewSummary && <NavLink to="/summary" className={({ isActive }) => (isActive ? "active" : "")}>
             Summary
-          </NavLink>
-          {showApprovals && (
+          </NavLink>}
+          {capabilities?.approveTimesheets && (
             <NavLink to="/approvals" className={({ isActive }) => (isActive ? "active" : "")}>
               Approvals
             </NavLink>
           )}
-          {showSupervisors && (
+          {capabilities?.manageSupervisors && (
             <NavLink to="/supervisors" className={({ isActive }) => (isActive ? "active" : "")}>
               Supervisors
             </NavLink>
           )}
-          {showAllocations && (
+          {capabilities?.allocateHours && (
             <NavLink to="/allocations" className={({ isActive }) => (isActive ? "active" : "")}>
               My Hours
             </NavLink>
           )}
-          {showAdminData && (
-            <NavLink to="/departments" className={({ isActive }) => (isActive ? "active" : "")}>
-              Departments
+          {capabilities?.manageEmployees && (
+            <NavLink to="/employees" className={({ isActive }) => (isActive ? "active" : "")}>
+              Employees
             </NavLink>
           )}
-          {showAdminData && (
+          {capabilities?.manageMasterData && (
+            <NavLink to="/departments" className={({ isActive }) => (isActive ? "active" : "")}>
+              Organisation
+            </NavLink>
+          )}
+          {capabilities?.manageEmployees && (
             <NavLink to="/csv-upload" className={({ isActive }) => (isActive ? "active" : "")}>
               CSV Upload
             </NavLink>

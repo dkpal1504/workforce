@@ -15,7 +15,12 @@ async function main() {
   await prisma.manpowerRequest.deleteMany();
   await prisma.attendanceFeed.deleteMany();
   await prisma.costRate.deleteMany();
-  await prisma.supervisorPin.deleteMany();
+  await prisma.credentialDelivery.deleteMany();
+  await prisma.supervisorOverride.deleteMany();
+  await prisma.employeeSectionAssignment.deleteMany();
+  await prisma.costCenter.deleteMany();
+  await prisma.section.deleteMany();
+  await prisma.syncException.deleteMany();
   await prisma.jobOrder.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectWbs.deleteMany();
@@ -24,13 +29,30 @@ async function main() {
   await prisma.department.deleteMany();
 
   const hull = await prisma.department.create({
-    data: { name: "Hull Production", code: "HULL" },
+    data: { name: "Production - EOU", code: "PRODUCTION_EOU" },
   });
   const blast = await prisma.department.create({
-    data: { name: "Blasting & Painting", code: "BLAST" },
+    data: { name: "Production - SEZ", code: "PRODUCTION_SEZ" },
   });
   const repair = await prisma.department.create({
-    data: { name: "Ship Repair", code: "REPAIR" },
+    data: { name: "Shipwright - EOU", code: "SHIPWRIGHT_EOU" },
+  });
+
+  const hullSection = await prisma.section.create({
+    data: { departmentId: hull.id, name: "Hull Production", code: "HULL", source: "MANUAL" },
+  });
+  const blastSection = await prisma.section.create({
+    data: { departmentId: blast.id, name: "Blasting & Painting", code: "BLAST", source: "MANUAL" },
+  });
+  const repairSection = await prisma.section.create({
+    data: { departmentId: repair.id, name: "Ship Repair", code: "REPAIR", source: "MANUAL" },
+  });
+  await prisma.costCenter.createMany({
+    data: [
+      { sectionId: hullSection.id, code: "CC-HULL", name: "Hull Production" },
+      { sectionId: blastSection.id, code: "CC-BLAST", name: "Blasting & Painting" },
+      { sectionId: repairSection.id, code: "CC-REPAIR", name: "Ship Repair" },
+    ],
   });
 
   const surnames = [
@@ -53,6 +75,10 @@ async function main() {
       },
     });
     employees.push(emp);
+    const sectionId = dept.id === hull.id ? hullSection.id : dept.id === blast.id ? blastSection.id : repairSection.id;
+    await prisma.employeeSectionAssignment.create({
+      data: { employeeId: emp.id, sectionId, source: "MANUAL" },
+    });
   }
 
   const passwordHash = await bcrypt.hash("password123", 10);

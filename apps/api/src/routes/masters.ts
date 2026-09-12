@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../db";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireRoles } from "../middleware/auth";
 
 export const mastersRouter = Router();
 
@@ -11,10 +11,11 @@ mastersRouter.get("/departments", async (_req, res) => {
   res.json({ departments });
 });
 
-mastersRouter.get("/employees", async (req, res) => {
-  const departmentId = req.query.department_id
-    ? Number(req.query.department_id)
-    : undefined;
+mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+  const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const departmentId = ["SUPERVISOR", "HOD"].includes(req.user!.role)
+    ? (req.user!.departmentId ?? -1)
+    : requestedDepartmentId;
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const employees = await prisma.employee.findMany({
     where: {
@@ -26,7 +27,10 @@ mastersRouter.get("/employees", async (req, res) => {
           }
         : {}),
     },
-    include: { department: { select: { id: true, name: true } } },
+    include: {
+      department: { select: { id: true, name: true } },
+      sectionAssignment: { include: { section: { include: { costCenter: true } } } },
+    },
     orderBy: { name: "asc" },
   });
   res.json({ employees });
@@ -50,7 +54,7 @@ mastersRouter.get("/projects", async (_req, res) => {
     orderBy: { sortOrder: "asc" },
     include: {
       jobOrders: {
-        where: { status: { in: ["active", "closed"] } },
+        where: { status: { in: ["active", "closed"] }, department: { name: { contains: " - " }, active: true } },
         orderBy: { code: "asc" },
         select: {
           id: true,
@@ -66,25 +70,26 @@ mastersRouter.get("/projects", async (_req, res) => {
   res.json({ projects });
 });
 
-mastersRouter.get("/supervisors", async (req, res) => {
-  const departmentId = req.query.department_id
-    ? Number(req.query.department_id)
-    : undefined;
-  const supervisors = await prisma.user.findMany({
-    where: {
-      role: "SUPERVISOR",
-      ...(departmentId ? { departmentId } : {}),
-    },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      source: true,
-      idCardNo: true,
-      departmentId: true,
-      department: { select: { id: true, name: true } },
-    },
+
+/** Active section picker, optionally scoped to a department. */
+mastersRouter.get("/sections", async (req, res) => {
+  const departmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const sections = await prisma.section.findMany({
+    where: { active: true, ...(departmentId ? { departmentId } : {}) },
+    select: { id: true, code: true, name: true, departmentId: true, costCenter: { select: { id: true, code: true, name: true, active: true } } },
     orderBy: { name: "asc" },
   });
-  res.json({ supervisors });
+  res.json({ sections });
+});
+
+/** Active cost-centre picker; section/department filters are optional. */
+mastersRouter.get("/cost-centers", async (req, res) => {
+  const sectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
+  const departmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const costCenters = await prisma.costCenter.findMany({
+    where: { active: true, ...(sectionId ? { sectionId } : {}), ...(departmentId ? { section: { departmentId } } : {}) },
+    select: { id: true, code: true, name: true, sectionId: true, section: { select: { id: true, code: true, name: true, departmentId: true } } },
+    orderBy: { code: "asc" },
+  });
+  res.json({ costCenters });
 });

@@ -1,276 +1,221 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
-
-/**
- * Front-end-managed supervisor registration (white-collar / on-payroll).
- *
- * These are MANUAL login accounts (source='MANUAL') — the sync never touches
- * them. Collision policy: a manual registration whose idCardNo already exists
- * as a SYNC row is REJECTED with a clear error (never silently duplicated).
- * Promoting a sync worker to a manual login is an explicit admin action
- * (convert + set password), not an implicit upsert side-effect.
- */
+import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
 
 export const supervisorRegistrationRouter = Router();
 
+function credentialRecipient(): string {
+  return process.env.CREDENTIAL_DELIVERY_RECIPIENT?.trim() || "itsupport.shipyard@swan.co.in";
+}
+
+async function uniqueSupervisorEmail(ecNo: string): Promise<string> {
+  const local = ecNo.toLowerCase().replace(/[^a-z0-9._-]/g, "_") || "supervisor";
+  let email = `${local}@sync.local`;
+  for (let suffix = 1; await prisma.user.findUnique({ where: { email }, select: { id: true } }); suffix += 1) {
+    email = `${local}.${suffix}@sync.local`;
+  }
+  return email;
+}
+
 supervisorRegistrationRouter.use(requireAuth, requireRoles("ADMIN", "HR"));
 
-/** List all supervisors (manual + sync) for the registration screen. */
+const supervisorSelect = {
+  id: true, name: true, email: true, role: true, source: true, active: true,
+  employeeId: true, departmentId: true, createdAt: true,
+  department: { select: { id: true, code: true, name: true } },
+  employee: { select: { id: true, ecNo: true, mobile: true, active: true, employmentType: true,
+    sectionAssignment: { include: { section: { include: { costCenter: true } } } } } },
+} as const;
+
 supervisorRegistrationRouter.get("/", async (_req, res) => {
-  const supervisors = await prisma.user.findMany({
-    where: { role: "SUPERVISOR" },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      role: true,
-      source: true,
-      idCardNo: true,
-      departmentId: true,
-      department: { select: { id: true, name: true } },
-      createdAt: true,
-    },
-    orderBy: { name: "asc" },
-  });
+  const supervisors = await prisma.user.findMany({ where: { role: "SUPERVISOR" }, select: supervisorSelect, orderBy: { name: "asc" } });
   res.json({ supervisors });
 });
 
-/** Create a manual supervisor (login account). */
+/** Register the canonical Employee, section assignment and linked User atomically. */
 supervisorRegistrationRouter.post("/", async (req, res) => {
-  const { name, email, password, idCardNo, departmentId } = req.body ?? {};
-
-  if (!name || !email || !password) {
-    return res.status(400).json({ error: "name, email and password are required" });
+  const { ecNo, name, email, mobile, departmentId, sectionId, designation, category } = req.body ?? {};
+  if (!ecNo || !name || !email || !departmentId || !sectionId) {
+    return res.status(400).json({ error: "ecNo, name, email, departmentId and sectionId are required" });
   }
-  if (!idCardNo) {
-    return res.status(400).json({ error: "idCardNo is required (ID card / employee code)" });
+  const section = await prisma.section.findUnique({ where: { id: Number(sectionId) } });
+  if (!section || !section.active || section.departmentId !== Number(departmentId)) {
+    return res.status(400).json({ error: "sectionId must be an active section in departmentId", code: "INVALID_SECTION" });
   }
-
-  // Collision policy: reject if idCardNo already exists as a SYNC row.
-  const existingSync = await prisma.user.findUnique({
-    where: { idCardNo },
-    select: { id: true, source: true },
+  const normalizedEcNo = canonicalEcNo(ecNo);
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (await findEmployeeByCanonicalEcNo(normalizedEcNo)) return res.status(409).json({ error: "ecNo already exists", code: "ECNO_EXISTS" });
+  if (await prisma.user.findUnique({ where: { email: normalizedEmail } })) return res.status(409).json({ error: "email already exists", code: "EMAIL_EXISTS" });
+  const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+  const user = await prisma.$transaction(async (tx) => {
+    const employee = await tx.employee.create({ data: {
+      ecNo: normalizedEcNo, name: String(name).trim(), mobile: mobile ? String(mobile).trim() : null,
+      departmentId: Number(departmentId), designation: String(designation || ""), category: String(category || "PAYROLL"),
+      employmentType: "PAYROLL", source: "PAYROLL", active: true,
+    } });
+    await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: Number(sectionId), source: "MANUAL" } });
+    const created = await tx.user.create({ data: {
+      employeeId: employee.id, name: employee.name, email: normalizedEmail, passwordHash, role: "SUPERVISOR",
+      source: "MANUAL", departmentId: employee.departmentId, active: true, mustChangePassword: true,
+    } });
+    await tx.credentialDelivery.create({ data: { userId: created.id, recipient: credentialRecipient(), purpose: "INITIAL" } });
+    return created;
   });
-  if (existingSync) {
-    if (existingSync.source === "SYNC") {
-      return res.status(409).json({
-        error: "This ID card / employee code already exists as a sync-managed supervisor. Use 'Convert to manual login' to promote it.",
-        code: "IDCARD_SYNC_EXISTS",
-      });
-    }
-    return res.status(409).json({
-      error: "A supervisor with this ID card / employee code already exists.",
-      code: "IDCARD_EXISTS",
-    });
-  }
-
-  const emailExists = await prisma.user.findUnique({ where: { email } });
-  if (emailExists) {
-    return res.status(409).json({ error: "A user with this email already exists.", code: "EMAIL_EXISTS" });
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  const user = await prisma.user.create({
-    data: {
-      name,
-      email,
-      passwordHash,
-      role: "SUPERVISOR",
-      source: "MANUAL",
-      idCardNo,
-      departmentId: departmentId || null,
-    },
-  });
-
-  await writeAudit(req.user!.id, "SUPERVISOR_CREATE", "user", user.id, {
-    name,
-    email,
-    idCardNo,
-    source: "MANUAL",
-  });
-
-  res.status(201).json({
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      source: user.source,
-      idCardNo: user.idCardNo,
-      departmentId: user.departmentId,
-    },
-  });
+  await writeAudit(req.user!.id, "SUPERVISOR_CREATE", "user", user.id, { ecNo: normalizedEcNo, employeeId: user.employeeId, sectionId, credentialQueued: true });
+  const result = await prisma.user.findUnique({ where: { id: user.id }, select: supervisorSelect });
+  res.status(201).json({ user: result, credentialQueued: true });
 });
 
-/** Update a manual supervisor (name, email, department, optional password reset). */
 supervisorRegistrationRouter.put("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { name, email, password, departmentId } = req.body ?? {};
-
-  const existing = await prisma.user.findUnique({ where: { id } });
-  if (!existing) return res.status(404).json({ error: "Supervisor not found" });
-  if (existing.source !== "MANUAL") {
-    return res.status(403).json({
-      error: "Sync-managed supervisors are read-only. Convert to manual login to edit.",
-      code: "SYNC_READONLY",
-    });
+  const existing = await prisma.user.findUnique({ where: { id }, include: { employee: true } });
+  if (!existing || existing.role !== "SUPERVISOR") return res.status(404).json({ error: "Supervisor not found" });
+  const { name, email, mobile, sectionId, active } = req.body ?? {};
+  const syncOwned = existing.source === "SYNC" || existing.employee?.employmentType === "CLMS";
+  if (syncOwned && [name, email, mobile, active].some((value) => value !== undefined)) {
+    return res.status(409).json({ error: "LabourWorks owns CLMS identity and lifecycle fields. Only Section may be changed here.", code: "CLMS_SYNC_OWNED" });
   }
-
-  const data: Record<string, unknown> = {};
-  if (name !== undefined) data.name = name;
-  if (email !== undefined) data.email = email;
-  if (departmentId !== undefined) data.departmentId = departmentId || null;
-  if (password) data.passwordHash = await bcrypt.hash(password, 10);
-
-  const user = await prisma.user.update({ where: { id }, data });
-  await writeAudit(req.user!.id, "SUPERVISOR_UPDATE", "user", user.id, {
-    name,
-    email,
-    departmentId,
-    passwordChanged: Boolean(password),
+  if (sectionId !== undefined) {
+    const section = await prisma.section.findUnique({ where: { id: Number(sectionId) } });
+    if (!section || !section.active || (existing.employee && section.departmentId !== existing.employee.departmentId)) return res.status(400).json({ error: "Section must be active and belong to the Supervisor Department", code: "INVALID_SECTION" });
+  }
+  const reactivating = active === true && !existing.active;
+  const deactivating = active === false && existing.active;
+  const passwordHash = reactivating ? await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10) : null;
+  let credentialQueued = false;
+  await prisma.$transaction(async (tx) => {
+    if (existing.employeeId) {
+      await tx.employee.update({ where: { id: existing.employeeId }, data: {
+        ...(name !== undefined ? { name: String(name).trim() } : {}), ...(mobile !== undefined ? { mobile: mobile ? String(mobile).trim() : null } : {}),
+        ...(active !== undefined ? { active: Boolean(active), terminatedAt: active ? null : new Date() } : {}),
+      } });
+      if (sectionId !== undefined) await tx.employeeSectionAssignment.upsert({ where: { employeeId: existing.employeeId }, create: { employeeId: existing.employeeId, sectionId: Number(sectionId), source: "MANUAL" }, update: { sectionId: Number(sectionId), source: "MANUAL" } });
+    }
+    await tx.user.update({ where: { id }, data: {
+      ...(name !== undefined ? { name: String(name).trim() } : {}), ...(email !== undefined ? { email: String(email).trim().toLowerCase() } : {}),
+      ...(active !== undefined ? { active: Boolean(active) } : {}),
+      ...(reactivating ? { passwordHash: passwordHash!, mustChangePassword: true, passwordExpiresAt: new Date(), credentialSentAt: null, tokenVersion: { increment: 1 } } : {}),
+      ...(deactivating ? { tokenVersion: { increment: 1 } } : {}),
+    } });
+    if (reactivating) {
+      const pending = await tx.credentialDelivery.findFirst({ where: { userId: id, status: { in: ["PENDING", "PROCESSING"] } } });
+      if (!pending) {
+        await tx.credentialDelivery.create({ data: { userId: id, recipient: credentialRecipient(), purpose: "REACTIVATION" } });
+        credentialQueued = true;
+      }
+    }
   });
-
-  res.json({
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      source: user.source,
-      idCardNo: user.idCardNo,
-      departmentId: user.departmentId,
-    },
-  });
+  await writeAudit(req.user!.id, "SUPERVISOR_UPDATE", "user", id, { sectionId, active, credentialQueued });
+  res.json({ user: await prisma.user.findUnique({ where: { id }, select: supervisorSelect }), credentialQueued });
 });
 
-/** Delete a manual supervisor. Sync rows are protected. */
+/** Queue a reset. No password is accepted, stored, audited, logged, or returned. */
+supervisorRegistrationRouter.post("/:id/credential-reset", async (req, res) => {
+  const id = Number(req.params.id);
+  const existing = await prisma.user.findUnique({ where: { id }, include: { employee: { select: { active: true } } } });
+  if (!existing || existing.role !== "SUPERVISOR") return res.status(404).json({ error: "Supervisor not found" });
+  if (!existing.active || (existing.employeeId != null && !existing.employee?.active)) {
+    return res.status(409).json({ error: "Credentials cannot be reset for an inactive Supervisor.", code: "ACCOUNT_INACTIVE" });
+  }
+  const pending = await prisma.credentialDelivery.findFirst({ where: { userId: id, status: { in: ["PENDING", "PROCESSING"] } } });
+  if (pending) return res.status(202).json({ queued: true, deliveryId: pending.id, alreadyPending: true });
+  const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+  const delivery = await prisma.$transaction(async (tx) => {
+    await tx.user.update({ where: { id }, data: {
+      passwordHash, mustChangePassword: true, passwordExpiresAt: new Date(), credentialSentAt: null,
+      tokenVersion: { increment: 1 },
+    } });
+    return tx.credentialDelivery.create({ data: { userId: id, recipient: credentialRecipient(), purpose: "RESET" } });
+  });
+  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET_QUEUED", "user", id, { deliveryId: delivery.id });
+  res.status(202).json({ queued: true, deliveryId: delivery.id });
+});
+
+/** Create or reactivate an audited CLMS supervisor override by employeeId or ecNo. */
+supervisorRegistrationRouter.post("/overrides", async (req, res) => {
+  const { employeeId, ecNo, reason } = req.body ?? {};
+  if ((!employeeId && !ecNo) || !String(reason || "").trim()) return res.status(400).json({ error: "employeeId or ecNo, and reason are required" });
+  const employee = employeeId ? await prisma.employee.findUnique({ where: { id: Number(employeeId) } }) : await findEmployeeByCanonicalEcNo(ecNo);
+  if (!employee) return res.status(404).json({ error: "Employee not found" });
+  if (!employee.active || employee.employmentType !== "CLMS") return res.status(409).json({ error: "Only active CLMS employees can be overridden", code: "NOT_ACTIVE_CLMS" });
+  const existingUser = await prisma.user.findUnique({ where: { employeeId: employee.id } });
+  const needsCredential = !existingUser?.active || existingUser.role !== "SUPERVISOR";
+  const passwordHash = needsCredential ? await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10) : null;
+  const loginEmail = existingUser?.email || await uniqueSupervisorEmail(employee.ecNo);
+  const result = await prisma.$transaction(async (tx) => {
+    const override = await tx.supervisorOverride.upsert({
+      where: { employeeId: employee.id },
+      create: { employeeId: employee.id, createdById: req.user!.id, reason: String(reason).trim() },
+      update: { createdById: req.user!.id, reason: String(reason).trim(), revokedAt: null },
+    });
+    let user = existingUser;
+    if (!user) {
+      user = await tx.user.create({ data: {
+        employeeId: employee.id, email: loginEmail, name: employee.name, role: "SUPERVISOR",
+        source: "SYNC", departmentId: employee.departmentId, active: true,
+        passwordHash: passwordHash!, mustChangePassword: true, passwordExpiresAt: new Date(),
+      } });
+    } else if (needsCredential) {
+      user = await tx.user.update({ where: { id: user.id }, data: {
+        name: employee.name, role: "SUPERVISOR", departmentId: employee.departmentId, active: true,
+        passwordHash: passwordHash!, mustChangePassword: true, passwordExpiresAt: new Date(),
+        credentialSentAt: null, tokenVersion: { increment: 1 },
+      } });
+    }
+    let delivery = null;
+    if (needsCredential) {
+      const pending = await tx.credentialDelivery.findFirst({ where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } } });
+      if (!pending) {
+        delivery = await tx.credentialDelivery.create({ data: {
+          userId: user.id, recipient: credentialRecipient(), purpose: existingUser ? "REACTIVATION" : "NEW_SUPERVISOR",
+        } });
+      }
+    }
+    return { override, user, delivery };
+  });
+  await writeAudit(req.user!.id, "SUPERVISOR_OVERRIDE", "supervisor_override", result.override.id, { employeeId: employee.id, ecNo: employee.ecNo, reason: String(reason).trim(), credentialQueued: Boolean(result.delivery) });
+  res.status(201).json({ override: result.override, user: {
+    id: result.user.id, email: result.user.email, name: result.user.name, role: result.user.role,
+    employeeId: result.user.employeeId, departmentId: result.user.departmentId, active: result.user.active,
+  }, credentialQueued: Boolean(result.delivery) });
+});
+
+supervisorRegistrationRouter.delete("/overrides/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const current = await prisma.supervisorOverride.findUnique({ where: { id } });
+  if (!current) return res.status(404).json({ error: "Supervisor override not found" });
+  if (current.revokedAt) return res.status(409).json({ error: "Supervisor override is already revoked", code: "ALREADY_REVOKED" });
+  const employee = await prisma.employee.findUnique({ where: { id: current.employeeId }, select: { natureOfWork: true, user: { select: { id: true } } } });
+  const remainsNaturalSupervisor = employee?.natureOfWork?.trim().toLowerCase() === "supervisor";
+  const override = await prisma.$transaction(async (tx) => {
+    const updated = await tx.supervisorOverride.update({ where: { id }, data: { revokedAt: new Date() } });
+    if (!remainsNaturalSupervisor && employee?.user) {
+      await tx.user.update({ where: { id: employee.user.id }, data: { active: false, tokenVersion: { increment: 1 } } });
+    }
+    return updated;
+  });
+  await writeAudit(req.user!.id, "SUPERVISOR_OVERRIDE_REVOKE", "supervisor_override", id, { employeeId: current.employeeId, accountDisabled: !remainsNaturalSupervisor });
+  res.json({ override });
+});
+
+supervisorRegistrationRouter.get("/overrides", async (_req, res) => {
+  const overrides = await prisma.supervisorOverride.findMany({ include: { employee: { include: { department: true } }, createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: "desc" } });
+  res.json({ overrides });
+});
+
+/** Soft-disable login; the canonical employee and historical records remain. */
 supervisorRegistrationRouter.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await prisma.user.findUnique({ where: { id } });
-  if (!existing) return res.status(404).json({ error: "Supervisor not found" });
-  if (existing.source !== "MANUAL") {
-    return res.status(403).json({
-      error: "Sync-managed supervisors are read-only and cannot be deleted.",
-      code: "SYNC_READONLY",
-    });
+  const existing = await prisma.user.findUnique({ where: { id }, include: { employee: { select: { employmentType: true } } } });
+  if (!existing || existing.role !== "SUPERVISOR") return res.status(404).json({ error: "Supervisor not found" });
+  if (existing.source === "SYNC" || existing.employee?.employmentType === "CLMS") {
+    return res.status(409).json({ error: "LabourWorks owns CLMS lifecycle. Revoke a manual override or update the source record.", code: "CLMS_SYNC_OWNED" });
   }
-
-  await prisma.user.delete({ where: { id } });
-  await writeAudit(req.user!.id, "SUPERVISOR_DELETE", "user", id, {
-    name: existing.name,
-    email: existing.email,
-    idCardNo: existing.idCardNo,
-    source: "MANUAL",
-  });
-
+  await prisma.user.update({ where: { id }, data: { active: false, tokenVersion: { increment: 1 } } });
+  await writeAudit(req.user!.id, "SUPERVISOR_DISABLE", "user", id);
   res.json({ ok: true });
-});
-
-/**
- * Explicit admin action: promote a sync supervisor to a manual login account.
- * Sets a password and flips source to MANUAL. This is the ONLY path that
- * converts a sync row — never an implicit upsert side-effect.
- */
-supervisorRegistrationRouter.post("/:id/convert", async (req, res) => {
-  const id = Number(req.params.id);
-  const { password, email } = req.body ?? {};
-
-  const existing = await prisma.user.findUnique({ where: { id } });
-  if (!existing) return res.status(404).json({ error: "Supervisor not found" });
-  if (existing.source !== "SYNC") {
-    return res.status(400).json({ error: "Only sync-managed supervisors can be converted.", code: "NOT_SYNC" });
-  }
-  if (!password) {
-    return res.status(400).json({ error: "password is required to convert to a manual login." });
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  const user = await prisma.user.update({
-    where: { id },
-    data: {
-      passwordHash,
-      source: "MANUAL",
-      ...(email ? { email } : {}),
-    },
-  });
-
-  // Converting to a manual login also pins the worker as a supervisor, so the
-  // next sync marks them isSupervisor=true instead of reverting them.
-  await prisma.supervisorPin.upsert({
-    where: { idCardNo: user.idCardNo! },
-    create: { idCardNo: user.idCardNo!, createdBy: req.user!.id },
-    update: {},
-  });
-
-  await writeAudit(req.user!.id, "SUPERVISOR_CONVERT", "user", user.id, {
-    name: user.name,
-    idCardNo: user.idCardNo,
-    from: "SYNC",
-    to: "MANUAL",
-    pinned: true,
-  });
-
-  res.json({
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      source: user.source,
-      idCardNo: user.idCardNo,
-      departmentId: user.departmentId,
-    },
-  });
-});
-
-/**
- * Explicitly pin a present contract worker as a supervisor (audited admin action).
- * A pin marks supervisor status of a PRESENT worker only — it never retains a
- * departed worker (strict-prune removes it on the next sync).
- */
-supervisorRegistrationRouter.post("/:idCardNo/pin", async (req, res) => {
-  const idCardNo = String(req.params.idCardNo);
-  const worker = await prisma.contractWorker.findUnique({ where: { idCardNo } });
-  if (!worker) {
-    return res.status(404).json({ error: "Contract worker not found in master data." });
-  }
-  const pin = await prisma.supervisorPin.upsert({
-    where: { idCardNo },
-    create: { idCardNo, createdBy: req.user!.id },
-    update: {},
-  });
-  await writeAudit(req.user!.id, "SUPERVISOR_PIN", "supervisor_pin", pin.id, {
-    idCardNo,
-    workmenName: worker.workmenName,
-  });
-  res.status(201).json({ pinned: true, idCardNo });
-});
-
-/**
- * Unpin a worker (audited admin action). The worker stays in the master data;
- * they simply no longer appear as a supervisor on the next sync.
- */
-supervisorRegistrationRouter.delete("/:idCardNo/pin", async (req, res) => {
-  const idCardNo = String(req.params.idCardNo);
-  const pin = await prisma.supervisorPin.findUnique({ where: { idCardNo } });
-  if (!pin) {
-    return res.status(404).json({ error: "Worker is not pinned as a supervisor." });
-  }
-  await prisma.supervisorPin.delete({ where: { idCardNo } });
-  await writeAudit(req.user!.id, "SUPERVISOR_UNPIN", "supervisor_pin", pin.id, {
-    idCardNo,
-  });
-  res.json({ pinned: false, idCardNo });
-});
-
-/** List current pins (supervisor set) for the UI. */
-supervisorRegistrationRouter.get("/pins", async (_req, res) => {
-  const pins = await prisma.supervisorPin.findMany({
-    select: { idCardNo: true, createdAt: true },
-    orderBy: { idCardNo: "asc" },
-  });
-  res.json({ pins });
 });

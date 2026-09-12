@@ -9,10 +9,11 @@ type UploadResult = {
 };
 
 const MAX_BYTES = 2 * 1024 * 1024; // keep in sync with the API's 2MB limit
-const TEMPLATE_COLUMNS = "ecNo, idCardNo, name, departmentName, designation, category, grade, section, plant";
+const TEMPLATE_COLUMNS = "ecNo, name, departmentName, sectionName, designation, category";
 
 /**
- * Employee CSV upload (CR#2) — ADMIN/HR gated at the API. Upload the raw CSV
+ * Payroll employee CSV upload — ADMIN/HR gated at the API. ecNo is the one
+ * canonical identifier. Organisation hierarchy is assigned separately. Upload the raw CSV
  * text; the server validates every row (required fields, duplicate ecNo,
  * CSV-injection cells) and reports per-row errors — never silent partial
  * acceptance. The template mirrors the API's expected column order.
@@ -106,7 +107,7 @@ export function CsvUploadPage() {
     <>
       <div className="supervisors-toolbar">
         <span className="supervisors-toolbar__count">
-          Bulk-register payroll employees via CSV. Future HRMS integration path.
+          Bulk-register payroll employees with canonical ecNo. Department and Section are required; Cost Center is derived from Section.
         </span>
         <div className="supervisors-actions">
           <button type="button" className="btn btn-ghost" onClick={downloadTemplate}>

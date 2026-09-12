@@ -5,6 +5,7 @@ import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
+import { rejectionStatusForEmployee } from "../services/employeeEligibility";
 
 export const approvalsRouter = Router();
 
@@ -39,6 +40,8 @@ type DayRow = {
     id: number;
     name: string;
     ecNo: string;
+    active: boolean;
+    departmentId: number;
     department: { name: string };
   };
   taggedBy: { id: number; name: string; email: string };
@@ -355,6 +358,9 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
   const days = (await prisma.timesheetDay.findMany({
     where: {
       status: { in: statusFilter },
+      ...(role === "HOD"
+        ? { employee: req.user!.departmentId == null ? { id: -1 } : { departmentId: req.user!.departmentId } }
+        : {}),
       // Only days that have at least one project-tagged hour (legacy WBS OR new JobOrder).
       entries: {
         some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
@@ -385,6 +391,9 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     const returned = (await prisma.timesheetDay.findMany({
       where: {
         status: "PLANNING_RETURNED",
+        ...(role === "HOD"
+          ? { employee: req.user!.departmentId == null ? { id: -1 } : { departmentId: req.user!.departmentId } }
+          : {}),
         entries: {
           some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
         },
@@ -504,12 +513,9 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
   // Scope: only entries in this approver's department (via supervisor OR employee),
   // matching the pending view. If the approver has no department (e.g. PM), no
   // department filter is applied — consistent with the existing pending view.
-  const deptWhere =
-    departmentId != null
-      ? {
-          OR: [{ taggedBy: { departmentId } }, { employee: { departmentId } }],
-        }
-      : {};
+  const deptWhere = role === "HOD"
+    ? { employee: departmentId == null ? { id: -1 } : { departmentId } }
+    : {};
 
   const entries = await prisma.timesheetEntry.findMany({
     where: {
@@ -599,7 +605,7 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
   res.json({ rows, role });
 });
 
-async function applyApprove(ids: number[], userId: number, role: string, comment: string | null) {
+async function applyApprove(ids: number[], userId: number, role: string, departmentId: number | null, comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
 
@@ -607,6 +613,7 @@ async function applyApprove(ids: number[], userId: number, role: string, comment
     const day = await prisma.timesheetDay.findUnique({
       where: { id },
       include: {
+        employee: { select: { active: true, departmentId: true } },
         entries: {
           where: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
         },
@@ -614,6 +621,10 @@ async function applyApprove(ids: number[], userId: number, role: string, comment
     });
     if (!day) {
       errors.push({ id, error: "Not found" });
+      continue;
+    }
+    if (role === "HOD" && (departmentId == null || day.employee.departmentId !== departmentId)) {
+      errors.push({ id, error: "Timesheet belongs to another Department or the HOD has no Department." });
       continue;
     }
     const next = nextStatusOnApprove(role, day.status);
@@ -655,7 +666,7 @@ async function applyApprove(ids: number[], userId: number, role: string, comment
   return { results, errors };
 }
 
-async function applyReject(ids: number[], userId: number, role: string, comment: string | null) {
+async function applyReject(ids: number[], userId: number, role: string, departmentId: number | null, comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
 
@@ -663,6 +674,7 @@ async function applyReject(ids: number[], userId: number, role: string, comment:
     const day = await prisma.timesheetDay.findUnique({
       where: { id },
       include: {
+        employee: { select: { active: true, departmentId: true } },
         entries: {
           where: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
         },
@@ -672,10 +684,14 @@ async function applyReject(ids: number[], userId: number, role: string, comment:
       errors.push({ id, error: "Not found" });
       continue;
     }
+    if (role === "HOD" && (departmentId == null || day.employee.departmentId !== departmentId)) {
+      errors.push({ id, error: "Timesheet belongs to another Department or the HOD has no Department." });
+      continue;
+    }
 
     const isPlanningReturn = (role === "PM" || role === "ADMIN") && day.status === "HOD_APPROVED";
-    const nextStatus = isPlanningReturn ? "PLANNING_RETURNED" : "REJECTED";
-    const action = isPlanningReturn ? "PLANNING_RETURN" : "REJECT";
+    const nextStatus = rejectionStatusForEmployee(day.employee.active, isPlanningReturn ? "PLANNING_RETURNED" : "REJECTED");
+    const action = !day.employee.active ? "REJECT" : isPlanningReturn ? "PLANNING_RETURN" : "REJECT";
 
     if (role === "HOD" && day.status !== "SUBMITTED") {
       errors.push({ id, error: `Cannot reject from status ${day.status} as HOD` });
@@ -730,8 +746,8 @@ approvalsRouter.post("/batch", requireRoles(...APPROVER_ROLES), async (req, res)
 
   const outcome =
     action === "approve"
-      ? await applyApprove(ids, req.user!.id, req.user!.role, comment)
-      : await applyReject(ids, req.user!.id, req.user!.role, comment);
+      ? await applyApprove(ids, req.user!.id, req.user!.role, req.user!.departmentId, comment)
+      : await applyReject(ids, req.user!.id, req.user!.role, req.user!.departmentId, comment);
 
   res.json({ ok: outcome.errors.length === 0, ...outcome });
 });
@@ -739,7 +755,7 @@ approvalsRouter.post("/batch", requireRoles(...APPROVER_ROLES), async (req, res)
 approvalsRouter.post("/:id/approve", requireRoles(...APPROVER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
-  const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, comment);
+  const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, req.user!.departmentId, comment);
   if (errors.length) return res.status(400).json({ error: errors[0].error });
   res.json({ ok: true, status: results[0].status });
 });
@@ -747,15 +763,18 @@ approvalsRouter.post("/:id/approve", requireRoles(...APPROVER_ROLES), async (req
 approvalsRouter.post("/:id/reject", requireRoles(...APPROVER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
-  const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, comment);
+  const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, req.user!.departmentId, comment);
   if (errors.length) return res.status(400).json({ error: errors[0].error });
   res.json({ ok: true, status: results[0].status });
 });
 
 approvalsRouter.post("/:id/send-back", requireRoles("HOD", "ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
-  const day = await prisma.timesheetDay.findUnique({ where: { id } });
+  const day = await prisma.timesheetDay.findUnique({ where: { id }, include: { employee: { select: { active: true, departmentId: true } } } });
   if (!day) return res.status(404).json({ error: "Not found" });
+  if (req.user!.role === "HOD" && (req.user!.departmentId == null || day.employee.departmentId !== req.user!.departmentId)) {
+    return res.status(403).json({ error: "Timesheet belongs to another Department or the HOD has no Department.", code: "FORBIDDEN" });
+  }
   if (day.status !== "PLANNING_RETURNED") {
     return res.status(400).json({ error: "Only Planning-returned sheets can be sent back to supervisor" });
   }
@@ -764,11 +783,11 @@ approvalsRouter.post("/:id/send-back", requireRoles("HOD", "ADMIN"), async (req,
   await prisma.$transaction([
     prisma.timesheetDay.update({
       where: { id },
-      data: { status: "REJECTED", remarks: comment || day.remarks },
+      data: { status: rejectionStatusForEmployee(day.employee.active), remarks: comment || day.remarks },
     }),
     prisma.timesheetEntry.updateMany({
       where: { timesheetDayId: id },
-      data: { status: "REJECTED" },
+      data: { status: rejectionStatusForEmployee(day.employee.active) },
     }),
     prisma.approval.create({
       data: {
@@ -781,5 +800,5 @@ approvalsRouter.post("/:id/send-back", requireRoles("HOD", "ADMIN"), async (req,
   ]);
 
   await writeAudit(req.user!.id, "SEND_BACK", "timesheet_day", id);
-  res.json({ ok: true, status: "REJECTED" });
+  res.json({ ok: true, status: rejectionStatusForEmployee(day.employee.active) });
 });

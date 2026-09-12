@@ -4,6 +4,8 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { parseDateOnly } from "../utils/date";
 import { getMaxDailyHours } from "../config";
+import { canSubmitRetainedDraft, inactiveEmployeePayload, rejectionStatusForEmployee } from "../services/employeeEligibility";
+import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrderEligibility";
 
 /**
  * Payroll employee manhour allocation (CR#2) — slot-based, parent day + slot rows.
@@ -71,7 +73,7 @@ employeeAllocationRouter.get("/", async (req, res) => {
         },
         orderBy: [{ shiftSlot: "asc" }],
       },
-      employee: { select: { id: true, name: true, ecNo: true, grade: true, department: true } },
+      employee: { select: { id: true, name: true, ecNo: true, grade: true, active: true, terminatedAt: true, department: true } },
     },
     orderBy: [{ workDate: "desc" }, { id: "desc" }],
     take: 200,
@@ -113,13 +115,13 @@ employeeAllocationRouter.post("/slot", async (req, res) => {
 
   const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
   if (!employee) return res.status(400).json({ error: "Employee not found" });
-  if (!employee.active) return res.status(400).json({ error: "Employee is not active.", code: "EMPLOYEE_INACTIVE" });
+  if (!employee.active) return res.status(409).json(inactiveEmployeePayload());
 
   const project = await prisma.project.findUnique({ where: { id: Number(bodyProjectId) } });
   if (!project) return res.status(400).json({ error: "Project not found" });
   if (bodyJobOrderId != null) {
-    const jo = await prisma.jobOrder.findUnique({ where: { id: Number(bodyJobOrderId) } });
-    if (!jo) return res.status(400).json({ error: "Work order not found" });
+    const jo = (await assignableJobOrders([Number(bodyJobOrderId)])).get(Number(bodyJobOrderId));
+    if (!jo) return res.status(400).json(invalidJobOrderPayload());
     if (jo.projectId !== project.id) {
       return res.status(400).json({ error: "Work order does not belong to the selected project." });
     }
@@ -181,8 +183,9 @@ employeeAllocationRouter.delete("/slot/:id", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
 
-  const slot = await prisma.employeeAllocation.findUnique({ where: { id }, include: { allocationDay: true } });
+  const slot = await prisma.employeeAllocation.findUnique({ where: { id }, include: { allocationDay: true, employee: { select: { active: true } } } });
   if (!slot) return res.status(404).json({ error: "Slot not found" });
+  if (!slot.employee.active) return res.status(409).json(inactiveEmployeePayload());
 
   const canDeleteOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
   if (!canDeleteOthers) {
@@ -227,10 +230,13 @@ employeeAllocationRouter.post("/submit", async (req, res) => {
 
   const day = await prisma.employeeAllocationDay.findUnique({
     where: { employeeId_workDate: { employeeId, workDate: wd } },
-    include: { allocations: true },
+    include: { allocations: true, employee: { select: { active: true, terminatedAt: true } } },
   });
   if (!day || day.allocations.length === 0) {
     return res.status(400).json({ error: "No slots assigned for this day." });
+  }
+  if (!day.employee.active && !canSubmitRetainedDraft(day.employee, day)) {
+    return res.status(409).json(inactiveEmployeePayload());
   }
   if (day.status !== "DRAFT" && day.status !== "REJECTED") {
     return res.status(400).json({ error: `Day is already ${day.status}; cannot submit.` });
@@ -319,7 +325,7 @@ employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMI
   const departmentId = req.user!.departmentId;
   const day = await prisma.employeeAllocationDay.findUnique({
     where: { id: dayId },
-    include: { employee: { select: { departmentId: true } } },
+    include: { employee: { select: { departmentId: true, active: true } } },
   });
   if (!day) return res.status(404).json({ error: "Day not found" });
 
@@ -377,7 +383,7 @@ employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN
 
   const day = await prisma.employeeAllocationDay.findUnique({
     where: { id: dayId },
-    include: { employee: { select: { departmentId: true } } },
+    include: { employee: { select: { departmentId: true, active: true } } },
   });
   if (!day) return res.status(404).json({ error: "Day not found" });
   if (day.status !== "SUBMITTED" && day.status !== "HOD_APPROVED") {
@@ -408,7 +414,7 @@ employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN
 
   const updated = await prisma.employeeAllocationDay.update({
     where: { id: dayId },
-    data: { status: "REJECTED", approverId: userId, remarks: comment ?? day.remarks },
+    data: { status: rejectionStatusForEmployee(day.employee.active), approverId: userId, remarks: comment ?? day.remarks },
   });
   await writeAudit(userId, "EMPLOYEE_ALLOCATION_REJECT", "employee_allocation_day", dayId, {
     employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), from: day.status, comment,

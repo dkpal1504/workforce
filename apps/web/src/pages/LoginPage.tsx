@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useTheme } from "../theme/ThemeContext";
 import { ThemePanel } from "../components/ThemePanel";
@@ -8,22 +8,30 @@ export function LoginPage() {
   const { login, user } = useAuth();
   const { openPanel } = useTheme();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("r.sharma@company.com");
-  const [password, setPassword] = useState("password123");
+  const location = useLocation();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (user) navigate("/select-team", { replace: true });
-  }, [user, navigate]);
+    if (!user) return;
+    const requested = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
+    navigate(user.mustChangePassword ? "/change-password" : requested || user.landingPath, { replace: true });
+  }, [user, navigate, location.state]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      await login(email, password);
-      navigate("/select-team");
+      const loggedIn = await login(email, password);
+      if (loggedIn.mustChangePassword) {
+        navigate("/change-password", { replace: true });
+      } else {
+        const requested = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
+        navigate(requested && requested !== "/login" ? requested : loggedIn.landingPath, { replace: true });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -66,9 +74,6 @@ export function LoginPage() {
           <button className="btn btn-primary" style={{ width: "100%" }} disabled={loading}>
             {loading ? "Signing in…" : "Sign in"}
           </button>
-          <p className="muted" style={{ marginTop: 14, fontSize: 12 }}>
-            Demo: r.sharma@company.com · HOD: hod@company.com · Project Head: pm@company.com / password123
-          </p>
         </form>
       </div>
       <ThemePanel />

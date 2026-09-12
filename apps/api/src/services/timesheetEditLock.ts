@@ -9,7 +9,7 @@ export type ApprovedStatus = (typeof APPROVED_STATUSES)[number];
  * SUBMITTED is the supervisor's submit cutoff — the user requirement is that
  * assign/unassign is allowed only UNTIL submission.
  */
-export const LOCKED_STATUSES = ["SUBMITTED", "HOD_APPROVED", "PM_APPROVED"] as const;
+export const LOCKED_STATUSES = ["SUBMITTED", "HOD_APPROVED", "PM_APPROVED", "FINAL_REJECTED"] as const;
 export type LockedStatus = (typeof LOCKED_STATUSES)[number];
 
 export type EditMode = "full" | "addOnly" | "locked";

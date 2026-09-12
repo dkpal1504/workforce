@@ -1,12 +1,12 @@
 import { Router } from "express";
 import { prisma } from "../db";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireRoles } from "../middleware/auth";
 import { endOfFrequency, parseDateOnly, startOfFrequency } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 
 export const summaryRouter = Router();
 
-summaryRouter.use(requireAuth);
+summaryRouter.use(requireAuth, requireRoles("SUPERVISOR", "HOD", "PM", "HR", "FINANCE", "ADMIN"));
 
 type JoStatus = "all" | "active" | "closed";
 
@@ -23,9 +23,9 @@ summaryRouter.get("/job-order", async (req, res) => {
     typeof req.query.departmentId === "string" && req.query.departmentId.length
       ? Number(req.query.departmentId)
       : undefined;
-  // "All Departments" must remain organization-wide. Apply department
-  // filtering only when the user explicitly selects a department in the report.
-  const filterDeptId = requestedDeptId;
+  // HOD is always scoped to the server-side Department. A missing Department
+  // fails closed. Other reporting roles may use the explicit report filter.
+  const filterDeptId = role === "HOD" ? (req.user!.departmentId ?? -1) : requestedDeptId;
 
   let projectIds: number[] | undefined;
   if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
@@ -205,13 +205,10 @@ summaryRouter.get("/", async (req, res) => {
       workDate: { gte: start, lte: end },
       OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
-      ...(role === "HOD" && departmentId != null
-        ? {
-            OR: [
-              { taggedBy: { departmentId } },
-              { employee: { departmentId } },
-            ],
-          }
+      ...(role === "HOD"
+        ? departmentId == null
+          ? { employeeId: -1 }
+          : { OR: [{ taggedBy: { departmentId } }, { employee: { departmentId } }] }
         : {}),
     },
     include: {

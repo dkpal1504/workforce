@@ -1,49 +1,20 @@
+import crypto from "crypto";
 import sql from "mssql";
+import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 
-/**
- * BadgeView master-data sync (LabourWorks SQL Server) — unified Employee, soft-depart.
- *
- * Reads the external BadgeView (columns: Workmen, IDCardNo, BuName, WorkmenName,
- * ValidFrom, ValidUpto, BgCode, contractor, NatureOfWork) filtered to IsTerminated='0'
- * AND Card Type IN (ASSOCIATES, ASSOCIATE SEZ) at the SOURCE query, then UPSERTS into
- * the unified `Employee` master table (CR#2). Contract workers + supervisors land in
- * `Employee` alongside seeded/payroll rows, distinguished by `source`.
- *
- * CR#2 locked semantics (option A — soft-depart):
- *   1. Upsert an `Employee` row for EVERY source row (all 555, supervisors included),
- *      keyed by `idCardNo`. Sync sets section (Workmen Section), plant (Workmen Division),
- *      natureOfWork (raw Nature Of Work), grade (compatibility mapping),
- *      source='SYNC', active=true on SYNC rows only.
- *   2. Auto-create Departments from distinct BuName values (idempotent on stable code;
- *      default "Unassigned" department for empty/unmappable BuName so the FK insert succeeds).
- *   3. Derive `ecNo` from `idCardNo` (deterministic; unique requirement).
- *   4. Link each SYNC supervisor's User row to their Employee.id via idCardNo (so the
- *      supervisor self-row resolves the correct employeeId).
- *   5. Soft-depart: SYNC rows absent from the source snapshot -> active=false (NEVER delete,
- *      so FK Restrict on historical timesheets won't break the sync and the liability trail
- *      survives). Picker filters on active.
- *   6. Prune orphaned pins whose idCardNo ∉ current BadgeView.
- *
- * Guards:
- *   - Partial-write: sync only ever touches source='SYNC' Employee rows (keyed by idCardNo).
- *     Seeded/payroll rows (no idCardNo or source != 'SYNC') are NEVER upserted, soft-departed
- *     (active flipped), or field-mutated by a sync run.
- *   - supervisor `User ↔ Employee` linkage is set on the User row but never grants a login
- *     (SYNC users keep empty passwordHash); grade/role changes stay audited admin actions.
- */
-
+/** One row from the LabourWorks BadgeView source. */
 export type BadgeViewRow = {
-  IDCardNo: string;
+  EcNo: string | null;
   BuName: string | null;
-  WorkmenName: string;
-  ValidFrom: Date | null;
-  ValidUpto: Date | null;
-  BgCode: string | null;
-  contractor: string | null;
-  NatureOfWork: string | null;
+  Department: string | null;
   Section: string | null;
   Division: string | null;
+  WorkmenName: string | null;
+  NatureOfWork: string | null;
+  mobile: string | number | null;
+  IsTerminated: boolean;
 };
 
 export type SyncResult = {
@@ -51,258 +22,536 @@ export type SyncResult = {
   workersUpserted: number;
   supervisorsLinked: number;
   departmentsCreated: number;
-  softDeparted: number;
-  pinsPruned: number;
+  sectionsCreated: number;
+  terminated: number;
+  reactivated: number;
+  exceptions: number;
+  credentialsQueued: number;
   startedAt: Date;
   finishedAt: Date;
   error?: string;
 };
 
+type Tx = Prisma.TransactionClient;
+
 function envRequired(name: string): string {
-  const v = process.env[name];
-  if (!v || v.trim() === "") {
-    throw new Error(`[badgeViewSync] Missing required env var: ${name}`);
+  const value = process.env[name];
+  if (!value?.trim()) throw new Error(`[badgeViewSync] Missing required env var: ${name}`);
+  return value.trim();
+}
+
+function normalizeText(value: unknown): string {
+  return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+
+function normalizeEcNo(value: unknown): string {
+  // Preserve LabourWorks IDCardNo as the canonical ecNo. Case folding is used
+  // only for collision detection, never to rewrite the source identifier.
+  return normalizeText(value);
+}
+
+function ecNoKey(value: unknown): string {
+  return normalizeEcNo(value).toUpperCase();
+}
+
+function normalizeMobile(value: unknown): string | null {
+  let digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("0")) digits = digits.slice(1);
+  return digits.length === 10 ? digits : null;
+}
+
+function isNaturalSupervisor(value: unknown): boolean {
+  return normalizeText(value).toLowerCase() === "supervisor";
+}
+
+function sourceTerminated(value: unknown): boolean {
+  const normalized = normalizeText(value).toLowerCase();
+  return value === true || value === 1 || normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function normalizeOrgKey(value: unknown): string {
+  return normalizeText(value).toLocaleLowerCase("en-US");
+}
+
+function stableCode(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "UNASSIGNED";
+}
+
+function collisionSuffix(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 8).toUpperCase();
+}
+
+async function departmentFor(tx: Tx, name: string, result: SyncResult) {
+  // Prisma SQLite does not support case-insensitive string filters. Compare a
+  // normalized key in application code while retaining the first display name.
+  const existing = (await tx.department.findMany()).find(
+    (candidate) => normalizeOrgKey(candidate.name) === normalizeOrgKey(name)
+  );
+  if (existing) {
+    return existing.active ? existing : tx.department.update({ where: { id: existing.id }, data: { active: true } });
   }
-  return v.trim();
+
+  const base = stableCode(name);
+  const codeOwner = await tx.department.findUnique({ where: { code: base } });
+  const code = codeOwner ? `${base}_${collisionSuffix(name)}` : base;
+  const department = await tx.department.create({ data: { name, code, source: "SYNC", active: true } });
+  result.departmentsCreated += 1;
+  return department;
 }
 
-function parseDate(v: Date | string | null | undefined): Date | null {
-  if (v == null) return null;
-  const d = v instanceof Date ? v : new Date(v);
-  return isNaN(d.getTime()) ? null : d;
+async function sectionFor(tx: Tx, departmentId: number, name: string, result: SyncResult) {
+  const existing = (await tx.section.findMany({ where: { departmentId } })).find(
+    (candidate) => normalizeOrgKey(candidate.name) === normalizeOrgKey(name)
+  );
+  if (existing) {
+    return existing.active ? existing : tx.section.update({ where: { id: existing.id }, data: { active: true } });
+  }
+
+  const base = stableCode(name);
+  const codeOwner = await tx.section.findUnique({
+    where: { departmentId_code: { departmentId, code: base } },
+  });
+  const code = codeOwner ? `${base}_${collisionSuffix(name)}` : base;
+  const section = await tx.section.create({
+    data: { departmentId, name, code, source: "SYNC", active: true },
+  });
+  result.sectionsCreated += 1;
+  return section;
 }
 
-/** Stable department code from a BuName (uppercased, non-alphanumeric -> underscore). */
-function deptCode(buName: string): string {
-  return buName.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "UNASSIGNED";
+async function recordException(
+  externalKey: string,
+  ecNo: string | null,
+  mobile: string | null,
+  errorCode: string,
+  message: string
+): Promise<void> {
+  await prisma.syncException.upsert({
+    where: {
+      sourceSystem_externalKey_errorCode: {
+        sourceSystem: "LABOURWORKS",
+        externalKey,
+        errorCode,
+      },
+    },
+    create: { sourceSystem: "LABOURWORKS", externalKey, ecNo, mobile, errorCode, message },
+    update: {
+      ecNo,
+      mobile,
+      message,
+      occurrences: { increment: 1 },
+      status: "OPEN",
+      lastSeenAt: new Date(),
+      resolvedAt: null,
+    },
+  });
 }
 
-/** Deterministic ecNo derived from idCardNo (unique requirement on Employee). */
-function deriveEcNo(idCardNo: string): string {
-  return `SYNC_${idCardNo}`;
+async function resolveExceptions(tx: Tx, externalKey: string): Promise<void> {
+  await tx.syncException.updateMany({
+    where: { sourceSystem: "LABOURWORKS", externalKey, status: "OPEN" },
+    data: { status: "RESOLVED", resolvedAt: new Date(), lastSeenAt: new Date() },
+  });
 }
 
-/** Read the BadgeView rows from the external SQL Server (read-only, parameterized). */
+function credentialRecipient(): string {
+  return process.env.CREDENTIAL_DELIVERY_RECIPIENT?.trim() || "itsupport.shipyard@swan.co.in";
+}
+
+async function queueCredential(tx: Tx, userId: number, purpose: "NEW_SUPERVISOR" | "REACTIVATION") {
+  const alreadyQueued = await tx.credentialDelivery.findFirst({
+    where: { userId, status: { in: ["PENDING", "PROCESSING"] } },
+    select: { id: true },
+  });
+  if (alreadyQueued) return false;
+  await tx.credentialDelivery.create({
+    data: { userId, recipient: credentialRecipient(), purpose, status: "PENDING" },
+  });
+  return true;
+}
+
+async function uniqueSyncEmail(tx: Tx, ecNo: string): Promise<string> {
+  const local = ecNo.toLowerCase().replace(/[^a-z0-9._-]/g, "_") || "supervisor";
+  let email = `${local}@sync.local`;
+  let suffix = 1;
+  while (await tx.user.findUnique({ where: { email }, select: { id: true } })) {
+    email = `${local}.${suffix}@sync.local`;
+    suffix += 1;
+  }
+  return email;
+}
+
 async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
-  const host = envRequired("BADGEVIEW_DB_HOST");
-  const user = envRequired("BADGEVIEW_DB_USER");
-  const password = envRequired("BADGEVIEW_DB_PASSWORD");
-  const database = envRequired("BADGEVIEW_DB_NAME");
-  const view = envRequired("BADGEVIEW_DB_VIEW");
-  const port = Number(process.env.BADGEVIEW_DB_PORT || 1433);
-  const encrypt = String(process.env.BADGEVIEW_DB_ENCRYPT || "false").toLowerCase() === "true";
-
   const pool = await new sql.ConnectionPool({
-    server: host,
-    port,
-    user,
-    password,
-    database,
+    server: envRequired("BADGEVIEW_DB_HOST"),
+    port: Number(process.env.BADGEVIEW_DB_PORT || 1433),
+    user: envRequired("BADGEVIEW_DB_USER"),
+    password: envRequired("BADGEVIEW_DB_PASSWORD"),
+    database: envRequired("BADGEVIEW_DB_NAME"),
     options: {
-      encrypt,
+      encrypt: String(process.env.BADGEVIEW_DB_ENCRYPT || "false").toLowerCase() === "true",
       trustServerCertificate: true,
-      // Read-only intent: never allow writes from this connection.
       readOnlyIntent: true,
     },
   }).connect();
 
   try {
-    const safeView = /^[A-Za-z0-9_.]+$/.test(view) ? view : "BadgeView";
-    const request = pool.request();
-    request.input("isTerminated", sql.NVarChar, "0");
-    const result = await request.query(`
+    const view = envRequired("BADGEVIEW_DB_VIEW");
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(view)) {
+      throw new Error("BADGEVIEW_DB_VIEW must be an identifier such as dbo.BadgeView.");
+    }
+    const safeView = view.split(".").map((part) => `[${part}]`).join(".");
+    const response = await pool.request().query(`
       SELECT
-        IDCardNo,
+        IDCardNo AS EcNo,
         BuName,
-        [Workmen Name]  AS WorkmenName,
-        [ValidFromDate] AS ValidFrom,
-        [ValidUpto Date] AS ValidUpto,
-        BgCode,
-        contractor,
-        [Nature Of Work] AS NatureOfWork,
+        CONCAT(LTRIM(RTRIM(BuName)), ' - ', LTRIM(RTRIM([Workmen Division]))) AS Department,
         [Workmen Section] AS Section,
-        [Workmen Division] AS Division
-      FROM [${safeView}]
-      WHERE IsTerminated = @isTerminated
-        AND [Card Type] IN ('ASSOCIATES', 'ASSOCIATE SEZ')
+        [Workmen Division] AS Division,
+        [Workmen Name] AS WorkmenName,
+        [Nature Of Work] AS NatureOfWork,
+        mobile,
+        IsTerminated
+      FROM ${safeView}
     `);
-    return (result.recordset as BadgeViewRow[]) || [];
+    return (response.recordset as BadgeViewRow[]) || [];
   } finally {
     await pool.close();
   }
 }
 
+async function assertCompleteSnapshot(rows: BadgeViewRow[]): Promise<void> {
+  const minimumRows = Math.max(1, Number(process.env.BADGEVIEW_SYNC_MIN_ROWS || 1));
+  if (rows.length < minimumRows) {
+    throw new Error(`Completeness guard rejected ${rows.length} rows (minimum ${minimumRows}).`);
+  }
+
+  const validEcNos = new Set(rows.map((row) => normalizeEcNo(row.EcNo)).filter(Boolean));
+  if (!validEcNos.size) throw new Error("Completeness guard found no valid EcNo values.");
+
+  const existingCount = await prisma.employee.count({ where: { source: "SYNC" } });
+  const minimumRatio = Number(process.env.BADGEVIEW_SYNC_MIN_RATIO || 0.9);
+  if (!Number.isFinite(minimumRatio) || minimumRatio <= 0 || minimumRatio > 1) {
+    throw new Error("BADGEVIEW_SYNC_MIN_RATIO must be greater than 0 and at most 1.");
+  }
+  if (existingCount > 0 && validEcNos.size < Math.ceil(existingCount * minimumRatio)) {
+    throw new Error(
+      `Completeness guard rejected ${validEcNos.size} distinct employees; expected at least ${Math.ceil(existingCount * minimumRatio)}.`
+    );
+  }
+}
+
 /**
- * Run one sync pass. Returns a SyncResult. Never throws — errors are captured
- * in the result so the cron wrapper can log them without crashing the API.
+ * Synchronize canonical Employee/Department/Section/Supervisor data from LabourWorks.
+ * Source fetch and credential delivery happen outside DB transactions. Each source row
+ * is isolated so an identity exception cannot corrupt or suppress unrelated workers.
  */
-export async function runBadgeViewSync(): Promise<SyncResult> {
+export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResult> {
   const startedAt = new Date();
   const result: SyncResult = {
     ok: false,
     workersUpserted: 0,
     supervisorsLinked: 0,
     departmentsCreated: 0,
-    softDeparted: 0,
-    pinsPruned: 0,
+    sectionsCreated: 0,
+    terminated: 0,
+    reactivated: 0,
+    exceptions: 0,
+    credentialsQueued: 0,
     startedAt,
     finishedAt: startedAt,
   };
 
   try {
-    const rows = await fetchBadgeViewRows();
-    const currentIdCardNos = new Set(rows.map((r) => r.IDCardNo));
+    await assertCompleteSnapshot(rows);
     const now = new Date();
-    const maxDailyHours = 0; // unused here
+    const seenEmployeeIds = new Set<number>();
 
-    await prisma.$transaction(async (tx) => {
-      // --- Auto-create Departments from distinct BuName (idempotent on stable code) ---
-      const buNames = new Set<string>();
-      for (const r of rows) buNames.add((r.BuName || "").trim());
-      // Ensure a default "Unassigned" department exists for empty/unmappable BuName.
-      const allDeptNames = new Set(["Unassigned"]);
-      for (const n of buNames) if (n) allDeptNames.add(n);
-      for (const name of allDeptNames) {
-        const code = deptCode(name || "Unassigned");
-        const existing = await tx.department.findUnique({ where: { code } });
-        if (!existing) {
-          // Sync-owned department: source='SYNC' so the UI can tag it and manual
-          // edits are never clobbered (sync only create-missing).
-          await tx.department.create({ data: { name, code, source: "SYNC" } });
-          result.departmentsCreated++;
-        }
+    const employeesByEcKey = new Map<string, Awaited<ReturnType<typeof prisma.employee.findMany>>>();
+    for (const employee of await prisma.employee.findMany()) {
+      const key = ecNoKey(employee.ecNo);
+      const matches = employeesByEcKey.get(key) || [];
+      matches.push(employee);
+      employeesByEcKey.set(key, matches);
+    }
+
+    const rowsByEcNo = new Map<string, BadgeViewRow[]>();
+    for (const row of rows) {
+      const key = ecNoKey(row.EcNo);
+      const group = rowsByEcNo.get(key) || [];
+      group.push(row);
+      rowsByEcNo.set(key, group);
+    }
+
+    for (const row of rows) {
+      const ecNo = normalizeEcNo(row.EcNo);
+      const mobile = normalizeMobile(row.mobile);
+      const externalKey = ecNo || `ROW_${collisionSuffix(JSON.stringify(row))}`;
+
+      if (!ecNo) {
+        await recordException(externalKey, null, mobile, "INVALID_ECNO", "LabourWorks row has a blank EcNo.");
+        result.exceptions += 1;
+        continue;
       }
-      // Build a name->id map for BuName -> departmentId.
-      const depts = await tx.department.findMany();
-      const deptByName = new Map<string, number>();
-      for (const d of depts) deptByName.set(d.name, d.id);
+      if ((rowsByEcNo.get(ecNoKey(ecNo))?.length || 0) > 1) {
+        const existing = employeesByEcKey.get(ecNoKey(ecNo))?.[0];
+        if (existing?.source === "SYNC") seenEmployeeIds.add(existing.id);
+        // Record the duplicate once, not once per duplicate source row.
+        if (rowsByEcNo.get(ecNoKey(ecNo))?.[0] === row) {
+          await recordException(externalKey, ecNo, mobile, "DUPLICATE_SOURCE_ECNO", "Multiple LabourWorks rows have the same normalized EcNo.");
+          result.exceptions += 1;
+        }
+        continue;
+      }
 
-      const unassignedDept = deptByName.get("Unassigned")!;
+      const buName = normalizeText(row.BuName);
+      const division = normalizeText(row.Division);
+      const departmentName = buName && division ? `${buName} - ${division}` : "";
+      const employeeName = normalizeText(row.WorkmenName);
+      if (!departmentName || !employeeName) {
+        const existing = employeesByEcKey.get(ecNoKey(ecNo))?.[0];
+        if (existing?.source === "SYNC") seenEmployeeIds.add(existing.id);
+        await recordException(externalKey, ecNo, mobile, "INVALID_MASTER_DATA", "Department, BuName, Division, and Workmen Name are required.");
+        result.exceptions += 1;
+        continue;
+      }
 
-      // --- Upsert every source row into unified `Employee` (source='SYNC', keyed by idCardNo) ---
-      for (const r of rows) {
-        const idCardNo = r.IDCardNo;
-        const deptId = (r.BuName && r.BuName.trim() && deptByName.get(r.BuName.trim())) || unassignedDept;
+      const exactMatches = employeesByEcKey.get(ecNoKey(ecNo)) || [];
+      if (exactMatches.length > 1) {
+        for (const candidate of exactMatches.filter((item) => item.source === "SYNC")) seenEmployeeIds.add(candidate.id);
+        await recordException(externalKey, ecNo, mobile, "ECNO_IDENTITY_CONFLICT", "Multiple Employee records match the normalized EcNo.");
+        result.exceptions += 1;
+        continue;
+      }
+      const exact = exactMatches[0] || null;
+      if (exact && exact.source !== "SYNC") {
+        await recordException(externalKey, ecNo, mobile, "ECNO_SOURCE_COLLISION", "EcNo belongs to a non-CLMS Employee; row was not applied.");
+        result.exceptions += 1;
+        continue;
+      }
 
-        const existingEmp = await tx.employee.findUnique({ where: { idCardNo } });
-        if (existingEmp) {
-          // Partial-write guard: only touch SYNC rows. NEVER mutate MANUAL/PAYROLL rows.
-          if (existingEmp.source === "SYNC") {
-            await tx.employee.update({
-              where: { id: existingEmp.id },
-              data: {
-                name: r.WorkmenName,
-                departmentId: deptId,
-                section: r.Section,
-                plant: r.Division,
-                natureOfWork: r.NatureOfWork,
-                grade: r.NatureOfWork,
-                active: true,
-                designation: r.NatureOfWork || existingEmp.designation,
-              },
-            });
-          }
-          // MANUAL/PAYROLL row with a matching idCardNo: skip (sync never clobbers them).
-          result.workersUpserted++;
+      let matched = exact;
+      if (!matched && mobile) {
+        const mobileMatches = await prisma.employee.findMany({
+          where: { source: "SYNC", mobile },
+          orderBy: { id: "asc" },
+        });
+        const inactiveMatches = mobileMatches.filter((candidate) => !candidate.active);
+        if (mobileMatches.length === 1 && inactiveMatches.length === 1) {
+          matched = inactiveMatches[0];
+        } else if (mobileMatches.length > 0) {
+          for (const candidate of mobileMatches) seenEmployeeIds.add(candidate.id);
+          await recordException(
+            externalKey,
+            ecNo,
+            mobile,
+            "MOBILE_IDENTITY_CONFLICT",
+            "Mobile fallback did not resolve to exactly one inactive CLMS Employee."
+          );
+          result.exceptions += 1;
           continue;
         }
-
-        // New SYNC employee row.
-        await tx.employee.create({
-          data: {
-            ecNo: deriveEcNo(idCardNo),
-            idCardNo,
-            name: r.WorkmenName,
-            departmentId: deptId,
-            designation: r.NatureOfWork || "",
-            category: "CONTRACTOR",
-            source: "SYNC",
-            section: r.Section,
-            plant: r.Division,
-            natureOfWork: r.NatureOfWork,
-            grade: r.NatureOfWork,
-            active: true,
-          },
-        });
-        result.workersUpserted++;
       }
 
-      // --- Soft-depart: SYNC rows absent from source -> active=false (never delete) ---
-      const softDepart = await tx.employee.updateMany({
-        where:
-          currentIdCardNos.size === 0
-            ? { source: "SYNC" }
-            : { source: "SYNC", idCardNo: { notIn: [...currentIdCardNos] } },
-        data: { active: false },
-      });
-      result.softDeparted = softDepart.count;
+      const wasInactive = Boolean(matched && !matched.active);
+      const terminated = sourceTerminated(row.IsTerminated);
+      const naturalSupervisor = isNaturalSupervisor(row.NatureOfWork);
 
-      // --- Link each SYNC supervisor's User.employeeId to their Employee row ---
-      // Supervisor = source-marked (Nature of Work = 'Supervisor') OR pinned.
-      const pins = await tx.supervisorPin.findMany({ select: { idCardNo: true } });
-      const pinnedIds = new Set(pins.map((p) => p.idCardNo));
-      const supervisors = rows.filter((r) => r.NatureOfWork === "Supervisor" || pinnedIds.has(r.IDCardNo));
+      const applied = await prisma.$transaction(async (tx) => {
+        const department = await departmentFor(tx, departmentName, result);
+        const sectionName = normalizeText(row.Section);
+        const section = sectionName ? await sectionFor(tx, department.id, sectionName, result) : null;
 
-      for (const r of supervisors) {
-        const emp = await tx.employee.findUnique({ where: { idCardNo: r.IDCardNo }, select: { id: true } });
-        if (!emp) continue;
-        // Update/create the SYNC supervisor's User row (read-only, no login) and link employeeId.
-        const existingUser = await tx.user.findUnique({ where: { idCardNo: r.IDCardNo }, select: { id: true, source: true } });
-        if (existingUser) {
-          if (existingUser.source === "SYNC") {
-            await tx.user.update({
-              where: { id: existingUser.id },
-              data: { name: r.WorkmenName, source: "SYNC", employeeId: emp.id },
-            });
-            result.supervisorsLinked++;
-          }
-          // MANUAL user: skip, never clobber.
-        } else {
-          const baseEmail = `${r.IDCardNo}@sync.local`;
-          let email = baseEmail;
-          let suffix = 1;
-          while (await tx.user.findUnique({ where: { email }, select: { id: true } })) {
-            email = `${baseEmail.split("@")[0]}.${suffix}@sync.local`;
-            suffix++;
-          }
-          await tx.user.create({
+        let employee;
+        if (matched) {
+          employee = await tx.employee.update({
+            where: { id: matched.id },
             data: {
-              email,
-              passwordHash: "", // no login for SYNC supervisors
-              name: r.WorkmenName,
-              role: "SUPERVISOR",
-              source: "SYNC",
-              idCardNo: r.IDCardNo,
-              employeeId: emp.id,
+              ecNo,
+              mobile,
+              name: employeeName,
+              departmentId: department.id,
+              designation: normalizeText(row.NatureOfWork) || matched.designation,
+              category: "CONTRACTOR",
+              employmentType: "CLMS",
+              natureOfWork: normalizeText(row.NatureOfWork) || null,
+              active: !terminated,
+              lastSyncedAt: now,
+              terminatedAt: terminated ? matched.terminatedAt || now : null,
             },
           });
-          result.supervisorsLinked++;
+        } else {
+          employee = await tx.employee.create({
+            data: {
+              ecNo,
+              mobile,
+              name: employeeName,
+              departmentId: department.id,
+              designation: normalizeText(row.NatureOfWork),
+              category: "CONTRACTOR",
+              source: "SYNC",
+              employmentType: "CLMS",
+              natureOfWork: normalizeText(row.NatureOfWork) || null,
+              active: !terminated,
+              lastSyncedAt: now,
+              terminatedAt: terminated ? now : null,
+            },
+          });
         }
-      }
 
-      // --- Prune SYNC User rows no longer in the current supervisor set ---
-      const supervisorIdCardNos = new Set(supervisors.map((r) => r.IDCardNo));
-      await tx.user.deleteMany({
-        where:
-          supervisorIdCardNos.size === 0
-            ? { source: "SYNC" }
-            : { source: "SYNC", idCardNo: { notIn: [...supervisorIdCardNos] } },
+        const override = await tx.supervisorOverride.findUnique({
+          where: { employeeId: employee.id },
+          select: { revokedAt: true },
+        });
+        const effectiveSupervisor = naturalSupervisor || Boolean(override && override.revokedAt == null);
+
+        if (section && !effectiveSupervisor) {
+          await tx.employeeSectionAssignment.upsert({
+            where: { employeeId: employee.id },
+            create: { employeeId: employee.id, sectionId: section.id, source: "SYNC" },
+            update: { sectionId: section.id, source: "SYNC" },
+          });
+        } else if (effectiveSupervisor) {
+          const assignment = await tx.employeeSectionAssignment.findUnique({
+            where: { employeeId: employee.id },
+            include: { section: { select: { departmentId: true } } },
+          });
+          if (assignment && assignment.section.departmentId !== department.id) {
+            await tx.employeeSectionAssignment.delete({ where: { employeeId: employee.id } });
+          }
+        }
+
+        let credentialsQueued = false;
+        let supervisorLinked = false;
+        let user = await tx.user.findUnique({ where: { employeeId: employee.id } });
+        if (user && user.departmentId !== employee.departmentId) {
+          user = await tx.user.update({ where: { id: user.id }, data: { departmentId: employee.departmentId } });
+        }
+        if (!employee.active) {
+          if (user?.active) {
+            await tx.user.update({
+              where: { id: user.id },
+              data: { active: false, tokenVersion: { increment: 1 } },
+            });
+          }
+          if (user) await tx.credentialDelivery.updateMany({ where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: "Employee terminated." } });
+        } else if (effectiveSupervisor) {
+          if (!user) {
+            user = await tx.user.create({
+              data: {
+                email: await uniqueSyncEmail(tx, ecNo),
+                passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
+                name: employee.name,
+                role: "SUPERVISOR",
+                source: "SYNC",
+                employeeId: employee.id,
+                departmentId: employee.departmentId,
+                active: true,
+                mustChangePassword: true,
+                // Deny login until the outbox activates and emails a fresh secret.
+                passwordExpiresAt: now,
+              },
+            });
+            credentialsQueued = await queueCredential(tx, user.id, wasInactive ? "REACTIVATION" : "NEW_SUPERVISOR");
+          } else {
+            const becomingSupervisor = user.role !== "SUPERVISOR";
+            const needsReactivationCredential = !user.active || wasInactive || becomingSupervisor;
+            user = await tx.user.update({
+              where: { id: user.id },
+              data: {
+                name: employee.name,
+                role: "SUPERVISOR",
+                departmentId: employee.departmentId,
+                active: true,
+                ...(needsReactivationCredential
+                  ? {
+                      passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
+                      mustChangePassword: true,
+                      passwordExpiresAt: now,
+                      credentialSentAt: null,
+                      tokenVersion: { increment: 1 },
+                    }
+                  : {}),
+              },
+            });
+            if (needsReactivationCredential) {
+              credentialsQueued = await queueCredential(tx, user.id, becomingSupervisor ? "NEW_SUPERVISOR" : "REACTIVATION");
+            }
+          }
+          supervisorLinked = true;
+        } else if (user?.active && user.role === "SUPERVISOR") {
+          await tx.user.update({
+            where: { id: user.id },
+            data: { active: false, tokenVersion: { increment: 1 } },
+          });
+          await tx.credentialDelivery.updateMany({ where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: "Supervisor eligibility removed." } });
+        }
+
+        await resolveExceptions(tx, externalKey);
+        return { employeeId: employee.id, credentialsQueued, supervisorLinked };
       });
 
-      // --- Prune orphaned pins ---
-      const pinPrune = await tx.supervisorPin.deleteMany({
-        where: currentIdCardNos.size === 0 ? {} : { idCardNo: { notIn: [...currentIdCardNos] } },
-      });
-      result.pinsPruned = pinPrune.count;
+      seenEmployeeIds.add(applied.employeeId);
+      result.workersUpserted += 1;
+      if (applied.supervisorLinked) result.supervisorsLinked += 1;
+      if (applied.credentialsQueued) result.credentialsQueued += 1;
+      if (terminated && (!matched || matched.active)) result.terminated += 1;
+      if (!terminated && wasInactive) result.reactivated += 1;
+    }
+
+    // Absence remains a soft termination, but only after the snapshot passes the
+    // absolute and relative completeness guards above. Preserve Employee/User/history.
+    const absent = await prisma.employee.findMany({
+      where: { source: "SYNC", id: { notIn: seenEmployeeIds.size ? [...seenEmployeeIds] : [-1] }, active: true },
+      select: { id: true, user: { select: { id: true, active: true } } },
     });
+    for (const employee of absent) {
+      await prisma.$transaction(async (tx) => {
+        await tx.employee.update({
+          where: { id: employee.id },
+          data: { active: false, terminatedAt: now, lastSyncedAt: now },
+        });
+        if (employee.user?.active) {
+          await tx.user.update({
+            where: { id: employee.user.id },
+            data: { active: false, tokenVersion: { increment: 1 } },
+          });
+        }
+        if (employee.user) await tx.credentialDelivery.updateMany({ where: { userId: employee.user.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: "Employee absent from validated LabourWorks snapshot." } });
+      });
+      result.terminated += 1;
+    }
 
     result.ok = true;
     result.finishedAt = new Date();
     return result;
-  } catch (err) {
-    result.ok = false;
+  } catch (error) {
+    result.error = error instanceof Error ? error.message : String(error);
     result.finishedAt = new Date();
-    result.error = err instanceof Error ? err.message : String(err);
     return result;
+  }
+}
+
+/** Fetch LabourWorks and apply the resulting staged snapshot. */
+export async function runBadgeViewSync(): Promise<SyncResult> {
+  const startedAt = new Date();
+  try {
+    return await syncBadgeViewRows(await fetchBadgeViewRows());
+  } catch (error) {
+    return {
+      ok: false,
+      workersUpserted: 0,
+      supervisorsLinked: 0,
+      departmentsCreated: 0,
+      sectionsCreated: 0,
+      terminated: 0,
+      reactivated: 0,
+      exceptions: 0,
+      credentialsQueued: 0,
+      startedAt,
+      finishedAt: new Date(),
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }

@@ -5,8 +5,10 @@ import dotenv from "dotenv";
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 dotenv.config();
 
+import "express-async-errors";
 import express from "express";
 import cors from "cors";
+import { rateLimit } from "express-rate-limit";
 import { authRouter } from "./routes/auth";
 import { mastersRouter } from "./routes/masters";
 import { teamsRouter } from "./routes/teams";
@@ -23,8 +25,25 @@ const app = express();
 const port = Number(process.env.API_PORT || 4000);
 const host = process.env.API_HOST || "0.0.0.0";
 
-app.use(cors({ origin: true, credentials: true }));
+const configuredOrigins = (process.env.CORS_ORIGINS || "").split(",").map((origin) => origin.trim()).filter(Boolean);
+if (process.env.NODE_ENV === "production" && configuredOrigins.length === 0) {
+  throw new Error("CORS_ORIGINS is required in production.");
+}
+app.use(cors({
+  credentials: false,
+  origin(origin, callback) {
+    if (!origin || configuredOrigins.length === 0 || configuredOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Origin is not allowed by CORS."));
+  },
+}));
 app.use(express.json({ limit: "2mb" }));
+app.use("/api/auth/login", rateLimit({
+  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
+  limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 10),
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Try again later.", code: "RATE_LIMITED" },
+}));
 
 app.get("/health", (_req, res) => res.json({ ok: true, maxDailyHours: Number(process.env.MAX_DAILY_HOURS || 8) }));
 app.get("/api/health", (_req, res) => res.json({ ok: true, maxDailyHours: Number(process.env.MAX_DAILY_HOURS || 8) }));
@@ -45,7 +64,7 @@ app.use("/api", api);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
-  res.status(500).json({ error: err.message || "Internal error" });
+  res.status(500).json({ error: process.env.NODE_ENV === "production" ? "Internal server error" : err.message || "Internal error" });
 });
 
 app.listen(port, host, () => {

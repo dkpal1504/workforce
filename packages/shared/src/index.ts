@@ -98,6 +98,24 @@ export const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+/** Password rotation for first login and ordinary authenticated changes. */
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1),
+    newPassword: z
+      .string()
+      .min(12, "Password must be at least 12 characters")
+      .max(128, "Password must be at most 128 characters")
+      .regex(/[a-z]/, "Password must contain a lowercase letter")
+      .regex(/[A-Z]/, "Password must contain an uppercase letter")
+      .regex(/[0-9]/, "Password must contain a number")
+      .regex(/[^A-Za-z0-9]/, "Password must contain a symbol"),
+  })
+  .refine((value) => value.currentPassword !== value.newPassword, {
+    path: ["newPassword"],
+    message: "New password must be different from the current password",
+  });
+
 export const teamTodaySchema = z.object({
   supervisorId: z.number().int().positive(),
   departmentId: z.number().int().positive(),
@@ -175,6 +193,7 @@ export const summaryQuerySchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type TeamTodayInput = z.infer<typeof teamTodaySchema>;
 export type TimesheetDayInput = z.infer<typeof timesheetDaySchema>;
 export type ShiftAssignmentInput = z.infer<typeof shiftAssignmentSchema>;

@@ -2,16 +2,18 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { SHIFT_SLOTS, bulkAssignSchema, setSlotJobOrderSchema, timesheetDaySchema } from "@workforce/shared";
 import type { ShiftSlot } from "@workforce/shared";
 import { prisma } from "../db";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { formatDateOnly, parseDateOnly, previousWorkDate } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
+import { canSubmitRetainedDraft, inactiveEmployeePayload } from "../services/employeeEligibility";
+import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrderEligibility";
 
 export const timesheetRouter = Router();
 
-timesheetRouter.use(requireAuth);
+timesheetRouter.use(requireAuth, requireRoles("SUPERVISOR"));
 
 // Serialize allocation writes in this API process. This makes submission a
 // first-writer-wins operation instead of allowing two overlapping submits to
@@ -275,7 +277,7 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     where: { taggedById: supervisorId, workDate: sourceDate },
     include: {
       employee: { select: { id: true, active: true } },
-      entries: { include: { jobOrder: { select: { id: true, status: true, project: { select: { active: true } } } } } },
+      entries: { include: { jobOrder: { select: { id: true, status: true, project: { select: { active: true } }, department: { select: { active: true, name: true } } } } } },
     },
   });
   const sourceTeam = await prisma.dailyTeamSelection.findMany({
@@ -308,7 +310,9 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
           entry.otHours == null &&
           entry.shiftSlot != null &&
           entry.jobOrder?.status === "active" &&
-          entry.jobOrder.project.active
+          entry.jobOrder.project.active &&
+          entry.jobOrder.department?.active === true &&
+          entry.jobOrder.department.name.includes(" - ")
       )
       .map((entry) => ({
         employeeId: day.employeeId,
@@ -399,7 +403,10 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
         }
         if (
           entry.jobOrderId != null &&
-          (entry.jobOrder?.status !== "active" || !entry.jobOrder.project.active)
+          (entry.jobOrder?.status !== "active" ||
+            !entry.jobOrder.project.active ||
+            entry.jobOrder.department?.active !== true ||
+            !entry.jobOrder.department.name.includes(" - "))
         ) {
           closedJobOrderSlots += 1;
           continue;
@@ -477,6 +484,9 @@ timesheetRouter.get("/", async (req, res) => {
   const dateStr = String(req.query.date || "");
   if (!supervisorId || !dateStr) {
     return res.status(400).json({ error: "supervisor_id and date required" });
+  }
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only view your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
   const maxDailyHours = getMaxDailyHours();
@@ -564,7 +574,7 @@ timesheetRouter.get("/", async (req, res) => {
     orderBy: { sortOrder: "asc" },
     include: {
       jobOrders: {
-        where: { status: { in: ["active"] } },
+        where: { status: { in: ["active"] }, department: { name: { contains: " - " }, active: true } },
         orderBy: { code: "asc" },
       },
     },
@@ -643,7 +653,10 @@ timesheetRouter.get("/", async (req, res) => {
       dayTotalHours,
       exceedsLimit,
       remarksRequired: (exceedsLimit && filledSlots > 0) || (ownOtEntry?.otHours ?? 0) > 0,
-      editMode: lock.editMode,
+      active: t.employee.active,
+      terminatedAt: t.employee.terminatedAt,
+      canSubmitRetainedDraft: canSubmitRetainedDraft(t.employee, day),
+      editMode: t.employee.active ? lock.editMode : "locked",
       approvedAt: lock.approvedAt,
       lockExpiresAt: lock.lockExpiresAt,
       returnFeedback: latestReturn
@@ -727,7 +740,27 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
-  const requestedClaims: SlotClaim[] = rows.flatMap((row) =>
+  const inactiveEmployees = await prisma.employee.findMany({
+    where: { id: { in: rows.map((row) => row.employeeId) }, active: false }, select: { id: true },
+  });
+  const inactiveIds = new Set(inactiveEmployees.map((employee) => employee.id));
+  for (const row of rows.filter((item) => inactiveIds.has(item.employeeId))) {
+    const existing = await prisma.timesheetDay.findUnique({
+      where: { employeeId_workDate_taggedById: { employeeId: row.employeeId, workDate, taggedById: supervisorId } },
+      include: { entries: true },
+    });
+    const existingByShift = new Map((existing?.entries ?? []).filter((entry) => entry.shiftSlot != null).map((entry) => [entry.shiftSlot as string, entry]));
+    const changed = (row.remarks ?? "") !== (existing?.remarks ?? "") || row.slots.some(
+      (slot) => (existingByShift.get(slot.shiftSlot)?.jobOrderId ?? null) !== slot.jobOrderId
+    );
+    if (changed) return res.status(409).json(inactiveEmployeePayload());
+  }
+  const requestedJobOrderIds = rows.flatMap((row) => row.slots.map((slot) => slot.jobOrderId).filter((id): id is number => id != null));
+  const assignable = await assignableJobOrders(requestedJobOrderIds);
+  if ([...new Set(requestedJobOrderIds)].some((id) => !assignable.has(id))) {
+    return res.status(400).json(invalidJobOrderPayload());
+  }
+  const requestedClaims: SlotClaim[] = rows.filter((row) => !inactiveIds.has(row.employeeId)).flatMap((row) =>
     row.slots
       .filter((slot) => slot.jobOrderId != null)
       .map((slot) => ({ employeeId: row.employeeId, shiftSlot: slot.shiftSlot, hourSlot: null }))
@@ -751,6 +784,7 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
       },
       include: {
         entries: true,
+        employee: { select: { active: true, terminatedAt: true } },
         approvals: {
           where: { action: "APPROVE" },
           orderBy: { createdAt: "desc" },
@@ -758,6 +792,27 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
         },
       },
     });
+
+    const employeeLifecycle = existing?.employee ?? await prisma.employee.findUnique({
+      where: { id: row.employeeId }, select: { active: true, terminatedAt: true },
+    });
+    if (!employeeLifecycle) {
+      lockViolations.push({ employeeId: row.employeeId, error: "Employee not found." });
+      continue;
+    }
+    if (!employeeLifecycle.active) {
+      const existingByShift = new Map(
+        (existing?.entries ?? []).filter((entry) => entry.shiftSlot != null).map((entry) => [entry.shiftSlot as string, entry])
+      );
+      const remarksChanged = (row.remarks ?? "") !== (existing?.remarks ?? "");
+      const slotsChanged = row.slots.some(
+        (slot) => (existingByShift.get(slot.shiftSlot)?.jobOrderId ?? null) !== slot.jobOrderId
+      );
+      if (remarksChanged || slotsChanged) {
+        lockViolations.push({ employeeId: row.employeeId, error: inactiveEmployeePayload().error });
+      }
+      continue;
+    }
 
     const status = existing?.status ?? "DRAFT";
     const hasProtectedEntries = Boolean(
@@ -1020,11 +1075,9 @@ timesheetRouter.post("/bulk-assign", serializeTimesheetMutation, async (req, res
   }
 
   // Validate the JobOrder belongs to the Project.
-  const jo = await prisma.jobOrder.findUnique({
-    where: { id: jobOrderId },
-    include: { project: true },
-  });
-  if (!jo || jo.projectId !== projectId) {
+  const jo = (await assignableJobOrders([jobOrderId])).get(jobOrderId);
+  if (!jo) return res.status(400).json(invalidJobOrderPayload());
+  if (jo.projectId !== projectId) {
     return res.status(400).json({ error: "JobOrder does not belong to the selected project" });
   }
 
@@ -1035,6 +1088,9 @@ timesheetRouter.post("/bulk-assign", serializeTimesheetMutation, async (req, res
     list.push(s.shiftSlot);
     byEmployee.set(s.employeeId, list);
   }
+
+  const activeEmployees = await prisma.employee.count({ where: { id: { in: [...byEmployee.keys()] }, active: true } });
+  if (activeEmployees !== byEmployee.size) return res.status(409).json(inactiveEmployeePayload());
 
   const lockViolations: { employeeId: number; error: string }[] = [];
   let taggedSlots = 0;
@@ -1132,8 +1188,11 @@ timesheetRouter.put("/entry", serializeTimesheetMutation, async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
+  if (!employee?.active) return res.status(409).json(inactiveEmployeePayload());
 
   if (jobOrderId != null) {
+    if (!(await assignableJobOrders([jobOrderId])).has(jobOrderId)) return res.status(400).json(invalidJobOrderPayload());
     const externalConflicts = await findExternalBookedConflicts(supervisorId, workDate, [
       { employeeId, shiftSlot, hourSlot: null },
     ]);
@@ -1211,6 +1270,8 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
+  if (!employee?.active) return res.status(409).json(inactiveEmployeePayload());
 
   // Validate OT hours: integer 1-12 (configurable cap), or null to clear.
   const maxOt = Number(process.env.MAX_OT_HOURS || 12);
@@ -1224,9 +1285,9 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     if (jobOrderId == null) {
       return res.status(400).json({ error: "A project / work order is required when adding OT hours.", code: "OT_REQUIRES_JOBORDER" });
     }
-    // Validate the job order exists.
-    const jo = await prisma.jobOrder.findUnique({ where: { id: jobOrderId } });
-    if (!jo) return res.status(400).json({ error: "Invalid work order.", code: "INVALID_JOBORDER" });
+    if (!(await assignableJobOrders([jobOrderId])).has(jobOrderId)) {
+      return res.status(400).json(invalidJobOrderPayload());
+    }
 
     const externalOt = await prisma.timesheetEntry.findFirst({
       where: {
@@ -1530,6 +1591,7 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
   }
 
   const submittable = days.filter((d) => {
+    if (!d.employee.active && !canSubmitRetainedDraft(d.employee, d)) return false;
     if (!d.entries.length) return false;
     if (lockedIds.includes(d.id)) return false;
     const hasProtectedEntries = d.entries.some(

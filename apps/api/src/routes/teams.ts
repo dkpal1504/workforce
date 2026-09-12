@@ -1,14 +1,15 @@
 import { Router } from "express";
 import { teamTodaySchema } from "@workforce/shared";
 import { prisma } from "../db";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { parseDateOnly, previousWorkDate } from "../utils/date";
 import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
+import { inactiveEmployeePayload } from "../services/employeeEligibility";
 
 export const teamsRouter = Router();
 
-teamsRouter.use(requireAuth);
+teamsRouter.use(requireAuth, requireRoles("SUPERVISOR"));
 
 teamsRouter.get("/pool", async (req, res) => {
   const departmentId = Number(req.query.department_id);
@@ -16,6 +17,9 @@ teamsRouter.get("/pool", async (req, res) => {
   const supervisorId = Number(req.query.supervisor_id);
   if (!departmentId || !dateStr || !supervisorId) {
     return res.status(400).json({ error: "department_id, date, supervisor_id required" });
+  }
+  if (supervisorId !== req.user!.id || req.user!.departmentId == null || departmentId !== req.user!.departmentId) {
+    return res.status(403).json({ error: "You can only view your own Department pool.", code: "FORBIDDEN" });
   }
   const workDate = parseDateOnly(dateStr);
 
@@ -44,6 +48,9 @@ teamsRouter.get("/today", async (req, res) => {
   if (!supervisorId || !dateStr) {
     return res.status(400).json({ error: "supervisor_id and date required" });
   }
+  if (supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only view your own team.", code: "NOT_OWNER" });
+  }
   const workDate = parseDateOnly(dateStr);
 
   let rows = await prisma.dailyTeamSelection.findMany({
@@ -59,7 +66,7 @@ teamsRouter.get("/today", async (req, res) => {
   if (rows.length === 0) {
     const prev = previousWorkDate(workDate);
     const prior = await prisma.dailyTeamSelection.findMany({
-      where: { supervisorId, workDate: prev, removedAt: null },
+      where: { supervisorId, workDate: prev, removedAt: null, employee: { active: true } },
     });
     if (prior.length > 0) {
       await prisma.$transaction(
@@ -127,7 +134,10 @@ teamsRouter.post("/today", async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const { supervisorId, workDate: dateStr, employeeIds } = parsed.data;
+  const { supervisorId, departmentId, workDate: dateStr, employeeIds } = parsed.data;
+  if (supervisorId !== req.user!.id || req.user!.departmentId == null || departmentId !== req.user!.departmentId) {
+    return res.status(403).json({ error: "You can only edit your own team.", code: "NOT_OWNER" });
+  }
   const workDate = parseDateOnly(dateStr);
 
   const existing = await prisma.dailyTeamSelection.findMany({
@@ -138,6 +148,23 @@ teamsRouter.post("/today", async (req, res) => {
 
   const toRemove = existing.filter((e) => !nextIds.has(e.employeeId));
   const toAdd = employeeIds.filter((id) => !existingIds.has(id));
+
+  if (toAdd.length) {
+    const inDepartment = await prisma.employee.count({ where: { id: { in: toAdd }, departmentId } });
+    if (inDepartment !== new Set(toAdd).size) {
+      return res.status(403).json({ error: "Employees must belong to your Department.", code: "WRONG_DEPARTMENT" });
+    }
+  }
+
+  const changedEmployeeIds = [...toAdd, ...toRemove.map((row) => row.employeeId)];
+  if (changedEmployeeIds.length) {
+    const activeCount = await prisma.employee.count({
+      where: { id: { in: changedEmployeeIds }, active: true },
+    });
+    if (activeCount !== new Set(changedEmployeeIds).size) {
+      return res.status(400).json(inactiveEmployeePayload());
+    }
+  }
 
   await prisma.$transaction([
     ...toRemove.map((r) =>
@@ -188,6 +215,8 @@ teamsRouter.delete("/today/:employeeId", async (req, res) => {
     where: { supervisorId, workDate, employeeId, removedAt: null },
   });
   if (!row) return res.status(404).json({ error: "Not on team" });
+  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
+  if (!employee?.active) return res.status(400).json(inactiveEmployeePayload());
 
   // Status lock: removing an employee (and clearing their allocations) is only
   // allowed on an editable day — never on a SUBMITTED/approved day, which would

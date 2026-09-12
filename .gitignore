@@ -12,3 +12,5 @@ apps/api/prisma/*.db
 apps/api/prisma/*.db-journal
 .turbo/
 *.tsbuildinfo
+
+*.master-data-upgrade-state.json

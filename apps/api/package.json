@@ -7,10 +7,11 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma db push",
-    "db:migrate:dev": "prisma db push",
+    "db:migrate": "node prisma/master-data-upgrade.cjs before && prisma db push --accept-data-loss && node prisma/master-data-upgrade.cjs after && prisma generate",
+    "db:migrate:dev": "node prisma/master-data-upgrade.cjs before && prisma db push --accept-data-loss && node prisma/master-data-upgrade.cjs after && prisma generate",
     "db:seed": "tsx prisma/seed.ts",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "test": "node --import tsx --test src/services/*.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -19,9 +20,12 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "express-async-errors": "^3.1.1",
+    "express-rate-limit": "^8.7.0",
     "jsonwebtoken": "^9.0.2",
     "mssql": "^12.7.0",
     "node-cron": "^4.6.0",
+    "nodemailer": "^10.0.8",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -32,11 +36,15 @@
     "@types/mssql": "^12.3.0",
     "@types/node": "^22.9.0",
     "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^8.0.1",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
+  },
+  "engines": {
+    "node": ">=22.5.0"
   }
 }
