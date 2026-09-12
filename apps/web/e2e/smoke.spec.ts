@@ -54,21 +54,22 @@ test.describe("Supervisor My Hours", () => {
     await page.getByRole("link", { name: "My Hours" }).click();
 
     await expect(page).toHaveURL(/\/allocations$/);
-    await expect(page.getByRole("main").getByRole("heading", { name: "My Hours" })).toBeVisible();
-    await expect(page.getByLabel("Work slots")).toBeVisible();
-    await expect(page.getByRole("button", { name: /AM 1/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "My Hours" })).toBeVisible();
+    await expect(page.getByLabel("My hours timesheet")).toBeVisible();
+    await expect(page.getByLabel("Section")).toBeVisible();
 
     // Use a future date to avoid colliding with a submitted demo/test day.
     const date = new Date();
     date.setUTCDate(date.getUTCDate() + 60);
     await page.getByLabel("Allocation date").fill(date.toISOString().slice(0, 10));
-    await page.getByLabel("Project").selectOption({ index: 1 });
-    await page.getByRole("button", { name: "Assign 2 Hours" }).click();
-    await expect(page.getByText("AM 1 assigned.")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Remove Slot" })).toBeVisible();
+    await page.getByRole("button", { name: /9:00.*11:00: empty/ }).click();
+    await page.locator(".alloc-bulk__field select").first().selectOption({ index: 1 });
+    await page.getByRole("button", { name: "Assign to Selected (1)" }).click();
+    await expect(page.getByText("1 slot saved.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Clear 9:00.*11:00 draft slot/ })).toBeVisible();
 
-    await page.getByRole("button", { name: "Remove Slot" }).click();
-    await expect(page.getByText("Slot removed.")).toBeVisible();
+    await page.getByRole("button", { name: /Clear 9:00.*11:00 draft slot/ }).click();
+    await expect(page.getByText("AM 1 cleared.")).toBeVisible();
     expect(pageErrors).toEqual([]);
   });
 });

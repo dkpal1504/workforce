@@ -502,10 +502,14 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
 
     // Absence remains a soft termination, but only after the snapshot passes the
     // absolute and relative completeness guards above. Preserve Employee/User/history.
-    const absent = await prisma.employee.findMany({
-      where: { source: "SYNC", id: { notIn: seenEmployeeIds.size ? [...seenEmployeeIds] : [-1] }, active: true },
+    // Filtering a large snapshot with `id: { notIn: [...] }` exceeds SQLite's
+    // bound-parameter limit. Fetch the active CLMS identities without a large
+    // negated filter, then compare against the staged snapshot in memory.
+    const activeSyncEmployees = await prisma.employee.findMany({
+      where: { source: "SYNC", active: true },
       select: { id: true, user: { select: { id: true, active: true } } },
     });
+    const absent = activeSyncEmployees.filter((employee) => !seenEmployeeIds.has(employee.id));
     for (const employee of absent) {
       await prisma.$transaction(async (tx) => {
         await tx.employee.update({

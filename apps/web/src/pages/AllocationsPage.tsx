@@ -6,7 +6,7 @@ import "../styles/allocations.css";
 
 type JobOrder = { id: number; code: string; name: string; status: string };
 type Project = { id: number; code: string; name: string; colorKey: string; jobOrders: JobOrder[] };
-type EmployeeOption = { id: number; name: string; ecNo: string };
+type ShiftSlot = "am1" | "am2" | "pm1" | "pm2";
 type AllocationSlot = {
   id: number;
   shiftSlot: ShiftSlot;
@@ -29,13 +29,12 @@ type AllocationDay = {
   };
   allocations: AllocationSlot[];
 };
-type ShiftSlot = "am1" | "am2" | "pm1" | "pm2";
 
-const SHIFT_SLOTS: Array<{ id: ShiftSlot; label: string; time: string }> = [
-  { id: "am1", label: "AM 1", time: "9:00–11:00" },
-  { id: "am2", label: "AM 2", time: "11:00–13:00" },
-  { id: "pm1", label: "PM 1", time: "14:00–16:00" },
-  { id: "pm2", label: "PM 2", time: "16:00–18:00" },
+const SHIFT_SLOTS: Array<{ id: ShiftSlot; short: string; time: string; half: string }> = [
+  { id: "am1", short: "AM 1", time: "9:00–11:00", half: "1st Half" },
+  { id: "am2", short: "AM 2", time: "11:00–13:00", half: "1st Half" },
+  { id: "pm1", short: "PM 1", time: "14:00–16:00", half: "2nd Half" },
+  { id: "pm2", short: "PM 2", time: "16:00–18:00", half: "2nd Half" },
 ];
 
 function messageFor(error: unknown, fallback: string) {
@@ -45,147 +44,171 @@ function messageFor(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function statusLabel(status: string) {
+  if (status === "SUBMITTED") return "Pending HOD";
+  if (status === "HOD_APPROVED") return "With Project Head";
+  if (status === "PM_APPROVED") return "Approved";
+  if (status === "REJECTED") return "Sent back / Rejected";
+  return status || "DRAFT";
+}
+
+function projectClass(colorKey: string | undefined) {
+  const key = colorKey?.toLowerCase();
+  return key && /^[a-f]$/.test(key) ? `alloc-slot-cell--project-${key}` : "alloc-slot-cell--project-n";
+}
+
 export function AllocationsPage() {
   const { user } = useAuth();
-  const canAllocateOthers = Boolean(user && ["HOD", "PM", "ADMIN", "HR"].includes(user.role));
+  const ownEmployeeId = user?.employeeId ?? user?.employee?.id ?? null;
+  const employeeInactive = user?.employeeActive === false || user?.employee?.active === false;
 
   const [days, setDays] = useState<AllocationDay[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [employeeId, setEmployeeId] = useState("");
   const [workDate, setWorkDate] = useState(todayDateString());
-  const [shiftSlot, setShiftSlot] = useState<ShiftSlot>("am1");
   const [projectId, setProjectId] = useState("");
   const [jobOrderId, setJobOrderId] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [selectedSlots, setSelectedSlots] = useState<Set<ShiftSlot>>(new Set());
   const [formErr, setFormErr] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
+      const allocationPath = ownEmployeeId ? `/allocations?employeeId=${ownEmployeeId}` : "/allocations";
       const [allocationResult, projectResult] = await Promise.all([
-        api<{ days?: AllocationDay[]; note?: string }>("/allocations"),
+        api<{ days?: AllocationDay[]; note?: string }>(allocationPath),
         api<{ projects?: Project[] }>("/projects"),
       ]);
-      if (!Array.isArray(allocationResult.days)) {
+      if (!Array.isArray(allocationResult.days) || !Array.isArray(projectResult.projects)) {
         throw new Error("The allocations service returned an invalid response. Please restart the API and try again.");
       }
-      if (!Array.isArray(projectResult.projects)) {
-        throw new Error("The projects service returned an invalid response. Please restart the API and try again.");
-      }
-      setDays(allocationResult.days);
+      setDays(ownEmployeeId ? allocationResult.days.filter((day) => day.employeeId === ownEmployeeId) : []);
       setProjects(projectResult.projects);
-      setNotice(allocationResult.note ?? "");
+      setNotice(allocationResult.note ?? (!ownEmployeeId ? "No linked employee record for this account." : ""));
     } catch (e) {
       setDays([]);
       setError(messageFor(e, "Failed to load allocations"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [ownEmployeeId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  useEffect(() => {
-    if (!canAllocateOthers) return;
-    api<{ employees?: EmployeeOption[] }>("/employees")
-      .then((result) => setEmployees(Array.isArray(result.employees) ? result.employees : []))
-      .catch(() => setEmployees([]));
-  }, [canAllocateOthers]);
-
+  const selectedDay = useMemo(
+    () => days.find((day) => day.workDate.slice(0, 10) === workDate) ?? null,
+    [days, workDate]
+  );
   const selectedProject = useMemo(
     () => projects.find((project) => String(project.id) === projectId) ?? null,
     [projects, projectId]
   );
-
-  const selectedDay = useMemo(
-    () =>
-      days.find(
-        (day) =>
-          day.workDate.slice(0, 10) === workDate &&
-          (!canAllocateOthers || (employeeId !== "" && day.employeeId === Number(employeeId)))
-      ) ?? null,
-    [canAllocateOthers, days, employeeId, workDate]
+  const selectedJobOrder = useMemo(
+    () => selectedProject?.jobOrders.find((order) => String(order.id) === jobOrderId) ?? null,
+    [jobOrderId, selectedProject]
   );
+  const dayEditable = !selectedDay || ["DRAFT", "REJECTED"].includes(selectedDay.status);
+  const canEditSlots = Boolean(ownEmployeeId && dayEditable && !employeeInactive);
+  const filledCount = selectedDay?.allocations.length ?? 0;
 
-  const selectedSlot = selectedDay?.allocations.find((slot) => slot.shiftSlot === shiftSlot) ?? null;
-  const editable = !selectedDay || ["DRAFT", "REJECTED"].includes(selectedDay.status);
-  const visibleDays = useMemo(
-    () => days.filter((day) => !canAllocateOthers || !employeeId || day.employeeId === Number(employeeId)),
-    [canAllocateOthers, days, employeeId]
-  );
+  useEffect(() => {
+    setSelectedSlots(new Set());
+    setRemarks(selectedDay?.remarks ?? "");
+  }, [selectedDay]);
 
-  function chooseSlot(slot: ShiftSlot) {
-    setShiftSlot(slot);
-    const allocation = selectedDay?.allocations.find((item) => item.shiftSlot === slot);
-    setProjectId(allocation ? String(allocation.project.id) : "");
-    setJobOrderId(allocation?.jobOrder ? String(allocation.jobOrder.id) : "");
+  function toggleSlot(slot: ShiftSlot) {
+    if (!canEditSlots || selectedDay?.allocations.some((item) => item.shiftSlot === slot)) return;
+    setSelectedSlots((current) => {
+      const next = new Set(current);
+      if (next.has(slot)) next.delete(slot);
+      else next.add(slot);
+      return next;
+    });
     setFormErr({});
   }
 
-  async function assignSlot() {
+  function toggleFullShift(checked: boolean) {
+    if (!canEditSlots) return;
+    if (!checked) {
+      setSelectedSlots(new Set());
+      return;
+    }
+    const filled = new Set(selectedDay?.allocations.map((slot) => slot.shiftSlot) ?? []);
+    setSelectedSlots(new Set(SHIFT_SLOTS.map((slot) => slot.id).filter((slot) => !filled.has(slot))));
+  }
+
+  async function assignSelected() {
     const errors: Record<string, string> = {};
-    if (canAllocateOthers && !employeeId) errors.employeeId = "Select an employee.";
+    if (!ownEmployeeId) errors.employee = "No employee record is linked to this login.";
     if (!workDate) errors.workDate = "Date is required.";
     if (!projectId) errors.projectId = "Project is required.";
+    if (selectedSlots.size === 0) errors.slots = "Select at least one empty slot.";
     setFormErr(errors);
-    if (Object.keys(errors).length > 0) return;
+    if (Object.keys(errors).length > 0 || !canEditSlots) return;
 
     setBusy(true);
     setError("");
     try {
-      await api("/allocations/slot", {
-        method: "POST",
-        body: JSON.stringify({
-          employeeId: employeeId ? Number(employeeId) : undefined,
-          workDate,
-          shiftSlot,
-          projectId: Number(projectId),
-          jobOrderId: jobOrderId ? Number(jobOrderId) : null,
-        }),
-      });
+      for (const shiftSlot of selectedSlots) {
+        await api("/allocations/slot", {
+          method: "POST",
+          body: JSON.stringify({
+            employeeId: ownEmployeeId,
+            workDate,
+            shiftSlot,
+            projectId: Number(projectId),
+            jobOrderId: jobOrderId ? Number(jobOrderId) : null,
+            remarks,
+          }),
+        });
+      }
+      const count = selectedSlots.size;
+      setSelectedSlots(new Set());
       await load();
-      setNotice(`${SHIFT_SLOTS.find((slot) => slot.id === shiftSlot)?.label} assigned.`);
+      setNotice(`${count} slot${count === 1 ? "" : "s"} saved.`);
     } catch (e) {
-      setError(messageFor(e, "Failed to assign the slot"));
+      const message = messageFor(e, "Failed to assign selected slots");
+      await load();
+      setError(message);
     } finally {
       setBusy(false);
     }
   }
 
-  async function removeSlot(id: number) {
+  async function removeSlot(slot: AllocationSlot) {
+    if (!canEditSlots) return;
     setBusy(true);
     setError("");
     try {
-      await api(`/allocations/slot/${id}`, { method: "DELETE" });
-      setProjectId("");
-      setJobOrderId("");
+      await api(`/allocations/slot/${slot.id}`, { method: "DELETE" });
       await load();
-      setNotice("Slot removed.");
+      setNotice(`${SHIFT_SLOTS.find((item) => item.id === slot.shiftSlot)?.short} cleared.`);
     } catch (e) {
-      setError(messageFor(e, "Failed to remove the slot"));
+      setError(messageFor(e, "Failed to clear the slot"));
     } finally {
       setBusy(false);
     }
   }
 
   async function submitDay() {
-    if (!selectedDay || selectedDay.allocations.length === 0) {
+    if (!ownEmployeeId || !selectedDay || selectedDay.allocations.length === 0) {
       setError("Assign at least one slot before submitting.");
       return;
     }
+    if (!dayEditable) return;
     setBusy(true);
     setError("");
     try {
       await api("/allocations/submit", {
         method: "POST",
-        body: JSON.stringify({ employeeId: employeeId ? Number(employeeId) : undefined, workDate }),
+        body: JSON.stringify({ employeeId: ownEmployeeId, workDate, remarks }),
       });
       await load();
       setNotice("Hours submitted for HOD approval.");
@@ -196,171 +219,252 @@ export function AllocationsPage() {
     }
   }
 
+  const employeeName = selectedDay?.employee.name ?? user?.name ?? "Logged-in employee";
+  const ecNo = selectedDay?.employee.ecNo ?? user?.employee?.ecNo ?? "—";
+  const sectionName = user?.section?.name ?? selectedDay?.employee.department?.name ?? user?.department?.name ?? "Not assigned";
+  const fullShiftChecked = filledCount + selectedSlots.size === SHIFT_SLOTS.length;
+
   return (
     <>
-      {/* Keep the repaired four-slot layout aligned with the Timesheet screen. */}
-      <section className="alloc-card alloc-card--timesheet-slots" data-layout="timesheet-slots">
-        <header className="alloc-card__head">
-          <h2>{canAllocateOthers ? "Allocate Manhours" : "My Hours"}</h2>
-          <p className="muted">
-            Each slot is 2 hours. Select a project and optional work order, then submit the day for HOD approval.
-            Payroll allocations do not allow overtime.
-          </p>
-        </header>
-
-        {notice && <div className="alloc-note" role="status">{notice}</div>}
-        {error && <div className="error-banner" role="alert">{error}</div>}
-
-        <div className="alloc-form alloc-form--day">
-          {canAllocateOthers && (
-            <label className={`alloc-field ${formErr.employeeId ? "alloc-field--error" : ""}`}>
-              <span>Employee</span>
-              <select
-                aria-label="Employee"
-                value={employeeId}
-                onChange={(event) => {
-                  setEmployeeId(event.target.value);
-                  setProjectId("");
-                  setJobOrderId("");
-                }}
-              >
-                <option value="">Select employee…</option>
-                {employees.map((employee) => (
-                  <option key={employee.id} value={employee.id}>{employee.name} ({employee.ecNo})</option>
-                ))}
-              </select>
-              {formErr.employeeId && <span className="field-error">{formErr.employeeId}</span>}
-            </label>
-          )}
-          <label className={`alloc-field ${formErr.workDate ? "alloc-field--error" : ""}`}>
-            <span>Date</span>
-            <input
-              aria-label="Allocation date"
-              type="date"
-              value={workDate}
-              onChange={(event) => {
-                setWorkDate(event.target.value);
-                setProjectId("");
-                setJobOrderId("");
-              }}
-            />
-            {formErr.workDate && <span className="field-error">{formErr.workDate}</span>}
-          </label>
-          {selectedDay && (
-            <div className="alloc-day-summary">
-              <span className={`alloc-status alloc-status--${selectedDay.status.toLowerCase()}`}>{selectedDay.status.replace(/_/g, " ")}</span>
-              <strong>{selectedDay.allocations.length * 2} / 8 hours</strong>
-            </div>
-          )}
+      <section className="alloc-context" aria-label="Allocation context">
+        <label className={formErr.workDate ? "alloc-context__field is-error" : "alloc-context__field"}>
+          <span>Date</span>
+          <input
+            aria-label="Allocation date"
+            type="date"
+            value={workDate}
+            onChange={(event) => {
+              setWorkDate(event.target.value);
+              setSelectedSlots(new Set());
+              setFormErr({});
+            }}
+          />
+          {formErr.workDate && <small>{formErr.workDate}</small>}
+        </label>
+        <label className="alloc-context__field">
+          <span>Section</span>
+          <input aria-label="Section" type="text" value={sectionName} readOnly />
+        </label>
+        <div className="alloc-context__summary">
+          <span className={`alloc-status alloc-status--${(selectedDay?.status ?? "draft").toLowerCase()}`}>
+            {statusLabel(selectedDay?.status ?? "DRAFT")}
+          </span>
+          <strong>{filledCount * 2} / 8 hours</strong>
         </div>
-
-        {canAllocateOthers && !employeeId ? (
-          <div className="empty-state alloc-empty-compact">Select an employee to manage a day.</div>
-        ) : (
-          <>
-            <div className="alloc-slot-grid" aria-label="Work slots">
-              {SHIFT_SLOTS.map((slot) => {
-                const allocation = selectedDay?.allocations.find((item) => item.shiftSlot === slot.id);
-                return (
-                  <button
-                    key={slot.id}
-                    type="button"
-                    className={`alloc-slot ${shiftSlot === slot.id ? "is-selected" : ""} ${allocation ? "is-filled" : ""}`}
-                    onClick={() => chooseSlot(slot.id)}
-                    disabled={!editable}
-                    aria-pressed={shiftSlot === slot.id}
-                  >
-                    <span>{slot.label}</span>
-                    <small>{slot.time} · 2h</small>
-                    <strong>{allocation?.project.name ?? "Empty"}</strong>
-                    {allocation?.jobOrder && <small>{allocation.jobOrder.code}</small>}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="alloc-form alloc-form--assign">
-              <label className={`alloc-field ${formErr.projectId ? "alloc-field--error" : ""}`}>
-                <span>Project *</span>
-                <select
-                  aria-label="Project"
-                  value={projectId}
-                  disabled={!editable}
-                  onChange={(event) => {
-                    setProjectId(event.target.value);
-                    setJobOrderId("");
-                  }}
-                >
-                  <option value="">Select project…</option>
-                  {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-                </select>
-                {formErr.projectId && <span className="field-error">{formErr.projectId}</span>}
-              </label>
-              <label className="alloc-field">
-                <span>Work Order (optional)</span>
-                <select
-                  aria-label="Work Order"
-                  value={jobOrderId}
-                  disabled={!editable || !selectedProject}
-                  onChange={(event) => setJobOrderId(event.target.value)}
-                >
-                  <option value="">{selectedProject ? "None / not applicable" : "Pick a project first"}</option>
-                  {(selectedProject?.jobOrders ?? []).map((order) => (
-                    <option key={order.id} value={order.id}>{order.code} - {order.name}</option>
-                  ))}
-                </select>
-              </label>
-              <div className="alloc-form__action alloc-action-group">
-                <button type="button" className="btn btn-primary" disabled={busy || !editable} onClick={assignSlot}>
-                  {busy ? "Saving…" : selectedSlot ? "Update Slot" : "Assign 2 Hours"}
-                </button>
-                {selectedSlot && editable && (
-                  <button type="button" className="btn btn-danger" disabled={busy} onClick={() => removeSlot(selectedSlot.id)}>
-                    Remove Slot
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={busy || !selectedDay || selectedDay.allocations.length === 0 || !editable}
-                  onClick={submitDay}
-                >
-                  Submit for HOD Approval
-                </button>
-              </div>
-            </div>
-          </>
-        )}
       </section>
 
-      <div className="alloc-list-head"><h3>Recent Allocation Days</h3></div>
-      {loading && <div className="loading-state">Loading allocations…</div>}
-      {!loading && visibleDays.length === 0 && <div className="empty-state">No allocation days yet. Assign a slot above.</div>}
-      {!loading && visibleDays.length > 0 && (
-        <div className="alloc-day-list">
-          {visibleDays.map((day) => (
-            <article key={day.id} className="alloc-item alloc-day-item">
-              <header>
-                <div><strong>{day.employee.name}</strong><div className="muted tiny">{day.employee.ecNo} · {day.workDate.slice(0, 10)}</div></div>
-                <span className={`alloc-status alloc-status--${day.status.toLowerCase()}`}>{day.status.replace(/_/g, " ")}</span>
-              </header>
-              <div className="alloc-day-slots">
-                {SHIFT_SLOTS.map((shift) => {
-                  const allocation = day.allocations.find((item) => item.shiftSlot === shift.id);
-                  return (
-                    <div key={shift.id} className={allocation ? "is-filled" : ""}>
-                      <span>{shift.label}</span>
-                      <strong>{allocation?.project.name ?? "—"}</strong>
-                      {allocation?.jobOrder && <small>{allocation.jobOrder.code}</small>}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="muted tiny">Total: {day.allocations.length * 2} hours</div>
-            </article>
-          ))}
+      {notice && <div className="alloc-note" role="status">{notice}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {employeeInactive && (
+        <div className="alloc-inactive" role="status">
+          This employee is inactive. Existing retained drafts may still be submitted when allowed, but slots cannot be changed.
         </div>
       )}
+
+      <section className="alloc-bulk" aria-labelledby="alloc-bulk-title">
+        <header className="alloc-bulk__head">
+          <h2 id="alloc-bulk-title">Assignment</h2>
+          <p>Select empty 2-hour cells, then assign the project and optional Job Order.</p>
+        </header>
+        <div className="alloc-bulk__row">
+          <label className={`alloc-bulk__field ${formErr.projectId ? "is-error" : ""}`}>
+            <span>Project</span>
+            <select
+              value={projectId}
+              disabled={!canEditSlots}
+              onChange={(event) => {
+                setProjectId(event.target.value);
+                setJobOrderId("");
+                setFormErr({});
+              }}
+            >
+              <option value="">Select…</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+            {formErr.projectId && <small>{formErr.projectId}</small>}
+          </label>
+          <label className="alloc-bulk__field">
+            <span>Job Order</span>
+            <select
+              value={jobOrderId}
+              disabled={!canEditSlots || !selectedProject}
+              onChange={(event) => setJobOrderId(event.target.value)}
+            >
+              <option value="">{selectedProject ? "None / not applicable" : "Select a project first"}</option>
+              {(selectedProject?.jobOrders ?? []).map((order) => (
+                <option key={order.id} value={order.id}>{order.code} - {order.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="alloc-bulk__field alloc-bulk__field--readonly">
+            <span>Job Order Name</span>
+            <input type="text" readOnly value={selectedJobOrder?.name ?? ""} placeholder="—" />
+          </label>
+          <div className="alloc-bulk__apply">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || !canEditSlots || !projectId || selectedSlots.size === 0}
+              onClick={assignSelected}
+            >
+              {busy ? "Saving…" : `Assign to Selected (${selectedSlots.size})`}
+            </button>
+          </div>
+        </div>
+        {formErr.slots && <div className="alloc-inline-error">{formErr.slots}</div>}
+      </section>
+
+      <section className="alloc-sheet" aria-label="My hours timesheet">
+        <div className="alloc-sheet__scroll">
+          <table className="alloc-timesheet">
+            <thead>
+              <tr>
+                <th rowSpan={2} className="alloc-employee-col">Employee</th>
+                <th rowSpan={2} className="alloc-fullshift-col">Full Shift</th>
+                <th colSpan={2} className="alloc-half-head">1st Half</th>
+                <th colSpan={2} className="alloc-half-head">2nd Half</th>
+                <th rowSpan={2} className="alloc-remarks-col">Status / Remarks</th>
+              </tr>
+              <tr>
+                {SHIFT_SLOTS.map((slot) => <th key={slot.id} className="alloc-slot-head">{slot.time}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="alloc-employee-col">
+                  <strong>{employeeName}</strong>
+                  <span>{ecNo} · {sectionName}</span>
+                </td>
+                <td className="alloc-fullshift-col">
+                  <label className="alloc-fullshift">
+                    <input
+                      type="checkbox"
+                      aria-label="Select full shift"
+                      checked={fullShiftChecked}
+                      disabled={!canEditSlots || filledCount === SHIFT_SLOTS.length}
+                      onChange={(event) => toggleFullShift(event.target.checked)}
+                    />
+                    <span>8h</span>
+                  </label>
+                </td>
+                {SHIFT_SLOTS.map((slot) => {
+                  const allocation = selectedDay?.allocations.find((item) => item.shiftSlot === slot.id);
+                  const selected = selectedSlots.has(slot.id);
+                  return (
+                    <td key={slot.id} className="alloc-slot-td">
+                      <button
+                        type="button"
+                        className={`alloc-slot-cell ${selected ? "is-selected" : ""} ${allocation ? `is-assigned ${projectClass(allocation.project.colorKey)}` : ""}`}
+                        disabled={!canEditSlots || busy || Boolean(allocation)}
+                        onClick={() => toggleSlot(slot.id)}
+                        aria-pressed={selected}
+                        aria-label={`${slot.time}: ${allocation ? `${allocation.project.name}, ${allocation.jobOrder?.code ?? "no Job Order"}` : selected ? "selected" : "empty"}`}
+                        title={allocation ? `${allocation.project.name}${allocation.jobOrder ? ` · ${allocation.jobOrder.code}` : ""}` : "Select this 2-hour slot"}
+                      >
+                        {allocation ? allocation.project.name.slice(0, 2).toUpperCase() : selected ? "✓" : ""}
+                      </button>
+                      {allocation && canEditSlots && (
+                        <button
+                          type="button"
+                          className="alloc-clear-slot"
+                          disabled={busy}
+                          onClick={() => removeSlot(allocation)}
+                          aria-label={`Clear ${slot.time} draft slot`}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </td>
+                  );
+                })}
+                <td className="alloc-remarks-col">
+                  <span className={`alloc-status alloc-status--${(selectedDay?.status ?? "draft").toLowerCase()}`}>
+                    {statusLabel(selectedDay?.status ?? "DRAFT")}
+                  </span>
+                  <textarea
+                    aria-label="Remarks"
+                    value={remarks}
+                    placeholder="Remarks (optional)"
+                    disabled={!dayEditable || !ownEmployeeId}
+                    onChange={(event) => setRemarks(event.target.value)}
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="alloc-mobile-row">
+          <header>
+            <div><strong>{employeeName}</strong><span>{ecNo} · {sectionName}</span></div>
+            <label className="alloc-fullshift">
+              <input
+                type="checkbox"
+                aria-label="Select full shift"
+                checked={fullShiftChecked}
+                disabled={!canEditSlots || filledCount === SHIFT_SLOTS.length}
+                onChange={(event) => toggleFullShift(event.target.checked)}
+              />
+              <span>Full Shift</span>
+            </label>
+          </header>
+          <div className="alloc-mobile-slots">
+            {SHIFT_SLOTS.map((slot) => {
+              const allocation = selectedDay?.allocations.find((item) => item.shiftSlot === slot.id);
+              const selected = selectedSlots.has(slot.id);
+              return (
+                <div key={slot.id} className="alloc-mobile-slot-wrap">
+                  <button
+                    type="button"
+                    className={`alloc-mobile-slot ${selected ? "is-selected" : ""} ${allocation ? `is-assigned ${projectClass(allocation.project.colorKey)}` : ""}`}
+                    disabled={!canEditSlots || busy || Boolean(allocation)}
+                    onClick={() => toggleSlot(slot.id)}
+                    aria-pressed={selected}
+                  >
+                    <span>{slot.half}</span>
+                    <strong>{slot.time}</strong>
+                    <small>{allocation ? allocation.project.name : selected ? "Selected" : "Empty · 2h"}</small>
+                    {allocation?.jobOrder && <small>{allocation.jobOrder.code}</small>}
+                  </button>
+                  {allocation && canEditSlots && (
+                    <button type="button" className="alloc-clear-slot" disabled={busy} onClick={() => removeSlot(allocation)}>
+                      Clear draft slot
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <label className="alloc-mobile-remarks">
+            <span>Remarks</span>
+            <textarea
+              value={remarks}
+              placeholder="Remarks (optional)"
+              disabled={!dayEditable || !ownEmployeeId}
+              onChange={(event) => setRemarks(event.target.value)}
+            />
+          </label>
+        </div>
+      </section>
+
+      {loading && <div className="loading-state">Loading allocations…</div>}
+      {!loading && !ownEmployeeId && formErr.employee && <div className="alloc-inline-error">{formErr.employee}</div>}
+
+      <footer className="alloc-footer">
+        <div className="alloc-legend">
+          <span><i className="alloc-legend__empty" /> Empty</span>
+          <span><i className="alloc-legend__selected" /> Selected</span>
+          <span><i className="alloc-legend__assigned" /> Assigned project</span>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={busy || !ownEmployeeId || !selectedDay || filledCount === 0 || !dayEditable}
+          onClick={submitDay}
+        >
+          Submit for HOD Approval
+        </button>
+      </footer>
     </>
   );
 }
