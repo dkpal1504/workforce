@@ -202,7 +202,9 @@ async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
       throw new Error("BADGEVIEW_DB_VIEW must be an identifier such as dbo.BadgeView.");
     }
     const safeView = view.split(".").map((part) => `[${part}]`).join(".");
-    const response = await pool.request().query(`
+    const request = pool.request();
+    request.input("cardType", sql.NVarChar(32), "ASSOCIATES");
+    const response = await request.query(`
       SELECT
         IDCardNo AS EcNo,
         BuName,
@@ -214,6 +216,7 @@ async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
         mobile,
         IsTerminated
       FROM ${safeView}
+      WHERE [Card Type] = @cardType
     `);
     return (response.recordset as BadgeViewRow[]) || [];
   } finally {
