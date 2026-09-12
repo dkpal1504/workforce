@@ -3,6 +3,7 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { endOfFrequency, parseDateOnly, startOfFrequency } from "../utils/date";
 import { getMaxDailyHours } from "../config";
+import { contractOverheadHours } from "../services/contractWorkHours";
 
 export const summaryRouter = Router();
 
@@ -346,15 +347,17 @@ summaryRouter.get("/", async (req, res) => {
 
   // Overhead is unused regular capacity for a timesheet day. It is deliberately
   // kept outside every project and shown only in the final Overhead Total column.
-  const dayRegular = new Map<number, { sample: (typeof entries)[number]; hours: number }>();
+  const dayRegular = new Map<number, { sample: (typeof entries)[number]; hours: number; overtimeHours: number }>();
   for (const e of entries) {
     let day = dayRegular.get(e.timesheetDayId);
     if (!day) {
-      day = { sample: e, hours: 0 };
+      day = { sample: e, hours: 0, overtimeHours: 0 };
       dayRegular.set(e.timesheetDayId, day);
     }
     if (e.otHours == null) {
       day.hours += e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
+    } else {
+      day.overtimeHours += e.otHours;
     }
   }
   const maxDailyHours = getMaxDailyHours();
@@ -362,7 +365,7 @@ summaryRouter.get("/", async (req, res) => {
     const identity = groupIdentity(day.sample);
     const bucket = buckets.get(identity.key);
     if (!bucket) continue;
-    const overhead = Math.max(0, maxDailyHours - day.hours);
+    const overhead = contractOverheadHours(maxDailyHours, day.hours, day.overtimeHours);
     bucket.overheadHours += overhead;
     bucket.overheadCost += overhead * rateFor(day.sample.employee.category);
   }

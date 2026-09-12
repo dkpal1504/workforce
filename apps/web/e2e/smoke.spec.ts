@@ -20,6 +20,19 @@ test.describe("Workforce happy paths", () => {
     await expect(page.getByRole("heading", { name: "Daily Timesheet" })).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Filled:")).toBeVisible();
 
+    const addEmployeeSearch = page.locator(".add-emp-input:visible");
+    await addEmployeeSearch.fill("Emp 6");
+    const addEmployeeResults = page.locator(".add-dropdown__list:visible");
+    await expect(addEmployeeResults).toBeVisible();
+    const [searchBox, resultsBox] = await Promise.all([
+      addEmployeeSearch.boundingBox(),
+      addEmployeeResults.boundingBox(),
+    ]);
+    expect(searchBox).not.toBeNull();
+    expect(resultsBox).not.toBeNull();
+    expect(resultsBox!.y + resultsBox!.height).toBeLessThanOrEqual(searchBox!.y + 1);
+    await addEmployeeSearch.fill("");
+
     // Select first empty hour on first row if present and assign
     const hourButtons = page.locator(".hour-cell").first();
     if (await hourButtons.count()) {

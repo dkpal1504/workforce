@@ -646,7 +646,7 @@ timesheetRouter.get("/", async (req, res) => {
       ],
       otOtherBookingStatus: externalOtEntry?.status ?? null,
       filledSlots,
-      filled: filledSlots > 0,
+      filled: filledSlots > 0 || (otEntry?.otHours ?? 0) > 0,
       fullShiftDone: filledSlots === SHIFT_SLOTS.length,
       otherHours,
       otherSlots,
@@ -671,7 +671,7 @@ timesheetRouter.get("/", async (req, res) => {
     };
   });
 
-  const filledCount = rows.filter((r) => r.filledSlots > 0).length;
+  const filledCount = rows.filter((r) => r.filledSlots > 0 || (r.otHours ?? 0) > 0).length;
   const rejectedCount = rows.filter((r) => r.status === "REJECTED").length;
 
   const openReturns = await prisma.timesheetDay.findMany({
@@ -1248,8 +1248,9 @@ timesheetRouter.put("/entry", serializeTimesheetMutation, async (req, res) => {
 
 /**
  * Add/update/clear overtime (OT) hours for an employee on a day.
- * OT is additive and separate from the 8h allocation — it never counts toward
- * totalAlloc/overhead. One OT row per (employee, workDate, taggedById) is
+ * OT is additive and separate from regular slots. An OT-only holiday day has
+ * zero overhead; mixed regular + OT days retain unused regular capacity as
+ * overhead. One OT row per (employee, workDate, taggedById) is
  * enforced here (SQLite treats NULL as distinct in unique constraints, so the
  * schema can't). Owner-checked + status-locked + audited, same as assign/unassign.
  */
@@ -1270,8 +1271,17 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
-  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { active: true, employmentType: true },
+  });
   if (!employee?.active) return res.status(409).json(inactiveEmployeePayload());
+  if (otHours != null && employee.employmentType !== "CLMS") {
+    return res.status(400).json({
+      error: "Overtime entry is available only for contract workmen.",
+      code: "OT_NOT_ALLOWED_FOR_PAYROLL",
+    });
+  }
 
   // Validate OT hours: integer 1-12 (configurable cap), or null to clear.
   const maxOt = Number(process.env.MAX_OT_HOURS || 12);

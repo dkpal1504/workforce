@@ -738,7 +738,8 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: 100%;
+  top: auto;
+  bottom: calc(100% + 4px);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -746,7 +747,7 @@
   overflow: auto;
   z-index: 10;
   list-style: none;
-  margin: 4px 0 0;
+  margin: 0;
   padding: 0;
   box-shadow: var(--shadow-md);
 }

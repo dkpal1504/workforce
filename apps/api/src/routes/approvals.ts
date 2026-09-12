@@ -3,6 +3,7 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
+import { contractOverheadHours } from "../services/contractWorkHours";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
 import { rejectionStatusForEmployee } from "../services/employeeEligibility";
@@ -97,8 +98,9 @@ function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
   }
   const regularTotalAlloc = Object.values(projectHours).reduce((a, b) => a + b, 0);
   const totalOtHours = Object.values(projectOtHours).reduce((a, b) => a + b, 0);
-  // OT is additive and does not consume the regular 8-hour capacity.
-  const overhead = Math.max(0, maxDailyHours - regularTotalAlloc);
+  // OT is normally additive. For an OT-only holiday booking, it represents
+  // the whole attendance and must not create artificial regular overhead.
+  const overhead = contractOverheadHours(maxDailyHours, regularTotalAlloc, totalOtHours);
   const totalAlloc = regularTotalAlloc + totalOtHours;
   return { projectHours, projectOtHours, overhead, totalAlloc, regularTotalAlloc, totalOtHours };
 }
@@ -200,7 +202,7 @@ function mapEmployeeRow(
   const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries, maxDailyHours);
   // "All tagged" (across the whole day, not just pending) must include both flows too.
   const allTagged = projectHoursFromEntries(d.entries, maxDailyHours);
-  const unallocatedHours = Math.max(0, maxDailyHours - dayTotalHours);
+  const unallocatedHours = contractOverheadHours(maxDailyHours, dayTotalHours, allTagged.totalOtHours);
   const conflictKey = `${d.employeeId}|${workDate}`;
   const conflictSupervisors = conflictMap.get(conflictKey) ?? null;
   // OT: the stored OT row for this employee/day (additive, separate from allocation).
@@ -574,20 +576,21 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
       byKey.set(key, row);
     }
 
+    const hours = e.otHours ?? (e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0);
     // Approved vs unapproved classification derived server-side from entry status.
     const isApproved = e.status === "HOD_APPROVED" || e.status === "PM_APPROVED";
     if (isApproved) {
-      row.consumptionApproved += 1;
+      row.consumptionApproved += hours;
     } else {
-      row.consumptionUnapproved += 1;
+      row.consumptionUnapproved += hours;
     }
 
     // Per-project hour breakdown (legacy ProjectWbs fallback kept for consistency).
     const colorKey = String(jo.project.colorKey || "").toUpperCase();
-    if (colorKey === "A") row.projectA += 1;
-    else if (colorKey === "B") row.projectB += 1;
-    else if (colorKey === "C") row.projectC += 1;
-    else row.overhead += 1;
+    if (colorKey === "A") row.projectA += hours;
+    else if (colorKey === "B") row.projectB += hours;
+    else if (colorKey === "C") row.projectC += hours;
+    else row.overhead += hours;
   }
 
   const rows = Array.from(byKey.values())

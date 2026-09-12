@@ -48,7 +48,7 @@ type ReturnFeedback = {
 type EditMode = "full" | "addOnly" | "locked";
 type Row = {
   employeeId: number;
-  employee: { id: number; name: string };
+  employee: { id: number; name: string; employmentType: string };
   remarks: string;
   status: string;
   slots: ShiftSlotRow[];
@@ -358,6 +358,10 @@ export function TimesheetPage() {
     const row = rows.find((r) => r.employeeId === employeeId);
     if (!row || (row.selectedSlots.size === 0 && !row.otSelected)) return;
     if (rowEditMode(row) === "locked") return;
+    if (row.otSelected && row.employee.employmentType !== "CLMS") {
+      setError("Overtime entry is available only for contract workmen.");
+      return;
+    }
 
     const hours = Number(row.otHoursInput);
     if (row.otSelected && (!Number.isInteger(hours) || hours < 0 || hours > 12)) {
@@ -959,6 +963,8 @@ export function TimesheetPage() {
               const rowJobOrders = rowProject?.jobOrders ?? [];
               const otRemarksRequired =
                 Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
+              const otAvailable = r.employee.employmentType === "CLMS";
+              const otOnly = filledCount === 0 && (r.otHours ?? 0) > 0;
               const expanded = expandedEmployees.has(r.employeeId) || r.fullShiftDone;
               return (
                 <>
@@ -991,7 +997,7 @@ export function TimesheetPage() {
                       <div className="emp-status-chip status-assigned">✓ Assigned</div>
                     )}
                     <div className="emp-hours-meta">
-                      {filledCount}/4 today
+                      {otOnly ? `OT ${r.otHours}h today · 0 overhead` : `${filledCount}/4 today`}
                       {r.exceedsLimit ? ` · over ${maxDailyHours}h limit` : ""}
                     </div>
                     <div className="emp-actions">
@@ -1073,7 +1079,7 @@ export function TimesheetPage() {
                             ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
                             : ""
                       } ${r.otBookedByOther ? "booked-other booked-other--submitted" : ""} ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
-                      disabled={!isOwner || isLocked || r.otLocked}
+                      disabled={!isOwner || !otAvailable || isLocked || r.otLocked}
                       onClick={() => toggleOtSelection(r.employeeId)}
                       onDoubleClick={() => clearDraftOt(r.employeeId)}
                       title={
@@ -1081,7 +1087,9 @@ export function TimesheetPage() {
                           ? `OT ${r.otHours ?? 0}h booked by Supervisor ${(r.otBookedBySupervisorNames ?? []).join(", ")} (${r.otOtherBookingStatus ?? "submitted"}) — read only`
                           : r.otHours != null
                             ? `OT ${r.otHours}h — click to select; double-click to remove`
-                            : "Select OT for assignment"
+                            : otAvailable
+                              ? "Select OT for assignment"
+                              : "OT is not applicable to Payroll Employees"
                       }
                     >
                       {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
@@ -1096,7 +1104,7 @@ export function TimesheetPage() {
                       max={12}
                       step={1}
                       value={r.otHoursInput}
-                      disabled={!isOwner || isLocked || r.otLocked || !r.otSelected}
+                      disabled={!isOwner || !otAvailable || isLocked || r.otLocked || !r.otSelected}
                       onChange={(e) => setOtHoursInput(r.employeeId, e.target.value)}
                       aria-label={`OT hours for ${r.employee.name}`}
                       title="Whole OT hours from 1 to 12; enter 0 to clear existing OT"
@@ -1224,6 +1232,8 @@ export function TimesheetPage() {
           const rowJobOrders = rowProject?.jobOrders ?? [];
           const otRemarksRequired =
             Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
+          const otAvailable = r.employee.employmentType === "CLMS";
+          const otOnly = filledCount === 0 && (r.otHours ?? 0) > 0;
           return (
             <article
               key={r.employeeId}
@@ -1246,7 +1256,7 @@ export function TimesheetPage() {
                     <div className="emp-status-chip status-assigned">✓ Assigned</div>
                   )}
                   <div className="emp-hours-meta">
-                    {filledCount}/4 today
+                    {otOnly ? `OT ${r.otHours}h today · 0 overhead` : `${filledCount}/4 today`}
                     {r.exceedsLimit ? ` · over ${maxDailyHours}h limit` : ""}
                   </div>
                 </div>
@@ -1318,7 +1328,7 @@ export function TimesheetPage() {
                         ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
                         : ""
                   } ${r.otBookedByOther ? "booked-other booked-other--submitted" : ""} ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
-                  disabled={!isOwner || isLocked || r.otLocked}
+                  disabled={!isOwner || !otAvailable || isLocked || r.otLocked}
                   onClick={() => toggleOtSelection(r.employeeId)}
                   onDoubleClick={() => clearDraftOt(r.employeeId)}
                   title={
@@ -1326,7 +1336,9 @@ export function TimesheetPage() {
                       ? `OT ${r.otHours ?? 0}h booked by Supervisor ${(r.otBookedBySupervisorNames ?? []).join(", ")} (${r.otOtherBookingStatus ?? "submitted"}) — read only`
                       : r.otHours != null
                         ? `OT ${r.otHours}h — click to select; double-click to remove`
-                        : "Select OT for assignment"
+                        : otAvailable
+                          ? "Select OT for assignment"
+                          : "OT is not applicable to Payroll Employees"
                   }
                 >
                   {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
@@ -1341,7 +1353,7 @@ export function TimesheetPage() {
                     max={12}
                     step={1}
                     value={r.otHoursInput}
-                    disabled={!isOwner || isLocked || r.otLocked || !r.otSelected}
+                    disabled={!isOwner || !otAvailable || isLocked || r.otLocked || !r.otSelected}
                     onChange={(e) => setOtHoursInput(r.employeeId, e.target.value)}
                     aria-label={`OT hours for ${r.employee.name}`}
                   />
@@ -1496,7 +1508,8 @@ export function TimesheetPage() {
           one click. The 4 slots per day are 1st Half (9a–11a, 11a–1p) and 2nd Half (2p–4p, 4p–6p).
           Full Shift selects all 4 empty slots for that employee; it freezes once the row is fully
           assigned. Click any cell to toggle its selection. Double-click a draft allocation to clear it.
-          Max {maxDailyHours}h/day; overtime requires a Remarks reason.
+          Max {maxDailyHours}h/day; overtime requires a Project, WBS / Job Order, and Remarks reason.
+          On a holiday, OT may be assigned without selecting regular slots; that day has zero overhead.
         </p>
       </div>
 

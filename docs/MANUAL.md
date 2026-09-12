@@ -92,11 +92,13 @@ The 8-hour daily cap is structural (only 4 slots × 2 h). Submitting a day with 
 
 ### 2.5 OT (Overtime)
 
-A supervisor can also assign **OT hours** to a contract-worker (sync employee) on a given date:
+A supervisor can also assign **OT hours** to a contract workman (CLMS employee) on a given date:
 
-1. Click the **OTHRS** cell on an employee row.
-2. Modal opens: pick **Project + Work Order** and enter **hours** (1-12, numeric only).
-3. **Save OT** — confirm the dialog. OT is **additive** and **separate** from the 8-hour allocation.
+1. Select the **OT** cell on the employee row.
+2. Enter whole OT hours (1-12), select the **Project + WBS / Job Order**, and enter mandatory Remarks.
+3. Click **Assign**, then submit the timesheet through the normal approval flow.
+
+For holiday attendance, OT may be entered without selecting any regular shift slot. The complete entered time is booked as project OT and overhead is `0`. On a mixed regular-plus-OT day, OT stays additive and unused regular capacity retains its normal overhead calculation. OT entry is disabled and rejected for Payroll Employees.
 
 ### 2.6 Supervisor self-row
 
