@@ -14,6 +14,6 @@
     "db:migrate": "npm run db:migrate -w @workforce/api",
     "db:seed": "npm run db:seed -w @workforce/api",
     "db:setup": "npm run build -w @workforce/shared && npm run db:generate -w @workforce/api && npm run db:migrate -w @workforce/api && npm run db:seed -w @workforce/api",
-    "db:set-rollout-password": "npm run db:set-rollout-password -w @workforce/api"
+    "db:migrate:deploy": "npm run db:migrate -w @workforce/api"
   }
 }

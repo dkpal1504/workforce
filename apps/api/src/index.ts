@@ -19,15 +19,34 @@ import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
 import { employeeAllocationRouter } from "./routes/employeeAllocation";
 import { csvUploadRouter } from "./routes/csvUpload";
-import { startBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
+import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
+import { prisma } from "./db";
 
 const app = express();
 const port = Number(process.env.API_PORT || 4000);
 const host = process.env.API_HOST || "0.0.0.0";
+let shuttingDown = false;
+
+app.disable("x-powered-by");
+if (process.env.TRUST_PROXY === "true") app.set("trust proxy", 1);
 
 const configuredOrigins = (process.env.CORS_ORIGINS || "").split(",").map((origin) => origin.trim()).filter(Boolean);
-if (process.env.NODE_ENV === "production" && configuredOrigins.length === 0) {
-  throw new Error("CORS_ORIGINS is required in production.");
+if (process.env.NODE_ENV === "production") {
+  const secret = process.env.JWT_SECRET || "";
+  if (secret.length < 32 || /change-me|replace/i.test(secret)) {
+    throw new Error("JWT_SECRET must be a non-placeholder secret of at least 32 characters in production.");
+  }
+  if (!process.env.DATABASE_URL?.startsWith("postgresql://")) {
+    throw new Error("A PostgreSQL DATABASE_URL is required in production.");
+  }
+  if (configuredOrigins.length === 0 || configuredOrigins.some((origin) => {
+    try { return new URL(origin).origin !== origin; } catch { return true; }
+  })) {
+    throw new Error("CORS_ORIGINS must contain exact, valid origins in production.");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("API_PORT must be an integer from 1 to 65535.");
+  }
 }
 app.use(cors({
   credentials: false,
@@ -45,8 +64,24 @@ app.use("/api/auth/login", rateLimit({
   message: { error: "Too many login attempts. Try again later.", code: "RATE_LIMITED" },
 }));
 
-app.get("/health", (_req, res) => res.json({ ok: true, maxDailyHours: Number(process.env.MAX_DAILY_HOURS || 8) }));
-app.get("/api/health", (_req, res) => res.json({ ok: true, maxDailyHours: Number(process.env.MAX_DAILY_HOURS || 8) }));
+const live = (_req: express.Request, res: express.Response) =>
+  res.status(shuttingDown ? 503 : 200).json({ ok: !shuttingDown });
+const ready = async (_req: express.Request, res: express.Response) => {
+  if (shuttingDown) return res.status(503).json({ ok: false });
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Database readiness check failed:", error);
+    return res.status(503).json({ ok: false, error: "Database unavailable" });
+  }
+};
+app.get("/health/live", live);
+app.get("/health/ready", ready);
+app.get("/health", ready);
+app.get("/api/health/live", live);
+app.get("/api/health/ready", ready);
+app.get("/api/health", ready);
 
 // All app APIs under /api so Vite SPA routes (/timesheet, /summary, /approvals) are not proxied away
 const api = express.Router();
@@ -67,8 +102,22 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: process.env.NODE_ENV === "production" ? "Internal server error" : err.message || "Internal error" });
 });
 
-app.listen(port, host, () => {
+const server = app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
-  console.log(`LAN example: http://10.5.18.209:${port} (use Vite URL for the UI)`);
   startBadgeViewSyncScheduler();
 });
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received; shutting down.`);
+  stopBadgeViewSyncScheduler();
+  server.close(async () => {
+    await prisma.$disconnect();
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+process.on("SIGINT", () => { void shutdown("SIGINT"); });

@@ -14,3 +14,6 @@ apps/api/prisma/*.db-journal
 *.tsbuildinfo
 
 *.master-data-upgrade-state.json
+
+.env.production
+**/.env.production

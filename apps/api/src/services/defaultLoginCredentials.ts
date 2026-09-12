@@ -1,17 +1,17 @@
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
 /**
- * Temporary shared bootstrap credential requested for the current rollout.
- * Replace this policy with one-time credential delivery before production.
+ * Give a newly queued account an unknown random password until its one-time
+ * credential is delivered. This prevents pending accounts from sharing a
+ * usable, published bootstrap password.
  */
-export const DEFAULT_WORKFORCE_PASSWORD = "password@SDHI";
-
 export async function hashDefaultWorkforcePassword(rounds = 10): Promise<string> {
-  return bcrypt.hash(DEFAULT_WORKFORCE_PASSWORD, rounds);
+  return bcrypt.hash(crypto.randomBytes(32).toString("base64url"), rounds);
 }
 
 export const defaultWorkforceCredentialState = {
-  mustChangePassword: false,
+  mustChangePassword: true,
   passwordExpiresAt: null,
   credentialProvisionedAt: null,
   credentialSentAt: null,

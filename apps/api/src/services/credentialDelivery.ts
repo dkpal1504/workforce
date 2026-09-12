@@ -2,7 +2,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
 import { prisma } from "../db";
-import { DEFAULT_WORKFORCE_PASSWORD, usesEcNoLogin } from "./defaultLoginCredentials";
+import { usesEcNoLogin } from "./defaultLoginCredentials";
 
 export type CredentialDeliveryResult = {
   processed: number;
@@ -84,22 +84,17 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
     }
 
     const ecNoAccount = usesEcNoLogin(currentUser.role, currentUser.employeeId);
-    const deliveredPassword = ecNoAccount ? DEFAULT_WORKFORCE_PASSWORD : temporaryPassword();
+    const deliveredPassword = temporaryPassword();
     try {
       const now = new Date();
-      const expiresAt = ecNoAccount ? null : new Date(now.getTime() + expiryHours * 60 * 60 * 1000);
-      const credentialData = ecNoAccount
-        ? { credentialProvisionedAt: now }
-        : {
-            passwordHash: await bcrypt.hash(deliveredPassword, 10),
-            mustChangePassword: true,
-            passwordExpiresAt: expiresAt,
-            credentialProvisionedAt: now,
-            tokenVersion: { increment: 1 },
-          };
-
-      // ecNo accounts already hold the shared rollout password. Administrative
-      // email accounts retain the one-time credential workflow.
+      const expiresAt = new Date(now.getTime() + expiryHours * 60 * 60 * 1000);
+      const credentialData = {
+        passwordHash: await bcrypt.hash(deliveredPassword, 10),
+        mustChangePassword: true,
+        passwordExpiresAt: expiresAt,
+        credentialProvisionedAt: now,
+        tokenVersion: { increment: 1 },
+      };
       const activated = await prisma.user.updateMany({
         where: { id: delivery.userId, active: true },
         data: credentialData,
@@ -118,15 +113,16 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
               "A Workforce login has been provisioned.",
               `Name: ${delivery.user.name}`,
               `Login EC No: ${delivery.user.employee?.ecNo ?? "Not linked"}`,
-              `Default password: ${deliveredPassword}`,
-              "Password change is not required during the current rollout.",
+              `Temporary password: ${deliveredPassword}`,
+              `Expires: ${expiresAt.toISOString()}`,
+              "The user must change this password at first login.",
             ].join("\n")
           : [
               "A Workforce administrative credential has been provisioned.",
               `Name: ${delivery.user.name}`,
               `Login email: ${delivery.user.email}`,
               `Temporary password: ${deliveredPassword}`,
-              `Expires: ${expiresAt!.toISOString()}`,
+              `Expires: ${expiresAt.toISOString()}`,
               "The user must change this password at first login.",
             ].join("\n"),
       });

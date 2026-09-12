@@ -1,6 +1,6 @@
 # Workforce — Manpower & Timesheet
 
-React + Node.js (Express/TypeScript) + SQLite (local) app that replicates the Select Team, Daily Timesheet Entry, and Summary screens. Docker Compose is included for optional PostgreSQL when Docker is available.
+React + Node.js (Express/TypeScript) + PostgreSQL app for manpower allocation, timesheets, approvals, and reporting. Production Docker assets and PostgreSQL creation SQL are included.
 
 ## Prerequisites
 
@@ -8,6 +8,8 @@ React + Node.js (Express/TypeScript) + SQLite (local) app that replicates the Se
 - npm 10+
 
 ## Quick start
+
+Create a PostgreSQL database and set `DATABASE_URL` first. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path.
 
 ```bash
 npm install
@@ -23,14 +25,9 @@ npm run dev:web
 - Web: http://localhost:5173
 - API: http://localhost:4000
 
-### Demo login
+### Demo data
 
-Payroll Employees and Supervisors sign in with their EC No (case-insensitive). Administrative roles use email.
-
-- Supervisor: `EC1001` / `password@SDHI`
-- HOD (approvals): `hod@company.com` / `password@SDHI`
-- Project Head: `pm@company.com` / `password@SDHI`
-- Admin: `admin@company.com` / `password@SDHI`
+The seed command is for local demos only and must not be used in production.
 
 Daily hour limit is controlled by `MAX_DAILY_HOURS` in `.env` (default `8`). Overtime requires Remarks, shown to HOD on Approvals.
 
@@ -46,8 +43,9 @@ Default date filters use **today’s local date**. Seed data uses yesterday’s 
 apps/api          Express + Prisma API
 apps/web          Vite React UI
 apps/jobs         Placeholder for Python CLMS/SAP/EOD jobs
+database          PostgreSQL database and complete schema SQL
+infra/docker      Production Compose and Nginx configuration
 packages/shared   Shared Zod schemas & constants
-infra/docker      Postgres compose file (optional)
 ```
 
 ## Scripts
@@ -56,7 +54,8 @@ infra/docker      Postgres compose file (optional)
 |---|---|
 | `npm run dev:api` | API with hot reload |
 | `npm run dev:web` | Vite dev server (proxies API) |
-| `npm run db:setup` | Push schema + seed |
+| `npm run db:migrate:deploy` | Apply reviewed PostgreSQL migrations |
+| `npm run db:seed` | Load demo data (never use in production) |
 | `npm run test:e2e -w @workforce/web` | Playwright smoke tests |
 
 ## Access on your LAN (e.g. Windows IP `10.5.18.209`)

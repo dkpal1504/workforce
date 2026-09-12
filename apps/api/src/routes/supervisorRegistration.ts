@@ -129,7 +129,7 @@ supervisorRegistrationRouter.post("/:id/credential-reset", async (req, res) => {
     } });
     return pending ?? tx.credentialDelivery.create({ data: { userId: id, recipient: credentialRecipient(), purpose: "RESET" } });
   });
-  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET", "user", id, { deliveryId: delivery.id, defaultPassword: true });
+  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET", "user", id, { deliveryId: delivery.id, oneTimeCredential: true });
   res.status(202).json({ reset: true, queued: true, deliveryId: delivery.id, alreadyPending: Boolean(pending) });
 });
 

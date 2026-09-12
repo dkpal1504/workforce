@@ -1,0 +1,70 @@
+name: workforce
+
+services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: migrate
+    image: workforce-migrate:${IMAGE_TAG:-latest}
+    env_file: .env.production
+    restart: "no"
+    networks: [backend]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: api
+    image: workforce-api:${IMAGE_TAG:-latest}
+    env_file: .env.production
+    init: true
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: web
+    image: workforce-web:${IMAGE_TAG:-latest}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    networks: [frontend, backend]
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx, /var/run]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  frontend: {}
+  backend: {}

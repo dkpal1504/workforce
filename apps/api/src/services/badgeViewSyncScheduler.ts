@@ -98,3 +98,11 @@ export async function runBadgeViewSyncNow(): Promise<void> {
   await runOnce();
   await runCredentialDeliveryOnce();
 }
+
+/** Stop scheduled work during graceful process shutdown. */
+export function stopBadgeViewSyncScheduler(): void {
+  scheduledTask?.stop();
+  credentialTask?.stop();
+  scheduledTask = null;
+  credentialTask = null;
+}

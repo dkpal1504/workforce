@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/*.db
+**/*.db-journal
+**/*.log
+**/*.tsbuildinfo
+**/test-results
+**/playwright-report
+*.png
+*.md
+!README.md
