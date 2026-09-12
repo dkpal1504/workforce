@@ -198,7 +198,8 @@ export function AllocationsPage() {
 
   return (
     <>
-      <section className="alloc-card">
+      {/* Keep the repaired four-slot layout aligned with the Timesheet screen. */}
+      <section className="alloc-card alloc-card--timesheet-slots" data-layout="timesheet-slots">
         <header className="alloc-card__head">
           <h2>{canAllocateOthers ? "Allocate Manhours" : "My Hours"}</h2>
           <p className="muted">

@@ -16,22 +16,24 @@ export function useWorkContext() {
 
   useEffect(() => {
     api<{ departments: Department[] }>("/departments").then((d) => {
-      setDepartments(d.departments);
+      const available = user?.role === "SUPERVISOR" && user.departmentId
+        ? d.departments.filter((department) => department.id === user.departmentId)
+        : d.departments;
+      setDepartments(available);
+      // The authenticated Employee Department is authoritative. Do not fall
+      // back to a legacy Department with a familiar display name.
       const preferred =
-        d.departments.find((x) => x.name === "Hull Production") ||
-        d.departments.find((x) => x.id === user?.departmentId) ||
-        d.departments[0];
-      if (preferred) setDepartmentId(preferred.id);
+        available.find((department) => department.id === user?.departmentId) ||
+        available[0];
+      setDepartmentId(preferred?.id ?? "");
     });
-  }, [user?.departmentId]);
+  }, [user?.departmentId, user?.role]);
 
   useEffect(() => {
     if (!departmentId) return;
 
-    // Department selects the employee pool. It must not change the owner of a
-    // Supervisor's timesheet. The logged-in Supervisor may build a team from
-    // any department, even though they are not listed as that department's
-    // supervisor.
+    // Department selects the employee pool. A Supervisor is fixed to the
+    // Department of their linked canonical Employee.
     if (user?.role === "SUPERVISOR" && user.id) {
       setSupervisorId(user.id);
       setSupervisors([]);
@@ -89,6 +91,7 @@ export function FilterBar(props: {
         <label>{props.departmentLabel ?? "Department"}</label>
         <select
           value={props.departmentId}
+          disabled={isSupervisor}
           onChange={(e) => props.setDepartmentId(e.target.value ? Number(e.target.value) : "")}
         >
           {props.departments.map((d) => (
@@ -98,6 +101,17 @@ export function FilterBar(props: {
           ))}
         </select>
       </div>
+      {isSupervisor && (
+        <div className="filter-field">
+          <label htmlFor="supervisor-section">Section</label>
+          <input
+            id="supervisor-section"
+            aria-label="Section"
+            value={user?.section?.name ?? "Not assigned"}
+            readOnly
+          />
+        </div>
+      )}
       {isSupervisor ? (
         props.bulkFill ?? null
       ) : (

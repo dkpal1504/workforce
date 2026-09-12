@@ -14,7 +14,7 @@ function titleForPath(pathname: string, role?: string) {
     return "Approvals";
   }
   if (pathname.startsWith("/supervisors")) return "Supervisor Registration";
-  if (pathname.startsWith("/allocations")) return "Manhour Allocation";
+  if (pathname.startsWith("/allocations")) return role === "SUPERVISOR" || role === "EMPLOYEE" ? "My Hours" : "Manhour Allocation";
   if (pathname.startsWith("/employees")) return "Employee Registration";
   if (pathname.startsWith("/departments")) return "Organisation Masters";
   if (pathname.startsWith("/csv-upload")) return "Employee CSV Upload";

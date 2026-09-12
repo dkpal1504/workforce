@@ -10,6 +10,10 @@ test.describe("Workforce happy paths", () => {
     await expect(page.getByRole("heading", { name: "Select Team for Today" })).toBeVisible();
     await expect(page.getByText("Department Pool")).toBeVisible();
     await expect(page.getByText("Today's Team")).toBeVisible();
+    await expect(page.getByLabel("Section")).toHaveValue("Hull Production");
+    const departmentSelect = page.locator(".filter-field").filter({ hasText: "Department" }).locator("select");
+    await expect(departmentSelect).toHaveValue(/.+/);
+    await expect(departmentSelect).toBeDisabled();
 
     // Confirm team (may already be carried over)
     await page.getByRole("button", { name: /Confirm Team/i }).click();
@@ -50,7 +54,7 @@ test.describe("Supervisor My Hours", () => {
     await page.getByRole("link", { name: "My Hours" }).click();
 
     await expect(page).toHaveURL(/\/allocations$/);
-    await expect(page.getByRole("heading", { name: "My Hours" })).toBeVisible();
+    await expect(page.getByRole("main").getByRole("heading", { name: "My Hours" })).toBeVisible();
     await expect(page.getByLabel("Work slots")).toBeVisible();
     await expect(page.getByRole("button", { name: /AM 1/ })).toBeVisible();
 
