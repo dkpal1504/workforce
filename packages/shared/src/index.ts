@@ -93,10 +93,17 @@ export const HOUR_LABELS: Record<HourSlot, string> = {
 
 export const PROJECT_COLORS = ["A", "B", "C", "D", "E", "F"] as const;
 
-export const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
-});
+export const loginSchema = z
+  .object({
+    identifier: z.string().trim().min(1).max(254).optional(),
+    // Retain the old field temporarily for API clients during rollout.
+    email: z.string().trim().min(1).max(254).optional(),
+    password: z.string().min(1),
+  })
+  .refine((value) => Boolean(value.identifier || value.email), {
+    path: ["identifier"],
+    message: "EC No or email is required",
+  });
 
 /** Password rotation for first login and ordinary authenticated changes. */
 export const changePasswordSchema = z

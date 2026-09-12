@@ -4,6 +4,8 @@ import { changePasswordSchema, loginSchema } from "@workforce/shared";
 import { prisma } from "../db";
 import { requireAuth, requireRoles, signToken } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
+import { usesEcNoLogin } from "../services/defaultLoginCredentials";
 
 export const authRouter = Router();
 
@@ -116,13 +118,33 @@ authRouter.post("/login", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const { password } = parsed.data;
-  const email = parsed.data.email.trim().toLowerCase();
-  const user = await prisma.user.findUnique({
-    where: { email },
+  const identifier = (parsed.data.identifier ?? parsed.data.email ?? "").trim();
+
+  // Payroll Employees and Supervisors authenticate with canonical ecNo. The
+  // comparison key is trimmed and case-insensitive; the stored ecNo is unchanged.
+  const employee = await findEmployeeByCanonicalEcNo(identifier);
+  const linkedUser = employee
+    ? await prisma.user.findUnique({
+        where: { employeeId: employee.id },
+        select: { ...lifecycleUserSelect, passwordHash: true },
+      })
+    : null;
+  const ecNoUser = linkedUser && usesEcNoLogin(linkedUser.role, linkedUser.employeeId) ? linkedUser : null;
+
+  // Keep email login for administrative roles and older API clients. Stored
+  // login emails are normalized to lowercase at creation time.
+  const emailCandidate = ecNoUser ? null : await prisma.user.findUnique({
+    where: { email: identifier.toLowerCase() },
     select: { ...lifecycleUserSelect, passwordHash: true },
   });
+  const emailUser = emailCandidate
+    && emailCandidate.employeeId == null
+    && ["ADMIN", "HR", "HOD", "PM", "FINANCE"].includes(emailCandidate.role)
+      ? emailCandidate
+      : null;
+  const user = ecNoUser ?? emailUser;
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    return res.status(401).json({ error: "Invalid email or password", code: "INVALID_CREDENTIALS" });
+    return res.status(401).json({ error: "Invalid EC No/email or password", code: "INVALID_CREDENTIALS" });
   }
   if (!user.active || (user.employeeId != null && !user.employee?.active)) {
     return res.status(401).json({ error: "This account is inactive. Contact support.", code: "ACCOUNT_INACTIVE" });

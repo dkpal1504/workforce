@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import sql from "mssql";
-import bcrypt from "bcryptjs";
+import { defaultWorkforceCredentialState, hashDefaultWorkforcePassword } from "./defaultLoginCredentials";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 
@@ -444,16 +444,14 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
             user = await tx.user.create({
               data: {
                 email: await uniqueSyncEmail(tx, ecNo),
-                passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
+                passwordHash: await hashDefaultWorkforcePassword(),
                 name: employee.name,
                 role: "SUPERVISOR",
                 source: "SYNC",
                 employeeId: employee.id,
                 departmentId: employee.departmentId,
                 active: true,
-                mustChangePassword: true,
-                // Deny login until the outbox activates and emails a fresh secret.
-                passwordExpiresAt: now,
+                ...defaultWorkforceCredentialState,
               },
             });
             credentialsQueued = await queueCredential(tx, user.id, wasInactive ? "REACTIVATION" : "NEW_SUPERVISOR");
@@ -469,10 +467,8 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
                 active: true,
                 ...(needsReactivationCredential
                   ? {
-                      passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
-                      mustChangePassword: true,
-                      passwordExpiresAt: now,
-                      credentialSentAt: null,
+                      passwordHash: await hashDefaultWorkforcePassword(),
+                      ...defaultWorkforceCredentialState,
                       tokenVersion: { increment: 1 },
                     }
                   : {}),

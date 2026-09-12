@@ -39,14 +39,14 @@
 
 The Workforce app runs at **`http://localhost:<web-port>`** (usually `5174` on Windows hosts where `5173` is OS-occupied, or `5173` elsewhere). The API runs on **`http://localhost:<api-port>`** (usually `4100` on Windows where `4000` is occupied, or `4000` elsewhere).
 
-Seeded test accounts (password is the same for all: `password123`):
+Seeded test accounts (password is the same for all: `password@SDHI`):
 
-| Role | Email | Notes |
+| Role | Login | Notes |
 |---|---|---|
-| Supervisor (linked to Employee 798) | `r.sharma@company.com` | Submits team timesheets; can self-allocate via "My Hours" |
-| Supervisor | `sup.a@company.com` | Linked supervisor (V. Kulkarni) |
-| Supervisor | `sup.b@company.com` | Linked supervisor (S. Menon) |
-| Supervisor | `sup.c@company.com` … `sup.e@company.com` | Additional supervisors across departments |
+| Supervisor (linked to payroll Employee) | `EC1001` | Submits team timesheets; can self-allocate via "My Hours" |
+| Supervisor | `EC1006` | V. Kulkarni |
+| Supervisor | `EC1007` | S. Menon |
+| Supervisor | `EC1014`, `EC1017`, `EC1018` | Additional supervisors across departments |
 | HOD | `hod@company.com` | Dept 56 (Hull Production) — sees only their department's submissions |
 | PM (Project Head) | `pm@company.com` | Central authority — sees all departments, final approval after HOD |
 | Admin | `admin@company.com` | Global visibility, can act at either stage |
@@ -442,7 +442,7 @@ All write routes enforce **owner + role + status-lock + audit** via shared middl
 Before exposing this app to any network beyond localhost, complete every item below:
 
 - [ ] **`API_HOST=127.0.0.1`** — bind the API to localhost only, OR place it behind a reverse proxy that terminates **TLS/HTTPS** (Caddy / nginx / Cloudflare Tunnel / etc.). Never serve plaintext HTTP on a reachable interface.
-- [ ] **Rotate or disable seeded `password123` accounts** in any environment that's reachable beyond localhost. Treat them as dev-only fixtures.
+- [ ] **Rotate or disable seeded `password@SDHI` accounts** in any environment that's reachable beyond localhost. Treat them as dev-only fixtures.
 - [ ] **`.env` is git-ignored** — verified before every commit. Production credentials (`BADGEVIEW_DB_PASSWORD`, `JWT_SECRET`, any DB URL with embedded passwords, any third-party API keys) must **never** be committed or pasted into chat transcripts / logs.
 - [ ] **`BADGEVIEW_DB_ENCRYPT`** — set to `true` if the source SQL Server is reachable beyond a trusted internal segment.
 - [ ] **Audit logs are rotated and backed up** off-host — `AuditLog` is the only record of who approved what.
@@ -519,15 +519,15 @@ HOD         hod@company.com            (dept 56 Hull Production)
 PM          pm@company.com             (single central authority)
 HR          hr@company.com             (read-only on lifecycle)
 Finance     finance@company.com         (cost-rates viewer)
-Supervisor  r.sharma@company.com       (linked to Employee 798)
-Supervisor  sup.a@company.com          (V. Kulkarni)
-Supervisor  sup.b@company.com          (S. Menon)
-Supervisor  sup.c@company.com          
-Supervisor  sup.d@company.com          
-Supervisor  sup.e@company.com          
+Supervisor  EC1001       (linked payroll Employee)
+Supervisor  EC1006                     (V. Kulkarni)
+Supervisor  EC1007                     (S. Menon)
+Supervisor  EC1014
+Supervisor  EC1017
+Supervisor  EC1018
 ```
 
-Password (all): `password123`
+Password (all): `password@SDHI`
 
 ---
 

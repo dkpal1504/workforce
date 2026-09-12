@@ -7,8 +7,22 @@ import { writeAudit } from "../audit";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
+import { hashDefaultWorkforcePassword } from "../services/defaultLoginCredentials";
 
 export const adminRouter = Router();
+
+function workforceCredentialRecipient(): string {
+  return process.env.CREDENTIAL_DELIVERY_RECIPIENT?.trim() || "itsupport.shipyard@swan.co.in";
+}
+
+async function uniqueEmployeeLoginEmail(ecNo: string): Promise<string> {
+  const local = ecNo.toLowerCase().replace(/[^a-z0-9._-]/g, "_") || "employee";
+  let email = `${local}@employee.local`;
+  for (let suffix = 1; await prisma.user.findUnique({ where: { email }, select: { id: true } }); suffix += 1) {
+    email = `${local}.${suffix}@employee.local`;
+  }
+  return email;
+}
 
 adminRouter.use(requireAuth, requireRoles("ADMIN", "HR"));
 
@@ -141,18 +155,22 @@ adminRouter.post("/employees", async (req, res) => {
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
   if (await findEmployeeByCanonicalEcNo(normalizedEcNo)) return res.status(409).json({ error: "ecNo already exists", code: "ECNO_EXISTS" });
   if (normalizedEmail && await prisma.user.findUnique({ where: { email: normalizedEmail } })) return res.status(409).json({ error: "email already exists", code: "EMAIL_EXISTS" });
-  const passwordHash = normalizedEmail ? await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10) : null;
+  const loginEmail = normalizedEmail || await uniqueEmployeeLoginEmail(normalizedEcNo);
+  const passwordHash = await hashDefaultWorkforcePassword();
   const result = await prisma.$transaction(async (tx) => {
     const employee = await tx.employee.create({ data: {
       ecNo: normalizedEcNo, name: String(name).trim(), departmentId: Number(departmentId), designation: String(designation || ""),
       category: String(category || "PAYROLL"), employmentType: "PAYROLL", source: "PAYROLL", mobile: mobile ? String(mobile).trim() : null,
     } });
     const sectionAssignment = await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: Number(sectionId), source: "MANUAL" } });
-    let user = null;
-    if (normalizedEmail && passwordHash) {
-      user = await tx.user.create({ data: { employeeId: employee.id, email: normalizedEmail, passwordHash, name: employee.name, role: "EMPLOYEE", source: "MANUAL", departmentId: employee.departmentId, mustChangePassword: true } });
-      await tx.credentialDelivery.create({ data: { userId: user.id, recipient: normalizedEmail, purpose: "INITIAL" } });
-    }
+    const user = await tx.user.create({ data: {
+      employeeId: employee.id, email: loginEmail, passwordHash, name: employee.name,
+      role: "EMPLOYEE", source: "MANUAL", departmentId: employee.departmentId,
+      mustChangePassword: false, passwordExpiresAt: null,
+    } });
+    await tx.credentialDelivery.create({
+      data: { userId: user.id, recipient: normalizedEmail || workforceCredentialRecipient(), purpose: "INITIAL" },
+    });
     return { employee, sectionAssignment, user };
   });
   await writeAudit(req.user!.id, "EMPLOYEE_REGISTER", "employee", result.employee.id, { ecNo: normalizedEcNo, sectionId, userId: result.user?.id, credentialQueued: Boolean(result.user) });

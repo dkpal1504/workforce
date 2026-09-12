@@ -1,4 +1,4 @@
-import bcrypt from "bcryptjs";
+import { hashDefaultWorkforcePassword } from "../src/services/defaultLoginCredentials";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -81,7 +81,7 @@ async function main() {
     });
   }
 
-  const passwordHash = await bcrypt.hash("password123", 10);
+  const passwordHash = await hashDefaultWorkforcePassword();
 
   const sharma = await prisma.user.create({
     data: {
@@ -145,11 +145,11 @@ async function main() {
   });
 
   const supervisors = [
-    { email: "sup.a@company.com", name: "V. Kulkarni", deptId: hull.id },
-    { email: "sup.b@company.com", name: "S. Menon", deptId: hull.id },
-    { email: "sup.c@company.com", name: "Supervisor C", deptId: blast.id },
-    { email: "sup.d@company.com", name: "Supervisor D", deptId: repair.id },
-    { email: "sup.e@company.com", name: "Supervisor E", deptId: repair.id },
+    { email: "sup.a@company.com", name: "V. Kulkarni", deptId: hull.id, employeeIndex: 5 },
+    { email: "sup.b@company.com", name: "S. Menon", deptId: hull.id, employeeIndex: 6 },
+    { email: "sup.c@company.com", name: "Supervisor C", deptId: blast.id, employeeIndex: 13 },
+    { email: "sup.d@company.com", name: "Supervisor D", deptId: repair.id, employeeIndex: 16 },
+    { email: "sup.e@company.com", name: "Supervisor E", deptId: repair.id, employeeIndex: 17 },
   ];
 
   for (const s of supervisors) {
@@ -160,6 +160,7 @@ async function main() {
         name: s.name,
         role: "SUPERVISOR",
         departmentId: s.deptId,
+        employeeId: employees[s.employeeIndex].id,
       },
     });
   }
@@ -665,10 +666,10 @@ async function main() {
   });
 
   console.log("Seed complete.");
-  console.log("Login: r.sharma@company.com / password123");
-  console.log("HOD: hod@company.com / password123");
-  console.log("Project Head: pm@company.com / password123");
-  console.log("Admin: admin@company.com / password123");
+  console.log("Login: EC1001 / password@SDHI");
+  console.log("HOD: hod@company.com / password@SDHI");
+  console.log("Project Head: pm@company.com / password@SDHI");
+  console.log("Admin: admin@company.com / password@SDHI");
 }
 
 main()

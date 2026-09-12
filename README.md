@@ -25,10 +25,12 @@ npm run dev:web
 
 ### Demo login
 
-- Supervisor: `r.sharma@company.com` / `password123`
-- HOD (approvals): `hod@company.com` / `password123`
-- Project Head: `pm@company.com` / `password123`
-- Admin: `admin@company.com` / `password123`
+Payroll Employees and Supervisors sign in with their EC No (case-insensitive). Administrative roles use email.
+
+- Supervisor: `EC1001` / `password@SDHI`
+- HOD (approvals): `hod@company.com` / `password@SDHI`
+- Project Head: `pm@company.com` / `password@SDHI`
+- Admin: `admin@company.com` / `password@SDHI`
 
 Daily hour limit is controlled by `MAX_DAILY_HOURS` in `.env` (default `8`). Overtime requires Remarks, shown to HOD on Approvals.
 

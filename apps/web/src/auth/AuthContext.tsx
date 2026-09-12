@@ -4,7 +4,7 @@ import { api, AuthUser, clearSession, getToken, SESSION_CLEARED_EVENT, setSessio
 type AuthCtx = {
   user: AuthUser | null;
   ready: boolean;
-  login: (email: string, password: string) => Promise<AuthUser>;
+  login: (identifier: string, password: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<AuthUser>;
   selectSection: (sectionId: number) => Promise<AuthUser>;
@@ -48,10 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (identifier: string, password: string) => {
     const data = await api<{ token: string; user: AuthUser }>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ identifier, password }),
     });
     setSession(data.token, data.user);
     setUser(data.user);

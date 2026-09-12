@@ -3,8 +3,8 @@ import { test, expect } from "@playwright/test";
 test.describe("Workforce happy paths", () => {
   test("login → select team → timesheet → summary", async ({ page }) => {
     await page.goto("/login");
-    await page.getByLabel("Email").fill("r.sharma@company.com");
-    await page.getByLabel("Password").fill("password123");
+    await page.getByLabel("EC No or email").fill("EC1001");
+    await page.getByLabel("Password").fill("password@SDHI");
     await page.getByRole("button", { name: "Sign in" }).click();
 
     await expect(page.getByRole("heading", { name: "Select Team for Today" })).toBeVisible();
@@ -48,8 +48,8 @@ test.describe("Supervisor My Hours", () => {
     page.on("pageerror", (error) => pageErrors.push(error));
 
     await page.goto("/login");
-    await page.getByLabel("Email").fill("r.sharma@company.com");
-    await page.getByLabel("Password").fill("password123");
+    await page.getByLabel("EC No or email").fill("ec1001");
+    await page.getByLabel("Password").fill("password@SDHI");
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("link", { name: "My Hours" }).click();
 

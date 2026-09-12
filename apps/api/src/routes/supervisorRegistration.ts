@@ -1,6 +1,5 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
-import crypto from "crypto";
+import { defaultWorkforceCredentialState, hashDefaultWorkforcePassword } from "../services/defaultLoginCredentials";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
@@ -50,7 +49,7 @@ supervisorRegistrationRouter.post("/", async (req, res) => {
   const normalizedEmail = String(email).trim().toLowerCase();
   if (await findEmployeeByCanonicalEcNo(normalizedEcNo)) return res.status(409).json({ error: "ecNo already exists", code: "ECNO_EXISTS" });
   if (await prisma.user.findUnique({ where: { email: normalizedEmail } })) return res.status(409).json({ error: "email already exists", code: "EMAIL_EXISTS" });
-  const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+  const passwordHash = await hashDefaultWorkforcePassword();
   const user = await prisma.$transaction(async (tx) => {
     const employee = await tx.employee.create({ data: {
       ecNo: normalizedEcNo, name: String(name).trim(), mobile: mobile ? String(mobile).trim() : null,
@@ -60,7 +59,7 @@ supervisorRegistrationRouter.post("/", async (req, res) => {
     await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: Number(sectionId), source: "MANUAL" } });
     const created = await tx.user.create({ data: {
       employeeId: employee.id, name: employee.name, email: normalizedEmail, passwordHash, role: "SUPERVISOR",
-      source: "MANUAL", departmentId: employee.departmentId, active: true, mustChangePassword: true,
+      source: "MANUAL", departmentId: employee.departmentId, active: true, mustChangePassword: false,
     } });
     await tx.credentialDelivery.create({ data: { userId: created.id, recipient: credentialRecipient(), purpose: "INITIAL" } });
     return created;
@@ -85,7 +84,7 @@ supervisorRegistrationRouter.put("/:id", async (req, res) => {
   }
   const reactivating = active === true && !existing.active;
   const deactivating = active === false && existing.active;
-  const passwordHash = reactivating ? await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10) : null;
+  const passwordHash = reactivating ? await hashDefaultWorkforcePassword() : null;
   let credentialQueued = false;
   await prisma.$transaction(async (tx) => {
     if (existing.employeeId) {
@@ -98,7 +97,7 @@ supervisorRegistrationRouter.put("/:id", async (req, res) => {
     await tx.user.update({ where: { id }, data: {
       ...(name !== undefined ? { name: String(name).trim() } : {}), ...(email !== undefined ? { email: String(email).trim().toLowerCase() } : {}),
       ...(active !== undefined ? { active: Boolean(active) } : {}),
-      ...(reactivating ? { passwordHash: passwordHash!, mustChangePassword: true, passwordExpiresAt: new Date(), credentialSentAt: null, tokenVersion: { increment: 1 } } : {}),
+      ...(reactivating ? { passwordHash: passwordHash!, ...defaultWorkforceCredentialState, tokenVersion: { increment: 1 } } : {}),
       ...(deactivating ? { tokenVersion: { increment: 1 } } : {}),
     } });
     if (reactivating) {
@@ -122,17 +121,16 @@ supervisorRegistrationRouter.post("/:id/credential-reset", async (req, res) => {
     return res.status(409).json({ error: "Credentials cannot be reset for an inactive Supervisor.", code: "ACCOUNT_INACTIVE" });
   }
   const pending = await prisma.credentialDelivery.findFirst({ where: { userId: id, status: { in: ["PENDING", "PROCESSING"] } } });
-  if (pending) return res.status(202).json({ queued: true, deliveryId: pending.id, alreadyPending: true });
-  const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+  const passwordHash = await hashDefaultWorkforcePassword();
   const delivery = await prisma.$transaction(async (tx) => {
     await tx.user.update({ where: { id }, data: {
-      passwordHash, mustChangePassword: true, passwordExpiresAt: new Date(), credentialSentAt: null,
+      passwordHash, ...defaultWorkforceCredentialState,
       tokenVersion: { increment: 1 },
     } });
-    return tx.credentialDelivery.create({ data: { userId: id, recipient: credentialRecipient(), purpose: "RESET" } });
+    return pending ?? tx.credentialDelivery.create({ data: { userId: id, recipient: credentialRecipient(), purpose: "RESET" } });
   });
-  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET_QUEUED", "user", id, { deliveryId: delivery.id });
-  res.status(202).json({ queued: true, deliveryId: delivery.id });
+  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET", "user", id, { deliveryId: delivery.id, defaultPassword: true });
+  res.status(202).json({ reset: true, queued: true, deliveryId: delivery.id, alreadyPending: Boolean(pending) });
 });
 
 /** Create or reactivate an audited CLMS supervisor override by employeeId or ecNo. */
@@ -144,7 +142,7 @@ supervisorRegistrationRouter.post("/overrides", async (req, res) => {
   if (!employee.active || employee.employmentType !== "CLMS") return res.status(409).json({ error: "Only active CLMS employees can be overridden", code: "NOT_ACTIVE_CLMS" });
   const existingUser = await prisma.user.findUnique({ where: { employeeId: employee.id } });
   const needsCredential = !existingUser?.active || existingUser.role !== "SUPERVISOR";
-  const passwordHash = needsCredential ? await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10) : null;
+  const passwordHash = needsCredential ? await hashDefaultWorkforcePassword() : null;
   const loginEmail = existingUser?.email || await uniqueSupervisorEmail(employee.ecNo);
   const result = await prisma.$transaction(async (tx) => {
     const override = await tx.supervisorOverride.upsert({
@@ -157,12 +155,12 @@ supervisorRegistrationRouter.post("/overrides", async (req, res) => {
       user = await tx.user.create({ data: {
         employeeId: employee.id, email: loginEmail, name: employee.name, role: "SUPERVISOR",
         source: "SYNC", departmentId: employee.departmentId, active: true,
-        passwordHash: passwordHash!, mustChangePassword: true, passwordExpiresAt: new Date(),
+        passwordHash: passwordHash!, ...defaultWorkforceCredentialState,
       } });
     } else if (needsCredential) {
       user = await tx.user.update({ where: { id: user.id }, data: {
         name: employee.name, role: "SUPERVISOR", departmentId: employee.departmentId, active: true,
-        passwordHash: passwordHash!, mustChangePassword: true, passwordExpiresAt: new Date(),
+        passwordHash: passwordHash!, ...defaultWorkforceCredentialState,
         credentialSentAt: null, tokenVersion: { increment: 1 },
       } });
     }

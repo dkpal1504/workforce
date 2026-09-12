@@ -11,7 +11,8 @@
     "db:migrate:dev": "node prisma/master-data-upgrade.cjs before && prisma db push --accept-data-loss && node prisma/master-data-upgrade.cjs after && prisma generate",
     "db:seed": "tsx prisma/seed.ts",
     "db:push": "prisma db push",
-    "test": "node --import tsx --test src/services/*.test.ts"
+    "test": "node --import tsx --test src/services/*.test.ts",
+    "db:set-rollout-password": "tsx prisma/set-rollout-password.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

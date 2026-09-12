@@ -9,7 +9,7 @@ export function LoginPage() {
   const { openPanel } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -25,7 +25,7 @@ export function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const loggedIn = await login(email, password);
+      const loggedIn = await login(identifier, password);
       if (loggedIn.mustChangePassword) {
         navigate("/change-password", { replace: true });
       } else {
@@ -61,8 +61,16 @@ export function LoginPage() {
             </button>
           </div>
           {error && <div className="error-banner">{error}</div>}
-          <label htmlFor="email">Email</label>
-          <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <label htmlFor="identifier">EC No or email</label>
+          <input
+            id="identifier"
+            type="text"
+            autoComplete="username"
+            autoCapitalize="none"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            required
+          />
           <label htmlFor="password">Password</label>
           <input
             id="password"

@@ -19,7 +19,7 @@ FAILED_TESTS=()
 login() {
   curl -s --max-time 8 -X POST "$BASE/api/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"email\":\"$1\",\"password\":\"password123\"}" \
+    -d "{\"identifier\":\"$1\",\"password\":\"password@SDHI\"}" \
     | python3 -c "$PY"
 }
 
@@ -105,7 +105,7 @@ assert_contains() {
 }
 
 # ---------- login tokens ----------
-T_SUP=$(login r.sharma@company.com)
+T_SUP=$(login EC1001)
 T_HOD=$(login hod@company.com)
 T_PM=$(login pm@company.com)
 T_ADMIN=$(login admin@company.com)

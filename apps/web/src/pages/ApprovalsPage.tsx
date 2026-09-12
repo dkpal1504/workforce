@@ -376,7 +376,7 @@ export function ApprovalsPage() {
   if (!canApprove) {
     return (
       <div className="error-banner">
-        Approvals are available for HOD / Project Head / Admin. Log in as hod@company.com / password123.
+        Approvals are available for HOD / Project Head / Admin. Log in as hod@company.com / password@SDHI.
       </div>
     );
   }
