@@ -9,7 +9,7 @@ React + Node.js (Express/TypeScript) + PostgreSQL app for manpower allocation, t
 
 ## Quick start
 
-Create a PostgreSQL database and set `DATABASE_URL` first. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path.
+Create a PostgreSQL database and set `DATABASE_URL` first. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path. The enforced role matrix is documented in [`docs/ROLE_BASED_ACCESS.md`](docs/ROLE_BASED_ACCESS.md).
 
 ```bash
 npm install

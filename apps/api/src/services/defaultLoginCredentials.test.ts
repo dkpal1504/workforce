@@ -13,9 +13,11 @@ test("new accounts do not use the published legacy rollout password", async () =
   assert.equal(defaultWorkforceCredentialState.mustChangePassword, true);
 });
 
-test("only linked Employee and Supervisor roles use ecNo login", () => {
+test("linked operational roles use ecNo login", () => {
   assert.equal(usesEcNoLogin("EMPLOYEE", 10), true);
   assert.equal(usesEcNoLogin("SUPERVISOR", 10), true);
+  assert.equal(usesEcNoLogin("HOD", 10), true);
+  assert.equal(usesEcNoLogin("PM", 10), true);
   assert.equal(usesEcNoLogin("SUPERVISOR", null), false);
   assert.equal(usesEcNoLogin("ADMIN", 10), false);
 });

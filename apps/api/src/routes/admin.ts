@@ -7,7 +7,8 @@ import { writeAudit } from "../audit";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
-import { hashDefaultWorkforcePassword } from "../services/defaultLoginCredentials";
+import { defaultWorkforceCredentialState, hashDefaultWorkforcePassword } from "../services/defaultLoginCredentials";
+import { canCreatePayrollEmployee } from "../services/roleAccess";
 
 export const adminRouter = Router();
 
@@ -24,7 +25,7 @@ async function uniqueEmployeeLoginEmail(ecNo: string): Promise<string> {
   return email;
 }
 
-adminRouter.use(requireAuth, requireRoles("ADMIN", "HR"));
+adminRouter.use(requireAuth);
 
 adminRouter.get("/users", requireRoles("ADMIN"), async (_req, res) => {
   const users = await prisma.user.findMany({
@@ -34,7 +35,9 @@ adminRouter.get("/users", requireRoles("ADMIN"), async (_req, res) => {
       name: true,
       role: true,
       departmentId: true,
+      employeeId: true,
       department: true,
+      employee: { select: { id: true, ecNo: true, name: true } },
     },
     orderBy: { name: "asc" },
   });
@@ -42,10 +45,17 @@ adminRouter.get("/users", requireRoles("ADMIN"), async (_req, res) => {
 });
 
 adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
-  const { email, name, role, departmentId } = req.body ?? {};
+  const { email, name, role, departmentId, employeeId } = req.body ?? {};
   if (!email || !name || !role) return res.status(400).json({ error: "email, name and role are required" });
   if (!["ADMIN", "HR", "HOD", "PM", "FINANCE"].includes(String(role))) {
     return res.status(400).json({ error: "Invalid role", code: "INVALID_ROLE" });
+  }
+  const linkedEmployee = employeeId ? await prisma.employee.findUnique({ where: { id: Number(employeeId) } }) : null;
+  if (employeeId && (!linkedEmployee || !linkedEmployee.active || linkedEmployee.employmentType !== "PAYROLL")) {
+    return res.status(400).json({ error: "An active payroll Employee is required.", code: "INVALID_EMPLOYEE" });
+  }
+  if (linkedEmployee && departmentId && linkedEmployee.departmentId !== Number(departmentId)) {
+    return res.status(400).json({ error: "User and employee Departments must match.", code: "WRONG_DEPARTMENT" });
   }
   // The API never accepts or returns an initial password. The delivery worker
   // creates the one-time secret when it processes this durable queue row.
@@ -53,7 +63,7 @@ adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
   const user = await prisma.$transaction(async (tx) => {
     const created = await tx.user.create({ data: {
       email: String(email).trim().toLowerCase(), passwordHash, name: String(name).trim(), role,
-      departmentId: departmentId ? Number(departmentId) : null, mustChangePassword: true,
+      departmentId: linkedEmployee?.departmentId ?? (departmentId ? Number(departmentId) : null), employeeId: linkedEmployee?.id ?? null, mustChangePassword: true,
     } });
     await tx.credentialDelivery.create({ data: { userId: created.id, recipient: created.email, purpose: "INITIAL" } });
     return created;
@@ -61,6 +71,32 @@ adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
   await writeAudit(req.user!.id, "ADMIN_CREATE_USER", "user", user.id, { credentialQueued: true });
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.status(201).json({ user: safeUser, credentialQueued: true });
+});
+
+adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, res) => {
+  const userId = Number(req.params.id);
+  const employeeId = req.body?.employeeId == null ? null : Number(req.body.employeeId);
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user || !["HOD", "PM", "ADMIN"].includes(user.role)) {
+    return res.status(404).json({ error: "Eligible role account was not found.", code: "USER_NOT_FOUND" });
+  }
+  const employee = employeeId == null ? null : await prisma.employee.findUnique({ where: { id: employeeId } });
+  if (employeeId != null && (!employee || !employee.active || employee.employmentType !== "PAYROLL")) {
+    return res.status(400).json({ error: "An active payroll Employee is required.", code: "INVALID_EMPLOYEE" });
+  }
+  if (employee) {
+    const existingLink = await prisma.user.findUnique({ where: { employeeId: employee.id }, select: { id: true } });
+    if (existingLink && existingLink.id !== userId) return res.status(409).json({ error: "Employee is already linked to another account.", code: "EMPLOYEE_ALREADY_LINKED" });
+  }
+  if (user.role === "HOD" && employee && user.departmentId !== employee.departmentId) {
+    return res.status(403).json({ error: "HOD and Employee Departments must match.", code: "WRONG_DEPARTMENT" });
+  }
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { employeeId: employee?.id ?? null, ...(employee ? { departmentId: employee.departmentId } : {}) },
+  });
+  await writeAudit(req.user!.id, "ADMIN_LINK_ROLE_EMPLOYEE", "user", userId, { employeeId: employee?.id ?? null });
+  res.json({ user: { id: updated.id, role: updated.role, departmentId: updated.departmentId, employeeId: updated.employeeId } });
 });
 
 adminRouter.get("/departments", requireRoles("ADMIN"), async (_req, res) => {
@@ -146,11 +182,16 @@ adminRouter.post("/cost-rates", requireRoles("ADMIN"), async (req, res) => {
 
 
 /** Register a payroll employee and their canonical section assignment. */
-adminRouter.post("/employees", async (req, res) => {
+adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+  if (!canCreatePayrollEmployee(req.user!.role)) return res.status(403).json({ error: "Forbidden", code: "FORBIDDEN" });
   const { ecNo, name, departmentId, sectionId, designation, category, mobile, email } = req.body ?? {};
-  if (!ecNo || !name || !departmentId || !sectionId) return res.status(400).json({ error: "ecNo, name, departmentId and sectionId are required" });
+  const effectiveDepartmentId = req.user!.role === "HOD" ? req.user!.departmentId : Number(departmentId);
+  if (!ecNo || !name || !effectiveDepartmentId || !sectionId) return res.status(400).json({ error: "ecNo, name, departmentId and sectionId are required" });
+  if (req.user!.role === "HOD" && Number(departmentId) !== effectiveDepartmentId) {
+    return res.status(403).json({ error: "HOD can add employees only to the assigned Department.", code: "WRONG_DEPARTMENT" });
+  }
   const section = await prisma.section.findUnique({ where: { id: Number(sectionId) } });
-  if (!section || !section.active || section.departmentId !== Number(departmentId)) return res.status(400).json({ error: "sectionId must be an active section in departmentId", code: "INVALID_SECTION" });
+  if (!section || !section.active || section.departmentId !== effectiveDepartmentId) return res.status(400).json({ error: "sectionId must be an active section in departmentId", code: "INVALID_SECTION" });
   const normalizedEcNo = canonicalEcNo(ecNo);
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
   if (await findEmployeeByCanonicalEcNo(normalizedEcNo)) return res.status(409).json({ error: "ecNo already exists", code: "ECNO_EXISTS" });
@@ -159,14 +200,14 @@ adminRouter.post("/employees", async (req, res) => {
   const passwordHash = await hashDefaultWorkforcePassword();
   const result = await prisma.$transaction(async (tx) => {
     const employee = await tx.employee.create({ data: {
-      ecNo: normalizedEcNo, name: String(name).trim(), departmentId: Number(departmentId), designation: String(designation || ""),
+      ecNo: normalizedEcNo, name: String(name).trim(), departmentId: effectiveDepartmentId, designation: String(designation || ""),
       category: String(category || "PAYROLL"), employmentType: "PAYROLL", source: "PAYROLL", mobile: mobile ? String(mobile).trim() : null,
     } });
     const sectionAssignment = await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: Number(sectionId), source: "MANUAL" } });
     const user = await tx.user.create({ data: {
       employeeId: employee.id, email: loginEmail, passwordHash, name: employee.name,
       role: "EMPLOYEE", source: "MANUAL", departmentId: employee.departmentId,
-      mustChangePassword: false, passwordExpiresAt: null,
+      ...defaultWorkforceCredentialState,
     } });
     await tx.credentialDelivery.create({
       data: { userId: user.id, recipient: normalizedEmail || workforceCredentialRecipient(), purpose: "INITIAL" },

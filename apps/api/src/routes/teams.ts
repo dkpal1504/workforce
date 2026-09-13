@@ -9,7 +9,13 @@ import { inactiveEmployeePayload } from "../services/employeeEligibility";
 
 export const teamsRouter = Router();
 
-teamsRouter.use(requireAuth, requireRoles("SUPERVISOR"));
+teamsRouter.use(requireAuth, requireRoles("SUPERVISOR", "ADMIN"));
+
+async function targetSupervisorDepartment(actorRole: string, actorId: number, supervisorId: number): Promise<number | null> {
+  if (actorRole !== "ADMIN" && supervisorId !== actorId) return null;
+  const supervisor = await prisma.user.findFirst({ where: { id: supervisorId, role: "SUPERVISOR", active: true }, select: { departmentId: true } });
+  return supervisor?.departmentId ?? null;
+}
 
 teamsRouter.get("/pool", async (req, res) => {
   const departmentId = Number(req.query.department_id);
@@ -18,9 +24,14 @@ teamsRouter.get("/pool", async (req, res) => {
   if (!departmentId || !dateStr || !supervisorId) {
     return res.status(400).json({ error: "department_id, date, supervisor_id required" });
   }
-  if (supervisorId !== req.user!.id || req.user!.departmentId == null || departmentId !== req.user!.departmentId) {
-    return res.status(403).json({ error: "You can only view your own Department pool.", code: "FORBIDDEN" });
+  const supervisorDepartmentId = await targetSupervisorDepartment(req.user!.role, req.user!.id, supervisorId);
+  if (supervisorDepartmentId == null || departmentId !== supervisorDepartmentId) {
+    return res.status(403).json({ error: "The Supervisor and Department scope do not match.", code: "FORBIDDEN" });
   }
+  const sectionId = Number(req.query.section_id);
+  if (!sectionId) return res.status(400).json({ error: "section_id is required" });
+  const section = await prisma.section.findFirst({ where: { id: sectionId, departmentId, active: true }, select: { id: true } });
+  if (!section) return res.status(403).json({ error: "Section must belong to the Supervisor Department.", code: "WRONG_SECTION" });
   const workDate = parseDateOnly(dateStr);
 
   const teamIds = (
@@ -33,13 +44,16 @@ teamsRouter.get("/pool", async (req, res) => {
   const employees = await prisma.employee.findMany({
     where: {
       departmentId,
+      employmentType: "CLMS",
       active: true,
+      sectionAssignment: { sectionId },
       id: { notIn: teamIds.length ? teamIds : [-1] },
     },
+    include: { sectionAssignment: { include: { section: true } } },
     orderBy: { name: "asc" },
   });
 
-  res.json({ employees, available: employees.length });
+  res.json({ employees, available: employees.length, sectionId });
 });
 
 teamsRouter.get("/today", async (req, res) => {
@@ -48,15 +62,23 @@ teamsRouter.get("/today", async (req, res) => {
   if (!supervisorId || !dateStr) {
     return res.status(400).json({ error: "supervisor_id and date required" });
   }
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only view your own team.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  const supervisorDepartmentId = await targetSupervisorDepartment(req.user!.role, req.user!.id, supervisorId);
+  if (supervisorDepartmentId == null) return res.status(403).json({ error: "Supervisor has no Department.", code: "FORBIDDEN" });
 
   let rows = await prisma.dailyTeamSelection.findMany({
-    where: { supervisorId, workDate, removedAt: null },
+    where: {
+      supervisorId, workDate, removedAt: null,
+      employee: {
+        departmentId: supervisorDepartmentId, employmentType: "CLMS",
+        sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
+      },
+    },
     include: {
-      employee: { include: { department: true } },
+      employee: { include: { department: true, sectionAssignment: { include: { section: true } } } },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -66,7 +88,13 @@ teamsRouter.get("/today", async (req, res) => {
   if (rows.length === 0) {
     const prev = previousWorkDate(workDate);
     const prior = await prisma.dailyTeamSelection.findMany({
-      where: { supervisorId, workDate: prev, removedAt: null, employee: { active: true } },
+      where: {
+        supervisorId, workDate: prev, removedAt: null,
+        employee: {
+          active: true, departmentId: supervisorDepartmentId, employmentType: "CLMS",
+          sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
+        },
+      },
     });
     if (prior.length > 0) {
       await prisma.$transaction(
@@ -83,9 +111,15 @@ teamsRouter.get("/today", async (req, res) => {
       );
       carriedOver = true;
       rows = await prisma.dailyTeamSelection.findMany({
-        where: { supervisorId, workDate, removedAt: null },
+        where: {
+          supervisorId, workDate, removedAt: null,
+          employee: {
+            departmentId: supervisorDepartmentId, employmentType: "CLMS",
+            sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
+          },
+        },
         include: {
-          employee: { include: { department: true } },
+          employee: { include: { department: true, sectionAssignment: { include: { section: true } } } },
         },
         orderBy: { createdAt: "asc" },
       });
@@ -135,8 +169,9 @@ teamsRouter.post("/today", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const { supervisorId, departmentId, workDate: dateStr, employeeIds } = parsed.data;
-  if (supervisorId !== req.user!.id || req.user!.departmentId == null || departmentId !== req.user!.departmentId) {
-    return res.status(403).json({ error: "You can only edit your own team.", code: "NOT_OWNER" });
+  const supervisorDepartmentId = await targetSupervisorDepartment(req.user!.role, req.user!.id, supervisorId);
+  if (supervisorDepartmentId == null || departmentId !== supervisorDepartmentId) {
+    return res.status(403).json({ error: "The Supervisor and Department scope do not match.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
 
@@ -149,10 +184,15 @@ teamsRouter.post("/today", async (req, res) => {
   const toRemove = existing.filter((e) => !nextIds.has(e.employeeId));
   const toAdd = employeeIds.filter((id) => !existingIds.has(id));
 
-  if (toAdd.length) {
-    const inDepartment = await prisma.employee.count({ where: { id: { in: toAdd }, departmentId } });
-    if (inDepartment !== new Set(toAdd).size) {
-      return res.status(403).json({ error: "Employees must belong to your Department.", code: "WRONG_DEPARTMENT" });
+  if (employeeIds.length) {
+    const allowed = await prisma.employee.count({
+      where: {
+        id: { in: employeeIds }, departmentId, employmentType: "CLMS", active: true,
+        sectionAssignment: { section: { departmentId, active: true } },
+      },
+    });
+    if (allowed !== new Set(employeeIds).size) {
+      return res.status(403).json({ error: "Every selected labour must belong to an active Section in your Department.", code: "WRONG_DEPARTMENT_OR_SECTION" });
     }
   }
 
@@ -207,7 +247,7 @@ teamsRouter.delete("/today/:employeeId", async (req, res) => {
     return res.status(400).json({ error: "supervisor_id, date, employeeId required" });
   }
   // Owner enforcement: only the timesheet's owner supervisor may remove an employee.
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);

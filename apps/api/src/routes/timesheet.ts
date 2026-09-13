@@ -13,7 +13,40 @@ import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrde
 
 export const timesheetRouter = Router();
 
-timesheetRouter.use(requireAuth, requireRoles("SUPERVISOR"));
+async function supervisorDepartmentForActor(actorRole: string, actorId: number, supervisorId: number): Promise<number | null> {
+  if (actorRole !== "ADMIN" && actorId !== supervisorId) return null;
+  const supervisor = await prisma.user.findFirst({ where: { id: supervisorId, role: "SUPERVISOR", active: true }, select: { departmentId: true } });
+  return supervisor?.departmentId ?? null;
+}
+
+async function hasTeamAccess(
+  supervisorId: number,
+  departmentId: number | null,
+  workDate: Date,
+  employeeIds: number[]
+): Promise<boolean> {
+  const ids = [...new Set(employeeIds)];
+  if (departmentId == null || ids.length === 0) return false;
+  const count = await prisma.dailyTeamSelection.count({
+    where: {
+      supervisorId,
+      workDate,
+      removedAt: null,
+      employeeId: { in: ids },
+      employee: { departmentId, employmentType: "CLMS" },
+    },
+  });
+  return count === ids.length;
+}
+
+function teamAccessDenied(res: import("express").Response) {
+  return res.status(403).json({
+    error: "Labour must be assigned to your team from a Section in your Department.",
+    code: "LABOUR_NOT_ASSIGNED",
+  });
+}
+
+timesheetRouter.use(requireAuth, requireRoles("SUPERVISOR", "ADMIN"));
 
 // Serialize allocation writes in this API process. This makes submission a
 // first-writer-wins operation instead of allowing two overlapping submits to
@@ -267,11 +300,13 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
   if (!supervisorId || !dateStr) {
     return res.status(400).json({ error: "supervisorId and workDate required" });
   }
-  if (supervisorId !== req.user!.id || req.user!.role !== "SUPERVISOR") {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only carry forward your own timesheet.", code: "NOT_OWNER" });
   }
 
   const workDate = parseDateOnly(dateStr);
+  const supervisorDepartmentId = await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId);
+  if (supervisorDepartmentId == null) return teamAccessDenied(res);
   const sourceDate = previousWorkDate(workDate);
   const sourceDays = await prisma.timesheetDay.findMany({
     where: { taggedById: supervisorId, workDate: sourceDate },
@@ -281,7 +316,13 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     },
   });
   const sourceTeam = await prisma.dailyTeamSelection.findMany({
-    where: { supervisorId, workDate: sourceDate, removedAt: null },
+    where: {
+      supervisorId, workDate: sourceDate, removedAt: null,
+      employee: {
+        departmentId: supervisorDepartmentId, employmentType: "CLMS",
+        sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
+      },
+    },
     select: { employeeId: true },
   });
 
@@ -292,14 +333,8 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     });
   }
 
-  // Match the rows visible on the previous-day screen: active roster plus the
-  // supervisor's own linked Employee row.
-  const supervisor = await prisma.user.findUnique({
-    where: { id: supervisorId },
-    select: { employeeId: true },
-  });
+  // Only the prior contract-labour roster is eligible; personal hours stay in My Hours.
   const visibleEmployeeIds = new Set(sourceTeam.map((row) => row.employeeId));
-  if (supervisor?.employeeId != null) visibleEmployeeIds.add(supervisor.employeeId);
   const activeSourceDays = sourceDays.filter(
     (day) => day.employee.active && visibleEmployeeIds.has(day.employeeId)
   );
@@ -336,8 +371,13 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     const lockedEmployeeIds: number[] = [];
 
     for (const employeeId of new Set(sourceTeam.map((row) => row.employeeId))) {
-      const employee = await tx.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
-      if (!employee?.active) continue;
+      const employee = await tx.employee.findFirst({
+        where: {
+          id: employeeId, active: true, departmentId: supervisorDepartmentId, employmentType: "CLMS",
+          sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
+        }, select: { active: true },
+      });
+      if (!employee) continue;
       const existing = await tx.dailyTeamSelection.findFirst({
         where: { supervisorId, employeeId, workDate },
         orderBy: { createdAt: "desc" },
@@ -485,14 +525,22 @@ timesheetRouter.get("/", async (req, res) => {
   if (!supervisorId || !dateStr) {
     return res.status(400).json({ error: "supervisor_id and date required" });
   }
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only view your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  const supervisorDepartmentId = await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId);
+  if (supervisorDepartmentId == null) return teamAccessDenied(res);
   const maxDailyHours = getMaxDailyHours();
 
   const team = await prisma.dailyTeamSelection.findMany({
-    where: { supervisorId, workDate, removedAt: null },
+    where: {
+      supervisorId, workDate, removedAt: null,
+      employee: {
+        departmentId: supervisorDepartmentId, employmentType: "CLMS",
+        sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
+      },
+    },
     include: { employee: { include: { department: true } } },
     orderBy: { createdAt: "asc" },
   });
@@ -516,30 +564,10 @@ timesheetRouter.get("/", async (req, res) => {
   });
   const dayByEmployee = new Map(days.map((d) => [d.employeeId, d]));
 
-  // Supervisor self-row (CR#2): surface the supervisor's OWN linked Employee as a
-  // non-removable default row so they can allocate their manhours to projects.
-  // The employeeId is server-derived from the supervisor's User<->Employee link —
-  // never client-supplied (owner/attribution guard).
-  const supUser = await prisma.user.findUnique({
-    where: { id: supervisorId },
-    select: { employeeId: true },
-  });
-  let selfEmployee: (typeof team)[number]["employee"] | null = null;
-  if (supUser?.employeeId != null) {
-    const emp = await prisma.employee.findUnique({
-      where: { id: supUser.employeeId },
-      include: { department: true },
-    });
-    if (emp && emp.active && !team.some((t) => t.employeeId === emp.id)) {
-      selfEmployee = emp;
-    }
-  }
-  const teamWithSelf: { employeeId: number; employee: (typeof team)[number]["employee"]; isSelf: boolean }[] = [
-    ...(selfEmployee
-      ? [{ employeeId: selfEmployee.id, employee: selfEmployee, isSelf: true }]
-      : []),
-    ...team.map((t) => ({ employeeId: t.employeeId, employee: t.employee, isSelf: false })),
-  ];
+  // Supervisor personal hours are recorded only through My Hours. This grid is
+  // restricted to contract labour explicitly assigned to the daily team.
+  const teamWithSelf: { employeeId: number; employee: (typeof team)[number]["employee"]; isSelf: boolean }[] =
+    team.map((item) => ({ employeeId: item.employeeId, employee: item.employee, isSelf: false }));
 
   const employeeIds = teamWithSelf.map((t) => t.employeeId);
   const dayTotals = await getEmployeeDayHourTotals(employeeIds, workDate, supervisorId);
@@ -736,10 +764,13 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
   }
   const { supervisorId, workDate: dateStr, rows } = parsed.data;
   // Owner enforcement: only the timesheet's owner supervisor may edit it.
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  if (!(await hasTeamAccess(supervisorId, await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId), workDate, rows.map((row) => row.employeeId)))) {
+    return teamAccessDenied(res);
+  }
   const inactiveEmployees = await prisma.employee.findMany({
     where: { id: { in: rows.map((row) => row.employeeId) }, active: false }, select: { id: true },
   });
@@ -1059,10 +1090,13 @@ timesheetRouter.post("/bulk-assign", serializeTimesheetMutation, async (req, res
   }
   const { supervisorId, workDate: dateStr, projectId, jobOrderId, slots } = parsed.data;
   // Owner enforcement: only the timesheet's owner supervisor may edit it.
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  if (!(await hasTeamAccess(supervisorId, await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId), workDate, slots.map((slot) => slot.employeeId)))) {
+    return teamAccessDenied(res);
+  }
   const requestedClaims: SlotClaim[] = slots.map((slot) => ({
     employeeId: slot.employeeId,
     shiftSlot: slot.shiftSlot,
@@ -1184,10 +1218,13 @@ timesheetRouter.put("/entry", serializeTimesheetMutation, async (req, res) => {
   }
   const { supervisorId, workDate: dateStr, employeeId, shiftSlot, jobOrderId } = parsed.data;
   // Owner enforcement: only the timesheet's owner supervisor may edit it.
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  if (!(await hasTeamAccess(supervisorId, await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId), workDate, [employeeId]))) {
+    return teamAccessDenied(res);
+  }
   const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
   if (!employee?.active) return res.status(409).json(inactiveEmployeePayload());
 
@@ -1267,10 +1304,13 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     return res.status(400).json({ error: "supervisorId, workDate and employeeId required" });
   }
   // Owner enforcement: only the timesheet's owner supervisor may add OT.
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only edit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
+  if (!(await hasTeamAccess(supervisorId, await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId), workDate, [employeeId]))) {
+    return teamAccessDenied(res);
+  }
   const employee = await prisma.employee.findUnique({
     where: { id: employeeId },
     select: { active: true, employmentType: true },
@@ -1416,7 +1456,7 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
     return res.status(400).json({ error: "supervisorId and workDate required" });
   }
   // Owner enforcement: only the timesheet's owner supervisor may submit it.
-  if (supervisorId !== req.user!.id) {
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
     return res.status(403).json({ error: "You can only submit your own timesheet.", code: "NOT_OWNER" });
   }
   const workDate = parseDateOnly(dateStr);
@@ -1444,6 +1484,9 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
   });
 
   const employeeIds = days.map((d) => d.employeeId);
+  if (employeeIds.length && !(await hasTeamAccess(supervisorId, await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId), workDate, employeeIds))) {
+    return teamAccessDenied(res);
+  }
   const dayTotals = await getEmployeeDayHourTotals(employeeIds, workDate, supervisorId);
   const bookedByOther = employeeIds.length
     ? await prisma.timesheetEntry.findMany({

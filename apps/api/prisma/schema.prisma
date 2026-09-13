@@ -37,7 +37,8 @@ model User {
   conflictsResolved          Conflict[]              @relation("ResolvedBy")
   auditLogs                  AuditLog[]
   allocationsGiven           EmployeeAllocation[]    @relation("EmployeeAllocationAllocatedBy")
-  allocationDaysApproved     EmployeeAllocationDay[] @relation("EmployeeAllocationApprover")
+  allocationDaysApproved     EmployeeAllocationDay[]      @relation("EmployeeAllocationApprover")
+  allocationApprovalsGiven   EmployeeAllocationApproval[] @relation("EmployeeAllocationApprovalApprover")
   manpowerRequestsRequested  ManpowerRequest[]       @relation("RequestedBy")
   manpowerRequestsAssigned   ManpowerRequest[]       @relation("AssignedBy")
   supervisorOverridesCreated SupervisorOverride[]    @relation("SupervisorOverrideCreator")
@@ -223,7 +224,7 @@ model SyncException {
 /// parent day is SUBMITTED/APPROVED, slot edits are rejected at the API.
 ///
 /// Owner + role enforcement: an employee allocates only to SELF via the linked
-/// Employee (NOT_OWNER guard); HOD/PM/ADMIN/HR allocate for others via requireRoles.
+/// Employee (NOT_OWNER guard); only ADMIN may allocate for another employee.
 model EmployeeAllocationDay {
   id          Int       @id @default(autoincrement())
   employeeId  Int       @map("employee_id")
@@ -239,6 +240,7 @@ model EmployeeAllocationDay {
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
   allocations EmployeeAllocation[]
+  approvals   EmployeeAllocationApproval[]
 
   @@unique([employeeId, workDate])
   @@map("employee_allocation_days")
@@ -247,6 +249,22 @@ model EmployeeAllocationDay {
 /// One slot row per (employee, day, shift slot). shiftSlot = am1|am2|pm1|pm2 (each 2h).
 /// projectId is mandatory; jobOrderId is optional. No OT field (payroll cannot have OT).
 /// Status lives on the parent day, not on individual slots.
+model EmployeeAllocationApproval {
+  id              Int                   @id @default(autoincrement())
+  allocationDayId Int                   @map("allocation_day_id")
+  allocationDay   EmployeeAllocationDay @relation(fields: [allocationDayId], references: [id], onDelete: Cascade)
+  approverId      Int                   @map("approver_id")
+  approver        User                  @relation("EmployeeAllocationApprovalApprover", fields: [approverId], references: [id])
+  action          String
+  comment         String?
+  resultingStatus String                @map("resulting_status")
+  createdAt       DateTime              @default(now()) @map("created_at")
+
+  @@index([approverId, createdAt])
+  @@index([allocationDayId])
+  @@map("employee_allocation_approvals")
+}
+
 model EmployeeAllocation {
   id              Int                   @id @default(autoincrement())
   allocationDayId Int                   @map("allocation_day_id")

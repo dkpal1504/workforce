@@ -22,7 +22,7 @@ import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrde
  * (Project Planning) approves HOD_APPROVED -> PM_APPROVED.
  *
  * Owner + role: an employee allocates only to SELF via the linked Employee
- * (NOT_OWNER guard); HOD/PM/ADMIN/HR allocate for others via requireRoles.
+ * (NOT_OWNER guard); only ADMIN may allocate for another employee.
  * `employeeId` is server-derived for self-service (never trusted from the body).
  */
 
@@ -42,8 +42,6 @@ async function employeeIdForUser(userId: number): Promise<number | null> {
 employeeAllocationRouter.get("/", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
-  const departmentId = req.user!.departmentId;
-
   const queryEmpId = req.query.employeeId ? Number(req.query.employeeId) : null;
   const queryDate = typeof req.query.date === "string" ? req.query.date : null;
 
@@ -52,14 +50,12 @@ employeeAllocationRouter.get("/", async (req, res) => {
   if (queryDate && /^\d{4}-\d{2}-\d{2}$/.test(queryDate)) {
     where.workDate = parseDateOnly(queryDate);
   }
-  if (!["HOD", "PM", "ADMIN", "HR"].includes(role)) {
+  if (role !== "ADMIN") {
     const ownEmpId = await employeeIdForUser(userId);
     if (ownEmpId == null) {
       return res.json({ days: [], note: "No linked employee record for this account." });
     }
     where.employeeId = ownEmpId;
-  } else if (role === "HOD" && departmentId != null) {
-    where.employee = { departmentId };
   }
 
   const days = await prisma.employeeAllocationDay.findMany({
@@ -99,9 +95,9 @@ employeeAllocationRouter.post("/slot", async (req, res) => {
     return res.status(400).json({ error: "projectId is required" });
   }
 
-  // Resolve employee: for self-service, server-derive from req.user; for approvers,
-  // accept the body value.
-  const canAllocateOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
+  // Resolve employee server-side for every non-Admin caller. Approval roles
+  // must use the approval endpoints and cannot edit another employee's draft.
+  const canAllocateOthers = role === "ADMIN";
   let employeeId = bodyEmpId;
   if (!canAllocateOthers) {
     const ownEmpId = await employeeIdForUser(userId);
@@ -187,7 +183,7 @@ employeeAllocationRouter.delete("/slot/:id", async (req, res) => {
   if (!slot) return res.status(404).json({ error: "Slot not found" });
   if (!slot.employee.active) return res.status(409).json(inactiveEmployeePayload());
 
-  const canDeleteOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
+  const canDeleteOthers = role === "ADMIN";
   if (!canDeleteOthers) {
     const ownEmpId = await employeeIdForUser(userId);
     if (ownEmpId == null || ownEmpId !== slot.employeeId) {
@@ -214,7 +210,7 @@ employeeAllocationRouter.post("/submit", async (req, res) => {
     return res.status(400).json({ error: "workDate required" });
   }
 
-  const canSubmitOthers = ["HOD", "PM", "ADMIN", "HR"].includes(role);
+  const canSubmitOthers = role === "ADMIN";
   let employeeId = bodyEmpId;
   if (!canSubmitOthers) {
     const ownEmpId = await employeeIdForUser(userId);
@@ -311,6 +307,24 @@ employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"
   res.json({ days });
 });
 
+/** Immutable payroll/My Hours decisions made by the logged-in approver. */
+employeeAllocationRouter.get("/history", requireRoles("HOD", "PM", "ADMIN"), async (req, res) => {
+  const approvals = await prisma.employeeAllocationApproval.findMany({
+    where: { approverId: req.user!.id },
+    include: {
+      allocationDay: {
+        include: {
+          employee: { include: { department: true } },
+          allocations: { include: { project: true, jobOrder: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+  res.json({ approvals });
+});
+
 /**
  * POST /api/allocations/:dayId/approve — staged approval, role + department guarded.
  *   HOD/ADMIN approves SUBMITTED -> HOD_APPROVED (within own department for HOD).
@@ -355,9 +369,16 @@ employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMI
     return res.status(400).json({ error: `Day status is ${day.status}; cannot approve.` });
   }
 
-  const updated = await prisma.employeeAllocationDay.update({
-    where: { id: dayId },
-    data: { status: nextStatus, approvedAt: new Date(), approverId: userId },
+  const comment = typeof req.body?.comment === "string" ? req.body.comment.trim() || null : null;
+  const updated = await prisma.$transaction(async (tx) => {
+    const saved = await tx.employeeAllocationDay.update({
+      where: { id: dayId },
+      data: { status: nextStatus!, approvedAt: new Date(), approverId: userId },
+    });
+    await tx.employeeAllocationApproval.create({
+      data: { allocationDayId: dayId, approverId: userId, action: "APPROVE", comment, resultingStatus: nextStatus! },
+    });
+    return saved;
   });
   await writeAudit(userId, "EMPLOYEE_ALLOCATION_APPROVE", "employee_allocation_day", dayId, {
     employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), from: day.status, to: nextStatus,
@@ -412,9 +433,16 @@ employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN
     }
   }
 
-  const updated = await prisma.employeeAllocationDay.update({
-    where: { id: dayId },
-    data: { status: rejectionStatusForEmployee(day.employee.active), approverId: userId, remarks: comment ?? day.remarks },
+  const resultingStatus = rejectionStatusForEmployee(day.employee.active);
+  const updated = await prisma.$transaction(async (tx) => {
+    const saved = await tx.employeeAllocationDay.update({
+      where: { id: dayId },
+      data: { status: resultingStatus, approverId: userId, remarks: comment ?? day.remarks },
+    });
+    await tx.employeeAllocationApproval.create({
+      data: { allocationDayId: dayId, approverId: userId, action: "REJECT", comment, resultingStatus },
+    });
+    return saved;
   });
   await writeAudit(userId, "EMPLOYEE_ALLOCATION_REJECT", "employee_allocation_day", dayId, {
     employeeId: day.employeeId, workDate: day.workDate.toISOString().slice(0, 10), from: day.status, comment,

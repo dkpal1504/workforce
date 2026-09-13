@@ -59,7 +59,7 @@ supervisorRegistrationRouter.post("/", async (req, res) => {
     await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: Number(sectionId), source: "MANUAL" } });
     const created = await tx.user.create({ data: {
       employeeId: employee.id, name: employee.name, email: normalizedEmail, passwordHash, role: "SUPERVISOR",
-      source: "MANUAL", departmentId: employee.departmentId, active: true, mustChangePassword: false,
+      source: "MANUAL", departmentId: employee.departmentId, active: true, ...defaultWorkforceCredentialState,
     } });
     await tx.credentialDelivery.create({ data: { userId: created.id, recipient: credentialRecipient(), purpose: "INITIAL" } });
     return created;

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { endOfFrequency, parseDateOnly, startOfFrequency } from "../utils/date";
@@ -7,12 +8,13 @@ import { contractOverheadHours } from "../services/contractWorkHours";
 
 export const summaryRouter = Router();
 
-summaryRouter.use(requireAuth, requireRoles("SUPERVISOR", "HOD", "PM", "HR", "FINANCE", "ADMIN"));
+summaryRouter.use(requireAuth, requireRoles("EMPLOYEE", "SUPERVISOR", "HOD", "PM", "HR", "FINANCE", "ADMIN"));
 
 type JoStatus = "all" | "active" | "closed";
 
 summaryRouter.get("/job-order", async (req, res) => {
   const role = req.user!.role;
+  if (role === "EMPLOYEE") return res.status(403).json({ error: "Employee Summary is limited to own approved My Hours.", code: "FORBIDDEN" });
   const userId = req.user!.id;
 
   // Optional filters
@@ -64,32 +66,29 @@ summaryRouter.get("/job-order", async (req, res) => {
       // Consumption is recognized only after the final Project Manager approval.
       status: "PM_APPROVED",
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
-      ...(role === "HOD" && filterDeptId != null
-        ? {
-            OR: [
-              { taggedBy: { departmentId: filterDeptId } },
-              { employee: { departmentId: filterDeptId } },
-            ],
-          }
-        : {}),
+      ...(role === "EMPLOYEE" ? { employeeId: req.user!.employeeId ?? -1 } : {}),
+      ...(role === "HOD" ? {
+        employee: { departmentId: req.user!.departmentId ?? -1 },
+        timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } },
+      } : {}),
+      ...(role === "PM" ? { timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } } } : {}),
     },
     select: { jobOrderId: true, shiftSlot: true, hourSlot: true, otHours: true },
   });
 
   // Payroll/My Hours allocations use a separate parent-day model. Include
   // their slots only after the same final PM approval stage.
-  const linkedUser =
-    role === "SUPERVISOR"
-      ? await prisma.user.findUnique({ where: { id: userId }, select: { employeeId: true } })
-      : null;
+  const linkedEmployeeId = req.user!.employeeId;
   const allocations = await prisma.employeeAllocation.findMany({
     where: {
       jobOrderId: { in: jobOrderIds },
-      allocationDay: { status: "PM_APPROVED" },
-      ...(filterDeptId != null ? { employee: { departmentId: filterDeptId } } : {}),
-      ...(role === "SUPERVISOR"
-        ? { employeeId: linkedUser?.employeeId ?? -1 }
-        : {}),
+      allocationDay: {
+        status: "PM_APPROVED",
+        ...(role === "HOD" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
+        ...(role === "PM" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
+      },
+      ...(role === "HOD" ? { employee: { departmentId: req.user!.departmentId ?? -1 } } : {}),
+      ...(["EMPLOYEE", "SUPERVISOR"].includes(role) ? { employeeId: linkedEmployeeId ?? -1 } : {}),
     },
     select: { jobOrderId: true },
   });
@@ -171,6 +170,71 @@ summaryRouter.get("/job-order", async (req, res) => {
   });
 });
 
+summaryRouter.get("/decisions", async (req, res) => {
+  const dateStr = String(req.query.date || "");
+  const frequency = String(req.query.frequency || "daily") as "daily" | "weekly" | "monthly";
+  if (!dateStr) return res.status(400).json({ error: "date required" });
+  const anchor = parseDateOnly(dateStr);
+  const start = startOfFrequency(anchor, frequency);
+  const end = endOfFrequency(anchor, frequency);
+  const { role, id: userId, departmentId, employeeId } = req.user!;
+  const statuses = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
+
+  let dayScope: Prisma.TimesheetDayWhereInput = { status: { in: statuses } };
+  let allocationScope: Prisma.EmployeeAllocationDayWhereInput = { status: { in: statuses } };
+  if (role === "EMPLOYEE") {
+    dayScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
+    allocationScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
+  } else if (role === "SUPERVISOR") {
+    dayScope = { taggedById: userId, approvals: { some: { approver: { role: "HOD" } } } };
+    allocationScope = { employeeId: employeeId ?? -1, approvals: { some: { approver: { role: "HOD" } } } };
+  } else if (role === "HOD") {
+    const decision = { OR: [{ approverId: userId }, { approver: { role: "PM" }, action: { in: ["REJECT", "PLANNING_RETURN"] } }] };
+    dayScope = { employee: { departmentId: departmentId ?? -1 }, approvals: { some: decision } };
+    allocationScope = { employee: { departmentId: departmentId ?? -1 }, approvals: { some: decision } };
+  } else if (role === "PM") {
+    dayScope = { approvals: { some: { approverId: userId } } };
+    allocationScope = { approvals: { some: { approverId: userId } } };
+  } else if (role === "FINANCE") {
+    dayScope = { status: "PM_APPROVED" };
+    allocationScope = { status: "PM_APPROVED" };
+  }
+
+  const [days, allocationDays] = await Promise.all([
+    prisma.timesheetDay.findMany({
+      where: { workDate: { gte: start, lte: end }, AND: [dayScope] },
+      include: { employee: { include: { department: true } }, entries: true, approvals: { include: { approver: true }, orderBy: { createdAt: "desc" } } },
+      orderBy: { workDate: "desc" }, take: 300,
+    }),
+    prisma.employeeAllocationDay.findMany({
+      where: { workDate: { gte: start, lte: end }, AND: [allocationScope] },
+      include: { employee: { include: { department: true } }, allocations: true, approvals: { include: { approver: true }, orderBy: { createdAt: "desc" } } },
+      orderBy: { workDate: "desc" }, take: 300,
+    }),
+  ]);
+
+  const relevant = (approval: { approverId: number; approver: { role: string }; action: string }) => {
+    if (role === "EMPLOYEE") return approval.approver.role === "PM" && approval.action === "APPROVE";
+    if (role === "SUPERVISOR") return approval.approver.role === "HOD";
+    if (role === "HOD") return approval.approverId === userId || (approval.approver.role === "PM" && (approval.action.includes("REJECT") || approval.action === "PLANNING_RETURN"));
+    if (role === "PM") return approval.approverId === userId;
+    return true;
+  };
+  const items = [
+    ...days.map((day) => {
+      const decision = day.approvals.find(relevant) ?? day.approvals[0] ?? null;
+      const hours = day.entries.reduce((sum, entry) => sum + (entry.otHours ?? (entry.shiftSlot ? 2 : entry.hourSlot != null ? 1 : 0)), 0);
+      return { id: `timesheet-${day.id}`, source: "SUPERVISOR_TIMESHEET", employee: day.employee, workDate: day.workDate.toISOString().slice(0, 10), status: day.status, hours, decision: decision ? { action: decision.action, comment: decision.comment, at: decision.createdAt, by: decision.approver.name, role: decision.approver.role } : null };
+    }),
+    ...allocationDays.map((day) => {
+      const decision = day.approvals.find(relevant) ?? day.approvals[0] ?? null;
+      return { id: `allocation-${day.id}`, source: "MY_HOURS", employee: day.employee, workDate: day.workDate.toISOString().slice(0, 10), status: day.status, hours: day.allocations.length * 2, decision: decision ? { action: decision.action, comment: decision.comment, at: decision.createdAt, by: decision.approver.name, role: decision.approver.role } : null };
+    }),
+  ].filter((item) => role === "ADMIN" || role === "FINANCE" || item.decision != null)
+    .sort((a, b) => b.workDate.localeCompare(a.workDate));
+  res.json({ items });
+});
+
 summaryRouter.get("/", async (req, res) => {
   const frequency = (String(req.query.frequency || "daily") as "daily" | "weekly" | "monthly");
   const groupBy = String(req.query.groupBy || "supervisor") as
@@ -197,26 +261,77 @@ summaryRouter.get("/", async (req, res) => {
   const userId = req.user!.id;
   const departmentId = req.user!.departmentId;
 
-  // Role scope: supervisors only see hours they tagged — not other supervisors' sheets.
-  // Match BOTH legacy ProjectWbs-tagged and new JobOrder-tagged entries (the daily
-  // timesheet entry writes jobOrder-only rows), so the summary isn't empty for
-  // jobOrder-tagged hours.
+  const employeeId = req.user!.employeeId;
+  const visibleStatuses = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
+  const hodDecision = {
+    OR: [
+      { approverId: userId },
+      { approver: { role: "PM" }, action: { in: ["REJECT", "PLANNING_RETURN"] } },
+    ],
+  };
+
+  let entryScope: Prisma.TimesheetEntryWhereInput = { status: { in: visibleStatuses } };
+  if (role === "EMPLOYEE") entryScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
+  else if (role === "SUPERVISOR") entryScope = {
+    taggedById: userId,
+    status: { in: visibleStatuses },
+    timesheetDay: { approvals: { some: { approver: { role: "HOD" }, action: { in: ["APPROVE", "REJECT", "SEND_BACK"] } } } },
+  };
+  else if (role === "HOD") entryScope = {
+    employee: { departmentId: departmentId ?? -1 },
+    status: { in: visibleStatuses },
+    timesheetDay: { approvals: { some: hodDecision } },
+  };
+  else if (role === "PM") entryScope = {
+    status: { in: visibleStatuses },
+    timesheetDay: { approvals: { some: { approverId: userId } } },
+  };
+  else if (role === "FINANCE") entryScope = { status: "PM_APPROVED" };
+
   const entries = await prisma.timesheetEntry.findMany({
     where: {
       workDate: { gte: start, lte: end },
-      OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
-      ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
-      ...(role === "HOD"
-        ? departmentId == null
-          ? { employeeId: -1 }
-          : { OR: [{ taggedBy: { departmentId } }, { employee: { departmentId } }] }
-        : {}),
+      AND: [
+        { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
+        entryScope,
+      ],
     },
     include: {
       employee: { include: { department: true } },
       taggedBy: { include: { department: true } },
       projectWbs: true,
       jobOrder: { include: { project: true } },
+    },
+  });
+
+  let allocationDayScope: Prisma.EmployeeAllocationDayWhereInput = { status: { in: visibleStatuses } };
+  if (role === "EMPLOYEE") allocationDayScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
+  else if (role === "SUPERVISOR") allocationDayScope = {
+    employeeId: employeeId ?? -1,
+    status: { in: visibleStatuses },
+    approvals: { some: { approver: { role: "HOD" } } },
+  };
+  else if (role === "HOD") allocationDayScope = {
+    employee: { departmentId: departmentId ?? -1 },
+    status: { in: visibleStatuses },
+    approvals: { some: hodDecision },
+  };
+  else if (role === "PM") allocationDayScope = {
+    status: { in: visibleStatuses }, approvals: { some: { approverId: userId } },
+  };
+  else if (role === "FINANCE") allocationDayScope = { status: "PM_APPROVED" };
+
+  const allocations = await prisma.employeeAllocation.findMany({
+    where: {
+      workDate: { gte: start, lte: end },
+      allocationDay: allocationDayScope,
+    },
+    include: {
+      employee: { include: { department: true } },
+      allocatedBy: { include: { department: true } },
+      project: true,
+      jobOrder: true,
+      allocationDay: true,
     },
   });
 
@@ -257,6 +372,10 @@ summaryRouter.get("/", async (req, res) => {
       }
     }
   }
+  for (const allocation of allocations) {
+    const ck = String(allocation.project.colorKey || "").toUpperCase();
+    if (ck) projectMeta.set(ck, { id: allocation.project.id, code: ck, name: allocation.project.name, colorKey: ck });
+  }
   // Only projects explicitly selected when a filter is provided. Filter by
   // colorKey (code) — the unified identity across BOTH tagging paths (legacy
   // ProjectWbs and new JobOrder→Project). Numeric ids differ between the two
@@ -283,7 +402,13 @@ summaryRouter.get("/", async (req, res) => {
   };
   const buckets = new Map<AggKey, Bucket>();
 
-  const groupIdentity = (e: (typeof entries)[number]) => {
+  type GroupSource = {
+    employeeId: number;
+    employee: { name: string; departmentId: number; department: { name: string } };
+    taggedById: number;
+    taggedBy: { name: string; department: { name: string } | null };
+  };
+  const groupIdentity = (e: GroupSource) => {
     if (groupBy === "employee") {
       return { key: `emp-${e.employeeId}`, label: e.employee.name, secondary: e.employee.department.name };
     }
@@ -343,6 +468,28 @@ summaryRouter.get("/", async (req, res) => {
     bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + regularHours;
     bucket.projectCost[colorKey] =
       (bucket.projectCost[colorKey] || 0) + regularHours * rateFor(e.employee.category);
+  }
+
+  for (const allocation of allocations) {
+    const colorKey = String(allocation.project.colorKey || "").toUpperCase();
+    if (!colorKey || !projectMeta.has(colorKey)) continue;
+    const source: GroupSource = {
+      employeeId: allocation.employeeId,
+      employee: allocation.employee,
+      taggedById: allocation.allocatedById,
+      taggedBy: allocation.allocatedBy,
+    };
+    const bucket = (() => {
+      const identity = groupIdentity(source);
+      let value = buckets.get(identity.key);
+      if (!value) {
+        value = { label: identity.label, secondary: identity.secondary, projectHours: {}, projectCost: {}, projectOtHours: {}, projectOtCost: {}, overheadHours: 0, overheadCost: 0 };
+        buckets.set(identity.key, value);
+      }
+      return value;
+    })();
+    bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + 2;
+    bucket.projectCost[colorKey] = (bucket.projectCost[colorKey] || 0) + 2 * rateFor(allocation.employee.category);
   }
 
   // Overhead is unused regular capacity for a timesheet day. It is deliberately

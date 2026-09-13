@@ -100,7 +100,7 @@ export function AppLayout() {
               Organisation
             </NavLink>
           )}
-          {capabilities?.manageEmployees && (
+          {capabilities?.uploadEmployees && (
             <NavLink to="/csv-upload" className={({ isActive }) => (isActive ? "active" : "")}>
               CSV Upload
             </NavLink>

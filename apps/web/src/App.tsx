@@ -86,6 +86,8 @@ export function App() {
           </Route>
           <Route element={<RequireCapability capability="manageEmployees" />}>
             <Route path="/employees" element={<EmployeesPage />} />
+          </Route>
+          <Route element={<RequireCapability capability="uploadEmployees" />}>
             <Route path="/csv-upload" element={<CsvUploadPage />} />
           </Route>
           <Route element={<RequireCapability capability="manageMasterData" />}>

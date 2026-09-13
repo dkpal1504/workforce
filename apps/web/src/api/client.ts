@@ -10,6 +10,7 @@ export type AuthCapabilities = {
   manageSupervisors: boolean;
   manageMasterData: boolean;
   manageEmployees: boolean;
+  uploadEmployees: boolean;
   allocateHours: boolean;
 };
 

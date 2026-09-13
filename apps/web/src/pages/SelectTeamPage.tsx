@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { FilterBar, useWorkContext } from "../hooks/useWorkContext";
 import "../styles/selectTeam.css";
 
-type Employee = { id: number; name: string; ecNo: string };
+type Section = { id: number; code: string; name: string; departmentId: number };
+type Employee = { id: number; name: string; ecNo: string; sectionAssignment?: { section: Section } | null };
 
 export function SelectTeamPage() {
   const navigate = useNavigate();
   const ctx = useWorkContext();
+  const [sections, setSections] = useState<Section[]>([]);
+  const [sectionId, setSectionId] = useState("");
   const [pool, setPool] = useState<Employee[]>([]);
   const [team, setTeam] = useState<Employee[]>([]);
+  const teamRef = useRef<Employee[]>([]);
+  const loadedTeamContext = useRef("");
   const [carriedOver, setCarriedOver] = useState(false);
   const [poolSelected, setPoolSelected] = useState<Set<number>>(new Set());
   const [teamSelected, setTeamSelected] = useState<Set<number>>(new Set());
@@ -18,23 +23,38 @@ export function SelectTeamPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (!ctx.departmentId) return;
+    api<{ sections: Section[] }>(`/sections?department_id=${ctx.departmentId}`)
+      .then(({ sections }) => {
+        setSections(sections);
+        setSectionId((current) => sections.some((section) => String(section.id) === current) ? current : String(sections[0]?.id ?? ""));
+      })
+      .catch((error) => setError(error instanceof Error ? error.message : "Failed to load Sections"));
+  }, [ctx.departmentId]);
+
   const load = useCallback(async () => {
-    if (!ctx.departmentId || !ctx.supervisorId) return;
+    if (!ctx.departmentId || !ctx.supervisorId || !sectionId) return;
     setLoading(true);
     setError("");
     try {
-      const today = await api<{
-        team: { employeeId: number; employee: Employee }[];
-        carriedOver: boolean;
-      }>(`/teams/today?supervisor_id=${ctx.supervisorId}&date=${ctx.date}`);
-
-      setTeam(today.team.map((t) => t.employee));
-      setCarriedOver(today.carriedOver);
+      const contextKey = `${ctx.supervisorId}|${ctx.date}`;
+      if (loadedTeamContext.current !== contextKey) {
+        const today = await api<{
+          team: { employeeId: number; employee: Employee }[];
+          carriedOver: boolean;
+        }>(`/teams/today?supervisor_id=${ctx.supervisorId}&date=${ctx.date}`);
+        teamRef.current = today.team.map((item) => item.employee);
+        setTeam(teamRef.current);
+        setCarriedOver(today.carriedOver);
+        loadedTeamContext.current = contextKey;
+      }
 
       const poolRes = await api<{ employees: Employee[] }>(
-        `/teams/pool?department_id=${ctx.departmentId}&date=${ctx.date}&supervisor_id=${ctx.supervisorId}`
+        `/teams/pool?department_id=${ctx.departmentId}&section_id=${sectionId}&date=${ctx.date}&supervisor_id=${ctx.supervisorId}`
       );
-      setPool(poolRes.employees);
+      const selectedIds = new Set(teamRef.current.map((employee) => employee.id));
+      setPool(poolRes.employees.filter((employee) => !selectedIds.has(employee.id)));
       setPoolSelected(new Set());
       setTeamSelected(new Set());
     } catch (e) {
@@ -42,11 +62,13 @@ export function SelectTeamPage() {
     } finally {
       setLoading(false);
     }
-  }, [ctx.departmentId, ctx.supervisorId, ctx.date]);
+  }, [ctx.departmentId, ctx.supervisorId, ctx.date, sectionId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => { teamRef.current = team; }, [team]);
 
   const filteredPool = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -75,7 +97,7 @@ export function SelectTeamPage() {
   function removeFromTeam() {
     const moving = team.filter((e) => teamSelected.has(e.id));
     if (!moving.length) return;
-    setPool((p) => [...p, ...moving].sort((a, b) => a.name.localeCompare(b.name)));
+    setPool((p) => [...p, ...moving.filter((employee) => String(employee.sectionAssignment?.section.id) === sectionId)].sort((a, b) => a.name.localeCompare(b.name)));
     setTeam((t) => t.filter((e) => !teamSelected.has(e.id)));
     setTeamSelected(new Set());
     setCarriedOver(false);
@@ -89,7 +111,7 @@ export function SelectTeamPage() {
   /** Deselect All — move everyone from Today's Team back to the Department Pool. */
   function deselectAllTeam() {
     if (!team.length) return;
-    setPool((p) => [...p, ...team].sort((a, b) => a.name.localeCompare(b.name)));
+    setPool((p) => [...p, ...team.filter((employee) => String(employee.sectionAssignment?.section.id) === sectionId)].sort((a, b) => a.name.localeCompare(b.name)));
     setTeam([]);
     setTeamSelected(new Set());
     setCarriedOver(false);
@@ -99,7 +121,7 @@ export function SelectTeamPage() {
     const emp = team.find((e) => e.id === id);
     if (!emp) return;
     setTeam((t) => t.filter((e) => e.id !== id));
-    setPool((p) => [...p, emp].sort((a, b) => a.name.localeCompare(b.name)));
+    if (String(emp.sectionAssignment?.section.id) === sectionId) setPool((p) => [...p, emp].sort((a, b) => a.name.localeCompare(b.name)));
     setCarriedOver(false);
   }
 
@@ -135,6 +157,12 @@ export function SelectTeamPage() {
             <span className="panel__count">Available: {filteredPool.length}</span>
           </div>
           <div className="panel__body">
+            <label className="filter-field">
+              <span>Section</span>
+              <select value={sectionId} onChange={(event) => setSectionId(event.target.value)}>
+                {sections.map((section) => <option key={section.id} value={section.id}>{section.code} · {section.name}</option>)}
+              </select>
+            </label>
             <input
               className="search-input"
               placeholder="Search by name..."
@@ -150,7 +178,7 @@ export function SelectTeamPage() {
                     onChange={() => togglePool(e.id)}
                     id={`pool-${e.id}`}
                   />
-                  <label htmlFor={`pool-${e.id}`}>{e.name}</label>
+                  <label htmlFor={`pool-${e.id}`}>{e.name} · {e.sectionAssignment?.section.name ?? "No Section"}</label>
                 </li>
               ))}
             </ul>
@@ -224,7 +252,7 @@ export function SelectTeamPage() {
       </div>
 
       <div className="footer-actions">
-        <button className="btn btn-ghost" onClick={() => load()}>
+        <button className="btn btn-ghost" onClick={() => { loadedTeamContext.current = ""; void load(); }}>
           Cancel
         </button>
         <button className="btn btn-primary" onClick={confirm}>

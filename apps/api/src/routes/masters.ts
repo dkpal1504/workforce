@@ -1,13 +1,18 @@
 import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
+import { departmentScope } from "../services/roleAccess";
 
 export const mastersRouter = Router();
 
 mastersRouter.use(requireAuth);
 
-mastersRouter.get("/departments", async (_req, res) => {
-  const departments = await prisma.department.findMany({ orderBy: { name: "asc" } });
+mastersRouter.get("/departments", async (req, res) => {
+  const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
+  const departments = await prisma.department.findMany({
+    where: scopedDepartmentId !== undefined ? { id: scopedDepartmentId } : undefined,
+    orderBy: { name: "asc" },
+  });
   res.json({ departments });
 });
 
@@ -73,9 +78,11 @@ mastersRouter.get("/projects", async (_req, res) => {
 
 /** Active section picker, optionally scoped to a department. */
 mastersRouter.get("/sections", async (req, res) => {
-  const departmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
+  const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
   const sections = await prisma.section.findMany({
-    where: { active: true, ...(departmentId ? { departmentId } : {}) },
+    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}) },
     select: { id: true, code: true, name: true, departmentId: true, costCenter: { select: { id: true, code: true, name: true, active: true } } },
     orderBy: { name: "asc" },
   });
@@ -85,7 +92,9 @@ mastersRouter.get("/sections", async (req, res) => {
 /** Active cost-centre picker; section/department filters are optional. */
 mastersRouter.get("/cost-centers", async (req, res) => {
   const sectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
-  const departmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
+  const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
   const costCenters = await prisma.costCenter.findMany({
     where: { active: true, ...(sectionId ? { sectionId } : {}), ...(departmentId ? { section: { departmentId } } : {}) },
     select: { id: true, code: true, name: true, sectionId: true, section: { select: { id: true, code: true, name: true, departmentId: true } } },

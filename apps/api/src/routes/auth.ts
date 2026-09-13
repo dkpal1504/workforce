@@ -6,40 +6,9 @@ import { requireAuth, requireRoles, signToken } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
 import { usesEcNoLogin } from "../services/defaultLoginCredentials";
+import { capabilitiesFor, landingPathFor } from "../services/roleAccess";
 
 export const authRouter = Router();
-
-type CapabilityMap = {
-  selectTeam: boolean;
-  editTimesheet: boolean;
-  viewSummary: boolean;
-  approveTimesheets: boolean;
-  manageSupervisors: boolean;
-  manageMasterData: boolean;
-  manageEmployees: boolean;
-  allocateHours: boolean;
-};
-
-function capabilitiesFor(role: string): CapabilityMap {
-  return {
-    selectTeam: role === "SUPERVISOR",
-    editTimesheet: role === "SUPERVISOR",
-    viewSummary: ["SUPERVISOR", "HOD", "PM", "HR", "FINANCE", "ADMIN"].includes(role),
-    approveTimesheets: ["HOD", "PM", "ADMIN"].includes(role),
-    manageSupervisors: ["ADMIN", "HR"].includes(role),
-    manageMasterData: role === "ADMIN",
-    manageEmployees: ["ADMIN", "HR"].includes(role),
-    allocateHours: ["SUPERVISOR", "EMPLOYEE", "HOD", "PM", "HR", "ADMIN"].includes(role),
-  };
-}
-
-function landingPath(role: string): string {
-  if (["HOD", "PM", "ADMIN"].includes(role)) return "/approvals";
-  if (role === "HR") return "/supervisors";
-  if (role === "FINANCE") return "/summary";
-  if (role === "EMPLOYEE") return "/allocations";
-  return "/select-team";
-}
 
 const lifecycleUserSelect = {
   id: true,
@@ -108,7 +77,7 @@ function presentUser(user: any) {
     section: assignedSection,
     requiresSectionSelection,
     capabilities: capabilitiesFor(user.role),
-    landingPath: landingPath(user.role),
+    landingPath: landingPathFor(user.role),
   };
 }
 
@@ -138,7 +107,6 @@ authRouter.post("/login", async (req, res) => {
     select: { ...lifecycleUserSelect, passwordHash: true },
   });
   const emailUser = emailCandidate
-    && emailCandidate.employeeId == null
     && ["ADMIN", "HR", "HOD", "PM", "FINANCE"].includes(emailCandidate.role)
       ? emailCandidate
       : null;

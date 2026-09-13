@@ -704,6 +704,10 @@ async function applyReject(ids: number[], userId: number, role: string, departme
       errors.push({ id, error: `Cannot reject from status ${day.status} as Project Head` });
       continue;
     }
+    if (role === "ADMIN" && !["SUBMITTED", "HOD_APPROVED"].includes(day.status)) {
+      errors.push({ id, error: `Cannot reject from status ${day.status} as Admin` });
+      continue;
+    }
 
     const hasProtected = day.entries.some((e) => isProtectedEntryStatus(e.status));
     // Amendment reject: bounce only the newly submitted slots; keep prior approvals intact.

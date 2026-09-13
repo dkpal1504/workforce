@@ -18,5 +18,5 @@ export const defaultWorkforceCredentialState = {
 } as const;
 
 export function usesEcNoLogin(role: string, employeeId: number | null | undefined): boolean {
-  return employeeId != null && (role === "EMPLOYEE" || role === "SUPERVISOR");
+  return employeeId != null && ["EMPLOYEE", "SUPERVISOR", "HOD", "PM"].includes(role);
 }

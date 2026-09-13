@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 import "../styles/summary.css";
 
@@ -34,6 +35,16 @@ type JoRow = {
   consumptionPct: number;
   balance: number;
 };
+type DecisionItem = {
+  id: string;
+  source: "SUPERVISOR_TIMESHEET" | "MY_HOURS";
+  employee: { name: string; ecNo: string; department: { name: string } };
+  workDate: string;
+  status: string;
+  hours: number;
+  decision: { action: string; comment: string | null; at: string; by: string; role: string } | null;
+};
+
 type JoGroup = {
   projectId: number;
   projectName: string;
@@ -43,6 +54,9 @@ type JoGroup = {
 };
 
 export function SummaryPage() {
+  const { user } = useAuth();
+  const employeeView = user?.role === "EMPLOYEE";
+  const canViewCost = ["HOD", "PM", "FINANCE", "ADMIN"].includes(user?.role ?? "");
   const [tab, setTab] = useState<Tab>("project");
 
   // Project Summary state
@@ -57,6 +71,7 @@ export function SummaryPage() {
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
+  const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [totals, setTotals] = useState<Record<string, number>>({});
   const [projectOtTotals, setProjectOtTotals] = useState<Record<string, number>>({});
   const [grandTotal, setGrandTotal] = useState(0);
@@ -77,6 +92,10 @@ export function SummaryPage() {
   useEffect(() => {
     api<{ projects: Project[] }>("/projects-wbs").then((d) => setAllProjects(d.projects));
   }, []);
+
+  useEffect(() => {
+    if (employeeView) { setGroupBy("employee"); setView("hours"); }
+  }, [employeeView]);
 
   // Job Order Summary needs a list of (new) Projects for the Select Projects multi-select,
   // and a list of departments for the Department filter.
@@ -119,6 +138,8 @@ export function SummaryPage() {
       setProjectOtTotals(data.projectOtTotals ?? {});
       setGrandTotal(data.grandTotal);
       setOverheadTotal(view === "cost" ? data.overheadTotalCost ?? 0 : data.overheadTotalHours ?? 0);
+      const decisionData = await api<{ items: DecisionItem[] }>(`/summary/decisions?date=${date}&frequency=${frequency}`);
+      setDecisions(decisionData.items ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load summary");
     }
@@ -220,6 +241,7 @@ export function SummaryPage() {
 
   return (
     <>
+      {employeeView && <div className="carry-banner">Only your final approved My Hours are shown.</div>}
       {/* Tab bar — Project Summary | Job Order Summary */}
       <div className="hod-tabs" role="tablist" aria-label="Summary views">
         <button
@@ -231,7 +253,7 @@ export function SummaryPage() {
         >
           Project Summary
         </button>
-        <button
+        {!employeeView && <button
           type="button"
           role="tab"
           className={`hod-tab ${tab === "jobOrder" ? "active" : ""}`}
@@ -239,7 +261,7 @@ export function SummaryPage() {
           onClick={() => setTab("jobOrder")}
         >
           Job Order Summary
-        </button>
+        </button>}
       </div>
 
       {tab === "project" && (
@@ -278,7 +300,7 @@ export function SummaryPage() {
           </div>
 
           <div className="summary-toggles">
-            <div className="toggle-group">
+            {!employeeView && <div className="toggle-group">
               {(
                 [
                   ["employee", "Group by Employee"],
@@ -296,18 +318,31 @@ export function SummaryPage() {
                   {label}
                 </button>
               ))}
-            </div>
+            </div>}
             <div className="toggle-group">
               <button type="button" className={view === "hours" ? "active" : ""} onClick={() => setView("hours")}>
                 Hours View
               </button>
-              <button type="button" className={view === "cost" ? "active" : ""} onClick={() => setView("cost")}>
+              {canViewCost && <button type="button" className={view === "cost" ? "active" : ""} onClick={() => setView("cost")}>
                 Cost View
-              </button>
+              </button>}
             </div>
           </div>
 
           {error && <div className="error-banner">{error}</div>}
+
+          <section className="panel" style={{ marginBottom: 16 }}>
+            <div className="panel__header"><span>Timesheet decisions</span><span className="panel__count">{decisions.length}</span></div>
+            <div className="summary-table-wrap">
+              <table className="summary-table">
+                <thead><tr><th>Employee</th><th>Department</th><th>Date</th><th>Source</th><th>Hours</th><th>Status</th><th>Decision</th><th>Comment</th></tr></thead>
+                <tbody>
+                  {decisions.map((item) => <tr key={item.id}><td>{item.employee.name} ({item.employee.ecNo})</td><td>{item.employee.department.name}</td><td>{item.workDate}</td><td>{item.source === "MY_HOURS" ? "My Hours" : "Supervisor Timesheet"}</td><td>{item.hours}</td><td>{item.status}</td><td>{item.decision ? `${item.decision.action} · ${item.decision.by}` : "—"}</td><td>{item.decision?.comment || "—"}</td></tr>)}
+                  {decisions.length === 0 && <tr><td colSpan={8} className="empty-cell">No approved or rejected timesheets in this period.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           <div className="summary-table-wrap summary-desktop-only">
             <table className="summary-table">

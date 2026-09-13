@@ -91,6 +91,25 @@ type PendingPayload = {
   returnedByPlanning: ReturnedRow[];
 };
 
+
+type PayrollAllocationDay = {
+  id: number;
+  workDate: string;
+  status: string;
+  remarks: string | null;
+  employee: { id: number; name: string; ecNo: string; department: { name: string } };
+  allocations: { id: number; shiftSlot: string; project: { name: string }; jobOrder: { code: string; name: string } | null }[];
+};
+
+type PayrollApproval = {
+  id: number;
+  action: string;
+  comment: string | null;
+  resultingStatus: string;
+  createdAt: string;
+  allocationDay: PayrollAllocationDay;
+};
+
 type JobOrderConsumptionRow = {
   jobOrderId: number;
   code: string;
@@ -193,6 +212,8 @@ export function ApprovalsPage() {
   const [returned, setReturned] = useState<ReturnedRow[]>([]);
   const [jobOrderRows, setJobOrderRows] = useState<JobOrderConsumptionRow[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [payrollPending, setPayrollPending] = useState<PayrollAllocationDay[]>([]);
+  const [payrollHistory, setPayrollHistory] = useState<PayrollApproval[]>([]);
   const [roleLabel, setRoleLabel] = useState("HOD");
   const [maxDailyHours, setMaxDailyHours] = useState(8);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -253,6 +274,8 @@ export function ApprovalsPage() {
       setReturned(data.returnedByPlanning || []);
       setRoleLabel(data.roleLabel);
       setMaxDailyHours(data.maxDailyHours);
+      const payroll = await api<{ days: PayrollAllocationDay[] }>("/allocations/pending");
+      setPayrollPending(payroll.days ?? []);
       setExpanded((prev) => {
         const next = { ...prev };
         for (const g of data.received) {
@@ -282,6 +305,8 @@ export function ApprovalsPage() {
     try {
       const data = await api<{ items: HistoryItem[]; roleLabel: string }>("/approvals/history");
       setHistory(data.items);
+      const payroll = await api<{ approvals: PayrollApproval[] }>("/allocations/history");
+      setPayrollHistory(payroll.approvals ?? []);
       setRoleLabel(data.roleLabel);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load approval history");
@@ -354,6 +379,19 @@ export function ApprovalsPage() {
     }
   }
 
+  async function actPayroll(id: number, action: "approve" | "reject") {
+    const comment = action === "reject" ? window.prompt("Rejection comment")?.trim() : "";
+    if (action === "reject" && !comment) return;
+    setError("");
+    try {
+      await api(`/allocations/${id}/${action}`, { method: "POST", body: JSON.stringify({ comment: comment || undefined }) });
+      setMessage(action === "approve" ? "My Hours approved." : "My Hours rejected.");
+      await loadPending();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Action failed");
+    }
+  }
+
   async function actOne(id: number, action: "approve" | "reject") {
     await batchAct(action, [id], comments[id]);
   }
@@ -420,6 +458,23 @@ export function ApprovalsPage() {
 
       {tab === "pending" && (
         <>
+          <section className="hod-section">
+            <div className="hod-section__header"><h3>Payroll Employee My Hours</h3></div>
+            <div className="hod-table-wrap">
+              <table className="hod-table">
+                <thead><tr><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Projects / Job Orders</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {payrollPending.map((day) => <tr key={day.id}>
+                    <td>{day.employee.name} <span className="muted">({day.employee.ecNo})</span></td>
+                    <td>{day.employee.department.name}</td><td>{day.workDate.slice(0, 10)}</td><td>{day.allocations.length * 2}</td>
+                    <td>{day.allocations.map((slot) => `${slot.project.name}${slot.jobOrder ? ` / ${slot.jobOrder.code}` : ""}`).join(", ")}</td>
+                    <td><button className="btn btn-approve" onClick={() => void actPayroll(day.id, "approve")}>Approve</button>{" "}<button className="btn btn-reject" onClick={() => void actPayroll(day.id, "reject")}>Reject</button></td>
+                  </tr>)}
+                  {!loading && payrollPending.length === 0 && <tr><td colSpan={6} className="empty-cell">No payroll My Hours submissions pending.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
           <section className="hod-section">
             <div className="hod-section__header">
               <h3>{isProjectHead ? "Received from HOD" : "Received from Supervisors"}</h3>
@@ -1295,6 +1350,16 @@ export function ApprovalsPage() {
               All decisions you have taken as {roleLabel}.
             </p>
           </div>
+          <div className="hod-table-wrap" style={{ marginBottom: 20 }}>
+            <table className="hod-table">
+              <thead><tr><th>When</th><th>Action</th><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Status</th><th>Comment</th></tr></thead>
+              <tbody>
+                {payrollHistory.map((item) => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleString()}</td><td>{item.action}</td><td>{item.allocationDay.employee.name}</td><td>{item.allocationDay.employee.department.name}</td><td>{item.allocationDay.workDate.slice(0,10)}</td><td>{item.allocationDay.allocations.length * 2}</td><td>{item.resultingStatus}</td><td>{item.comment || "—"}</td></tr>)}
+                {!loading && payrollHistory.length === 0 && <tr><td colSpan={8} className="empty-cell">No payroll My Hours decisions recorded.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <h4>Contract labour timesheets</h4>
           <div className="hod-table-wrap hod-desktop-only">
             <table className="hod-table">
               <thead>
