@@ -1,6 +1,16 @@
 \set ON_ERROR_STOP on
--- Complete PostgreSQL schema generated from apps/api/prisma/schema.prisma.
--- Run while connected as the application role to an empty database.
+-- Baseline PostgreSQL schema generated from apps/api/prisma/schema.prisma at the
+-- 2026-09-13 baseline. Run while connected as the application role to an empty database.
+--
+-- !! THIS FILE IS FROZEN AT THE BASELINE AND IS NOT THE CURRENT SCHEMA !!
+-- It does not contain later migrations, notably:
+--   * users.section_id            (20260915000000_hod_section_and_org_transfer)
+--   * employee_organisation_overrides (same migration)
+--   * hod_delegations             (20260916000000_hod_approval_delegation)
+-- After running this file you MUST apply the remaining migrations
+-- (`npx prisma migrate deploy`), or HOD scoping and HOD approval cover will not work.
+-- The authoritative schema is apps/api/prisma/migrations/ — see docs/PRODUCTION_DEPLOYMENT.md
+-- (Schema option B and C).
 BEGIN;
 -- CreateTable
 CREATE TABLE "users" (
