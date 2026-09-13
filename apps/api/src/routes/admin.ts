@@ -1,6 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
@@ -14,6 +15,16 @@ export const adminRouter = Router();
 
 function workforceCredentialRecipient(): string {
   return process.env.CREDENTIAL_DELIVERY_RECIPIENT?.trim() || "itsupport.shipyard@swan.co.in";
+}
+
+/** A LabourWorks-style login handle (`<ecNo>@sync.local`) for accounts that share the ecNo pool. */
+async function uniqueSyncEmail(tx: Prisma.TransactionClient, ecNo: string): Promise<string> {
+  const local = ecNo.toLowerCase().replace(/[^a-z0-9._-]/g, "_") || "user";
+  let email = `${local}@sync.local`;
+  for (let suffix = 1; await tx.user.findUnique({ where: { email }, select: { id: true } }); suffix += 1) {
+    email = `${local}.${suffix}@sync.local`;
+  }
+  return email;
 }
 
 async function uniqueEmployeeLoginEmail(ecNo: string): Promise<string> {
@@ -116,6 +127,110 @@ adminRouter.get("/hods", requireRoles("PM", "ADMIN"), async (_req, res) => {
     orderBy: { name: "asc" },
   });
   res.json({ hods });
+});
+
+/**
+ * Active payroll Employees that can be given an HOD account, optionally narrowed
+ * to one Department so the picker only shows valid choices.
+ *
+ * Registering a payroll Employee always creates an EMPLOYEE account, so that
+ * account is included here: it is the normal starting point for promotion to HOD.
+ * Only SUPERVISOR/ADMIN/HR/PM/FINANCE accounts are withheld — those are not
+ * silently re-roled.
+ */
+adminRouter.get("/hod-candidates", requireRoles("PM", "ADMIN"), async (req, res) => {
+  const departmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const candidates = await prisma.employee.findMany({
+    where: {
+      active: true,
+      employmentType: "PAYROLL",
+      ...(departmentId ? { departmentId } : {}),
+      OR: [{ user: null }, { user: { role: { in: ["EMPLOYEE", "HOD"] } } }],
+    },
+    select: {
+      id: true, ecNo: true, name: true, designation: true, departmentId: true,
+      department: { select: { id: true, name: true } },
+      sectionAssignment: { select: { sectionId: true, section: { select: { id: true, name: true, code: true } } } },
+      user: { select: { id: true, role: true, active: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+  res.json({ candidates });
+});
+
+/** Promote an existing active payroll Employee into an HOD scoped to one Department/Section. */
+adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
+  const employeeId = Number(req.body?.employeeId);
+  const departmentId = Number(req.body?.departmentId);
+  const sectionId = Number(req.body?.sectionId);
+  if (!employeeId || !departmentId || !sectionId) {
+    return res.status(400).json({ error: "employeeId, departmentId and sectionId are required." });
+  }
+  const [employee, section] = await Promise.all([
+    prisma.employee.findUnique({ where: { id: employeeId }, include: { sectionAssignment: true, user: true } }),
+    prisma.section.findFirst({ where: { id: sectionId, departmentId, active: true, department: { active: true } } }),
+  ]);
+  if (!employee) return res.status(404).json({ error: "Employee not found." });
+  if (!employee.active) return res.status(409).json({ error: "Employee is not active.", code: "INACTIVE_EMPLOYEE" });
+  // HOD approval and creation permissions need an ecNo login, so the linked Employee
+  // must be payroll (usesEcNoLogin) rather than a CLMS contract worker.
+  if (employee.employmentType !== "PAYROLL") {
+    return res.status(400).json({ error: "Only a payroll Employee can be registered as HOD.", code: "INVALID_EMPLOYEE" });
+  }
+  if (!section) return res.status(400).json({ error: "Select an active Section in the Department.", code: "INVALID_SCOPE" });
+  if (employee.departmentId !== departmentId) {
+    return res.status(400).json({ error: "The Employee's Department must match the selected Department.", code: "WRONG_DEPARTMENT" });
+  }
+  if (employee.sectionAssignment && employee.sectionAssignment.sectionId !== sectionId) {
+    return res.status(400).json({ error: "The Employee's Section must match the selected Section.", code: "WRONG_SECTION" });
+  }
+  if (employee.user && !["EMPLOYEE", "HOD"].includes(employee.user.role)) {
+    return res.status(409).json({ error: `This Employee already has a ${employee.user.role} account.`, code: "ROLE_CONFLICT" });
+  }
+
+  const ecNo = employee.ecNo;
+  const passwordHash = await hashDefaultWorkforcePassword();
+  const result = await prisma.$transaction(async (tx) => {
+    if (!employee.sectionAssignment) {
+      await tx.employeeSectionAssignment.create({ data: { employeeId, sectionId, source: "MANUAL" } });
+    }
+    if (employee.user) {
+      // Promote in place, or re-map an existing HOD. The EMPLOYEE login handle is
+      // kept so the person can still open My Hours with the same credentials; the
+      // ecNo works as a login id as well (usesEcNoLogin) and is what HODs use.
+      const user = await tx.user.update({
+        where: { id: employee.user.id },
+        data: { role: "HOD", departmentId, sectionId, name: employee.name, active: true, tokenVersion: { increment: 1 } },
+      });
+      await tx.credentialDelivery.updateMany({
+        where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } },
+        data: { status: "CANCELLED", lastError: "Superseded by a new HOD credential request." },
+      });
+      await tx.credentialDelivery.create({ data: { userId: user.id, recipient: user.email, purpose: "HOD_SCOPE_UPDATE" } });
+      return { user, created: false };
+    }
+    const user = await tx.user.create({
+      data: {
+        employeeId,
+        email: await uniqueSyncEmail(tx, ecNo),
+        passwordHash,
+        name: employee.name,
+        role: "HOD",
+        source: "MANUAL",
+        departmentId,
+        sectionId,
+        ...defaultWorkforceCredentialState,
+      },
+    });
+    await tx.credentialDelivery.create({ data: { userId: user.id, recipient: user.email, purpose: "INITIAL" } });
+    return { user, created: true };
+  });
+
+  await writeAudit(req.user!.id, "HOD_REGISTER", "user", result.user.id, {
+    employeeId, ecNo, departmentId, sectionId, credentialQueued: true,
+  });
+  const { passwordHash: _passwordHash, ...safeUser } = result.user;
+  res.status(result.created ? 201 : 200).json({ user: safeUser, credentialQueued: true, created: result.created });
 });
 
 /** Map an HOD to exactly one Department/Section scope. */

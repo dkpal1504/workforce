@@ -1,9 +1,13 @@
-import { hashDefaultWorkforcePassword } from "../src/services/defaultLoginCredentials";
+import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
 async function main() {
+  if (process.env.NODE_ENV === "production") throw new Error("Demo seed is disabled in production.");
+  const devPassword = process.env.DEV_SEED_PASSWORD || "WorkforceDev@2026";
+  const passwordHash = await bcrypt.hash(devPassword, 10);
+
   await prisma.auditLog.deleteMany();
   await prisma.employeeAllocation.deleteMany();
   await prisma.employeeAllocationApproval.deleteMany();
@@ -65,15 +69,21 @@ async function main() {
   const firstInitials = ["D", "A", "R", "S", "M", "V", "P", "K", "J", "N"];
 
   const employees = [];
+  const supervisorEmployeeIndexes = new Set([0, 5, 6, 13, 16, 17]);
+  const payrollEmployeeIndexes = new Set([10, 11, 12]);
   for (let i = 1; i <= 20; i++) {
+    const employeeIndex = i - 1;
+    const isSupervisor = supervisorEmployeeIndexes.has(employeeIndex);
+    const isPayroll = payrollEmployeeIndexes.has(employeeIndex);
     const dept = i <= 13 ? hull : i <= 16 ? blast : repair;
     const emp = await prisma.employee.create({
       data: {
         ecNo: `EC${1000 + i}`,
         name: `Emp ${i} — ${firstInitials[(i - 1) % firstInitials.length]}. ${surnames[(i - 1) % surnames.length]}`,
         departmentId: dept.id,
-        designation: i % 3 === 0 ? "Welder" : i % 3 === 1 ? "Fitter" : "Helper",
-        category: i % 3 === 0 ? "ON_ROLL" : i % 3 === 1 ? "ASSOCIATE" : "CONTRACTOR",
+        designation: isSupervisor ? "Supervisor" : i % 3 === 0 ? "Welder" : i % 3 === 1 ? "Fitter" : "Helper",
+        category: isPayroll ? "ON_ROLL" : "CONTRACTOR",
+        employmentType: isPayroll ? "PAYROLL" : "CLMS",
       },
     });
     employees.push(emp);
@@ -83,7 +93,6 @@ async function main() {
     });
   }
 
-  const passwordHash = await hashDefaultWorkforcePassword();
 
   const sharma = await prisma.user.create({
     data: {
@@ -144,6 +153,17 @@ async function main() {
       name: "Finance User",
       role: "FINANCE",
       departmentId: hull.id,
+    },
+  });
+
+  await prisma.user.create({
+    data: {
+      email: "employee@company.com",
+      passwordHash,
+      name: employees[10].name,
+      role: "EMPLOYEE",
+      departmentId: hull.id,
+      employeeId: employees[10].id,
     },
   });
 
@@ -253,11 +273,12 @@ async function main() {
   const yesterdayUtc = new Date(todayUtc);
   yesterdayUtc.setUTCDate(yesterdayUtc.getUTCDate() - 1);
 
-  for (let i = 0; i < 5; i++) {
+  const sharmaTeamIndexes = [1, 2, 3, 4, 7];
+  for (const employeeIndex of sharmaTeamIndexes) {
     await prisma.dailyTeamSelection.create({
       data: {
         supervisorId: sharma.id,
-        employeeId: employees[i].id,
+        employeeId: employees[employeeIndex].id,
         workDate: yesterdayUtc,
         source: "ADDED",
       },
@@ -336,7 +357,9 @@ async function main() {
 
   for (let i = 6; i < employees.length; i++) {
     const emp = employees[i];
-    const sup = allSupervisors[i % allSupervisors.length];
+    if (emp.employmentType !== "CLMS") continue;
+    const supervisorsInDepartment = allSupervisors.filter((supervisor) => supervisor.departmentId === emp.departmentId);
+    const sup = supervisorsInDepartment[i % supervisorsInDepartment.length];
     const pattern = patterns[i % patterns.length];
     const dayId = await ensureDay(emp.id, sup.id, "SUBMITTED", null);
     for (let pi = 0; pi < pattern.keys.length; pi++) {
@@ -631,11 +654,11 @@ async function main() {
   });
 
   // Supervisor inbox demo: HOD rejected / sent back to R. Sharma (needs correction + resubmit)
-  for (let i = 0; i < 5; i++) {
+  for (const employeeIndex of sharmaTeamIndexes) {
     await prisma.dailyTeamSelection.create({
       data: {
         supervisorId: sharma.id,
-        employeeId: employees[i].id,
+        employeeId: employees[employeeIndex].id,
         workDate: demoDate,
         source: "CARRIED_OVER",
       },
@@ -669,10 +692,11 @@ async function main() {
   });
 
   console.log("Seed complete.");
-  console.log("Login: EC1001 / password@SDHI");
-  console.log("HOD: hod@company.com / password@SDHI");
-  console.log("Project Head: pm@company.com / password@SDHI");
-  console.log("Admin: admin@company.com / password@SDHI");
+  console.log(`Employee: EC1011 / ${devPassword}`);
+  console.log(`Supervisor: EC1001 / ${devPassword}`);
+  console.log(`HOD: hod@company.com / ${devPassword}`);
+  console.log(`Project Head: pm@company.com / ${devPassword}`);
+  console.log(`Admin: admin@company.com / ${devPassword}`);
 }
 
 main()

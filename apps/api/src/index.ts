@@ -19,12 +19,23 @@ import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
 import { employeeAllocationRouter } from "./routes/employeeAllocation";
 import { csvUploadRouter } from "./routes/csvUpload";
+import { delegationRouter } from "./routes/delegations";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { prisma } from "./db";
 
 const app = express();
 const port = Number(process.env.API_PORT || 4000);
 const host = process.env.API_HOST || "0.0.0.0";
+const databaseUrl = process.env.DATABASE_URL || "";
+// `file:` URLs select the local test database (SQLite dev build only). They are
+// rejected outright in production, where a PostgreSQL URL is required.
+const isLocalTestDb = databaseUrl.startsWith("file:");
+if (isLocalTestDb && process.env.NODE_ENV === "production") {
+  throw new Error("SQLite is not permitted in production. A PostgreSQL DATABASE_URL is required.");
+}
+if (!isLocalTestDb && !databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://")) {
+  throw new Error("DATABASE_URL must be a PostgreSQL URL, or a file: URL for local SQLite testing.");
+}
 let shuttingDown = false;
 
 app.disable("x-powered-by");
@@ -56,13 +67,24 @@ app.use(cors({
   },
 }));
 app.use(express.json({ limit: "2mb" }));
-app.use("/api/auth/login", rateLimit({
-  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-  limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 10),
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  message: { error: "Too many login attempts. Try again later.", code: "RATE_LIMITED" },
-}));
+// Brute-force protection on login. In production the strict default matters, so it
+// stays enforced unless it is disabled explicitly. For local testing set
+// AUTH_RATE_LIMIT_ENABLED=false in .env to remove it.
+const authRateLimitEnabled = process.env.AUTH_RATE_LIMIT_ENABLED !== "false";
+if (!authRateLimitEnabled && process.env.NODE_ENV === "production") {
+  throw new Error("AUTH_RATE_LIMIT_ENABLED must be true in production.");
+}
+if (authRateLimitEnabled) {
+  app.use("/api/auth/login", rateLimit({
+    windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
+    limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 10),
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many login attempts. Try again later.", code: "RATE_LIMITED" },
+  }));
+} else {
+  console.warn("[auth] Login rate limiting is DISABLED (AUTH_RATE_LIMIT_ENABLED=false). Local testing only — never use this in production.");
+}
 
 const live = (_req: express.Request, res: express.Response) =>
   res.status(shuttingDown ? 503 : 200).json({ ok: !shuttingDown });
@@ -95,6 +117,7 @@ api.use("/admin", adminRouter);
 api.use("/supervisors", supervisorRegistrationRouter);
 api.use("/allocations", employeeAllocationRouter);
 api.use("/csv-upload", csvUploadRouter);
+api.use("/delegations", delegationRouter);
 app.use("/api", api);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

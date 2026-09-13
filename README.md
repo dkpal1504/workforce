@@ -9,25 +9,76 @@ React + Node.js (Express/TypeScript) + PostgreSQL app for manpower allocation, t
 
 ## Quick start
 
-Create a PostgreSQL database and set `DATABASE_URL` first. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path. The enforced role matrix is documented in [`docs/ROLE_BASED_ACCESS.md`](docs/ROLE_BASED_ACCESS.md).
+Local development testing can run against SQLite — no database server, no Docker. The API rejects SQLite outright when `NODE_ENV=production`, so this cannot leak into a deployment.
 
-```bash
+```powershell
+# 1. Point the app at the local SQLite file (both files: the API loads the root .env first)
+#    .env                         -> DATABASE_URL="file:./dev.db"
+# 2. Build, generate the Prisma client, create/update the SQLite schema, seed demo data
 npm install
-npm run build -w @workforce/shared
-npm run db:generate -w @workforce/api
-npm run db:migrate -w @workforce/api
-npm run db:seed -w @workforce/api
+npm run db:setup
+```
 
+Then start the two application processes in separate terminals:
+
+```powershell
 npm run dev:api
+```
+
+```powershell
 npm run dev:web
 ```
+
+`npm run db:setup` is provider-aware: with a `file:` URL it runs `prisma db push` against SQLite, with a PostgreSQL URL it runs `prisma migrate deploy` exactly as production does. The database file is `apps/api/prisma/dev.db`.
+
+### Setting a password for a new account
+
+Accounts created through the UI (payroll Employee, HOD, Supervisor) get an unknown
+random password and a queued credential-e-mail row. With
+`CREDENTIAL_DELIVERY_ENABLED=false` nothing is mailed, so set one locally:
+
+```bash
+node apps/api/set-dev-password.cjs EC1013                 # -> password@SDHI
+node apps/api/set-dev-password.cjs EC1013 MyPassword@1
+```
+
+### LabourWorks sync (optional)
+
+`apps/api/run-sync-once.cjs` pulls the real BadgeView data into the SQLite dev
+database and gives every provisioned account the password `password@SDHI`, with
+no credential e-mail. See [`docs/DEV_SQLITE_TESTING.md`](docs/DEV_SQLITE_TESTING.md).
+The twice-daily scheduler stays off (`BADGEVIEW_SYNC_ENABLED=false`).
+
+### Switching back to PostgreSQL for development
+
+`apps/api/prisma/schema.postgresql.prisma` holds the production (PostgreSQL) schema that `prisma/migrations` were generated from. To go back:
+
+```powershell
+Copy-Item apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma
+# set DATABASE_URL to the PostgreSQL URL in .env, then:
+npm run db:generate
+npm run dev:db:up     # Docker Desktop on port 5433
+npm run db:setup
+```
+
+The local PostgreSQL container avoids a conflict with an existing PostgreSQL service on port `5432` by publishing `5433`.
+
+Keep `BADGEVIEW_SYNC_ENABLED=false` and `CREDENTIAL_DELIVERY_ENABLED=false` until you intentionally test those external integrations. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path. The enforced role matrix is documented in [`docs/ROLE_BASED_ACCESS.md`](docs/ROLE_BASED_ACCESS.md).
 
 - Web: http://localhost:5173
 - API: http://localhost:4000
 
 ### Demo data
 
-The seed command is for local demos only and must not be used in production.
+The seed command is for local demos only and is blocked when `NODE_ENV=production`. The default development password is `WorkforceDev@2026` and can be changed with `DEV_SEED_PASSWORD` before running the seed.
+
+| Role | Login |
+|---|---|
+| Employee | `EC1011` |
+| Supervisor | `EC1001` |
+| HOD | `hod@company.com` |
+| Project Head | `pm@company.com` |
+| Admin | `admin@company.com` |
 
 Daily hour limit is controlled by `MAX_DAILY_HOURS` in `.env` (default `8`). Overtime requires Remarks, shown to HOD on Approvals.
 
@@ -71,7 +122,10 @@ cd c:\data\comp\workforce
 # If node_modules was installed in WSL, reinstall once on Windows:
 # Remove-Item -Recurse -Force node_modules; npm install
 
-npm run db:setup   # first time only
+# Start Docker Desktop first.
+Copy-Item .env.development.example .env
+npm run dev:db:up
+npm run db:setup   # first time only; applies migrations and loads demo data
 npm run dev:api    # terminal 1 — listens on 0.0.0.0:4000
 npm run dev:web    # terminal 2 — listens on 0.0.0.0:5173
 ```

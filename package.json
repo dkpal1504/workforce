@@ -9,6 +9,8 @@
     "dev": "npm run dev --workspaces --if-present",
     "dev:api": "npm run dev -w @workforce/api",
     "dev:web": "npm run dev -w @workforce/web",
+    "dev:db:up": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "dev:db:down": "docker compose -f infra/docker/docker-compose.yml down",
     "build": "npm run build --workspaces --if-present",
     "db:generate": "npm run db:generate -w @workforce/api",
     "db:migrate": "npm run db:migrate -w @workforce/api",

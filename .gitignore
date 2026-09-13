@@ -3,13 +3,13 @@ dist/
 build/
 .env
 .env.local
+.env.sqlite
 *.log
 .DS_Store
 coverage/
 playwright-report/
 test-results/
-apps/api/prisma/*.db
-apps/api/prisma/*.db-journal
+apps/api/prisma/*.db*
 .turbo/
 *.tsbuildinfo
 

@@ -1,0 +1,578 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                      Int         @id @default(autoincrement())
+  email                   String      @unique
+  passwordHash            String      @map("password_hash")
+  name                    String
+  role                    String
+  /// 'SYNC' = provisioned from LabourWorks; 'MANUAL' = application-managed account.
+  source                  String      @default("MANUAL")
+  employeeId              Int?        @unique @map("employee_id")
+  employee                Employee?   @relation(fields: [employeeId], references: [id])
+  departmentId            Int?        @map("department_id")
+  department              Department? @relation(fields: [departmentId], references: [id])
+  sectionId               Int?        @map("section_id")
+  scopeSection            Section?    @relation("UserScopeSection", fields: [sectionId], references: [id])
+  active                  Boolean     @default(true)
+  mustChangePassword      Boolean     @default(false) @map("must_change_password")
+  tokenVersion            Int         @default(0) @map("token_version")
+  passwordExpiresAt       DateTime?   @map("password_expires_at")
+  credentialProvisionedAt DateTime?   @map("credential_provisioned_at")
+  credentialSentAt        DateTime?   @map("credential_sent_at")
+  createdAt               DateTime    @default(now()) @map("created_at")
+  updatedAt               DateTime    @updatedAt @map("updated_at")
+
+  teamSelections             DailyTeamSelection[]
+  timesheetDays              TimesheetDay[]          @relation("TaggedBy")
+  timesheetEntries           TimesheetEntry[]        @relation("TaggedBy")
+  approvalsGiven             Approval[]              @relation("Approver")
+  conflictsAsSup1            Conflict[]              @relation("Supervisor1")
+  conflictsAsSup2            Conflict[]              @relation("Supervisor2")
+  conflictsResolved          Conflict[]              @relation("ResolvedBy")
+  auditLogs                  AuditLog[]
+  allocationsGiven           EmployeeAllocation[]    @relation("EmployeeAllocationAllocatedBy")
+  allocationDaysApproved     EmployeeAllocationDay[]      @relation("EmployeeAllocationApprover")
+  allocationApprovalsGiven   EmployeeAllocationApproval[] @relation("EmployeeAllocationApprovalApprover")
+  manpowerRequestsRequested  ManpowerRequest[]       @relation("RequestedBy")
+  manpowerRequestsAssigned   ManpowerRequest[]       @relation("AssignedBy")
+  supervisorOverridesCreated SupervisorOverride[]    @relation("SupervisorOverrideCreator")
+  credentialDeliveries       CredentialDelivery[]
+  organisationOverridesCreated EmployeeOrganisationOverride[] @relation("OrganisationOverrideCreator")
+  delegationsAsDelegator     HodDelegation[] @relation("HodDelegationDelegator")
+  delegationsAsDelegate      HodDelegation[] @relation("HodDelegationDelegate")
+  delegationsCreated         HodDelegation[] @relation("HodDelegationCreator")
+
+  @@index([sectionId])
+  @@map("users")
+}
+
+model Department {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  code      String   @unique
+  /// 'SYNC' = auto-created from BadgeView BuName (sync owns these, create-missing
+  /// only, never overwrites manual edits); 'MANUAL' = admin-managed (editable).
+  source    String   @default("MANUAL")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  employees        Employee[]
+  users            User[]
+  manpowerRequests ManpowerRequest[]
+  jobOrders        JobOrder[]
+  sections         Section[]
+  organisationOverrides EmployeeOrganisationOverride[]
+  hodDelegations   HodDelegation[]
+
+  @@map("departments")
+}
+
+model Employee {
+  id             Int        @id @default(autoincrement())
+  ecNo           String     @unique @map("ec_no")
+  name           String
+  departmentId   Int        @map("department_id")
+  department     Department @relation(fields: [departmentId], references: [id])
+  designation    String
+  category       String
+  /// Canonical employee number. For CLMS rows this is LabourWorks IDCardNo.
+  mobile         String?    @map("mobile")
+  /// Origin: 'SYNC' (LabourWorks), 'PAYROLL' (HRMS/manual payroll), or 'MANUAL'.
+  source         String     @default("MANUAL")
+  /// Workforce class: 'CLMS' or 'PAYROLL'.
+  employmentType String     @default("PAYROLL") @map("employment_type")
+  lastSyncedAt   DateTime?  @map("last_synced_at")
+  terminatedAt   DateTime?  @map("terminated_at")
+  /// Raw Nature Of Work value from LabourWorks BadgeView.
+  natureOfWork   String?    @map("nature_of_work")
+  /// Nature of Work -> Grade (Supervisor/Technician/Plumber...). Privilege field:
+  /// grade changes that grant supervisor/approver capability are audited admin
+  /// actions, not sync or self-service side-effects.
+  grade          String?    @map("grade")
+  /// Active = present in the current source snapshot (for SYNC rows) or manually
+  /// active. Soft-depart: departed workers are active=false (hidden from pickers)
+  /// but retained so approved OT/allocations stay on record (liability trail).
+  active         Boolean    @default(true)
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  user                   User?
+  teamSelections         DailyTeamSelection[]
+  timesheetDays          TimesheetDay[]
+  timesheetEntries       TimesheetEntry[]
+  conflicts              Conflict[]
+  attendanceFeed         AttendanceFeed[]
+  manpowerAssignments    ManpowerRequest[]          @relation("AssignedEmployee")
+  employeeAllocations    EmployeeAllocation[]
+  employeeAllocationDays EmployeeAllocationDay[]
+  sectionAssignment      EmployeeSectionAssignment?
+  supervisorOverride     SupervisorOverride?
+  organisationOverride   EmployeeOrganisationOverride?
+
+  @@index([source])
+  @@index([mobile])
+  @@index([active])
+  @@map("employees")
+}
+
+model Section {
+  id           Int        @id @default(autoincrement())
+  departmentId Int        @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id])
+  code         String
+  name         String
+  source       String     @default("MANUAL")
+  active       Boolean    @default(true)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  costCenter          CostCenter?
+  employeeAssignments EmployeeSectionAssignment[]
+  scopedUsers         User[] @relation("UserScopeSection")
+  organisationOverrides EmployeeOrganisationOverride[]
+  hodDelegations      HodDelegation[]
+
+  @@unique([departmentId, code])
+  @@unique([departmentId, name])
+  @@index([departmentId, active])
+  @@map("sections")
+}
+
+model CostCenter {
+  id        Int      @id @default(autoincrement())
+  sectionId Int      @unique @map("section_id")
+  section   Section  @relation(fields: [sectionId], references: [id])
+  code      String   @unique
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([active])
+  @@map("cost_centers")
+}
+
+model EmployeeSectionAssignment {
+  id         Int      @id @default(autoincrement())
+  employeeId Int      @unique @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  sectionId  Int      @map("section_id")
+  section    Section  @relation(fields: [sectionId], references: [id])
+  source     String   @default("MANUAL")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([sectionId])
+  @@map("employee_section_assignments")
+}
+
+/// Audited PM/Admin organisation mapping. For CLMS rows this overrides the
+/// source Department/Section until another explicit remap is made.
+model EmployeeOrganisationOverride {
+  id           Int        @id @default(autoincrement())
+  employeeId   Int        @unique @map("employee_id")
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  departmentId Int        @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id])
+  sectionId    Int        @map("section_id")
+  section      Section    @relation(fields: [sectionId], references: [id])
+  createdById  Int?       @map("created_by")
+  createdBy    User?      @relation("OrganisationOverrideCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  reason       String
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  @@index([departmentId, sectionId])
+  @@map("employee_organisation_overrides")
+}
+
+/// Audited manual promotion of an active CLMS worker to Supervisor.
+model SupervisorOverride {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int       @unique @map("employee_id")
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  createdById Int?      @map("created_by")
+  createdBy   User?     @relation("SupervisorOverrideCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  reason      String
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([revokedAt])
+  @@map("supervisor_overrides")
+}
+
+/// Durable notification queue. Passwords are generated only during delivery and never logged.
+model CredentialDelivery {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recipient String
+  purpose   String
+  status    String    @default("PENDING")
+  attempts  Int       @default(0)
+  lastError String?   @map("last_error")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  sentAt    DateTime? @map("sent_at")
+
+  @@index([status, createdAt])
+  @@map("credential_deliveries")
+}
+
+model SyncException {
+  id           Int       @id @default(autoincrement())
+  sourceSystem String    @map("source_system")
+  externalKey  String    @map("external_key")
+  ecNo         String?   @map("ec_no")
+  mobile       String?
+  errorCode    String    @map("error_code")
+  message      String
+  occurrences  Int       @default(1)
+  status       String    @default("OPEN")
+  firstSeenAt  DateTime  @default(now()) @map("first_seen_at")
+  lastSeenAt   DateTime  @default(now()) @map("last_seen_at")
+  resolvedAt   DateTime? @map("resolved_at")
+
+  @@unique([sourceSystem, externalKey, errorCode])
+  @@index([status, lastSeenAt])
+  @@map("sync_exceptions")
+}
+
+/// Payroll employee manhour allocation (CR#2) — parent day + slot rows.
+///
+/// Project is mandatory; Work Order is optional. OT is NOT applicable to payroll
+/// employees — no OT field exists (structurally incapable of OT).
+///
+/// Lifecycle: DRAFT (assigning slots) -> SUBMITTED (after employee clicks
+/// "Submit for HOD approval") -> HOD_APPROVED / REJECTED. Status-locked: when the
+/// parent day is SUBMITTED/APPROVED, slot edits are rejected at the API.
+///
+/// Owner + role enforcement: an employee allocates only to SELF via the linked
+/// Employee (NOT_OWNER guard); only ADMIN may allocate for another employee.
+model EmployeeAllocationDay {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int       @map("employee_id")
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  workDate    DateTime  @map("work_date")
+  status      String    @default("DRAFT") // DRAFT | SUBMITTED | HOD_APPROVED | REJECTED
+  remarks     String?
+  submittedAt DateTime? @map("submitted_at")
+  approvedAt  DateTime? @map("approved_at")
+  approverId  Int?      @map("approver_id")
+  approver    User?     @relation("EmployeeAllocationApprover", fields: [approverId], references: [id])
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  allocations EmployeeAllocation[]
+  approvals   EmployeeAllocationApproval[]
+
+  @@unique([employeeId, workDate])
+  @@map("employee_allocation_days")
+}
+
+/// One slot row per (employee, day, shift slot). shiftSlot = am1|am2|pm1|pm2 (each 2h).
+/// projectId is mandatory; jobOrderId is optional. No OT field (payroll cannot have OT).
+/// Status lives on the parent day, not on individual slots.
+model EmployeeAllocationApproval {
+  id              Int                   @id @default(autoincrement())
+  allocationDayId Int                   @map("allocation_day_id")
+  allocationDay   EmployeeAllocationDay @relation(fields: [allocationDayId], references: [id], onDelete: Cascade)
+  approverId      Int                   @map("approver_id")
+  approver        User                  @relation("EmployeeAllocationApprovalApprover", fields: [approverId], references: [id])
+  action          String
+  comment         String?
+  resultingStatus String                @map("resulting_status")
+  createdAt       DateTime              @default(now()) @map("created_at")
+
+  @@index([approverId, createdAt])
+  @@index([allocationDayId])
+  @@map("employee_allocation_approvals")
+}
+
+model EmployeeAllocation {
+  id              Int                   @id @default(autoincrement())
+  allocationDayId Int                   @map("allocation_day_id")
+  allocationDay   EmployeeAllocationDay @relation(fields: [allocationDayId], references: [id], onDelete: Cascade)
+  employeeId      Int                   @map("employee_id")
+  employee        Employee              @relation(fields: [employeeId], references: [id])
+  workDate        DateTime              @map("work_date")
+  shiftSlot       String                @map("shift_slot") // am1 | am2 | pm1 | pm2
+  projectId       Int                   @map("project_id")
+  project         Project               @relation(fields: [projectId], references: [id])
+  jobOrderId      Int?                  @map("job_order_id")
+  jobOrder        JobOrder?             @relation(fields: [jobOrderId], references: [id])
+  allocatedById   Int                   @map("allocated_by")
+  allocatedBy     User                  @relation("EmployeeAllocationAllocatedBy", fields: [allocatedById], references: [id])
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+
+  @@unique([allocationDayId, shiftSlot])
+  @@index([employeeId, workDate])
+  @@map("employee_allocations")
+}
+
+model ProjectWbs {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  wbsCode   String   @map("wbs_code")
+  colorKey  String   @map("color_key")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  timesheetEntries TimesheetEntry[]
+  jobOrders        JobOrder[]
+
+  @@map("projects_wbs")
+}
+
+/// Top-level Project — drives the new Job Order master (1900000xxx codes).
+/// Separate from ProjectWbs (which is the legacy Project row used by the
+/// existing Project Summary page); the two are kept in sync by hand for now.
+model Project {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique // PRJ-A / PRJ-N
+  name      String // Project A / Non Project
+  colorKey  String   @map("color_key") // A / B / C / D / N
+  sortOrder Int      @default(0) @map("sort_order")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  jobOrders           JobOrder[]
+  employeeAllocations EmployeeAllocation[]
+
+  @@map("projects")
+}
+
+/// Numeric-coded Job Order (1900000107 Pipe Spool Installation, etc.).
+/// `status` is one of: active, closed, on_hold.
+/// `budgetedHours` is in clock hours; null for Non-Project / Standing JOs.
+model JobOrder {
+  id            Int         @id @default(autoincrement())
+  projectId     Int         @map("project_id")
+  project       Project     @relation(fields: [projectId], references: [id])
+  /// Optional pointer into the legacy ProjectWbs row so existing Project
+  /// Summary totals stay consistent. New code should use projectId directly.
+  projectWbsId  Int?        @map("project_wbs_id")
+  projectWbs    ProjectWbs? @relation(fields: [projectWbsId], references: [id])
+  code          String      @unique // 1900000107 (all-numeric)
+  name          String // Pipe Spool Installation
+  departmentId  Int?        @map("department_id")
+  department    Department? @relation(fields: [departmentId], references: [id])
+  budgetedHours Float?      @map("budgeted_hours")
+  status        String      @default("active") // active | closed | on_hold
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  timesheetEntries    TimesheetEntry[]
+  employeeAllocations EmployeeAllocation[]
+
+  @@index([projectId, status])
+  @@index([departmentId])
+  @@map("job_orders")
+}
+
+model DailyTeamSelection {
+  id           Int       @id @default(autoincrement())
+  supervisorId Int       @map("supervisor_id")
+  supervisor   User      @relation(fields: [supervisorId], references: [id])
+  employeeId   Int       @map("employee_id")
+  employee     Employee  @relation(fields: [employeeId], references: [id])
+  workDate     DateTime  @map("work_date")
+  source       String
+  createdAt    DateTime  @default(now()) @map("created_at")
+  removedAt    DateTime? @map("removed_at")
+
+  @@index([supervisorId, workDate])
+  @@index([employeeId, workDate])
+  @@map("daily_team_selection")
+}
+
+model TimesheetDay {
+  id         Int      @id @default(autoincrement())
+  employeeId Int      @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  workDate   DateTime @map("work_date")
+  taggedById Int      @map("tagged_by")
+  taggedBy   User     @relation("TaggedBy", fields: [taggedById], references: [id])
+  status     String   @default("DRAFT")
+  remarks    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  entries   TimesheetEntry[]
+  approvals Approval[]
+
+  @@unique([employeeId, workDate, taggedById])
+  @@map("timesheet_days")
+}
+
+model TimesheetEntry {
+  id             Int          @id @default(autoincrement())
+  timesheetDayId Int          @map("timesheet_day_id")
+  timesheetDay   TimesheetDay @relation(fields: [timesheetDayId], references: [id], onDelete: Cascade)
+  employeeId     Int          @map("employee_id")
+  employee       Employee     @relation(fields: [employeeId], references: [id])
+  workDate       DateTime     @map("work_date")
+  /// Legacy 13-hour grid (0-12). Kept for backward compat with the existing
+  /// Project Summary / seed rows. New Timesheet Entry writes should use
+  /// `shiftSlot` (am1/am2/pm1/pm2) instead.
+  hourSlot       Int?         @map("hour_slot")
+  /// New 4-shift model: am1 (9a-11a) | am2 (11a-1p) | pm1 (2p-4p) | pm2 (4p-6p).
+  shiftSlot      String?      @map("shift_slot")
+  /// Overtime hours (1-12) for this employee/day. An OT row has shiftSlot=null,
+  /// hourSlot=null, otHours=N, and a jobOrderId. OT is booked to its Project/WBS.
+  /// An OT-only holiday day has zero overhead; mixed days keep regular capacity. One OT row
+  /// per (employee, workDate, taggedById) is enforced in application code (SQLite
+  /// treats NULL as distinct in unique constraints, so the schema can't enforce it).
+  otHours        Int?         @map("ot_hours")
+  projectWbsId   Int?         @map("project_wbs_id")
+  projectWbs     ProjectWbs?  @relation(fields: [projectWbsId], references: [id])
+  jobOrderId     Int?         @map("job_order_id")
+  jobOrder       JobOrder?    @relation(fields: [jobOrderId], references: [id])
+  taggedById     Int          @map("tagged_by")
+  taggedBy       User         @relation("TaggedBy", fields: [taggedById], references: [id])
+  status         String       @default("DRAFT")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  // Legacy hour-slot rows AND new shift-slot rows are unique per (employee, date, supervisor).
+  // Both columns are nullable, but exactly one of hourSlot / shiftSlot is set per row.
+  // SQLite treats NULL as distinct in unique constraints, so the two parallel
+  // constraints don't collide. Application code enforces "exactly one" via Zod.
+  @@unique([employeeId, workDate, hourSlot, taggedById], name: "timesheet_entry_hourSlot_unique")
+  @@unique([employeeId, workDate, shiftSlot, taggedById], name: "timesheet_entry_shiftSlot_unique")
+  @@index([workDate, taggedById])
+  @@index([workDate, jobOrderId])
+  @@map("timesheet_entries")
+}
+
+model Approval {
+  id             Int          @id @default(autoincrement())
+  timesheetDayId Int          @map("timesheet_day_id")
+  timesheetDay   TimesheetDay @relation(fields: [timesheetDayId], references: [id])
+  approverId     Int          @map("approver_id")
+  approver       User         @relation("Approver", fields: [approverId], references: [id])
+  action         String
+  comment        String?
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@map("approvals")
+}
+
+model Conflict {
+  id            Int       @id @default(autoincrement())
+  employeeId    Int       @map("employee_id")
+  employee      Employee  @relation(fields: [employeeId], references: [id])
+  workDate      DateTime  @map("work_date")
+  supervisorId1 Int       @map("supervisor_id_1")
+  supervisor1   User      @relation("Supervisor1", fields: [supervisorId1], references: [id])
+  supervisorId2 Int       @map("supervisor_id_2")
+  supervisor2   User      @relation("Supervisor2", fields: [supervisorId2], references: [id])
+  status        String    @default("OPEN")
+  resolvedById  Int?      @map("resolved_by")
+  resolvedBy    User?     @relation("ResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt    DateTime? @map("resolved_at")
+  detectedAt    DateTime  @default(now()) @map("detected_at")
+
+  @@map("conflicts")
+}
+
+model ManpowerRequest {
+  id                 Int        @id @default(autoincrement())
+  requestingDeptId   Int        @map("requesting_dept_id")
+  requestingDept     Department @relation(fields: [requestingDeptId], references: [id])
+  requestedById      Int        @map("requested_by")
+  requestedBy        User       @relation("RequestedBy", fields: [requestedById], references: [id])
+  headcount          Int
+  workDate           DateTime   @map("work_date")
+  status             String     @default("OPEN")
+  assignedEmployeeId Int?       @map("assigned_employee_id")
+  assignedEmployee   Employee?  @relation("AssignedEmployee", fields: [assignedEmployeeId], references: [id])
+  assignedById       Int?       @map("assigned_by")
+  assignedBy         User?      @relation("AssignedBy", fields: [assignedById], references: [id])
+  notes              String?
+  createdAt          DateTime   @default(now()) @map("created_at")
+
+  @@map("manpower_requests")
+}
+
+model AttendanceFeed {
+  id         Int      @id @default(autoincrement())
+  employeeId Int      @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  workDate   DateTime @map("work_date")
+  present    Boolean
+  source     String   @default("CLMS")
+  importedAt DateTime @default(now()) @map("imported_at")
+
+  @@unique([employeeId, workDate])
+  @@map("attendance_feed")
+}
+
+model CostRate {
+  id            Int       @id @default(autoincrement())
+  category      String
+  ratePerHour   Float     @map("rate_per_hour")
+  effectiveFrom DateTime  @map("effective_from")
+  effectiveTo   DateTime? @map("effective_to")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([category, effectiveFrom])
+  @@map("cost_rates")
+}
+
+/// Delegated HOD approval cover. The delegate must already hold an HOD account for
+/// the same Department+Section (approval authorization is unchanged — this record
+/// makes the cover explicit, time-boxed and auditable). The delegator keeps their
+/// own approval rights.
+model HodDelegation {
+  id             Int        @id @default(autoincrement())
+  delegatorId    Int        @map("delegator_id")
+  delegator      User       @relation("HodDelegationDelegator", fields: [delegatorId], references: [id], onDelete: Cascade)
+  delegateUserId Int        @map("delegate_user_id")
+  delegateUser   User       @relation("HodDelegationDelegate", fields: [delegateUserId], references: [id], onDelete: Cascade)
+  departmentId   Int        @map("department_id")
+  department     Department @relation(fields: [departmentId], references: [id])
+  sectionId      Int        @map("section_id")
+  section        Section    @relation(fields: [sectionId], references: [id])
+  fromDate       DateTime   @map("from_date")
+  toDate         DateTime   @map("to_date")
+  reason         String
+  createdById    Int?       @map("created_by")
+  createdBy      User?      @relation("HodDelegationCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  revokedAt      DateTime?  @map("revoked_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  // No DB unique constraint on (delegate, section, fromDate): a revoked delegation
+  // must remain re-creatable for the same start date (it is retained as history).
+  // Genuine duplicates are rejected by the overlap guard in the POST handler below.
+  @@index([sectionId, fromDate, toDate])
+  @@index([delegatorId, revokedAt])
+  @@index([delegateUserId, sectionId])
+  @@map("hod_delegations")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  metadata   String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@map("audit_log")
+}
