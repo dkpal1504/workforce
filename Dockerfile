@@ -11,6 +11,24 @@ FROM dependencies AS build
 COPY apps/api apps/api
 COPY apps/web apps/web
 COPY packages/shared packages/shared
+# Guard: the image must be built from the PostgreSQL schema. Local development
+# switches apps/api/prisma/schema.prisma to `sqlite` (see
+# apps/api/prisma/schema.postgresql.prisma); shipping that variant would generate a
+# SQLite client and a SQLite datasource for a PostgreSQL deployment. Fail the build
+# instead of deploying something that cannot work.
+RUN set -eux; \
+    schema="apps/api/prisma/schema.prisma"; \
+    tr -d '\r' < "$schema" > /tmp/schema.check; \
+    provider="$(sed -n '/^datasource/,/}/p' /tmp/schema.check | sed -n 's/.*provider *= *"\([a-z]*\)".*/\1/p')"; \
+    echo "datasource provider in $schema: '${provider}'"; \
+    if [ "$provider" != "postgresql" ]; then \
+      printf '%s\n' \
+        "ERROR: $schema declares the '${provider}' datasource provider." \
+        "Production images must be built from the PostgreSQL schema." \
+        "Restore it with:  cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma" \
+        "(and set DATABASE_URL back to the PostgreSQL URL in .env)."; \
+      exit 1; \
+    fi
 RUN npm run db:generate -w @workforce/api \
  && npm run build -w @workforce/shared \
  && npm run build -w @workforce/api \
@@ -19,6 +37,19 @@ RUN npm run db:generate -w @workforce/api \
 FROM dependencies AS migrate
 ENV NODE_ENV=production
 COPY apps/api/prisma apps/api/prisma
+# The migration SQL under prisma/migrations is PostgreSQL dialect, so pin the
+# datasource explicitly. This also overrides the sqlite provider used for local
+# development, and makes the migrate step independent of the committed provider.
+ENV DATABASE_PROVIDER=postgresql
+RUN set -eux; \
+    schema="apps/api/prisma/schema.prisma"; \
+    tr -d '\r' < "$schema" > /tmp/schema.check; \
+    sed -n '/^datasource/,/}/p' /tmp/schema.check | grep -q 'provider *= *"sqlite"' && \
+      sed -i '/^datasource/,/}/s/provider *= *"sqlite"/provider = "postgresql"/' /tmp/schema.check || true; \
+    provider="$(sed -n '/^datasource/,/}/p' /tmp/schema.check | sed -n 's/.*provider *= *"\([a-z]*\)".*/\1/p')"; \
+    echo "migrate stage datasource provider: '${provider}'"; \
+    [ "$provider" = "postgresql" ]; \
+    cp /tmp/schema.check "$schema"
 USER node
 CMD ["npx", "prisma", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
 

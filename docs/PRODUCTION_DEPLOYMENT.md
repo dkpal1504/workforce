@@ -129,11 +129,17 @@ Also required, and easy to miss:
   production, so a dev `.env` copied to the host will not silently work.
 - **The schema provider must be `postgresql`.** Dev builds switch
   `apps/api/prisma/schema.prisma` to `sqlite`; production must ship the PostgreSQL
-  variant. The Docker build generates its client from the committed schema, so verify
-  before building:
-  `grep provider apps/api/prisma/schema.prisma` → must say `postgresql`
-  (restore with `cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma`).
-  This is the single most likely way a dev-mode change reaches production and breaks it.
+  variant. **The image build now enforces this:** the `build` stage reads the
+  datasource provider and fails with an explicit error if it is not `postgresql`, so a
+  dev-mode schema cannot produce a production image. If the build stops with
+  `ERROR: apps/api/prisma/schema.prisma declares the 'sqlite' datasource provider`,
+  restore it and rebuild:
+  ```bash
+  cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma
+  ```
+  The `migrate` stage is additionally pinned: it rewrites `sqlite` → `postgresql`
+  before running `prisma migrate deploy`, because the SQL under `prisma/migrations`
+  is PostgreSQL dialect regardless of what the committed schema says.
 - **Configure `SMTP_*` and `CREDENTIAL_DELIVERY_ENABLED=true`** if you intend to
   onboard users from the UI. With delivery off, the credential queue only accumulates
   and no new Employee/HOD/Supervisor can log in.
