@@ -1,7 +1,8 @@
 # Workforce — Application Manual
 
-> **Version:** CR#2 (`feature/cr2-unified-employee`, `666f35b`)
-> **Scope:** End-user guide + developer/admin reference for the Workforce timesheet, approvals, OT, summary, and CR#2 unified-Employee + slot-based payroll allocations.
+> **Version:** CR#2 unified Employee + HOD scope + HOD approval cover (`feature/cr2-unified-employee`, `6f3eea4`)
+> **Scope:** End-user guide + developer/admin reference for the Workforce timesheet, approvals, OT, summary, CR#2 unified-Employee + slot-based payroll allocations, HOD registration/scope and HOD approval cover (delegation).
+> **Databases:** local development/testing runs on **SQLite**; production runs on **PostgreSQL** (`prisma migrate deploy`). See [14](#14-database--migrations) and [docs/DEV_SQLITE_TESTING.md](DEV_SQLITE_TESTING.md).
 
 ---
 
@@ -12,24 +13,27 @@
 2. [Daily Timesheet (Supervisor)](#2-supervisor-daily-timesheet)
 3. [Approvals (HOD / PM)](#3-approvals-hod--pm)
 4. [My Hours / Allocations (Payroll employees)](#4-my-hours--allocations-payroll)
-5. [Supervisor Registration](#5-supervisor-registration)
-6. [Departments (admin)](#6-departments-admin)
-7. [CSV Upload (admin)](#7-csv-upload-admin)
-8. [Summary Reports](#8-summary-reports)
-9. [BadgeView Sync](#9-badgeview-sync)
+5. [Employee Registration (Admin/PM/HOD)](#5-employee-registration)
+6. [HOD Registration &amp; Department/Section Mapping](#6-hod-registration--departmentsection-mapping)
+7. [HOD Approval Cover (delegation)](#7-hod-approval-cover-delegation)
+8. [Supervisor Registration](#8-supervisor-registration)
+9. [Departments (admin)](#9-departments-admin)
+10. [CSV Upload (admin)](#10-csv-upload-admin)
+11. [Summary Reports](#11-summary-reports)
+12. [BadgeView Sync](#12-badgeview-sync)
 
 **Part II — Developer / Admin Reference**
-10. [Architecture & stack](#10-architecture--stack)
-11. [Repository layout](#11-repository-layout)
-12. [Local setup (WSL Ubuntu)](#12-local-setup-wsl-ubuntu)
-13. [Local setup (PowerShell / Windows)](#13-local-setup-powershell--windows)
-14. [Database & migrations](#14-database--migrations)
-15. [Environment variables](#15-environment-variables)
-16. [Ports & proxy](#16-ports--proxy)
-17. [Schema overview (Prisma)](#17-schema-overview-prisma)
-18. [API endpoints](#18-api-endpoints)
-19. [Security model](#19-security-model)
-20. [Troubleshooting](#20-troubleshooting)
+13. [Architecture & stack](#13-architecture--stack)
+14. [Repository layout](#14-repository-layout)
+15. [Local setup (WSL Ubuntu)](#15-local-setup-wsl-ubuntu)
+16. [Local setup (PowerShell / Windows)](#16-local-setup-powershell--windows)
+17. [Database & migrations](#17-database--migrations)
+18. [Environment variables](#18-environment-variables)
+19. [Ports & proxy](#19-ports--proxy)
+20. [Schema overview (Prisma)](#20-schema-overview-prisma)
+21. [API endpoints](#21-api-endpoints)
+22. [Security model](#22-security-model)
+23. [Troubleshooting](#23-troubleshooting)
 
 ---
 
@@ -39,21 +43,27 @@
 
 The Workforce app runs at **`http://localhost:<web-port>`** (usually `5174` on Windows hosts where `5173` is OS-occupied, or `5173` elsewhere). The API runs on **`http://localhost:<api-port>`** (usually `4100` on Windows where `4000` is occupied, or `4000` elsewhere).
 
-Seeded test accounts (password is the same for all: `password@SDHI`):
+Seeded test accounts. **The password differs by account type** — this is the most common login problem:
+
+| Password | Applies to |
+|---|---|
+| `WorkforceDev@2026` | The seeded demo accounts below (ADMIN, HOD, PM, HR, FINANCE, EMPLOYEE, and the seeded supervisors). Override with `DEV_SEED_PASSWORD` before `npm run db:seed`. |
+| `password@SDHI` | Accounts provisioned by the LabourWorks sync (log in with the EcNo, e.g. `BAPL0251`). On a dev box, set one with `node apps/api/set-dev-password.cjs <ecNo>`. |
 
 | Role | Login | Notes |
 |---|---|---|
-| Supervisor (linked to payroll Employee) | `EC1001` | Submits team timesheets; can self-allocate via "My Hours" |
-| Supervisor | `EC1006` | V. Kulkarni |
-| Supervisor | `EC1007` | S. Menon |
-| Supervisor | `EC1014`, `EC1017`, `EC1018` | Additional supervisors across departments |
-| HOD | `hod@company.com` | Dept 56 (Hull Production) — sees only their department's submissions |
+| Employee | `EC1011` (or `employee@company.com`) | Payroll "My Hours" self-allocation |
+| Supervisor (linked to payroll Employee) | `EC1001` (or `r.sharma@company.com`) | Submits team timesheets; can self-allocate via "My Hours" |
+| Supervisor | `EC1006`, `EC1007`, `EC1014`, `EC1017`, `EC1018` | `sup.a` … `sup.e@company.com` |
+| HOD | `hod@company.com` | Seeded example — mapped to Production - EOU / Hull Production |
 | PM (Project Head) | `pm@company.com` | Central authority — sees all departments, final approval after HOD |
 | Admin | `admin@company.com` | Global visibility, can act at either stage |
-| HR | `hr@company.com` | Read-only on lifecycle (read-only on approval queues) |
+| HR | `hr@company.com` | Legacy screens only (CSV upload, supervisor registration); not a workforce approver |
 | Finance | `finance@company.com` | Cost-rates viewer |
 
 > **Security:** these are **dev-only** credentials. Rotate or disable before any environment that is reachable beyond localhost. In `.env`, set `API_HOST=127.0.0.1` so the API does not bind to the LAN.
+
+> **Login throttling:** the API rate-limits `/api/auth/login` to 10 attempts per 15 minutes per IP. For local testing only, set `AUTH_RATE_LIMIT_ENABLED=false` in `.env` (the API refuses to start that way when `NODE_ENV=production`). A `429 RATE_LIMITED` response means the limiter tripped, not a bad password.
 
 ---
 
@@ -120,10 +130,11 @@ Click **Submit for Approval**. If any day exceeds the configured daily cap, a ma
 
 ### 3.1 Routing rules
 
-- **HOD** is **department-scoped**: each Department has its own HOD; HODs see only submissions from supervisors/employees in their department.
-- **PM (Project Head)** is a **single central authority**: sees all departments after `HOD_APPROVED`.
-- **Admin** is global, can act at either stage.
-- **HR** is read-only on the lifecycle (browses the queue but cannot approve/reject).
+- **HOD** is scoped to a **Department + Section** (`User.departmentId` + `User.sectionId`), matched against the employee's organisation. Each Section has its own HOD; HODs see only submissions for their Section. An HOD with no mapping fails closed (empty queue, `403` on mutation).
+- **PM (Project Head)** is the central authority: sees all departments once `HOD_APPROVED`.
+- **Admin** is global and can act at either stage.
+- **HR** is *not* a workforce approver: `/approvals/*` is gated to HOD/PM/ADMIN. HR keeps the legacy admin screens (CSV upload, supervisor registration) only.
+- **Approval cover** — an HOD may name another HOD of the same Section as cover; see [7](#7-hod-approval-cover-delegation). The cover record does not change who is authorized, only who is formally standing in.
 
 ### 3.2 Two stages
 
@@ -188,7 +199,82 @@ HOD/PM/Admin/HR can allocate hours **on behalf of any employee** via the same en
 
 ---
 
-## 5. Supervisor Registration
+## 5. Employee Registration
+
+**Path:** `/employees` (roles: HOD, PM, ADMIN — gated by `canCreatePayrollEmployee`).
+
+- **Register Payroll Employee** form: canonical `ecNo`, full name, Department, Section, designation, category, mobile, optional login email.
+- Registration creates the **canonical `Employee` row and an `EMPLOYEE` login account in one transaction**, and queues a one-time credential. There is no separate "create login" step.
+- **HOD scope is fail-closed**: if the logged-in user is an HOD, Department and Section are locked to their own mapping (server-enforced with `WRONG_SCOPE`), and the form is disabled with a banner when the HOD has no mapping.
+- **Active Employees** table (bottom panel) lists every active employee with ecNo, name, type/role, Department, Section and designation, plus two actions per row:
+  - **Transfer** (PM/ADMIN only) — moves the employee's Department/Section. HOD-linked rows are refused (`HOD_SCOPE_REQUIRES_COORDINATION`).
+  - **Set as HOD** / **Change HOD scope** (PM/ADMIN) — pre-fills the HOD form below with that employee.
+- A plain **registration always creates an `EMPLOYEE` account**; that is the normal starting point for promotion to HOD — the person is reused, not duplicated.
+
+---
+
+## 6. HOD Registration &amp; Department/Section Mapping
+
+**Path:** `/employees` → panel **HOD Registration & Department / Section Mapping** (PM/ADMIN).
+
+An HOD is **not created from a blank form**: it is an existing active **payroll** Employee promoted to a Department/Section scope. HODs log in with their **ecNo**.
+
+### 6.1 Registering an HOD
+
+1. Register the person under **Register Payroll Employee** if they are not in the system (or press **Set as HOD** on their row in the Active Employees table).
+2. In the HOD panel pick **Department**, optionally **Filter by Section**, then the **Employee** (the picker offers active payroll employees of that Department with an `EMPLOYEE` or `HOD` account), then the **Section (HOD scope)**.
+3. Press **Register HOD**.
+
+`POST /api/admin/hods` does this atomically: it promotes the existing `EMPLOYEE` account in place (or creates an `HOD` account when the employee had none), links the Employee's Section assignment when missing, bumps `tokenVersion` so stale sessions die, and queues a one-time credential. Re-posting the same employee updates the scope.
+
+A bulk-CSV-imported employee has **no** account yet; the same panel creates one.
+
+### 6.2 Mapping rules (fail-closed)
+
+| Condition | Result |
+|---|---|
+| CLMS contract worker, or any non-payroll Employee | `400 INVALID_EMPLOYEE` — CLMS logins are not EcNo-based, so an HOD account for one cannot work |
+| Employee already holds a SUPERVISOR/ADMIN/HR/PM/FINANCE account | `409 ROLE_CONFLICT` |
+| Employee's Department ≠ selected Department | `400 WRONG_DEPARTMENT` |
+| Employee's Section ≠ selected Section | `400 WRONG_SECTION` |
+| Section inactive or not in that Department | `400 INVALID_SCOPE` |
+| Employee inactive | `409 INACTIVE_EMPLOYEE` |
+
+Each HOD has exactly **one** Department + Section (`User.departmentId` + `User.sectionId`), matched against the employee's organisation by `hodScopeMatches`. To move an HOD, use **Map scope** on the HOD table, or register the same employee again with the new Section.
+
+### 6.3 Credentials
+
+New and re-scoped HOD accounts receive an **unknown random password** plus a queued `credential_deliveries` row. Nothing is e-mailed while `CREDENTIAL_DELIVERY_ENABLED=false`, so on a dev box set a password explicitly:
+
+```bash
+node apps/api/set-dev-password.cjs EC1013            # -> password@SDHI
+node apps/api/set-dev-password.cjs EC1013 MyPass@1
+```
+
+---
+
+## 7. HOD Approval Cover (delegation)
+
+**Path:** `/approvals` → panel **HOD Approval Cover (delegation)** (HOD, PM, ADMIN).
+
+An HOD who is away can name another HOD of the **same Section** as approval cover. Delegation does **not** change approval authorization — `hodScopeMatches` is Department+Section based, so a second HOD of that Section could already approve. The record makes the cover explicit, date-bounded and auditable, and shows who is standing in.
+
+| Rule | Behaviour |
+|---|---|
+| Who may create | PM and ADMIN for **any** Department/Section; an HOD only for its **own** (`403 WRONG_SCOPE` otherwise) |
+| Who may be the delegate | An active `HOD` already mapped to that same Department/Section (`400 INVALID_DELEGATE` otherwise) |
+| Period | `fromDate`/`toDate` required and ordered (`400 INVALID_RANGE`); same delegate+Section overlap rejected (`409 OVERLAPPING_DELEGATION`) |
+| Reason | Mandatory (`400 REASON_REQUIRED`) |
+| Delegator's own rights | Unchanged — the HOD keeps approving its own Section |
+| Revoke | Delegator, PM or ADMIN (`DELETE /api/delegations/{id}`); already revoked → `409` |
+
+A deputy sees a banner on Approvals — *"You are acting as deputy HOD for IT until …"* — and the delegator sees who is covering. Every create/revoke writes `HOD_DELEGATION_CREATE` / `HOD_DELEGATION_REVOKE` to the audit log.
+
+> A Section needs **two** HODs for cover to be possible. In a single-HOD Section, register a second payroll employee of that Section as HOD first.
+
+---
+
+## 8. Supervisor Registration
 
 **Path:** `/supervisors` (ADMIN/HR-only).
 
@@ -200,7 +286,7 @@ HOD/PM/Admin/HR can allocate hours **on behalf of any employee** via the same en
 
 ---
 
-## 6. Departments (admin)
+## 9. Departments (admin)
 
 **Path:** `/departments` (ADMIN/HR-only).
 
@@ -212,7 +298,7 @@ HOD/PM/Admin/HR can allocate hours **on behalf of any employee** via the same en
 
 ---
 
-## 7. CSV Upload (admin)
+## 10. CSV Upload (admin)
 
 **Path:** `/admin/csv-upload` (ADMIN/HR-only).
 
@@ -225,7 +311,7 @@ HOD/PM/Admin/HR can allocate hours **on behalf of any employee** via the same en
 
 ---
 
-## 8. Summary Reports
+## 11. Summary Reports
 
 **Path:** `/summary` (top nav: **Summary**).
 
@@ -236,36 +322,39 @@ HOD/PM/Admin/HR can allocate hours **on behalf of any employee** via the same en
 - **Grand total** = sum of hours per row (excluding OT).
 - **Mobile parity** — table collapses to cards at the ≤1023 px breakpoint.
 
-### 8.1 Job Order Summary
+### 11.1 Job Order Summary
 
 A complementary view (top of the Summary page) showing each job order's **consumed hours, approved hours, budgeted hours, and % consumption**. Filter by status (`active` / `closed` / `all`) and department.
 
 ---
 
-## 9. BadgeView Sync
+## 12. BadgeView Sync
 
 Source-of-truth for **contract workers and supervisors** is the external **LabourWorks BadgeView** (`10.5.1.106`).
 
 - **Twice-daily** (`0 6,18 * * *`) — controlled by `BADGEVIEW_SYNC_ENABLED` and `BADGEVIEW_SYNC_CRON` in `.env`.
-- Re-upserts unified `Employee` rows keyed by `idCardNo`. Soft-departs rows absent from the latest snapshot (`active = false`) rather than deleting (preserves historical OT / allocation history).
-- Surfaces supervisors via the `User` table (read-only `source='SYNC'` accounts).
-- Auto-creates **Departments** from distinct `BuName` values (never overwrites manually-managed ones).
-- Only writes to SYNC rows; never overwrites MANUAL / PAYROLL fields (the partial-write guard).
-- Cardinalities preserved on re-runs: 555 associates / 27 supervisors baseline.
+- Re-upserts unified `Employee` rows keyed by the canonical **`ecNo`** (LabourWorks `IDCardNo`). The old `idCardNo` column was retired.
+- **Completeness guards** run before any write: a snapshot below `BADGEVIEW_SYNC_MIN_ROWS` or below `BADGEVIEW_SYNC_MIN_RATIO` (default 0.9) of the existing SYNC population aborts the run. Absence from a validated snapshot is a soft-depart (`active = false`) that preserves history, never a delete.
+- **Identity is never guessed**: duplicate source EcNo, EcNo collisions with non-CLMS rows, and mobile numbers matching more than one candidate are recorded in `sync_exceptions` (`DUPLICATE_SOURCE_ECNO`, `ECNO_SOURCE_COLLISION`, `MOBILE_IDENTITY_CONFLICT`, …) and skipped for review in **Admin → Sync Exceptions**.
+- Surfaces supervisors from `Nature Of Work = Supervisor`; new SUPERVISOR accounts get an unknown random password plus a queued credential e-mail.
+- Auto-creates **Departments and Sections** from `BuName - Division` / `Workmen Section` (never overwrites manually-managed ones).
+- Only writes to SYNC rows; never overwrites MANUAL / PAYROLL fields (the partial-write guard). A PM/Admin organisation transfer creates a durable override so the next sync does not undo it.
+- One-off runs on the dev box: `node apps/api/run-sync-once.cjs` (see `docs/DEV_SQLITE_TESTING.md`) — same service, with a known dev password and no e-mail.
 
 ---
 
 # Part II — Developer / Admin Reference
 
-## 10. Architecture & stack
+## 13. Architecture & stack
 
 - **Monorepo**: npm workspaces (`apps/api`, `apps/web`, `apps/jobs`, `packages/shared`).
-- **Backend**: Node 22 + Express + TypeScript + Prisma + SQLite (dev). Auth: bcrypt + JWT. Slot-based timesheets + slot-based allocations.
-- **Frontend**: React + Vite + TypeScript. React Router. Mobile-first responsive layout at the ≤1023 px breakpoint.
+- **Backend**: Node 22 + Express + TypeScript + Prisma. Auth: bcrypt + JWT. Slot-based timesheets + slot-based allocations.
+- **Databases**: **SQLite** for local development/testing (`file:./dev.db`), **PostgreSQL** for production. The datasource provider in `schema.prisma` selects one; the production schema is kept in `schema.postgresql.prisma`. The API refuses a `file:` URL when `NODE_ENV=production`.
+- **Frontend**: React + Vite + TypeScript. React Router. Mobile-first responsive layout at the ≤1023 px breakpoint. The session is held in `sessionStorage` (`workforce_token`, `workforce_user`).
 - **Shared types**: Zod schemas and TS types in `packages/shared` (consumed by both api and web).
 - **Sync**: in-process cron (`node-cron` inside the API process) for the BadgeView source.
 
-## 11. Repository layout
+## 14. Repository layout
 
 ```
 workforce/
@@ -291,7 +380,7 @@ workforce/
 └── package.json    # workspaces, db:setup, db:seed, dev:api, dev:web
 ```
 
-## 12. Local setup (WSL Ubuntu)
+## 15. Local setup (WSL Ubuntu)
 
 ```bash
 cd /mnt/c/data/comp/workforce
@@ -317,7 +406,7 @@ npm run dev:web          # Vite picks a free port (5173 → 5174 if 5173 is take
 
 Open `http://localhost:5174/` (or whichever port Vite reports) and log in as one of the seeded accounts.
 
-## 13. Local setup (PowerShell / Windows)
+## 16. Local setup (PowerShell / Windows)
 
 ```powershell
 cd C:\data\comp\workforce
@@ -337,59 +426,80 @@ npm run dev:web
 # (the proxy target must match the API_PORT).
 ```
 
-## 14. Database & migrations
+## 17. Database & migrations
 
-- **Dev DB**: SQLite at `apps/api/prisma/dev.db`.
-- **Migrations** live under `apps/api/prisma/migrations/`. Apply with `npm run db:migrate -w @workforce/api` (alias for `prisma db push`).
-- **Seed** with `npm run db:seed -w @workforce/api` (alias for `tsx prisma/seed.ts`). Wipes all tables first, then re-creates departments, projects (incl. Project D), job orders, employees, supervisors, ADMIN/HOD/PM/HR/FINANCE accounts, and timesheet/OT/approval data.
-- **Reset DB**: `npm run db:seed` (or `npm run db:setup` for full setup). The seed's `deleteMany` chain runs in the correct FK order so child tables are removed before parents (including CR#2's `EmployeeAllocation` and `SupervisorPin`).
+**Development / testing runs on SQLite; production runs on PostgreSQL.**
+
+- **Dev DB**: SQLite at `apps/api/prisma/dev.db` (git-ignored). `DATABASE_URL="file:./dev.db"` in **both** the root `.env` and `apps/api/.env` — the API loads the root file first, so change both.
+- **`npm run db:migrate` is provider-aware** (`apps/api/scripts/migrate.mjs`): a `file:` URL runs `prisma db push` (the PostgreSQL migrations cannot be applied to SQLite), a `prisma://`/`postgresql://` URL runs `prisma migrate deploy` exactly as production does. No production behaviour is special-cased.
+- **Migrations** live under `apps/api/prisma/migrations/` and are **PostgreSQL**; `migration_lock.toml` is `postgresql`. Never regenerate or delete them to make SQLite work.
+- **Production schema**: `apps/api/prisma/schema.postgresql.prisma` holds the PostgreSQL datasource variant. Restore with `cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma` then `npm run db:generate`.
+- **Seed** with `npm run db:seed -w @workforce/api`. It is **destructive** (a `deleteMany` chain in FK order) and refuses to run when `NODE_ENV=production`.
+- **Reset DB**: `npm run db:seed`, or `npm run db:setup` for the full path (shared build → `prisma generate` → provider-aware schema step → seed).
+- **Adding a model on the dev box?** `prisma db push` writes **no** migration, so production would never get the table. Generate the DDL with `prisma migrate diff --from-schema-datamodel <old>.pg --to-schema-datamodel <new>.pg --script` and commit it under `migrations/<timestamp>_<name>/`.
+
+Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md).
 
 ### Schema highlights
 
-- **CR#2 unified `Employee`** (`apps/api/prisma/schema.prisma`): absorbs the old `ContractWorker` table, with `source` (`SYNC` / `MANUAL` / `PAYROLL`), `idCardNo`, `section`, `plant`, `grade`, `active`. Sync writes only to SYNC rows (partial-write guard); never overwrites MANUAL/PAYROLL fields.
-- **`EmployeeAllocationDay`** (parent per employee/day) with `status` and audit timestamps.
-- **`EmployeeAllocation`** (child rows) keyed by `(allocationDayId, shiftSlot)`, mandatory `projectId`, optional `jobOrderId`, no OT field. `allocatedById` is server-derived from `req.user`.
-- **`SupervisorPin`** tracks manual supervisor promotions.
-- Migration `20260905000000_employee_allocation_slot_model` introduced the slot model.
+- **CR#2 unified `Employee`**: `source` (`SYNC` / `MANUAL` / `PAYROLL`), `employmentType` (`CLMS` / `PAYROLL`), canonical `ecNo`, `natureOfWork`, `grade`, `active` (soft-depart). The old `ContractWorker`, `idCardNo`, `section` and `plant` columns were retired.
+- **`EmployeeSectionAssignment`** (one Section per employee), **`EmployeeOrganisationOverride`** (durable PM/Admin transfer that the sync will not undo), **`SupervisorOverride`** (audited manual promotion to Supervisor).
+- **`User.sectionId` + `User.departmentId`** — the HOD approval scope (`hodScopeMatches`).
+- **`EmployeeAllocationDay`** (parent per employee/day) with `status`, and **`EmployeeAllocation`** (child rows) keyed by `(allocationDayId, shiftSlot)`: mandatory `projectId`, optional `jobOrderId`, no OT. **`EmployeeAllocationApproval`** stores the immutable decision history.
+- **`HodDelegation`** — dated, reasoned HOD approval cover (delegator, delegate, Department+Section, from/to, revoke). Migration `20260916000000_hod_approval_delegation`.
+- **`CredentialDelivery`** — durable queue for one-time credentials (no password is ever stored in it).
+- Latest migrations: `20260913000000_postgresql_baseline`, `20260914000000_role_based_access`, `20260915000000_hod_section_and_org_transfer`, `20260916000000_hod_approval_delegation`.
 
-## 15. Environment variables
+## 18. Environment variables
 
 `.env` (root) and `apps/api/.env`:
 
 | Var | Purpose | Default |
 |---|---|---|
-| `DATABASE_URL` | Prisma DB connection | `file:./dev.db` |
+| `DATABASE_URL` | Prisma DB connection (`file:./dev.db` for SQLite dev; `postgresql://…` for production) | `file:./dev.db` |
 | `API_PORT` | API port | `4000` (use `4100` on Windows) |
 | `API_HOST` | Bind interface | `0.0.0.0` (set to `127.0.0.1` for local-only) |
+| `JWT_SECRET` | Token signing secret (≥32 chars in production) | dev value; must be replaced in production |
+| `CORS_ORIGINS` | Exact allowed origins (required in production) | — |
+| `TRUST_PROXY` | Set `true` behind a reverse proxy | `false` |
+| `AUTH_RATE_LIMIT_ENABLED` | `false` removes the login brute-force limit (dev only; rejected in production) | `true` |
+| `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX` | Login throttle window / attempts | `900000` / `10` |
+| `DEV_SEED_PASSWORD` | Password the demo seed gives every seeded account | `WorkforceDev@2026` |
+| `DEV_SYNC_PASSWORD` | Password `run-sync-once.cjs` gives synced accounts | `password@SDHI` |
 | `MAX_DAILY_HOURS` | Daily cap for over-allocation guard | `8` |
 | `MAX_OT_HOURS` | OT validation upper bound | `12` |
 | `SHIFTS` | Shift window config | `GENERAL:09:00-17:00` |
-| `BADGEVIEW_SYNC_ENABLED` | Enable sync cron | `true` |
+| `BADGEVIEW_SYNC_ENABLED` | Enable sync cron | `false` |
 | `BADGEVIEW_SYNC_CRON` | Sync schedule | `0 6,18 * * *` |
 | `BADGEVIEW_DB_HOST` | Source SQL Server | `10.5.1.106` |
 | `BADGEVIEW_DB_USER` / `_PASSWORD` / `_NAME` / `_VIEW` | Source credentials | (set in `.env`, git-ignored) |
 | `BADGEVIEW_DB_ENCRYPT` | TLS to source | `false` (internal segment only) |
+| `BADGEVIEW_SYNC_MIN_ROWS` / `BADGEVIEW_SYNC_MIN_RATIO` | Snapshot completeness guards | `1` / `0.9` |
+| `CREDENTIAL_DELIVERY_ENABLED` | Send one-time credentials by e-mail | `false` (keep false locally) |
+| `CREDENTIAL_DELIVERY_RECIPIENT` | Default recipient for queued credentials | IT Support mailbox |
+| `SMTP_*` | Mail transport for credential delivery | unset ⇒ delivery stays pending |
 
-## 16. Ports & proxy
+## 19. Ports & proxy
 
 - **API**: `API_PORT` (default `4000`; use `4100` if `4000` is OS-occupied).
 - **Vite web**: `apps/web/vite.config.ts` `server.port` (default `5173`; Vite auto-falls-back to `5174` if taken).
 - **Vite proxy target**: must match `API_PORT`. If you change one, change the other.
 - Common Windows issue: `4000` and `5173` may be held by `svchost` — pick free ports (`4100`, `5174`) and update the proxy.
 
-## 17. Schema overview (Prisma)
+## 20. Schema overview (Prisma)
 
 Key models in `apps/api/prisma/schema.prisma`:
 
 - `Department`, `Project`, `ProjectWbs`, `JobOrder`
-- `Employee` (unified, CR#2)
-- `User` (login accounts; role-gated; `source` for sync vs manual)
-- `SupervisorPin` (CR#2 manual supervisor promotion)
+- `Employee` (unified, CR#2) + `EmployeeSectionAssignment`, `EmployeeOrganisationOverride`, `SupervisorOverride`
+- `User` (login accounts; role-gated; `source` for sync vs manual; `departmentId` + `sectionId` = HOD scope)
+- `HodDelegation` (dated HOD approval cover)
 - `TimesheetDay` + `TimesheetEntry` (contract-worker timesheets, with OT)
-- `EmployeeAllocationDay` + `EmployeeAllocation` (CR#2 slot-based payroll allocations, no OT)
+- `EmployeeAllocationDay` + `EmployeeAllocation` + `EmployeeAllocationApproval` (CR#2 slot-based payroll allocations, no OT)
 - `Approval`, `AuditLog`, `DailyTeamSelection`, `ManpowerRequest`, `CostRate`, `AttendanceFeed`, `Conflict`
+- `CredentialDelivery`, `SyncException`, `Section`, `CostCenter`
 
-## 18. API endpoints
+## 21. API endpoints
 
 Selected routes (all under `/api/`):
 
@@ -419,45 +529,64 @@ Selected routes (all under `/api/`):
 | `/projects` | GET | auth | Project master list |
 | `/job-order` | GET | auth | Job-order list (filter by project / status / department) |
 | `/supervisors?department_id=` | GET | auth | Supervisor list |
-| `/employees?department_id=` | GET | auth | Employee list (department-scoped) |
+| `/employees?department_id=` | GET | auth | Employee list (department- and HOD-section scoped) |
+| `/admin/employees` | POST | HOD/PM/ADMIN/HR | Register a payroll Employee **+ EMPLOYEE login account** (atomic) |
+| `/admin/hod-candidates?department_id=` | GET | PM/ADMIN | Payroll employees eligible to become HOD |
+| `/admin/hods` | POST | PM/ADMIN | Promote an Employee to HOD with a Department/Section scope |
+| `/admin/users/:id/hod-scope` | PUT | PM/ADMIN | Re-map an existing HOD's scope |
+| `/admin/users/:id/employee-link` | PUT | PM/ADMIN | Link an HOD/PM account to its payroll Employee |
+| `/delegations` | GET/POST | HOD/PM/ADMIN | HOD approval cover: list / create (HOD = own Section only) |
+| `/delegations/coverage` | GET | HOD/PM/ADMIN | Who covers me today / whom I cover |
+| `/delegations/candidates?departmentId=&sectionId=` | GET | HOD/PM/ADMIN | HODs eligible as delegate |
+| `/delegations/:id` | DELETE | delegator/PM/ADMIN | Revoke cover |
+| `/admin/sync/exceptions` | GET | ADMIN | Open BadgeView sync exceptions |
+| `/admin/credentials` / `/admin/credentials/process` | GET/POST | ADMIN | Credential queue / run delivery |
 | `/departments` | GET/POST | admin/HR | Master departments (manual CRUD) |
 | `/admin/csv-upload` | POST | admin/HR | Bulk CSV registration |
 | `/master/supervisors` | GET | auth | (Admin) supervisor master |
 
 All write routes enforce **owner + role + status-lock + audit** via shared middleware.
 
-## 19. Security model
+## 22. Security model
 
 - **Owner enforcement** — supervisors only edit their own timesheets/allocations (`NOT_OWNER` 403 otherwise). HOD/PM/Admin can act on behalf.
 - **Status lock** — once `SUBMITTED` / approved, the day is locked from edits except via HOD/PM reject.
-- **Department isolation** — HODs see only their own department's pending queue; cross-department approve attempts return `403 FORBIDDEN`.
+- **Department + Section isolation** — an HOD's pending queue is limited to its own Department/Section (`hodScopeMatches`); cross-scope approve attempts return `403 FORBIDDEN`. HOD scope changes and approval-cover revocation bump `tokenVersion`, revoking existing sessions.
 - **Stage isolation** — PM cannot approve `SUBMITTED` days directly (returns `403 WRONG_STAGE`); only HOD can.
-- **HR read-only** — HR can browse queues but cannot approve/reject (any attempt returns `403 WRONG_STAGE`).
-- **Audit** — every write goes through `writeAudit` with actor, action, entity, before/after.
-- **Fail-closed null department** — HOD/HR with `departmentId = null` get empty queues and `403` on mutation, never global access.
+- **Approver whitelist** — `/approvals/*` is gated to HOD/PM/ADMIN. HR is not a workforce approver.
+- **HOD registration is fail-closed** — Department, Section and payroll/`active` checks all run server-side; a CLMS worker or an employee holding another role's account is refused.
+- **Audit** — every write goes through `writeAudit` with actor, action, entity, before/after (including `HOD_DELEGATION_CREATE` / `HOD_DELEGATION_REVOKE`).
+- **Fail-closed null scope** — an HOD with `departmentId`/`sectionId = null` gets an empty queue and `403` on mutation, never global access.
 - **CSV-injection neutralization** — `=`, `+`, `-`, `@`-prefixed cells are rejected on CSV upload.
 - **Partial-write guard** — BadgeView sync only writes to SYNC rows; never overwrites MANUAL / PAYROLL fields.
 - **Soft-depart** — departed workers are kept in the unified `Employee` with `active = false` (preserves historical OT / allocation / approval history), hidden from pickers.
+- **Credentials are never guessed or shown** — new accounts receive an unknown random password plus a queued `CredentialDelivery` row; the password is generated only at delivery time and disclosed solely to the configured SMTP transport. The API never accepts or returns an initial password.
+- **Login throttling** — `/api/auth/login` is rate-limited per IP (default 10 per 15 min). `AUTH_RATE_LIMIT_ENABLED=false` disables it for local testing and is **rejected when `NODE_ENV=production`**.
+- **Database guard** — a `file:` (SQLite) `DATABASE_URL` is rejected when `NODE_ENV=production`.
 
-### 19.1 Production deployment checklist (mandatory)
+### 22.1 Production deployment checklist (mandatory)
 
 Before exposing this app to any network beyond localhost, complete every item below:
 
 - [ ] **`API_HOST=127.0.0.1`** — bind the API to localhost only, OR place it behind a reverse proxy that terminates **TLS/HTTPS** (Caddy / nginx / Cloudflare Tunnel / etc.). Never serve plaintext HTTP on a reachable interface.
-- [ ] **Rotate or disable seeded `password@SDHI` accounts** in any environment that's reachable beyond localhost. Treat them as dev-only fixtures.
-- [ ] **`.env` is git-ignored** — verified before every commit. Production credentials (`BADGEVIEW_DB_PASSWORD`, `JWT_SECRET`, any DB URL with embedded passwords, any third-party API keys) must **never** be committed or pasted into chat transcripts / logs.
+- [ ] **Set a real `JWT_SECRET`** (≥32 chars, not a placeholder) and `CORS_ORIGINS` — the API refuses to start in production without them.
+- [ ] **Rotate or disable the seeded demo accounts** (`WorkforceDev@2026`) in any environment reachable beyond localhost. Treat them as dev-only fixtures.
+- [ ] **Keep `AUTH_RATE_LIMIT_ENABLED` at its default (`true`)** — production refuses to start with it disabled.
+- [ ] **`DATABASE_URL` must be a PostgreSQL URL** — a `file:` URL is rejected in production.
+- [ ] **`.env` is git-ignored** — verified before every commit. Production credentials (`BADGEVIEW_DB_PASSWORD`, `JWT_SECRET`, `SMTP_PASSWORD`, any DB URL with an embedded password) must **never** be committed or pasted into chat transcripts / logs.
 - [ ] **`BADGEVIEW_DB_ENCRYPT`** — set to `true` if the source SQL Server is reachable beyond a trusted internal segment.
+- [ ] **Keep `CREDENTIAL_DELIVERY_ENABLED=false`** until SMTP is configured, or queued one-time credentials will never be delivered and new users cannot log in.
 - [ ] **Audit logs are rotated and backed up** off-host — `AuditLog` is the only record of who approved what.
-- [ ] **Run the latest migration** — the SQLite `dev.db` is dev-only; production must use a managed DB (Postgres recommended) with `prisma migrate deploy` rather than `db push`.
+- [ ] **Run the latest migration** — production must use a managed PostgreSQL instance with `prisma migrate deploy` (never `db push`). Confirm `20260916000000_hod_approval_delegation` has been applied.
 
-### 19.2 Credential hygiene
+### 22.2 Credential hygiene
 
 - `.env` is in `.gitignore`; do not commit it. Do not paste its contents into chat, screenshots, or issue trackers.
 - Rotate the `JWT_SECRET` (if configured) and the seeded admin password before any production deploy.
 - Source DB credentials (`BADGEVIEW_DB_PASSWORD`) belong only in the runtime `.env` of the deploy host — never in code, comments, or transcripts.
 - If a credential is exposed (e.g. typed into chat), revoke it immediately and rotate.
 
-## 20. Troubleshooting
+## 23. Troubleshooting
 
 ### App won't start — `EADDRINUSE` on 4000 or 5173
 - On Windows, `svchost` often holds 4000 and 5173. Use `API_PORT=4100` and let Vite auto-fallback to `5174`. Update `apps/web/vite.config.ts` proxy target to match.
@@ -492,8 +621,26 @@ Before exposing this app to any network beyond localhost, complete every item be
 ### OT not showing in Summary
 - Summary OT is approved-days-only and uses effective OT (manual OR `max(0, trueHours − 8)`). Check that the day is in `PM_APPROVED` status (final stage) and that the employee actually had 8+ hours (or manual OT) that day.
 
-### HR can see approvals but cannot approve
-- HR is intentionally read-only on the lifecycle. This matches the user's spec that HR is not an approver.
+### HR can see the Employees tab but has no approval queue
+- HR is intentionally **not** a workforce approver: `/approvals/*` is gated to HOD/PM/ADMIN. HR keeps the legacy admin screens (CSV upload, supervisor registration). If HR needs approver rights that is a deliberate role change, not a bug.
+
+### Added a Prisma model but production has no table
+- `prisma db push` (used for SQLite dev) writes **no** migration, so `prisma migrate deploy` on production will never create the table. Generate PostgreSQL DDL with `prisma migrate diff --from-schema-datamodel <old>.pg --to-schema-datamodel <new>.pg --script`, save it under `migrations/<timestamp>_<name>/migration.sql`, and commit it. Passing an SQLite URL to `--from-url` for a PostgreSQL diff panics the schema engine — use two schema files.
+
+### `P3019` — datasource provider does not match `migration_lock.toml`
+- You are running `prisma migrate deploy` while `schema.prisma` says `sqlite`. Run the provider-aware `npm run db:migrate` instead (`file:` URL ⇒ `db push`). Never delete `migrations/` to work around it.
+
+### Edits have no effect / the UI shows old code
+- `tsx watch` and Vite both miss file changes on a WSL `/mnt/c` mount (9p). **Restart both servers after every change**; a browser hard-refresh (`Ctrl+Shift+R`) is also needed for the web bundle.
+
+### Login returns `429 RATE_LIMITED`
+- The IP is throttled: 10 attempts per 15 minutes. Wait out the window, or set `AUTH_RATE_LIMIT_ENABLED=false` in `.env` and restart the API (dev only; refused in production).
+
+### A newly registered HOD/Employee cannot log in
+- New accounts carry an unknown random password until the credential worker e-mails one. With `CREDENTIAL_DELIVERY_ENABLED=false` nothing is sent — set a password locally: `node apps/api/set-dev-password.cjs <ecNo>`.
+
+### "No eligible payroll employee in this Department" in the HOD panel
+- Only **active payroll** employees appear, and each is filtered to the chosen Department. A CLMS contract worker can never appear (EcNo logins are payroll-only). Employees already holding a SUPERVISOR/ADMIN/HR/PM/FINANCE account are withheld on purpose (`ROLE_CONFLICT`).
 
 ### `BADGEVIEW_DB_*` sync fails to connect
 - Verify `.env` has `BADGEVIEW_DB_HOST=10.5.1.106`, port `1433`, and the correct user/password. `BADGEVIEW_DB_ENCRYPT=false` is fine for internal segments only.
@@ -502,14 +649,17 @@ Before exposing this app to any network beyond localhost, complete every item be
 
 ## Appendix A — Glossary
 
-- **HOD** — Head of Department. Owns stage-1 approval for their department.
-- **PM** — Project Manager / Project Head. Stage-2 approver, global (cross-department) view.
-- **Admin / HR** — Admin = global visibility, can act at either stage. HR = read-only.
-- **SUBMITTED / HOD_APPROVED / PM_APPROVED / REJECTED** — stages of the approval lifecycle.
+- **HOD** — Head of Department/Section. Owns stage-1 approval for one Department + Section. Logs in with the linked payroll Employee's **ecNo**.
+- **PM** — Project Manager / Project Head. Stage-2 approver with a global (cross-department) view.
+- **Admin / HR** — Admin = global visibility, can act at either stage and manages HOD mapping. HR = legacy admin screens only (not a workforce approver).
+- **Approval cover** — a dated, reasoned delegation naming another HOD of the same Section as a stand-in; it records who is covering, it does not change who is authorized.
+- **SUBMITTED / HOD_APPROVED / PM_APPROVED / REJECTED** — stages of the approval lifecycle. `PLANNING_RETURNED` = a PM return awaiting HOD action.
 - **Shift slot** — one of `am1`, `am2`, `pm1`, `pm2`; each is 2 hours.
 - **Effective OT** — `manual ?? max(0, trueHours − MAX_DAILY_HOURS)`. Manual wins; otherwise auto-calc.
-- **Source (`SYNC` / `MANUAL` / `PAYROLL`)** — `SYNC` = BadgeView-imported (no login); `MANUAL` = admin-registered login; `PAYROLL` = payroll employee with login.
+- **Source (`SYNC` / `MANUAL` / `PAYROLL`)** — `SYNC` = LabourWorks-imported CLMS worker; `MANUAL` = admin-registered login; `PAYROLL` = payroll employee with a login.
+- **`employmentType` (`CLMS` / `PAYROLL`)** — CLMS = contract labour from the sync (no EcNo login, OT applies); PAYROLL = white-collar (EcNo login, My Hours, no OT).
 - **Partial-write guard** — sync only writes identity/source/`active` on SYNC rows; never overwrites MANUAL/PAYROLL fields.
+- **Credential delivery** — the durable queue that issues one-time passwords; with delivery disabled the queue just accumulates.
 
 ---
 
@@ -517,20 +667,25 @@ Before exposing this app to any network beyond localhost, complete every item be
 
 ```
 ADMIN       admin@company.com
-HOD         hod@company.com            (dept 56 Hull Production)
-PM          pm@company.com             (single central authority)
-HR          hr@company.com             (read-only on lifecycle)
-Finance     finance@company.com         (cost-rates viewer)
-Supervisor  EC1001       (linked payroll Employee)
-Supervisor  EC1006                     (V. Kulkarni)
-Supervisor  EC1007                     (S. Menon)
-Supervisor  EC1014
-Supervisor  EC1017
-Supervisor  EC1018
+HOD         hod@company.com            (seeded example: Production - EOU / Hull Production)
+PM          pm@company.com             (central authority, all departments)
+HR          hr@company.com             (legacy admin screens only — not an approver)
+Finance     finance@company.com        (cost-rates viewer)
+Employee    EC1011   (employee@company.com)
+Supervisor  EC1001   (r.sharma@company.com, linked payroll Employee)
+Supervisor  EC1006   (sup.a@company.com)
+Supervisor  EC1007   (sup.b@company.com)
+Supervisor  EC1014   (sup.c@company.com)
+Supervisor  EC1017   (sup.d@company.com)
+Supervisor  EC1018   (sup.e@company.com)
 ```
 
-Password (all): `password@SDHI`
+Passwords — **they differ by account type**:
+
+- Seeded demo accounts above: **`WorkforceDev@2026`** (`DEV_SEED_PASSWORD`)
+- Accounts created by the LabourWorks sync (EcNo login, e.g. `BAPL0251`): **`password@SDHI`**, set on a dev box with `node apps/api/set-dev-password.cjs <ecNo>`
+- Accounts you register in the UI (Employee/HOD): no usable password until the credential is delivered — use `set-dev-password.cjs`
 
 ---
 
-_Document version: CR#2 (`feature/cr2-unified-employee`, `666f35b`). Maintained alongside the codebase; update when schema, routes, or lifecycle change._
+_Document version: CR#2 unified Employee + HOD scope + HOD approval cover (`feature/cr2-unified-employee`, `6f3eea4`). Maintained alongside the codebase; update when schema, routes, roles or lifecycle change. Companion documents: [`ROLE_BASED_ACCESS.md`](ROLE_BASED_ACCESS.md) (enforced role matrix), [`DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md) (local SQLite dev), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md)._
