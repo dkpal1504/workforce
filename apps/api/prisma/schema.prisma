@@ -19,6 +19,8 @@ model User {
   employee                Employee?   @relation(fields: [employeeId], references: [id])
   departmentId            Int?        @map("department_id")
   department              Department? @relation(fields: [departmentId], references: [id])
+  sectionId               Int?        @map("section_id")
+  scopeSection            Section?    @relation("UserScopeSection", fields: [sectionId], references: [id])
   active                  Boolean     @default(true)
   mustChangePassword      Boolean     @default(false) @map("must_change_password")
   tokenVersion            Int         @default(0) @map("token_version")
@@ -43,7 +45,9 @@ model User {
   manpowerRequestsAssigned   ManpowerRequest[]       @relation("AssignedBy")
   supervisorOverridesCreated SupervisorOverride[]    @relation("SupervisorOverrideCreator")
   credentialDeliveries       CredentialDelivery[]
+  organisationOverridesCreated EmployeeOrganisationOverride[] @relation("OrganisationOverrideCreator")
 
+  @@index([sectionId])
   @@map("users")
 }
 
@@ -62,6 +66,7 @@ model Department {
   manpowerRequests ManpowerRequest[]
   jobOrders        JobOrder[]
   sections         Section[]
+  organisationOverrides EmployeeOrganisationOverride[]
 
   @@map("departments")
 }
@@ -106,6 +111,7 @@ model Employee {
   employeeAllocationDays EmployeeAllocationDay[]
   sectionAssignment      EmployeeSectionAssignment?
   supervisorOverride     SupervisorOverride?
+  organisationOverride   EmployeeOrganisationOverride?
 
   @@index([source])
   @@index([mobile])
@@ -126,6 +132,8 @@ model Section {
 
   costCenter          CostCenter?
   employeeAssignments EmployeeSectionAssignment[]
+  scopedUsers         User[] @relation("UserScopeSection")
+  organisationOverrides EmployeeOrganisationOverride[]
 
   @@unique([departmentId, code])
   @@unique([departmentId, name])
@@ -159,6 +167,26 @@ model EmployeeSectionAssignment {
 
   @@index([sectionId])
   @@map("employee_section_assignments")
+}
+
+/// Audited PM/Admin organisation mapping. For CLMS rows this overrides the
+/// source Department/Section until another explicit remap is made.
+model EmployeeOrganisationOverride {
+  id           Int        @id @default(autoincrement())
+  employeeId   Int        @unique @map("employee_id")
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  departmentId Int        @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id])
+  sectionId    Int        @map("section_id")
+  section      Section    @relation(fields: [sectionId], references: [id])
+  createdById  Int?       @map("created_by")
+  createdBy    User?      @relation("OrganisationOverrideCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  reason       String
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  @@index([departmentId, sectionId])
+  @@map("employee_organisation_overrides")
 }
 
 /// Audited manual promotion of an active CLMS worker to Supervisor.

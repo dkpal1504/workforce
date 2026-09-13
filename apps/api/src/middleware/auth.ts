@@ -8,6 +8,7 @@ export type AuthUser = {
   name: string;
   role: string;
   departmentId: number | null;
+  sectionId: number | null;
   employeeId: number | null;
   mustChangePassword: boolean;
   tokenVersion: number;
@@ -61,6 +62,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         name: true,
         role: true,
         departmentId: true,
+        sectionId: true,
         employeeId: true,
         active: true,
         mustChangePassword: true,
@@ -88,6 +90,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       name: user.name,
       role: user.role,
       departmentId: user.departmentId,
+      sectionId: user.sectionId,
       employeeId: user.employeeId,
       mustChangePassword: user.mustChangePassword,
       tokenVersion: user.tokenVersion,

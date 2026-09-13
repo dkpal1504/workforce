@@ -6,6 +6,7 @@ const prisma = new PrismaClient();
 async function main() {
   await prisma.auditLog.deleteMany();
   await prisma.employeeAllocation.deleteMany();
+  await prisma.employeeAllocationApproval.deleteMany();
   await prisma.employeeAllocationDay.deleteMany();
   await prisma.timesheetEntry.deleteMany();
   await prisma.approval.deleteMany();
@@ -17,6 +18,7 @@ async function main() {
   await prisma.costRate.deleteMany();
   await prisma.credentialDelivery.deleteMany();
   await prisma.supervisorOverride.deleteMany();
+  await prisma.employeeOrganisationOverride.deleteMany();
   await prisma.employeeSectionAssignment.deleteMany();
   await prisma.costCenter.deleteMany();
   await prisma.section.deleteMany();
@@ -121,6 +123,7 @@ async function main() {
       name: "HOD User",
       role: "HOD",
       departmentId: hull.id,
+      sectionId: hullSection.id,
     },
   });
 

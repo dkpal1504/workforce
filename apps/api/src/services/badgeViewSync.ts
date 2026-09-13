@@ -3,6 +3,7 @@ import sql from "mssql";
 import { defaultWorkforceCredentialState, hashDefaultWorkforcePassword } from "./defaultLoginCredentials";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
+import { effectiveOrganisation } from "./roleAccess";
 
 /** One row from the LabourWorks BadgeView source. */
 export type BadgeViewRow = {
@@ -365,6 +366,12 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
         const department = await departmentFor(tx, departmentName, result);
         const sectionName = normalizeText(row.Section);
         const section = sectionName ? await sectionFor(tx, department.id, sectionName, result) : null;
+        const organisationOverride = matched
+          ? await tx.employeeOrganisationOverride.findUnique({ where: { employeeId: matched.id } })
+          : null;
+        const effective = effectiveOrganisation(department.id, section?.id ?? null, organisationOverride);
+        const effectiveDepartmentId = effective.departmentId;
+        const effectiveSectionId = effective.sectionId;
 
         let employee;
         if (matched) {
@@ -374,7 +381,7 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
               ecNo,
               mobile,
               name: employeeName,
-              departmentId: department.id,
+              departmentId: effectiveDepartmentId,
               designation: normalizeText(row.NatureOfWork) || matched.designation,
               category: "CONTRACTOR",
               employmentType: "CLMS",
@@ -390,7 +397,7 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
               ecNo,
               mobile,
               name: employeeName,
-              departmentId: department.id,
+              departmentId: effectiveDepartmentId,
               designation: normalizeText(row.NatureOfWork),
               category: "CONTRACTOR",
               source: "SYNC",
@@ -409,11 +416,11 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
         });
         const effectiveSupervisor = naturalSupervisor || Boolean(override && override.revokedAt == null);
 
-        if (section && !effectiveSupervisor) {
+        if (effectiveSectionId != null && (organisationOverride || !effectiveSupervisor)) {
           await tx.employeeSectionAssignment.upsert({
             where: { employeeId: employee.id },
-            create: { employeeId: employee.id, sectionId: section.id, source: "SYNC" },
-            update: { sectionId: section.id, source: "SYNC" },
+            create: { employeeId: employee.id, sectionId: effectiveSectionId, source: organisationOverride ? "MANUAL" : "SYNC" },
+            update: { sectionId: effectiveSectionId, source: organisationOverride ? "MANUAL" : "SYNC" },
           });
         } else if (effectiveSupervisor) {
           const assignment = await tx.employeeSectionAssignment.findUnique({

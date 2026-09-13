@@ -68,7 +68,6 @@ summaryRouter.get("/job-order", async (req, res) => {
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
       ...(role === "EMPLOYEE" ? { employeeId: req.user!.employeeId ?? -1 } : {}),
       ...(role === "HOD" ? {
-        employee: { departmentId: req.user!.departmentId ?? -1 },
         timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } },
       } : {}),
       ...(role === "PM" ? { timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } } } : {}),
@@ -87,7 +86,6 @@ summaryRouter.get("/job-order", async (req, res) => {
         ...(role === "HOD" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
         ...(role === "PM" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
       },
-      ...(role === "HOD" ? { employee: { departmentId: req.user!.departmentId ?? -1 } } : {}),
       ...(["EMPLOYEE", "SUPERVISOR"].includes(role) ? { employeeId: linkedEmployeeId ?? -1 } : {}),
     },
     select: { jobOrderId: true },
@@ -177,7 +175,7 @@ summaryRouter.get("/decisions", async (req, res) => {
   const anchor = parseDateOnly(dateStr);
   const start = startOfFrequency(anchor, frequency);
   const end = endOfFrequency(anchor, frequency);
-  const { role, id: userId, departmentId, employeeId } = req.user!;
+  const { role, id: userId, employeeId } = req.user!;
   const statuses = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
 
   let dayScope: Prisma.TimesheetDayWhereInput = { status: { in: statuses } };
@@ -189,9 +187,8 @@ summaryRouter.get("/decisions", async (req, res) => {
     dayScope = { taggedById: userId, approvals: { some: { approver: { role: "HOD" } } } };
     allocationScope = { employeeId: employeeId ?? -1, approvals: { some: { approver: { role: "HOD" } } } };
   } else if (role === "HOD") {
-    const decision = { OR: [{ approverId: userId }, { approver: { role: "PM" }, action: { in: ["REJECT", "PLANNING_RETURN"] } }] };
-    dayScope = { employee: { departmentId: departmentId ?? -1 }, approvals: { some: decision } };
-    allocationScope = { employee: { departmentId: departmentId ?? -1 }, approvals: { some: decision } };
+    dayScope = { approvals: { some: { approverId: userId } } };
+    allocationScope = { approvals: { some: { approverId: userId } } };
   } else if (role === "PM") {
     dayScope = { approvals: { some: { approverId: userId } } };
     allocationScope = { approvals: { some: { approverId: userId } } };
@@ -259,17 +256,8 @@ summaryRouter.get("/", async (req, res) => {
 
   const role = req.user!.role;
   const userId = req.user!.id;
-  const departmentId = req.user!.departmentId;
-
   const employeeId = req.user!.employeeId;
   const visibleStatuses = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
-  const hodDecision = {
-    OR: [
-      { approverId: userId },
-      { approver: { role: "PM" }, action: { in: ["REJECT", "PLANNING_RETURN"] } },
-    ],
-  };
-
   let entryScope: Prisma.TimesheetEntryWhereInput = { status: { in: visibleStatuses } };
   if (role === "EMPLOYEE") entryScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
   else if (role === "SUPERVISOR") entryScope = {
@@ -278,9 +266,8 @@ summaryRouter.get("/", async (req, res) => {
     timesheetDay: { approvals: { some: { approver: { role: "HOD" }, action: { in: ["APPROVE", "REJECT", "SEND_BACK"] } } } },
   };
   else if (role === "HOD") entryScope = {
-    employee: { departmentId: departmentId ?? -1 },
     status: { in: visibleStatuses },
-    timesheetDay: { approvals: { some: hodDecision } },
+    timesheetDay: { approvals: { some: { approverId: userId } } },
   };
   else if (role === "PM") entryScope = {
     status: { in: visibleStatuses },
@@ -312,9 +299,8 @@ summaryRouter.get("/", async (req, res) => {
     approvals: { some: { approver: { role: "HOD" } } },
   };
   else if (role === "HOD") allocationDayScope = {
-    employee: { departmentId: departmentId ?? -1 },
     status: { in: visibleStatuses },
-    approvals: { some: hodDecision },
+    approvals: { some: { approverId: userId } },
   };
   else if (role === "PM") allocationDayScope = {
     status: { in: visibleStatuses }, approvals: { some: { approverId: userId } },

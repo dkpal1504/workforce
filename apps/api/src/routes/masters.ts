@@ -26,6 +26,7 @@ mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "PM", "ADMIN",
     where: {
       active: true,
       ...(departmentId ? { departmentId } : {}),
+      ...(req.user!.role === "HOD" ? { sectionAssignment: { sectionId: req.user!.sectionId ?? -1 } } : {}),
       ...(q
         ? {
             OR: [{ name: { contains: q } }, { ecNo: { contains: q } }],
@@ -35,6 +36,7 @@ mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "PM", "ADMIN",
     include: {
       department: { select: { id: true, name: true } },
       sectionAssignment: { include: { section: { include: { costCenter: true } } } },
+      user: { select: { id: true, role: true, active: true } },
     },
     orderBy: { name: "asc" },
   });
@@ -81,8 +83,9 @@ mastersRouter.get("/sections", async (req, res) => {
   const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
   const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
   const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
+  const hodSectionId = req.user!.role === "HOD" ? (req.user!.sectionId ?? -1) : undefined;
   const sections = await prisma.section.findMany({
-    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}) },
+    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}), ...(hodSectionId !== undefined ? { id: hodSectionId } : {}) },
     select: { id: true, code: true, name: true, departmentId: true, costCenter: { select: { id: true, code: true, name: true, active: true } } },
     orderBy: { name: "asc" },
   });
@@ -91,7 +94,8 @@ mastersRouter.get("/sections", async (req, res) => {
 
 /** Active cost-centre picker; section/department filters are optional. */
 mastersRouter.get("/cost-centers", async (req, res) => {
-  const sectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
+  const requestedSectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
+  const sectionId = req.user!.role === "HOD" ? (req.user!.sectionId ?? -1) : requestedSectionId;
   const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
   const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
   const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;

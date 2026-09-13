@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { changePasswordSchema, loginSchema } from "@workforce/shared";
 import { prisma } from "../db";
-import { requireAuth, requireRoles, signToken } from "../middleware/auth";
+import { requireAuth, signToken } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
 import { usesEcNoLogin } from "../services/defaultLoginCredentials";
@@ -16,6 +16,8 @@ const lifecycleUserSelect = {
   name: true,
   role: true,
   departmentId: true,
+  sectionId: true,
+  scopeSection: { select: { id: true, code: true, name: true, departmentId: true } },
   employeeId: true,
   active: true,
   mustChangePassword: true,
@@ -50,14 +52,17 @@ const lifecycleUserSelect = {
 
 function presentUser(user: any) {
   const assignedSection = user.employee?.sectionAssignment?.section ?? null;
-  const requiresSectionSelection =
-    user.role === "SUPERVISOR" && user.employeeId != null && assignedSection == null;
+  // Organisation assignment is managed by PM/Admin. Supervisors are authorised
+  // at Department level and do not self-select a Section.
+  const requiresSectionSelection = false;
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     role: user.role,
     departmentId: user.departmentId,
+    sectionId: user.sectionId,
+    scopeSection: user.scopeSection,
     employeeId: user.employeeId,
     active: user.active,
     employeeActive: user.employee?.active ?? null,
@@ -138,28 +143,6 @@ authRouter.post("/logout", requireAuth, async (req, res) => {
 authRouter.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.user!.id }, select: lifecycleUserSelect });
   if (!user) return res.status(401).json({ error: "Session revoked", code: "SESSION_REVOKED" });
-  res.json({ user: presentUser(user) });
-});
-
-authRouter.put("/section", requireAuth, requireRoles("SUPERVISOR", "EMPLOYEE"), async (req, res) => {
-  if (!req.user!.employeeId) return res.status(409).json({ error: "No linked Employee record.", code: "NO_LINKED_EMPLOYEE" });
-  const sectionId = Number(req.body?.sectionId);
-  if (!Number.isInteger(sectionId) || sectionId <= 0) return res.status(400).json({ error: "sectionId is required" });
-  const [employee, section] = await Promise.all([
-    prisma.employee.findUnique({ where: { id: req.user!.employeeId }, select: { id: true, departmentId: true, active: true } }),
-    prisma.section.findUnique({ where: { id: sectionId } }),
-  ]);
-  if (!employee?.active) return res.status(409).json({ error: "Employee is inactive.", code: "EMPLOYEE_INACTIVE" });
-  if (!section?.active || section.departmentId !== employee.departmentId) {
-    return res.status(400).json({ error: "Select an active Section under your Department.", code: "INVALID_SECTION" });
-  }
-  await prisma.employeeSectionAssignment.upsert({
-    where: { employeeId: employee.id },
-    create: { employeeId: employee.id, sectionId, source: "SELF_SERVICE" },
-    update: { sectionId, source: "SELF_SERVICE" },
-  });
-  await writeAudit(req.user!.id, "EMPLOYEE_SECTION_SELECT", "employee", employee.id, { sectionId });
-  const user = await prisma.user.findUnique({ where: { id: req.user!.id }, select: lifecycleUserSelect });
   res.json({ user: presentUser(user) });
 });
 

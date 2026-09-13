@@ -11,6 +11,7 @@ export type AuthCapabilities = {
   manageMasterData: boolean;
   manageEmployees: boolean;
   uploadEmployees: boolean;
+  transferEmployees: boolean;
   allocateHours: boolean;
 };
 
@@ -20,6 +21,8 @@ export type AuthUser = {
   name: string;
   role: string;
   departmentId: number | null;
+  sectionId: number | null;
+  scopeSection: { id: number; code: string; name: string; departmentId: number } | null;
   employeeId: number | null;
   active: boolean;
   employeeActive: boolean | null;

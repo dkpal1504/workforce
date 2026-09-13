@@ -6,6 +6,7 @@ import { parseDateOnly } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 import { canSubmitRetainedDraft, inactiveEmployeePayload, rejectionStatusForEmployee } from "../services/employeeEligibility";
 import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrderEligibility";
+import { hodScopeMatches } from "../services/roleAccess";
 
 /**
  * Payroll employee manhour allocation (CR#2) — slot-based, parent day + slot rows.
@@ -32,6 +33,12 @@ employeeAllocationRouter.use(requireAuth);
 
 const VALID_SLOTS = new Set(["am1", "am2", "pm1", "pm2"]);
 const SHIFT_HOURS: Record<string, number> = { am1: 2, am2: 2, pm1: 2, pm2: 2 };
+
+function hodEmployeeScope(departmentId: number | null, sectionId: number | null) {
+  return departmentId == null || sectionId == null
+    ? { id: -1 }
+    : { departmentId, sectionAssignment: { sectionId } };
+}
 
 async function employeeIdForUser(userId: number): Promise<number | null> {
   const u = await prisma.user.findUnique({ where: { id: userId }, select: { employeeId: true } });
@@ -269,6 +276,7 @@ employeeAllocationRouter.post("/submit", async (req, res) => {
 employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
   const role = req.user!.role;
   const departmentId = req.user!.departmentId;
+  const sectionId = req.user!.sectionId;
 
   // Role-aware status filter (strict per-stage):
   //   HOD: SUBMITTED only (their queue; HOD_APPROVED has already moved to PM).
@@ -283,11 +291,11 @@ employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"
 
   // Department scope for HOD and HR; PM/ADMIN are global.
   if (role === "HOD" || role === "HR") {
-    if (departmentId == null) {
-      // Fail closed: a department-less HOD/HR sees nothing rather than all records.
+    if (role === "HOD" && (departmentId == null || sectionId == null)) {
       return res.json({ days: [] });
     }
-    where.employee = { departmentId };
+    if (role === "HR" && departmentId == null) return res.json({ days: [] });
+    where.employee = role === "HOD" ? hodEmployeeScope(departmentId, sectionId) : { departmentId: departmentId! };
   }
   // PM, ADMIN: no department filter.
 
@@ -337,19 +345,20 @@ employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMI
   const userId = req.user!.id;
   const role = req.user!.role;
   const departmentId = req.user!.departmentId;
+  const sectionId = req.user!.sectionId;
   const day = await prisma.employeeAllocationDay.findUnique({
     where: { id: dayId },
-    include: { employee: { select: { departmentId: true, active: true } } },
+    include: { employee: { select: { departmentId: true, active: true, sectionAssignment: { select: { sectionId: true } } } } },
   });
   if (!day) return res.status(404).json({ error: "Day not found" });
 
   // Department isolation for HOD: must match the day's employee department.
   if (role === "HOD") {
-    if (departmentId == null) {
-      return res.status(403).json({ error: "HOD has no department assigned.", code: "FORBIDDEN" });
+    if (departmentId == null || sectionId == null) {
+      return res.status(403).json({ error: "HOD has no Department/Section assigned.", code: "FORBIDDEN" });
     }
-    if (day.employee.departmentId !== departmentId) {
-      return res.status(403).json({ error: "Day belongs to another department.", code: "FORBIDDEN" });
+    if (!hodScopeMatches(departmentId, sectionId, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null)) {
+      return res.status(403).json({ error: "Day belongs to another Department/Section.", code: "FORBIDDEN" });
     }
   }
 
@@ -400,11 +409,12 @@ employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN
   const userId = req.user!.id;
   const role = req.user!.role;
   const departmentId = req.user!.departmentId;
+  const sectionId = req.user!.sectionId;
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
 
   const day = await prisma.employeeAllocationDay.findUnique({
     where: { id: dayId },
-    include: { employee: { select: { departmentId: true, active: true } } },
+    include: { employee: { select: { departmentId: true, active: true, sectionAssignment: { select: { sectionId: true } } } } },
   });
   if (!day) return res.status(404).json({ error: "Day not found" });
   if (day.status !== "SUBMITTED" && day.status !== "HOD_APPROVED") {
@@ -413,11 +423,11 @@ employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN
 
   // Department isolation for HOD.
   if (role === "HOD") {
-    if (departmentId == null) {
-      return res.status(403).json({ error: "HOD has no department assigned.", code: "FORBIDDEN" });
+    if (departmentId == null || sectionId == null) {
+      return res.status(403).json({ error: "HOD has no Department/Section assigned.", code: "FORBIDDEN" });
     }
-    if (day.employee.departmentId !== departmentId) {
-      return res.status(403).json({ error: "Day belongs to another department.", code: "FORBIDDEN" });
+    if (!hodScopeMatches(departmentId, sectionId, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null)) {
+      return res.status(403).json({ error: "Day belongs to another Department/Section.", code: "FORBIDDEN" });
     }
   }
 

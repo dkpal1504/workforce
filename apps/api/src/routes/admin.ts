@@ -45,10 +45,14 @@ adminRouter.get("/users", requireRoles("ADMIN"), async (_req, res) => {
 });
 
 adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
-  const { email, name, role, departmentId, employeeId } = req.body ?? {};
+  const { email, name, role, departmentId, sectionId, employeeId } = req.body ?? {};
   if (!email || !name || !role) return res.status(400).json({ error: "email, name and role are required" });
   if (!["ADMIN", "HR", "HOD", "PM", "FINANCE"].includes(String(role))) {
     return res.status(400).json({ error: "Invalid role", code: "INVALID_ROLE" });
+  }
+  const scopeSection = sectionId ? await prisma.section.findUnique({ where: { id: Number(sectionId) } }) : null;
+  if (role === "HOD" && (!scopeSection || !scopeSection.active || scopeSection.departmentId !== Number(departmentId))) {
+    return res.status(400).json({ error: "HOD requires an active Section in the selected Department.", code: "INVALID_HOD_SCOPE" });
   }
   const linkedEmployee = employeeId ? await prisma.employee.findUnique({ where: { id: Number(employeeId) } }) : null;
   if (employeeId && (!linkedEmployee || !linkedEmployee.active || linkedEmployee.employmentType !== "PAYROLL")) {
@@ -57,13 +61,19 @@ adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
   if (linkedEmployee && departmentId && linkedEmployee.departmentId !== Number(departmentId)) {
     return res.status(400).json({ error: "User and employee Departments must match.", code: "WRONG_DEPARTMENT" });
   }
+  if (role === "HOD" && linkedEmployee) {
+    const assignment = await prisma.employeeSectionAssignment.findUnique({ where: { employeeId: linkedEmployee.id } });
+    if (assignment?.sectionId !== scopeSection!.id) return res.status(400).json({ error: "HOD and linked Employee Sections must match.", code: "WRONG_SECTION" });
+  }
   // The API never accepts or returns an initial password. The delivery worker
   // creates the one-time secret when it processes this durable queue row.
   const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
   const user = await prisma.$transaction(async (tx) => {
     const created = await tx.user.create({ data: {
       email: String(email).trim().toLowerCase(), passwordHash, name: String(name).trim(), role,
-      departmentId: linkedEmployee?.departmentId ?? (departmentId ? Number(departmentId) : null), employeeId: linkedEmployee?.id ?? null, mustChangePassword: true,
+      departmentId: linkedEmployee?.departmentId ?? (departmentId ? Number(departmentId) : null),
+      sectionId: role === "HOD" ? scopeSection!.id : null,
+      employeeId: linkedEmployee?.id ?? null, mustChangePassword: true,
     } });
     await tx.credentialDelivery.create({ data: { userId: created.id, recipient: created.email, purpose: "INITIAL" } });
     return created;
@@ -80,7 +90,7 @@ adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, r
   if (!user || !["HOD", "PM", "ADMIN"].includes(user.role)) {
     return res.status(404).json({ error: "Eligible role account was not found.", code: "USER_NOT_FOUND" });
   }
-  const employee = employeeId == null ? null : await prisma.employee.findUnique({ where: { id: employeeId } });
+  const employee = employeeId == null ? null : await prisma.employee.findUnique({ where: { id: employeeId }, include: { sectionAssignment: true } });
   if (employeeId != null && (!employee || !employee.active || employee.employmentType !== "PAYROLL")) {
     return res.status(400).json({ error: "An active payroll Employee is required.", code: "INVALID_EMPLOYEE" });
   }
@@ -88,8 +98,8 @@ adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, r
     const existingLink = await prisma.user.findUnique({ where: { employeeId: employee.id }, select: { id: true } });
     if (existingLink && existingLink.id !== userId) return res.status(409).json({ error: "Employee is already linked to another account.", code: "EMPLOYEE_ALREADY_LINKED" });
   }
-  if (user.role === "HOD" && employee && user.departmentId !== employee.departmentId) {
-    return res.status(403).json({ error: "HOD and Employee Departments must match.", code: "WRONG_DEPARTMENT" });
+  if (user.role === "HOD" && employee && (user.departmentId !== employee.departmentId || user.sectionId !== employee.sectionAssignment?.sectionId)) {
+    return res.status(403).json({ error: "HOD and linked Employee Department/Section must match.", code: "WRONG_SCOPE" });
   }
   const updated = await prisma.user.update({
     where: { id: userId },
@@ -97,6 +107,94 @@ adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, r
   });
   await writeAudit(req.user!.id, "ADMIN_LINK_ROLE_EMPLOYEE", "user", userId, { employeeId: employee?.id ?? null });
   res.json({ user: { id: updated.id, role: updated.role, departmentId: updated.departmentId, employeeId: updated.employeeId } });
+});
+
+adminRouter.get("/hods", requireRoles("PM", "ADMIN"), async (_req, res) => {
+  const hods = await prisma.user.findMany({
+    where: { role: "HOD", active: true },
+    select: { id: true, name: true, email: true, departmentId: true, sectionId: true, department: true, scopeSection: true, employeeId: true },
+    orderBy: { name: "asc" },
+  });
+  res.json({ hods });
+});
+
+/** Map an HOD to exactly one Department/Section scope. */
+adminRouter.put("/users/:id/hod-scope", requireRoles("PM", "ADMIN"), async (req, res) => {
+  const userId = Number(req.params.id);
+  const departmentId = Number(req.body?.departmentId);
+  const sectionId = Number(req.body?.sectionId);
+  const user = await prisma.user.findUnique({
+    where: { id: userId }, include: { employee: { include: { sectionAssignment: true } } },
+  });
+  if (!user || user.role !== "HOD") return res.status(404).json({ error: "HOD account not found." });
+  const section = await prisma.section.findFirst({ where: { id: sectionId, departmentId, active: true, department: { active: true } } });
+  if (!section) return res.status(400).json({ error: "Select an active Section in the Department.", code: "INVALID_SCOPE" });
+  if (user.employee) {
+    const open = await prisma.employeeAllocationDay.count({ where: { employeeId: user.employee.id, status: { in: ["SUBMITTED", "HOD_APPROVED"] } } });
+    if (open) return res.status(409).json({ error: "Resolve the HOD's submitted My Hours before changing scope.", code: "OPEN_TIMESHEETS" });
+  }
+  const updated = await prisma.$transaction(async (tx) => {
+    if (user.employee) {
+      await tx.employee.update({ where: { id: user.employee.id }, data: { departmentId } });
+      await tx.employeeSectionAssignment.upsert({
+        where: { employeeId: user.employee.id },
+        create: { employeeId: user.employee.id, sectionId, source: "MANUAL" },
+        update: { sectionId, source: "MANUAL" },
+      });
+    }
+    return tx.user.update({ where: { id: userId }, data: { departmentId, sectionId, tokenVersion: { increment: 1 } } });
+  });
+  await writeAudit(req.user!.id, "HOD_SCOPE_UPDATE", "user", userId, { departmentId, sectionId });
+  res.json({ user: { id: updated.id, departmentId: updated.departmentId, sectionId: updated.sectionId } });
+});
+
+/** Atomically de-link an Employee from the current organisation path and map a new one. */
+adminRouter.put("/employees/:id/organisation", requireRoles("PM", "ADMIN"), async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const departmentId = Number(req.body?.departmentId);
+  const sectionId = Number(req.body?.sectionId);
+  const reason = String(req.body?.reason || "Organisation transfer").trim();
+  const [employee, section] = await Promise.all([
+    prisma.employee.findUnique({ where: { id: employeeId }, include: { sectionAssignment: true, user: true } }),
+    prisma.section.findFirst({ where: { id: sectionId, departmentId, active: true, department: { active: true } } }),
+  ]);
+  if (!employee) return res.status(404).json({ error: "Employee not found." });
+  if (!section) return res.status(400).json({ error: "Select an active Section in the target Department.", code: "INVALID_SCOPE" });
+  if (employee.user?.role === "HOD") {
+    return res.status(409).json({ error: "Use HOD scope mapping together with the linked payroll Employee transfer.", code: "HOD_SCOPE_REQUIRES_COORDINATION" });
+  }
+  const [openTimesheets, openAllocations] = await Promise.all([
+    prisma.timesheetDay.count({ where: { employeeId, status: { in: ["SUBMITTED", "HOD_APPROVED", "PLANNING_RETURNED"] } } }),
+    prisma.employeeAllocationDay.count({ where: { employeeId, status: { in: ["SUBMITTED", "HOD_APPROVED"] } } }),
+  ]);
+  if (openTimesheets || openAllocations) {
+    return res.status(409).json({ error: "Resolve or close open timesheets before transferring this Employee.", code: "OPEN_TIMESHEETS" });
+  }
+  const previous = { departmentId: employee.departmentId, sectionId: employee.sectionAssignment?.sectionId ?? null };
+  await prisma.$transaction(async (tx) => {
+    await tx.dailyTeamSelection.updateMany({
+      where: { employeeId, removedAt: null, workDate: { gte: new Date(new Date().toISOString().slice(0, 10)) } },
+      data: { removedAt: new Date(), source: "TRANSFERRED" },
+    });
+    await tx.employee.update({ where: { id: employeeId }, data: { departmentId } });
+    await tx.employeeSectionAssignment.upsert({
+      where: { employeeId },
+      create: { employeeId, sectionId, source: "MANUAL" },
+      update: { sectionId, source: "MANUAL" },
+    });
+    if (employee.user) await tx.user.update({ where: { id: employee.user.id }, data: { departmentId, tokenVersion: { increment: 1 } } });
+    if (employee.employmentType === "CLMS") {
+      await tx.employeeOrganisationOverride.upsert({
+        where: { employeeId },
+        create: { employeeId, departmentId, sectionId, createdById: req.user!.id, reason },
+        update: { departmentId, sectionId, createdById: req.user!.id, reason },
+      });
+    } else {
+      await tx.employeeOrganisationOverride.deleteMany({ where: { employeeId } });
+    }
+  });
+  await writeAudit(req.user!.id, "EMPLOYEE_ORGANISATION_TRANSFER", "employee", employeeId, { previous, next: { departmentId, sectionId }, employmentType: employee.employmentType, linkedRole: employee.user?.role ?? null, reason });
+  res.json({ ok: true, employeeId, previous, next: { departmentId, sectionId } });
 });
 
 adminRouter.get("/departments", requireRoles("ADMIN"), async (_req, res) => {
@@ -186,11 +284,12 @@ adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (
   if (!canCreatePayrollEmployee(req.user!.role)) return res.status(403).json({ error: "Forbidden", code: "FORBIDDEN" });
   const { ecNo, name, departmentId, sectionId, designation, category, mobile, email } = req.body ?? {};
   const effectiveDepartmentId = req.user!.role === "HOD" ? req.user!.departmentId : Number(departmentId);
-  if (!ecNo || !name || !effectiveDepartmentId || !sectionId) return res.status(400).json({ error: "ecNo, name, departmentId and sectionId are required" });
-  if (req.user!.role === "HOD" && Number(departmentId) !== effectiveDepartmentId) {
-    return res.status(403).json({ error: "HOD can add employees only to the assigned Department.", code: "WRONG_DEPARTMENT" });
+  const effectiveSectionId = req.user!.role === "HOD" ? req.user!.sectionId : Number(sectionId);
+  if (!ecNo || !name || !effectiveDepartmentId || !effectiveSectionId) return res.status(400).json({ error: "ecNo, name, departmentId and sectionId are required" });
+  if (req.user!.role === "HOD" && (Number(departmentId) !== effectiveDepartmentId || Number(sectionId) !== effectiveSectionId)) {
+    return res.status(403).json({ error: "HOD can add employees only to the assigned Department/Section.", code: "WRONG_SCOPE" });
   }
-  const section = await prisma.section.findUnique({ where: { id: Number(sectionId) } });
+  const section = await prisma.section.findUnique({ where: { id: effectiveSectionId } });
   if (!section || !section.active || section.departmentId !== effectiveDepartmentId) return res.status(400).json({ error: "sectionId must be an active section in departmentId", code: "INVALID_SECTION" });
   const normalizedEcNo = canonicalEcNo(ecNo);
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
@@ -203,7 +302,7 @@ adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (
       ecNo: normalizedEcNo, name: String(name).trim(), departmentId: effectiveDepartmentId, designation: String(designation || ""),
       category: String(category || "PAYROLL"), employmentType: "PAYROLL", source: "PAYROLL", mobile: mobile ? String(mobile).trim() : null,
     } });
-    const sectionAssignment = await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: Number(sectionId), source: "MANUAL" } });
+    const sectionAssignment = await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: effectiveSectionId, source: "MANUAL" } });
     const user = await tx.user.create({ data: {
       employeeId: employee.id, email: loginEmail, passwordHash, name: employee.name,
       role: "EMPLOYEE", source: "MANUAL", departmentId: employee.departmentId,
@@ -214,7 +313,7 @@ adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (
     });
     return { employee, sectionAssignment, user };
   });
-  await writeAudit(req.user!.id, "EMPLOYEE_REGISTER", "employee", result.employee.id, { ecNo: normalizedEcNo, sectionId, userId: result.user?.id, credentialQueued: Boolean(result.user) });
+  await writeAudit(req.user!.id, "EMPLOYEE_REGISTER", "employee", result.employee.id, { ecNo: normalizedEcNo, sectionId: effectiveSectionId, userId: result.user?.id, credentialQueued: Boolean(result.user) });
   const safeUser = result.user ? {
     id: result.user.id, email: result.user.email, name: result.user.name, role: result.user.role,
     employeeId: result.user.employeeId, departmentId: result.user.departmentId, active: result.user.active,
@@ -245,11 +344,11 @@ adminRouter.post("/sections", requireRoles("ADMIN"), async (req, res) => {
 
 adminRouter.put("/sections/:id", requireRoles("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
-  const current = await prisma.section.findUnique({ where: { id }, include: { _count: { select: { employeeAssignments: true } } } });
+  const current = await prisma.section.findUnique({ where: { id }, include: { _count: { select: { employeeAssignments: true, scopedUsers: true, organisationOverrides: true } } } });
   if (!current) return res.status(404).json({ error: "Section not found" });
   const { departmentId, code, name, active } = req.body ?? {};
-  if (departmentId !== undefined && Number(departmentId) !== current.departmentId && current._count.employeeAssignments > 0) {
-    return res.status(409).json({ error: "Cannot move a Section with Employee assignments to another Department.", code: "SECTION_IN_USE" });
+  if (departmentId !== undefined && Number(departmentId) !== current.departmentId && (current._count.employeeAssignments > 0 || current._count.scopedUsers > 0 || current._count.organisationOverrides > 0)) {
+    return res.status(409).json({ error: "Cannot move a Section with active Employee, HOD, or override mappings to another Department.", code: "SECTION_IN_USE" });
   }
   const section = await prisma.section.update({ where: { id }, data: {
     ...(departmentId !== undefined ? { departmentId: Number(departmentId) } : {}),
@@ -263,9 +362,9 @@ adminRouter.put("/sections/:id", requireRoles("ADMIN"), async (req, res) => {
 
 adminRouter.delete("/sections/:id", requireRoles("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
-  const section = await prisma.section.findUnique({ where: { id }, include: { _count: { select: { employeeAssignments: true } }, costCenter: true } });
+  const section = await prisma.section.findUnique({ where: { id }, include: { _count: { select: { employeeAssignments: true, scopedUsers: true, organisationOverrides: true } }, costCenter: true } });
   if (!section) return res.status(404).json({ error: "Section not found" });
-  if (section._count.employeeAssignments || section.costCenter) return res.status(409).json({ error: "Section is in use; deactivate it instead", code: "SECTION_IN_USE" });
+  if (section._count.employeeAssignments || section._count.scopedUsers || section._count.organisationOverrides || section.costCenter) return res.status(409).json({ error: "Section is in use; deactivate it instead", code: "SECTION_IN_USE" });
   await prisma.section.delete({ where: { id } });
   await writeAudit(req.user!.id, "ADMIN_DELETE_SECTION", "section", id);
   res.json({ ok: true });

@@ -7,6 +7,7 @@ export type CapabilityMap = {
   manageMasterData: boolean;
   manageEmployees: boolean;
   uploadEmployees: boolean;
+  transferEmployees: boolean;
   allocateHours: boolean;
 };
 
@@ -21,6 +22,7 @@ export function capabilitiesFor(role: string): CapabilityMap {
     manageMasterData: admin,
     manageEmployees: ["HOD", "PM", "ADMIN", "HR"].includes(role),
     uploadEmployees: admin || role === "HR",
+    transferEmployees: admin || role === "PM",
     allocateHours: ["EMPLOYEE", "SUPERVISOR", "HOD", "PM", "HR", "ADMIN"].includes(role),
   };
 }
@@ -42,3 +44,23 @@ export function departmentScope(role: string, departmentId: number | null): numb
 }
 
 export const SUMMARY_VISIBLE_STATUSES = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"] as const;
+
+export function hodScopeMatches(
+  actorDepartmentId: number | null,
+  actorSectionId: number | null,
+  resourceDepartmentId: number,
+  resourceSectionId: number | null
+): boolean {
+  return actorDepartmentId != null && actorSectionId != null
+    && actorDepartmentId === resourceDepartmentId && actorSectionId === resourceSectionId;
+}
+
+export function effectiveOrganisation(
+  sourceDepartmentId: number,
+  sourceSectionId: number | null,
+  override: { departmentId: number; sectionId: number } | null
+) {
+  return override
+    ? { departmentId: override.departmentId, sectionId: override.sectionId, overridden: true }
+    : { departmentId: sourceDepartmentId, sectionId: sourceSectionId, overridden: false };
+}

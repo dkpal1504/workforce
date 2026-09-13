@@ -74,6 +74,9 @@ supervisorRegistrationRouter.put("/:id", async (req, res) => {
   const existing = await prisma.user.findUnique({ where: { id }, include: { employee: true } });
   if (!existing || existing.role !== "SUPERVISOR") return res.status(404).json({ error: "Supervisor not found" });
   const { name, email, mobile, sectionId, active } = req.body ?? {};
+  if (sectionId !== undefined && req.user!.role !== "ADMIN") {
+    return res.status(403).json({ error: "Only PM/Admin may remap a Supervisor's organisation assignment.", code: "FORBIDDEN" });
+  }
   const syncOwned = existing.source === "SYNC" || existing.employee?.employmentType === "CLMS";
   if (syncOwned && [name, email, mobile, active].some((value) => value !== undefined)) {
     return res.status(409).json({ error: "LabourWorks owns CLMS identity and lifecycle fields. Only Section may be changed here.", code: "CLMS_SYNC_OWNED" });
