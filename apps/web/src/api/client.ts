@@ -13,6 +13,8 @@ export type AuthCapabilities = {
   uploadEmployees: boolean;
   transferEmployees: boolean;
   allocateHours: boolean;
+  assignRoles: boolean;
+  viewDepartmentSummary: boolean;
 };
 
 export type AuthUser = {

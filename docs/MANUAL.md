@@ -48,7 +48,7 @@ Seeded test accounts. **The password differs by account type** — this is the m
 | Password | Applies to |
 |---|---|
 | `WorkforceDev@2026` | The seeded demo accounts below (ADMIN, HOD, PM, HR, FINANCE, EMPLOYEE, and the seeded supervisors). Override with `DEV_SEED_PASSWORD` before `npm run db:seed`. |
-| `password@SDHI` | Accounts provisioned by the LabourWorks sync (log in with the EcNo, e.g. `BAPL0251`). On a dev box, set one with `node apps/api/set-dev-password.cjs <ecNo>`. |
+| `password@SDHI` | Accounts provisioned by the LabourWorks sync (log in with the EcNo, e.g. `BAPL0251`) **and, while the app is still pre-production, every account registered from the web UI** — Employee, Supervisor and HOD registration all start on `password@SDHI` with no forced change. On a dev box, set one with `node apps/api/set-dev-password.cjs <ecNo>`. Removed before production: the API build fails while the dev bootstrap password is still in the source. |
 
 | Role | Login | Notes |
 |---|---|---|

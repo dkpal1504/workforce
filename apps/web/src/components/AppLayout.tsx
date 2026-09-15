@@ -17,6 +17,8 @@ function titleForPath(pathname: string, role?: string) {
   if (pathname.startsWith("/allocations")) return role === "SUPERVISOR" || role === "EMPLOYEE" ? "My Hours" : "Manhour Allocation";
   if (pathname.startsWith("/employees")) return "Employee Registration";
   if (pathname.startsWith("/departments")) return "Organisation Masters";
+  if (pathname.startsWith("/role-assignment")) return "Role Assignment";
+  if (pathname.startsWith("/account/password")) return "Change Password";
   if (pathname.startsWith("/csv-upload")) return "Employee CSV Upload";
   return "Select Team for Today";
 }
@@ -100,11 +102,20 @@ export function AppLayout() {
               Organisation
             </NavLink>
           )}
+          {capabilities?.assignRoles && (
+            <NavLink to="/role-assignment" className={({ isActive }) => (isActive ? "active" : "")}>
+              Role Assignment
+            </NavLink>
+          )}
           {capabilities?.uploadEmployees && (
             <NavLink to="/csv-upload" className={({ isActive }) => (isActive ? "active" : "")}>
               CSV Upload
             </NavLink>
           )}
+          {/* Offered, not forced: the account may still be on the shared password. */}
+          <NavLink to="/account/password" className={({ isActive }) => (isActive ? "active" : "")}>
+            Password
+          </NavLink>
           <span className="app-header__user">
             {user?.name} · {roleDisplay}
           </span>

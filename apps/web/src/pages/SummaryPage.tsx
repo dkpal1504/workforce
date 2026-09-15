@@ -35,16 +35,6 @@ type JoRow = {
   consumptionPct: number;
   balance: number;
 };
-type DecisionItem = {
-  id: string;
-  source: "SUPERVISOR_TIMESHEET" | "MY_HOURS";
-  employee: { name: string; ecNo: string; department: { name: string } };
-  workDate: string;
-  status: string;
-  hours: number;
-  decision: { action: string; comment: string | null; at: string; by: string; role: string } | null;
-};
-
 type JoGroup = {
   projectId: number;
   projectName: string;
@@ -56,7 +46,7 @@ type JoGroup = {
 export function SummaryPage() {
   const { user } = useAuth();
   const employeeView = user?.role === "EMPLOYEE";
-  const canViewCost = ["HOD", "PM", "FINANCE", "ADMIN"].includes(user?.role ?? "");
+  const canViewCost = ["HOD", "DEPT_HEAD", "PM", "FINANCE", "ADMIN"].includes(user?.role ?? "");
   const [tab, setTab] = useState<Tab>("project");
 
   // Project Summary state
@@ -71,7 +61,6 @@ export function SummaryPage() {
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
-  const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [totals, setTotals] = useState<Record<string, number>>({});
   const [projectOtTotals, setProjectOtTotals] = useState<Record<string, number>>({});
   const [grandTotal, setGrandTotal] = useState(0);
@@ -138,8 +127,6 @@ export function SummaryPage() {
       setProjectOtTotals(data.projectOtTotals ?? {});
       setGrandTotal(data.grandTotal);
       setOverheadTotal(view === "cost" ? data.overheadTotalCost ?? 0 : data.overheadTotalHours ?? 0);
-      const decisionData = await api<{ items: DecisionItem[] }>(`/summary/decisions?date=${date}&frequency=${frequency}`);
-      setDecisions(decisionData.items ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load summary");
     }
@@ -242,6 +229,12 @@ export function SummaryPage() {
   return (
     <>
       {employeeView && <div className="carry-banner">Only your final approved My Hours are shown.</div>}
+      {user?.capabilities.viewDepartmentSummary && !user?.sectionId && !employeeView && (
+        <div className="carry-banner">
+          Department-wide view: approved hours for every Section of {user?.department?.name ?? "your Department"}.
+          Hours still with a Section HOD are not included.
+        </div>
+      )}
       {/* Tab bar — Project Summary | Job Order Summary */}
       <div className="hod-tabs" role="tablist" aria-label="Summary views">
         <button
@@ -330,19 +323,6 @@ export function SummaryPage() {
           </div>
 
           {error && <div className="error-banner">{error}</div>}
-
-          <section className="panel" style={{ marginBottom: 16 }}>
-            <div className="panel__header"><span>Timesheet decisions</span><span className="panel__count">{decisions.length}</span></div>
-            <div className="summary-table-wrap">
-              <table className="summary-table">
-                <thead><tr><th>Employee</th><th>Department</th><th>Date</th><th>Source</th><th>Hours</th><th>Status</th><th>Decision</th><th>Comment</th></tr></thead>
-                <tbody>
-                  {decisions.map((item) => <tr key={item.id}><td>{item.employee.name} ({item.employee.ecNo})</td><td>{item.employee.department.name}</td><td>{item.workDate}</td><td>{item.source === "MY_HOURS" ? "My Hours" : "Supervisor Timesheet"}</td><td>{item.hours}</td><td>{item.status}</td><td>{item.decision ? `${item.decision.action} · ${item.decision.by}` : "—"}</td><td>{item.decision?.comment || "—"}</td></tr>)}
-                  {decisions.length === 0 && <tr><td colSpan={8} className="empty-cell">No approved or rejected timesheets in this period.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </section>
 
           <div className="summary-table-wrap summary-desktop-only">
             <table className="summary-table">

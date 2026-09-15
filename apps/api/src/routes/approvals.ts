@@ -4,7 +4,7 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours } from "../services/contractWorkHours";
-import { hodScopeMatches } from "../services/roleAccess";
+import { hodScopeMatches, isDepartmentViewRole } from "../services/roleAccess";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
 import { rejectionStatusForEmployee } from "../services/employeeEligibility";
@@ -15,10 +15,18 @@ approvalsRouter.use(requireAuth);
 
 const APPROVER_ROLES = ["HOD", "PM", "ADMIN"] as const;
 
+/**
+ * The labour an approver may act on.
+ *
+ *   Section HOD      -> its Department + Section.
+ *   Department HOD   -> the whole Department (every Section under it).
+ *
+ * An approver with no Department fails closed.
+ */
 function hodEmployeeScope(departmentId: number | null, sectionId: number | null) {
-  return departmentId == null || sectionId == null
-    ? { id: -1 }
-    : { departmentId, sectionAssignment: { sectionId } };
+  if (departmentId == null) return { id: -1 };
+  if (sectionId == null) return { departmentId };
+  return { departmentId, sectionAssignment: { sectionId } };
 }
 
 type ProjectWbsRef = { colorKey: string; name: string } | null;
@@ -63,6 +71,8 @@ type DayRow = {
 };
 
 function pendingStatusesForRole(role: string): string[] {
+  // Department Head is oversight-only: no approval queue to action.
+  if (role === "DEPT_HEAD") return [];
   if (role === "HOD") return ["SUBMITTED"];
   if (role === "PM") return ["HOD_APPROVED"];
   return ["SUBMITTED", "HOD_APPROVED"];
@@ -367,7 +377,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
   const days = (await prisma.timesheetDay.findMany({
     where: {
       status: { in: statusFilter },
-      ...(role === "HOD"
+      ...(isDepartmentViewRole(role)
         ? { employee: hodEmployeeScope(req.user!.departmentId, req.user!.sectionId) }
         : {}),
       // Only days that have at least one project-tagged hour (legacy WBS OR new JobOrder).
@@ -400,7 +410,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     const returned = (await prisma.timesheetDay.findMany({
       where: {
         status: "PLANNING_RETURNED",
-        ...(role === "HOD"
+        ...(isDepartmentViewRole(role)
           ? { employee: hodEmployeeScope(req.user!.departmentId, req.user!.sectionId) }
           : {}),
         entries: {

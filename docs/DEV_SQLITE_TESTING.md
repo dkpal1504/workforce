@@ -56,8 +56,16 @@ What it does, in order:
    linking all behave exactly as in production;
 4. cancels every queued `credential_deliveries` row, so nothing can be mailed;
 5. re-hashes the password of every account carrying `mustChangePassword`
-   (`hashDefaultWorkforcePassword()` sets exactly that for newly provisioned
-   supervisors) to `password@SDHI` and clears `mustChangePassword`.
+   (the sync still provisions unknown random passwords) to `password@SDHI` and
+   clears `mustChangePassword`.
+
+Accounts registered later from the web UI do not need this helper: while
+`DEV_BOOTSTRAP_PASSWORD` is present in
+`apps/api/src/services/defaultLoginCredentials.ts`, every new Employee / Supervisor
+/ HOD registration is provisioned with `password@SDHI` and no forced password
+change. That constant cannot reach production — the API build fails while it
+exists (`scripts/check-no-dev-bootstrap-password.mjs`) and the server refuses to
+boot against PostgreSQL while it is enabled.
 
 `BADGEVIEW_SYNC_ENABLED` stays `false` in `.env` — the scheduler still does
 nothing; this is a one-shot manual call. `SMTP_*` being set does not matter

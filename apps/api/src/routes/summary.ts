@@ -5,10 +5,11 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { endOfFrequency, parseDateOnly, startOfFrequency } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours } from "../services/contractWorkHours";
+import { isDepartmentViewRole } from "../services/roleAccess";
 
 export const summaryRouter = Router();
 
-summaryRouter.use(requireAuth, requireRoles("EMPLOYEE", "SUPERVISOR", "HOD", "PM", "HR", "FINANCE", "ADMIN"));
+summaryRouter.use(requireAuth, requireRoles("EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "FINANCE", "ADMIN"));
 
 type JoStatus = "all" | "active" | "closed";
 
@@ -28,7 +29,9 @@ summaryRouter.get("/job-order", async (req, res) => {
       : undefined;
   // HOD is always scoped to the server-side Department. A missing Department
   // fails closed. Other reporting roles may use the explicit report filter.
-  const filterDeptId = role === "HOD" ? (req.user!.departmentId ?? -1) : requestedDeptId;
+  // A Section HOD is pinned to its Department; a Department HOD / Department Head is
+  // pinned to its Department too, but covers every Section in it.
+  const filterDeptId = isDepartmentViewRole(role) ? (req.user!.departmentId ?? -1) : requestedDeptId;
 
   let projectIds: number[] | undefined;
   if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
@@ -67,7 +70,14 @@ summaryRouter.get("/job-order", async (req, res) => {
       status: "PM_APPROVED",
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
       ...(role === "EMPLOYEE" ? { employeeId: req.user!.employeeId ?? -1 } : {}),
-      ...(role === "HOD" ? {
+      ...(isDepartmentViewRole(role) && req.user!.sectionId == null ? {
+        // Approved by a Section HOD of this Department (the Department HOD may not
+        // have approved it personally), which is the department-level roll-up.
+        timesheetDay: {
+          approvals: { some: { approverId: { not: req.user!.id }, approver: { role: "HOD" }, action: "APPROVE" } },
+          employee: { departmentId: req.user!.departmentId ?? -1 },
+        },
+      } : role === "HOD" ? {
         timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } },
       } : {}),
       ...(role === "PM" ? { timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } } } : {}),
@@ -83,7 +93,12 @@ summaryRouter.get("/job-order", async (req, res) => {
       jobOrderId: { in: jobOrderIds },
       allocationDay: {
         status: "PM_APPROVED",
-        ...(role === "HOD" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
+        ...(isDepartmentViewRole(role) && req.user!.sectionId == null
+          ? {
+              approvals: { some: { approverId: { not: req.user!.id }, approver: { role: "HOD" }, action: "APPROVE" } },
+              employee: { departmentId: req.user!.departmentId ?? -1 },
+            }
+          : role === "HOD" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
         ...(role === "PM" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
       },
       ...(["EMPLOYEE", "SUPERVISOR"].includes(role) ? { employeeId: linkedEmployeeId ?? -1 } : {}),
@@ -186,6 +201,10 @@ summaryRouter.get("/decisions", async (req, res) => {
   } else if (role === "SUPERVISOR") {
     dayScope = { taggedById: userId, approvals: { some: { approver: { role: "HOD" } } } };
     allocationScope = { employeeId: employeeId ?? -1, approvals: { some: { approver: { role: "HOD" } } } };
+  } else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
+    const departmentId = req.user!.departmentId ?? -1;
+    dayScope = { employee: { departmentId } };
+    allocationScope = { employee: { departmentId } };
   } else if (role === "HOD") {
     dayScope = { approvals: { some: { approverId: userId } } };
     allocationScope = { approvals: { some: { approverId: userId } } };
@@ -265,6 +284,16 @@ summaryRouter.get("/", async (req, res) => {
     status: { in: visibleStatuses },
     timesheetDay: { approvals: { some: { approver: { role: "HOD" }, action: { in: ["APPROVE", "REJECT", "SEND_BACK"] } } } },
   };
+  else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
+    // Department HOD / Department Head: every Section of this Department, showing only
+    // hours already APPROVED by the Section HODs. Work still sitting with a Section
+    // HOD is deliberately excluded (it is not attendance yet) and belongs in the
+    // Approvals queue instead.
+    entryScope = {
+      status: { in: visibleStatuses },
+      employee: { departmentId: req.user!.departmentId ?? -1 },
+    };
+  }
   else if (role === "HOD") entryScope = {
     status: { in: visibleStatuses },
     timesheetDay: { approvals: { some: { approverId: userId } } },
@@ -298,6 +327,12 @@ summaryRouter.get("/", async (req, res) => {
     status: { in: visibleStatuses },
     approvals: { some: { approver: { role: "HOD" } } },
   };
+  else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
+    allocationDayScope = {
+      status: { in: visibleStatuses },
+      employee: { departmentId: req.user!.departmentId ?? -1 },
+    };
+  }
   else if (role === "HOD") allocationDayScope = {
     status: { in: visibleStatuses },
     approvals: { some: { approverId: userId } },
@@ -548,7 +583,7 @@ summaryRouter.get("/", async (req, res) => {
     groupBy,
     view,
     frequency,
-    scope: role === "SUPERVISOR" ? "own" : role === "HOD" ? "department" : "organization",
+    scope: role === "SUPERVISOR" ? "own" : isDepartmentViewRole(role) ? "department" : "organization",
     dateFrom: start.toISOString().slice(0, 10),
     dateTo: end.toISOString().slice(0, 10),
   });

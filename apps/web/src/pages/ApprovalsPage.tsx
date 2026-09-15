@@ -2,7 +2,6 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/approvals.css";
-import { DelegationsPanel } from "../components/DelegationsPanel";
 
 type ProjectHours = Record<string, number>;
 
@@ -1460,7 +1459,6 @@ export function ApprovalsPage() {
           </div>
         </section>
       )}
-      {(user?.role === "HOD" || user?.role === "PM" || user?.role === "ADMIN") && <DelegationsPanel />}
     </div>
   );
 }

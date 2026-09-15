@@ -1,6 +1,5 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
-import crypto from "crypto";
+
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
@@ -8,8 +7,9 @@ import { writeAudit } from "../audit";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
-import { defaultWorkforceCredentialState, hashDefaultWorkforcePassword } from "../services/defaultLoginCredentials";
+import { initialCredentialState } from "../services/defaultLoginCredentials";
 import { canCreatePayrollEmployee } from "../services/roleAccess";
+import { ASSIGNABLE_ROLES, planRoleChange, type OpenWorkload, type RoleTarget } from "../services/roleAssignment";
 
 export const adminRouter = Router();
 
@@ -76,15 +76,16 @@ adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
     const assignment = await prisma.employeeSectionAssignment.findUnique({ where: { employeeId: linkedEmployee.id } });
     if (assignment?.sectionId !== scopeSection!.id) return res.status(400).json({ error: "HOD and linked Employee Sections must match.", code: "WRONG_SECTION" });
   }
-  // The API never accepts or returns an initial password. The delivery worker
-  // creates the one-time secret when it processes this durable queue row.
-  const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+  // The API never accepts an initial password. On the local development box the
+  // account is provisioned with the shared bootstrap password so it can be used
+  // immediately; the delivery worker still owns the one-time secret in production.
+  const credential = await initialCredentialState();
   const user = await prisma.$transaction(async (tx) => {
     const created = await tx.user.create({ data: {
-      email: String(email).trim().toLowerCase(), passwordHash, name: String(name).trim(), role,
+      email: String(email).trim().toLowerCase(), ...credential, name: String(name).trim(), role,
       departmentId: linkedEmployee?.departmentId ?? (departmentId ? Number(departmentId) : null),
       sectionId: role === "HOD" ? scopeSection!.id : null,
-      employeeId: linkedEmployee?.id ?? null, mustChangePassword: true,
+      employeeId: linkedEmployee?.id ?? null,
     } });
     await tx.credentialDelivery.create({ data: { userId: created.id, recipient: created.email, purpose: "INITIAL" } });
     return created;
@@ -189,7 +190,7 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
   }
 
   const ecNo = employee.ecNo;
-  const passwordHash = await hashDefaultWorkforcePassword();
+  const credential = await initialCredentialState();
   const result = await prisma.$transaction(async (tx) => {
     if (!employee.sectionAssignment) {
       await tx.employeeSectionAssignment.create({ data: { employeeId, sectionId, source: "MANUAL" } });
@@ -200,7 +201,7 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
       // ecNo works as a login id as well (usesEcNoLogin) and is what HODs use.
       const user = await tx.user.update({
         where: { id: employee.user.id },
-        data: { role: "HOD", departmentId, sectionId, name: employee.name, active: true, tokenVersion: { increment: 1 } },
+        data: { role: "HOD", departmentId, sectionId, name: employee.name, active: true, ...credential, tokenVersion: { increment: 1 } },
       });
       await tx.credentialDelivery.updateMany({
         where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } },
@@ -213,13 +214,12 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
       data: {
         employeeId,
         email: await uniqueSyncEmail(tx, ecNo),
-        passwordHash,
+        ...credential,
         name: employee.name,
         role: "HOD",
         source: "MANUAL",
         departmentId,
         sectionId,
-        ...defaultWorkforceCredentialState,
       },
     });
     await tx.credentialDelivery.create({ data: { userId: user.id, recipient: user.email, purpose: "INITIAL" } });
@@ -394,6 +394,169 @@ adminRouter.post("/cost-rates", requireRoles("ADMIN"), async (req, res) => {
 });
 
 
+
+/**
+ * Role Assignment (ADMIN only).
+ *
+ * Lists the accounts an Admin can move between roles, with the pay type and
+ * organisation mapping that will be inherited on assignment. The payload carries
+ * `roles` so the UI renders its tick boxes from the server list.
+ */
+adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
+  const search = String(req.query.search || "").trim().toLowerCase();
+  const users = await prisma.user.findMany({
+    where: search
+      ? { OR: [{ name: { contains: search } }, { email: { contains: search } }, { employee: { ecNo: { contains: search } } }] }
+      : undefined,
+    select: {
+      id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true,
+      department: { select: { id: true, name: true } },
+      scopeSection: { select: { id: true, name: true } },
+      employee: {
+        select: {
+          id: true, ecNo: true, name: true, active: true, employmentType: true, departmentId: true,
+          department: { select: { id: true, name: true } },
+          sectionAssignment: { select: { section: { select: { id: true, name: true, departmentId: true } } } },
+        },
+      },
+    },
+    orderBy: [{ role: "asc" }, { name: "asc" }],
+    take: 500,
+  });
+  res.json({
+    roles: ASSIGNABLE_ROLES,
+    users: users.map((user) => ({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      active: user.active,
+      // An Admin may not change their own role, so the UI can disable the row.
+      self: user.id === req.user!.id,
+      employeeId: user.employeeId,
+      employee: user.employee
+        ? {
+            id: user.employee.id,
+            ecNo: user.employee.ecNo,
+            name: user.employee.name,
+            active: user.employee.active,
+            employmentType: user.employee.employmentType,
+            department: user.employee.department,
+            section: user.employee.sectionAssignment?.section ?? null,
+          }
+        : null,
+      department: user.department,
+      scopeSection: user.scopeSection,
+      // HOD with no Section = Department-level oversight.
+      hodScope: user.role === "HOD" ? (user.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
+    })),
+  });
+});
+
+/**
+ * Move one account to another role. Department and Section are inherited from the
+ * account's own Employee mapping, never from the request, so this endpoint cannot
+ * be used to grant a scope the person does not belong to.
+ */
+adminRouter.put("/users/:id/role", requireRoles("ADMIN"), async (req, res) => {
+  const userId = Number(req.params.id);
+  const requestedRole = req.body?.role;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true, name: true, role: true, active: true, employeeId: true, departmentId: true, sectionId: true,
+      employee: {
+        select: {
+          id: true, active: true, employmentType: true, departmentId: true,
+          sectionAssignment: { select: { sectionId: true, section: { select: { active: true, departmentId: true } } } },
+        },
+      },
+    },
+  });
+  if (!user) return res.status(404).json({ error: "Account not found.", code: "USER_NOT_FOUND" });
+
+  const section = user.employee?.sectionAssignment;
+  const target: RoleTarget = {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    active: user.active,
+    currentSectionId: user.sectionId,
+    employeeId: user.employeeId,
+    employee: user.employee
+      ? { id: user.employee.id, active: user.employee.active, employmentType: user.employee.employmentType, departmentId: user.employee.departmentId }
+      : null,
+    sectionAssignment: section && section.section
+      ? { sectionId: section.sectionId, sectionActive: section.section.active, sectionDepartmentId: section.section.departmentId }
+      : null,
+  };
+
+  // Outstanding work blocks the move, so nothing is orphaned mid-workflow.
+  // The approval queue is derived from the day's status + the role's scope
+  // (mirrors pendingStatusesForRole/hodEmployeeScope in routes/approvals.ts), so a
+  // day waiting on this account is counted here even though no Approval row exists
+  // until an action is taken.
+  const queueStatuses = user.role === "HOD" ? ["SUBMITTED"] : user.role === "PM" ? ["HOD_APPROVED"] : ["SUBMITTED", "HOD_APPROVED"];
+  const approvalScoped = ["HOD", "PM", "ADMIN"].includes(user.role);
+  const pendingApprovals = !approvalScoped
+    ? Promise.resolve(0)
+    : prisma.timesheetDay.count({
+        where: {
+          status: { in: queueStatuses },
+          ...(user.role === "HOD"
+            ? user.departmentId == null || user.sectionId == null
+              ? { employee: { id: -1 } }
+              : { employee: { departmentId: user.departmentId, sectionAssignment: { sectionId: user.sectionId } } }
+            : {}),
+        },
+      });
+  const [returnedTimesheetDays, pendingApprovalCount] = await Promise.all([
+    // Only rework still needs the supervisor role; SUBMITTED/approved days are the
+    // approver's, and would otherwise permanently block any reassignment.
+    prisma.timesheetDay.count({ where: { taggedById: userId, status: "PLANNING_RETURNED" } }),
+    pendingApprovals,
+  ]);
+  const workload: OpenWorkload = { returnedTimesheetDays, pendingApprovals: pendingApprovalCount };
+
+  const plan = planRoleChange(req.user!.id, target, requestedRole, workload, { hodScope: req.body?.hodScope });
+  if (!plan.ok) {
+    const status = plan.code === "INVALID_ROLE" || plan.code === "NO_CHANGE" ? 400 : 409;
+    return res.status(status).json({ error: plan.error, code: plan.code });
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    // A role change rewrites what the account may do, so revoke live sessions:
+    // the next request with the old token is rejected and the person logs in again
+    // with the new landing page and capabilities.
+    const saved = await tx.user.update({
+      where: { id: userId },
+      data: {
+        role: plan.update.role,
+        departmentId: plan.update.departmentId,
+        sectionId: plan.update.sectionId,
+        tokenVersion: { increment: 1 },
+      },
+      select: { id: true, name: true, email: true, role: true, departmentId: true, sectionId: true },
+    });
+    return saved;
+  });
+
+  await writeAudit(req.user!.id, "USER_ROLE_ASSIGNMENT", "user", userId, {
+    from: user.role,
+    to: plan.update.role,
+    departmentId: plan.update.departmentId,
+    sectionId: plan.update.sectionId,
+    hodScope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : undefined,
+  });
+  res.json({
+    user: updated,
+    previousRole: user.role,
+    sessionsRevoked: true,
+    // Tells the panel which scope was actually stored, so the UI can confirm it.
+    scope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
+  });
+});
+
 /** Register a payroll employee and their canonical section assignment. */
 adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
   if (!canCreatePayrollEmployee(req.user!.role)) return res.status(403).json({ error: "Forbidden", code: "FORBIDDEN" });
@@ -411,7 +574,7 @@ adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (
   if (await findEmployeeByCanonicalEcNo(normalizedEcNo)) return res.status(409).json({ error: "ecNo already exists", code: "ECNO_EXISTS" });
   if (normalizedEmail && await prisma.user.findUnique({ where: { email: normalizedEmail } })) return res.status(409).json({ error: "email already exists", code: "EMAIL_EXISTS" });
   const loginEmail = normalizedEmail || await uniqueEmployeeLoginEmail(normalizedEcNo);
-  const passwordHash = await hashDefaultWorkforcePassword();
+  const credential = await initialCredentialState();
   const result = await prisma.$transaction(async (tx) => {
     const employee = await tx.employee.create({ data: {
       ecNo: normalizedEcNo, name: String(name).trim(), departmentId: effectiveDepartmentId, designation: String(designation || ""),
@@ -419,9 +582,8 @@ adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (
     } });
     const sectionAssignment = await tx.employeeSectionAssignment.create({ data: { employeeId: employee.id, sectionId: effectiveSectionId, source: "MANUAL" } });
     const user = await tx.user.create({ data: {
-      employeeId: employee.id, email: loginEmail, passwordHash, name: employee.name,
+      employeeId: employee.id, email: loginEmail, ...credential, name: employee.name,
       role: "EMPLOYEE", source: "MANUAL", departmentId: employee.departmentId,
-      ...defaultWorkforceCredentialState,
     } });
     await tx.credentialDelivery.create({
       data: { userId: user.id, recipient: normalizedEmail || workforceCredentialRecipient(), purpose: "INITIAL" },

@@ -60,8 +60,18 @@ Validation is fail-closed:
 Scope changes elsewhere: `PUT /api/admin/users/{id}/hod-scope` re-maps the scope of
 an existing HOD (including accounts with no linked Employee), and
 `PUT /api/admin/users/{id}/employee-link` links an existing HOD/PM account to its
-payroll Employee for My Hours. Both are API-only today. On the dev box, credential
-e-mail is off, so use `node apps/api/set-dev-password.cjs <ecNo>` to set a password.
+payroll Employee for My Hours. Both are API-only today.
+
+**Dev-box credentials.** While the application is still being built, every account
+created from the web UI (Employee Registration, Supervisor Registration, HOD
+registration/promotion, admin `POST /api/admin/users`, and re-activation) is
+provisioned with the one bootstrap password `password@SDHI` and no forced password
+change, so a new registration can log in immediately without a credential e-mail.
+To give a single existing account a known password instead, use
+`node apps/api/set-dev-password.cjs <ecNo>`. The bootstrap password is local-only:
+`apps/api/scripts/check-no-dev-bootstrap-password.mjs` fails the production build
+while it exists, and `assertDevBootstrapAllowed()` refuses to boot a PostgreSQL
+instance while it is enabled. See `docs/DEV_SQLITE_TESTING.md`.
 
 ## HOD approval cover (delegation)
 

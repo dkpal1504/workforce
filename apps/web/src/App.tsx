@@ -14,6 +14,7 @@ import { AllocationsPage } from "./pages/AllocationsPage";
 import { DepartmentsPage } from "./pages/DepartmentsPage";
 import { CsvUploadPage } from "./pages/CsvUploadPage";
 import { EmployeesPage } from "./pages/EmployeesPage";
+import { RoleAssignmentPage } from "./pages/RoleAssignmentPage";
 
 function LoadingSession() {
   return <div className="loading-state" style={{ margin: "20vh auto", maxWidth: 420 }}>Checking your session…</div>;
@@ -92,6 +93,12 @@ export function App() {
           </Route>
           <Route element={<RequireCapability capability="manageMasterData" />}>
             <Route path="/departments" element={<DepartmentsPage />} />
+          </Route>
+          {/* Offered, not forced: accounts on the shared dev password can change it
+              whenever they like, and are not trapped in the flow. */}
+          <Route path="/account/password" element={<ChangePasswordPage />} />
+          <Route element={<RequireCapability capability="assignRoles" />}>
+            <Route path="/role-assignment" element={<RoleAssignmentPage />} />
           </Route>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="*" element={<HomeRedirect />} />

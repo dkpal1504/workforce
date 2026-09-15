@@ -3,13 +3,17 @@ import { api, ApiError, getToken } from "../api/client";
 import "../styles/supervisors.css";
 
 type UploadResult = {
+  accountsCreated?: number;
+  emailsSent?: { row: number; to: string }[];
+  emailFailures?: { row: number; to: string; error: string }[];
+  queuedDeliveries?: { processed: number; sent: number; pending: number; disabled: boolean } | null;
   ok: boolean;
   created: number;
   errors: { row: number; error: string }[];
 };
 
 const MAX_BYTES = 2 * 1024 * 1024; // keep in sync with the API's 2MB limit
-const TEMPLATE_COLUMNS = "ecNo, name, departmentName, sectionName, designation, category";
+const TEMPLATE_COLUMNS = "ecNo, name, departmentName, sectionName, designation, category, email, mobile";
 
 /**
  * Payroll employee CSV upload — ADMIN/HR gated at the API. ecNo is the one
@@ -107,7 +111,10 @@ export function CsvUploadPage() {
     <>
       <div className="supervisors-toolbar">
         <span className="supervisors-toolbar__count">
-          Bulk-register payroll employees with canonical ecNo. Department and Section are required; Cost Center is derived from Section.
+          Bulk-register payroll employees with canonical ecNo. Department and Section are required (exact names from
+          Organisation Masters); Cost Center is derived from Section. Each row also creates the login account (Employee
+          role, ecNo login). Credentials are e-mailed to the row&apos;s email; leave it blank and they go to the support
+          inbox. Leave email and mobile blank if you do not have them.
         </span>
         <div className="supervisors-actions">
           <button type="button" className="btn btn-ghost" onClick={downloadTemplate}>
@@ -164,7 +171,27 @@ export function CsvUploadPage() {
           <div className="panel__body">
             {result.created > 0 && (
               <div className="alloc-note" style={{ marginBottom: 10 }}>
-                ✓ {result.created} employee record{result.created === 1 ? "" : "s"} created.
+                ✓ {result.created} employee record{result.created === 1 ? "" : "s"} created
+                {result.accountsCreated ? ` with ${result.accountsCreated} login account${result.accountsCreated === 1 ? "" : "s"}` : ""}.
+              </div>
+            )}
+            {result.emailsSent && result.emailsSent.length > 0 && (
+              <div className="alloc-note" style={{ marginBottom: 10 }}>
+                Credentials e-mailed for {result.emailsSent.length} row{result.emailsSent.length === 1 ? "" : "s"} —{" "}
+                {result.emailsSent.slice(0, 3).map((m) => m.to).join(", ")}
+                {result.emailsSent.length > 3 ? ` +${result.emailsSent.length - 3} more` : ""}.
+              </div>
+            )}
+            {result.emailFailures && result.emailFailures.length > 0 && (
+              <div className="error-banner" style={{ marginBottom: 10 }}>
+                Credential e-mail could not be sent for {result.emailFailures.length} row
+                {result.emailFailures.length === 1 ? "" : "s"}
+                {result.queuedDeliveries
+                  ? result.queuedDeliveries.disabled
+                    ? " — the credential queue is idle (SMTP is not configured), so they stay pending."
+                    : ` — the credential queue then delivered ${result.queuedDeliveries.sent} and ${result.queuedDeliveries.pending} remain pending.`
+                  : " — they remain on the credential queue."}
+                {" "}First reason: {result.emailFailures[0].error}
               </div>
             )}
             {result.errors.length === 0 ? (
