@@ -179,7 +179,7 @@ export function TimesheetPage() {
   }, []);
 
   const load = useCallback(async () => {
-    if (!ctx.supervisorId || !ctx.departmentId) return;
+    if (!ctx.supervisorId || !ctx.departmentId || !ctx.sectionId) return;
     setLoading(true);
     setError("");
     try {
@@ -209,16 +209,22 @@ export function TimesheetPage() {
           };
         })
       );
-      const pool = await api<{ employees: { id: number; name: string }[] }>(
-        `/teams/pool?department_id=${ctx.departmentId}&date=${ctx.date}&supervisor_id=${ctx.supervisorId}`
-      );
-      setPoolCandidates(pool.employees);
+      // The "pick from previous day" list is a convenience: a failure here must not
+      // blank the whole timesheet, so it is caught separately from the day itself.
+      try {
+        const pool = await api<{ employees: { id: number; name: string }[] }>(
+          `/teams/pool?department_id=${ctx.departmentId}&section_id=${ctx.sectionId}&date=${ctx.date}&supervisor_id=${ctx.supervisorId}`
+        );
+        setPoolCandidates(pool.employees);
+      } catch {
+        setPoolCandidates([]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load timesheet");
     } finally {
       setLoading(false);
     }
-  }, [ctx.supervisorId, ctx.departmentId, ctx.date]);
+  }, [ctx.supervisorId, ctx.departmentId, ctx.date, ctx.sectionId]);
 
   useEffect(() => {
     load();

@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 
 export type Department = { id: number; name: string; code: string };
+export type Section = { id: number; code: string; name: string; departmentId: number };
 export type Supervisor = { id: number; name: string; email: string; departmentId: number | null };
 
 export function useWorkContext() {
@@ -12,6 +13,8 @@ export function useWorkContext() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
   const [departmentId, setDepartmentId] = useState<number | "">("");
+  const [sectionId, setSectionId] = useState<number | "">("");
+  const [sections, setSections] = useState<Section[]>([]);
   const [supervisorId, setSupervisorId] = useState<number | "">("");
 
   useEffect(() => {
@@ -49,6 +52,26 @@ export function useWorkContext() {
     });
   }, [departmentId, user?.id, user?.role]);
 
+  useEffect(() => {
+    if (!departmentId) { setSections([]); return; }
+    let cancelled = false;
+    api<{ sections: Section[] }>(`/sections?department_id=${departmentId}`)
+      .then(({ sections: list }) => {
+        if (cancelled) return;
+        setSections(list);
+        // Default to the Section this person is mapped to (supervisors are mapped
+        // to one), otherwise the first Section of the Department.
+        const mapped = user?.section?.id;
+        setSectionId((current) => {
+          if (current && list.some((section) => section.id === current)) return current;
+          if (mapped && list.some((section) => section.id === mapped)) return mapped;
+          return list[0]?.id ?? "";
+        });
+      })
+      .catch(() => { if (!cancelled) setSections([]); });
+    return () => { cancelled = true; };
+  }, [departmentId, user?.section?.id]);
+
   const dateInputValue = useMemo(() => date, [date]);
 
   return {
@@ -58,6 +81,9 @@ export function useWorkContext() {
     departments,
     departmentId,
     setDepartmentId,
+    sections,
+    sectionId,
+    setSectionId,
     supervisors,
     supervisorId,
     setSupervisorId,
@@ -70,6 +96,10 @@ export function FilterBar(props: {
   departments: Department[];
   departmentId: number | "";
   setDepartmentId: (v: number | "") => void;
+  /** Sections of the selected Department — the capture/working scope. */
+  sections?: Section[];
+  sectionId?: number | "";
+  setSectionId?: (v: number | "") => void;
   supervisors: Supervisor[];
   supervisorId: number | "";
   setSupervisorId: (v: number | "") => void;
@@ -80,6 +110,7 @@ export function FilterBar(props: {
 }) {
   const { user } = useAuth();
   const isSupervisor = user?.role === "SUPERVISOR";
+  const sectionEditable = props.setSectionId != null && (props.sections?.length ?? 0) > 0;
 
   return (
     <div className="filter-row">
@@ -88,8 +119,9 @@ export function FilterBar(props: {
         <input type="date" value={props.date} onChange={(e) => props.setDate(e.target.value)} />
       </div>
       <div className="filter-field">
-        <label>{props.departmentLabel ?? "Department"}</label>
+        <label htmlFor="work-department">Department</label>
         <select
+          id="work-department"
           value={props.departmentId}
           disabled={isSupervisor}
           onChange={(e) => props.setDepartmentId(e.target.value ? Number(e.target.value) : "")}
@@ -101,23 +133,30 @@ export function FilterBar(props: {
           ))}
         </select>
       </div>
-      {isSupervisor && (
+      {sectionEditable && (
         <div className="filter-field">
-          <label htmlFor="supervisor-section">Section</label>
-          <input
-            id="supervisor-section"
+          <label htmlFor="work-section">Section</label>
+          <select
+            id="work-section"
             aria-label="Section"
-            value={user?.section?.name ?? "Not assigned"}
-            readOnly
-          />
+            value={props.sectionId ?? ""}
+            onChange={(e) => props.setSectionId!(e.target.value ? Number(e.target.value) : "")}
+          >
+            {props.sections!.map((section) => (
+              <option key={section.id} value={section.id}>
+                {section.code} · {section.name}
+              </option>
+            ))}
+          </select>
         </div>
       )}
       {isSupervisor ? (
         props.bulkFill ?? null
       ) : (
         <div className="filter-field">
-          <label>Supervisor</label>
+          <label htmlFor="work-supervisor">{props.departmentLabel ?? "Department"}</label>
           <select
+            id="work-supervisor"
             value={props.supervisorId}
             onChange={(e) => props.setSupervisorId(e.target.value ? Number(e.target.value) : "")}
           >

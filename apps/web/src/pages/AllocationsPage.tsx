@@ -57,6 +57,24 @@ function projectClass(colorKey: string | undefined) {
   return key && /^[a-f]$/.test(key) ? `alloc-slot-cell--project-${key}` : "alloc-slot-cell--project-n";
 }
 
+/**
+ * The single-letter badge shown inside an assigned slot: the project's own
+ * designation (A / B / C / D / Non-Project), i.e. the letter the Allocation
+ * screen also colours the cell with. Never derive it from the project *name* —
+ * "Project A".slice(0, 2) renders "PR" for every project, which makes Project A
+ * and Project B look identical in a half-filled shift.
+ */
+function projectBadge(project: { colorKey?: string | null; name?: string | null; code?: string | null }): string {
+  const key = project.colorKey?.trim();
+  if (key && /^[a-z]$/i.test(key)) return key.toUpperCase();
+  const fromCode = project.code?.trim().match(/[A-Za-z](?=\s*$)/);
+  if (fromCode) return fromCode[0].toUpperCase();
+  const fromName = project.name?.trim().match(/[A-Za-z](?=\s*$)/);
+  if (fromName) return fromName[0].toUpperCase();
+  const first = project.name?.trim()[0];
+  return first ? first.toUpperCase() : "?";
+}
+
 export function AllocationsPage() {
   const { user } = useAuth();
   const ownEmployeeId = user?.employeeId ?? user?.employee?.id ?? null;
@@ -361,7 +379,7 @@ export function AllocationsPage() {
                         aria-label={`${slot.time}: ${allocation ? `${allocation.project.name}, ${allocation.jobOrder?.code ?? "no Job Order"}` : selected ? "selected" : "empty"}`}
                         title={allocation ? `${allocation.project.name}${allocation.jobOrder ? ` · ${allocation.jobOrder.code}` : ""}` : "Select this 2-hour slot"}
                       >
-                        {allocation ? allocation.project.name.slice(0, 2).toUpperCase() : selected ? "✓" : ""}
+                        {allocation ? projectBadge(allocation.project) : selected ? "✓" : ""}
                       </button>
                       {allocation && canEditSlots && (
                         <button
