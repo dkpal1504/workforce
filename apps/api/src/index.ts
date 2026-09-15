@@ -22,6 +22,7 @@ import { csvUploadRouter } from "./routes/csvUpload";
 import { delegationRouter } from "./routes/delegations";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { prisma } from "./db";
+import { assertDevBootstrapAllowed } from "./services/defaultLoginCredentials";
 
 const app = express();
 const port = Number(process.env.API_PORT || 4000);
@@ -36,6 +37,10 @@ if (isLocalTestDb && process.env.NODE_ENV === "production") {
 if (!isLocalTestDb && !databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://")) {
   throw new Error("DATABASE_URL must be a PostgreSQL URL, or a file: URL for local SQLite testing.");
 }
+// Local development provisions every new registration with a shared bootstrap
+// password. That is only ever handed out against a file: SQLite database; this
+// refuses to boot a PostgreSQL (production) instance while it is still enabled.
+if (!isLocalTestDb) assertDevBootstrapAllowed();
 let shuttingDown = false;
 
 app.disable("x-powered-by");

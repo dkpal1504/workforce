@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../db";
+import { usesDevBootstrapPassword } from "../services/defaultLoginCredentials";
 
 export type AuthUser = {
   id: number;
@@ -97,8 +98,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     };
 
     // A temporary credential grants access only to the lifecycle endpoints.
+    // A dev bootstrap password is a shared, published secret, so changing it is
+    // offered but not forced — otherwise every dev account would be locked into a
+    // change-password screen that nothing else can reach. In production
+    // (mustChangePassword from the credential worker) the gate stays hard.
     const allowedWhileChanging = new Set(["/api/auth/me", "/api/auth/logout", "/api/auth/change-password"]);
-    if (user.mustChangePassword && !allowedWhileChanging.has(req.originalUrl.split("?")[0])) {
+    const forcePasswordChange = user.mustChangePassword && !usesDevBootstrapPassword();
+    if (forcePasswordChange && !allowedWhileChanging.has(req.originalUrl.split("?")[0])) {
       return res.status(403).json({
         error: "You must change your temporary password before continuing.",
         code: "PASSWORD_CHANGE_REQUIRED",

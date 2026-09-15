@@ -1,8 +1,8 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import nodemailer from "nodemailer";
 import { prisma } from "../db";
-import { usesEcNoLogin } from "./defaultLoginCredentials";
+import { DEV_BOOTSTRAP_PASSWORD, usesDevBootstrapPassword, usesEcNoLogin } from "./defaultLoginCredentials";
+import { createSmtpTransport, safeSmtpError, smtpConfigured } from "./smtp";
 
 export type CredentialDeliveryResult = {
   processed: number;
@@ -12,19 +12,9 @@ export type CredentialDeliveryResult = {
   disabled: boolean;
 };
 
-function smtpConfigured(): boolean {
-  return Boolean(process.env.SMTP_HOST?.trim() && process.env.SMTP_FROM?.trim());
-}
-
 function temporaryPassword(): string {
   // 144 random bits. base64url avoids whitespace and mail-client punctuation issues.
   return crypto.randomBytes(18).toString("base64url");
-}
-
-function safeError(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  // Limit persisted provider errors and defensively redact URI-style credentials.
-  return text.replace(/([a-z]+:\/\/)[^@\s]+@/gi, "$1[redacted]@").slice(0, 1000);
 }
 
 /**
@@ -40,16 +30,7 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
     return result;
   }
 
-  const port = Number(process.env.SMTP_PORT || 587);
-  const secure = String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
-  const user = process.env.SMTP_USER?.trim();
-  const password = process.env.SMTP_PASSWORD;
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST!.trim(),
-    port,
-    secure,
-    ...(user && password ? { auth: { user, pass: password } } : {}),
-  });
+  const transporter = createSmtpTransport();
   const batchSize = Math.max(1, Math.min(100, Number(process.env.CREDENTIAL_DELIVERY_BATCH_SIZE || 20)));
   const expiryHours = Math.max(1, Number(process.env.TEMP_PASSWORD_EXPIRY_HOURS || 24));
   const staleBefore = new Date(Date.now() - 15 * 60 * 1000);
@@ -83,15 +64,34 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
       continue;
     }
 
+    // While the dev bootstrap password is in force, a queued one-time credential
+    // would immediately overwrite the password the operator deliberately
+    // provisioned (and that an unauthenticated caller can poll for). Fail closed:
+    // mark the row FAILED with no attempt, and leave the password alone.
+    if (usesDevBootstrapPassword() && !currentUser.credentialSentAt) {
+      await prisma.credentialDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: "FAILED",
+          lastError: "Dev bootstrap password is enabled; a one-time credential would overwrite it.",
+        },
+      });
+      continue;
+    }
+
     const ecNoAccount = usesEcNoLogin(currentUser.role, currentUser.employeeId);
-    const deliveredPassword = temporaryPassword();
+    // While the dev bootstrap password is in force the queue must disclose THAT
+    // password. Generating a fresh random one here would mail a secret nobody can
+    // read and silently lock the account out of the shared dev credential.
+    const devBootstrap = usesDevBootstrapPassword();
+    const deliveredPassword = devBootstrap ? String(DEV_BOOTSTRAP_PASSWORD) : temporaryPassword();
     try {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + expiryHours * 60 * 60 * 1000);
       const credentialData = {
         passwordHash: await bcrypt.hash(deliveredPassword, 10),
-        mustChangePassword: true,
-        passwordExpiresAt: expiresAt,
+        mustChangePassword: !devBootstrap,
+        passwordExpiresAt: devBootstrap ? null : expiresAt,
         credentialProvisionedAt: now,
         tokenVersion: { increment: 1 },
       };
@@ -107,23 +107,21 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
       await transporter.sendMail({
         from: process.env.SMTP_FROM!.trim(),
         to: delivery.recipient,
-        subject: `Workforce supervisor temporary credential (${delivery.purpose})`,
+        subject: `Workforce ${devBootstrap ? "account credentials" : "supervisor temporary credential"} (${delivery.purpose})`,
         text: ecNoAccount
           ? [
               "A Workforce login has been provisioned.",
               `Name: ${delivery.user.name}`,
               `Login EC No: ${delivery.user.employee?.ecNo ?? "Not linked"}`,
-              `Temporary password: ${deliveredPassword}`,
-              `Expires: ${expiresAt.toISOString()}`,
-              "The user must change this password at first login.",
+              `Password: ${deliveredPassword}`,
+              ...(devBootstrap ? [] : [`Expires: ${expiresAt.toISOString()}`, "The user must change this password at first login."]),
             ].join("\n")
           : [
               "A Workforce administrative credential has been provisioned.",
               `Name: ${delivery.user.name}`,
               `Login email: ${delivery.user.email}`,
-              `Temporary password: ${deliveredPassword}`,
-              `Expires: ${expiresAt.toISOString()}`,
-              "The user must change this password at first login.",
+              `Password: ${deliveredPassword}`,
+              ...(devBootstrap ? [] : [`Expires: ${expiresAt.toISOString()}`, "The user must change this password at first login."]),
             ].join("\n"),
       });
 
@@ -139,7 +137,7 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
     } catch (error) {
       await prisma.credentialDelivery.updateMany({
         where: { id: delivery.id, status: "PROCESSING" },
-        data: { status: "PENDING", lastError: safeError(error) },
+        data: { status: "PENDING", lastError: safeSmtpError(error) },
       });
       result.failed += 1;
     }
