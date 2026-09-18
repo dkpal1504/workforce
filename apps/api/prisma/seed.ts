@@ -27,9 +27,14 @@ async function main() {
   await prisma.costCenter.deleteMany();
   await prisma.section.deleteMany();
   await prisma.syncException.deleteMany();
+  await prisma.jobOrderProgressRemark.deleteMany();
+  await prisma.jobOrderProgress.deleteMany();
+  await prisma.jobOrderBudgetRevision.deleteMany();
   await prisma.jobOrder.deleteMany();
+  await prisma.network.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectWbs.deleteMany();
+  await prisma.uom.deleteMany();
   await prisma.user.deleteMany();
   await prisma.employee.deleteMany();
   await prisma.department.deleteMany();
@@ -125,7 +130,7 @@ async function main() {
     },
   });
 
-  await prisma.user.create({
+  const hodUser = await prisma.user.create({
     data: {
       email: "hod@company.com",
       passwordHash,
@@ -188,77 +193,196 @@ async function main() {
     });
   }
 
-  const projects = [
-    { code: "PRJ-A", name: "Project A", wbsCode: "A.HULL.0010.100", colorKey: "A" },
-    { code: "PRJ-B", name: "Project B", wbsCode: "B.HULL.0020.150", colorKey: "B" },
-    { code: "PRJ-C", name: "Project C", wbsCode: "C.SFR.0045.201", colorKey: "C" },
-    { code: "PRJ-D", name: "Project D", wbsCode: "D.REP.0030.110", colorKey: "D" },
+  // --- UoM master -----------------------------------------------------------
+  const uomRows = [
+    { code: "NOS", name: "Numbers", example: "Count of pieces, e.g. 12 spools" },
+    { code: "MT", name: "Metric Tonne", example: "Weight in tonnes, e.g. 4.5" },
+    { code: "SQM", name: "Square Metre", example: "Painted area, e.g. 320" },
+    { code: "MTR", name: "Metre", example: "Length in metres, e.g. 18.5" },
   ];
-
-  for (const p of projects) {
-    await prisma.projectWbs.create({ data: p });
+  const uomId: Record<string, number> = {};
+  for (const row of uomRows) {
+    uomId[row.code] = (await prisma.uom.create({ data: row })).id;
   }
 
-  // --- New Project + JobOrder master (1900000xxx codes) ---
-  // Used by Job Order Summary tab and (in a later round) by the 4-slot Timesheet Entry.
-  const newProjects = [
-    { code: "PRJ-A", name: "Project A", colorKey: "A", sortOrder: 1 },
-    { code: "PRJ-B", name: "Project B", colorKey: "B", sortOrder: 2 },
-    { code: "PRJ-C", name: "Project C", colorKey: "C", sortOrder: 3 },
-    { code: "PRJ-D", name: "Project D", colorKey: "D", sortOrder: 4 },
-    { code: "PRJ-N", name: "Non Project", colorKey: "N", sortOrder: 5 },
+  // --- Projects: ERP Project number + short display colour key --------------
+  const projectRows = [
+    { code: "PRJ-A", name: "Project A", colorKey: "A", sortOrder: 1, isNonProject: false },
+    { code: "PRJ-B", name: "Project B", colorKey: "B", sortOrder: 2, isNonProject: false },
+    { code: "PRJ-C", name: "Project C", colorKey: "C", sortOrder: 3, isNonProject: false },
+    { code: "PRJ-D", name: "Project D", colorKey: "D", sortOrder: 4, isNonProject: false },
+    { code: "PRJ-N", name: "Non Project", colorKey: "N", sortOrder: 5, isNonProject: true },
   ];
-  const projARow = await prisma.project.create({ data: newProjects[0] });
-  const projBRow = await prisma.project.create({ data: newProjects[1] });
-  const projCRow = await prisma.project.create({ data: newProjects[2] });
-  const projDRow = await prisma.project.create({ data: newProjects[3] });
-  const projNRow = await prisma.project.create({ data: newProjects[4] });
+  const projectId: Record<string, number> = {};
+  for (const row of projectRows) {
+    projectId[row.code] = (await prisma.project.create({ data: row })).id;
+  }
+  const projectFor = (code: string) => projectId[code];
 
-  // Link ProjectWbs rows to Project rows so legacy Project Summary stays consistent.
-  // The seed_projectWbs objects were just created above; fetch by code.
-  const wbsA = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-A" } });
-  const wbsB = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-B" } });
-  const wbsC = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-C" } });
-  const wbsD = await prisma.projectWbs.findUniqueOrThrow({ where: { code: "PRJ-D" } });
-  await prisma.project.update({ where: { id: projARow.id }, data: {} });
-  // projectWbsId FK on JobOrder points into the legacy ProjectWbs row.
+  // --- Networks: validated reference, scoped per project (SAP-fed in phase 2)
+  const networkRows = [
+    { projectCode: "PRJ-A", code: "SAP-NW-91001", name: "Hull networks" },
+    { projectCode: "PRJ-A", code: "SAP-NW-91002", name: "Outfit networks" },
+    { projectCode: "PRJ-B", code: "SAP-NW-92001", name: "Block 223 networks" },
+    { projectCode: "PRJ-C", code: "SAP-NW-93001", name: "Surface treatment networks" },
+    { projectCode: "PRJ-C", code: "SAP-NW-93002", name: "Repair networks" },
+    { projectCode: "PRJ-D", code: "SAP-NW-94001", name: "Repair networks" },
+    { projectCode: "PRJ-N", code: "DUMMY", name: "Standing / idle hours (no SAP network)" },
+  ];
+  const networkId: Record<string, number> = {};
+  for (const r of networkRows) {
+    const created = await prisma.network.create({
+      data: { projectId: projectFor(r.projectCode), code: r.code, name: r.name },
+    });
+    networkId[`${r.projectCode}:${r.code}`] = created.id;
+  }
 
+  // --- WBS rows: a WBS only groups Job Orders and carries no budget ---------
+  const wbsRows = [
+    { projectCode: "PRJ-A", wbsCode: "A.HULL.0010.100", name: "Hull structure", sortOrder: 1 },
+    { projectCode: "PRJ-A", wbsCode: "A.OUTF.0020.100", name: "Outfit", sortOrder: 2 },
+    { projectCode: "PRJ-B", wbsCode: "B.HULL.0020.150", name: "Block 223", sortOrder: 1 },
+    { projectCode: "PRJ-C", wbsCode: "C.SFR.0045.201", name: "Surface treatment", sortOrder: 1 },
+    { projectCode: "PRJ-C", wbsCode: "C.REP.0045.202", name: "Repair works", sortOrder: 2 },
+    { projectCode: "PRJ-D", wbsCode: "D.REP.0030.110", name: "Repair works", sortOrder: 1 },
+    { projectCode: "PRJ-N", wbsCode: "GENERAL", name: "General / Standing", sortOrder: 99 },
+  ];
+  const wbsId: Record<string, number> = {};
+  for (const r of wbsRows) {
+    const created = await prisma.projectWbs.create({
+      data: { projectId: projectFor(r.projectCode), wbsCode: r.wbsCode, name: r.name, sortOrder: r.sortOrder },
+    });
+    wbsId[`${r.projectCode}:${r.wbsCode}`] = created.id;
+  }
+
+  // --- Job Orders ----------------------------------------------------------
+  // The Job Order number repeats ACROSS projects (same activity, same number) and
+  // is unique inside one project only. `1900000107` appears in Project A and
+  // Project C below on purpose, to exercise that rule.
+  // `sectionId` is null only for standing / Non-Project Job Orders, which any
+  // section of the department may book.
   type JoSeed = {
-    projectId: number;
-    projectWbsId: number | null;
+    projectCode: string;
+    wbsCode: string;
+    network: string;
     code: string;
     name: string;
+    uom: string;
+    qty: number;
+    hours: number;
     departmentId: number;
-    budgetedHours: number | null;
-    status: "active" | "closed" | "on_hold";
+    sectionId: number | null;
+    status: "active" | "inactive";
   };
   const joSeeds: JoSeed[] = [
-    // Project A — active vessel hull work, all active
-    { projectId: projARow.id, projectWbsId: wbsA.id, code: "1900000107", name: "Pipe Spool Installation", departmentId: hull.id, budgetedHours: 1200, status: "active" },
-    { projectId: projARow.id, projectWbsId: wbsA.id, code: "1900000108", name: "MCB Panel Installation", departmentId: hull.id, budgetedHours: 800, status: "active" },
-    { projectId: projARow.id, projectWbsId: wbsA.id, code: "1900000109", name: "Sea Chest Grating Renewal", departmentId: hull.id, budgetedHours: 1500, status: "active" },
-    // Project B — Block 223, active
-    { projectId: projBRow.id, projectWbsId: wbsB.id, code: "1900000204", name: "Block Transfer (Block 223)", departmentId: hull.id, budgetedHours: 2000, status: "active" },
-    { projectId: projBRow.id, projectWbsId: wbsB.id, code: "1900000205", name: "Block Cleaning (Block 223)", departmentId: hull.id, budgetedHours: 1500, status: "active" },
-    { projectId: projBRow.id, projectWbsId: wbsB.id, code: "1900000206", name: "Block Painting (Block 223)", departmentId: hull.id, budgetedHours: 1800, status: "active" },
-    // Project C — split across multiple departments
-    { projectId: projCRow.id, projectWbsId: wbsC.id, code: "1900000110", name: "Block Washing", departmentId: blast.id, budgetedHours: 1100, status: "active" },
-    { projectId: projCRow.id, projectWbsId: wbsC.id, code: "1900000111", name: "Propeller & Rudder Inspection", departmentId: repair.id, budgetedHours: 950, status: "active" },
-    { projectId: projCRow.id, projectWbsId: wbsC.id, code: "1900000112", name: "Hull Blasting", departmentId: blast.id, budgetedHours: 2000, status: "closed" },
-    // Project D — single active JO, demoing the "CLOSED" superscript on a peer
-    { projectId: projDRow.id, projectWbsId: wbsD.id, code: "1900000113", name: "Deck Furniture Installation", departmentId: repair.id, budgetedHours: 600, status: "active" },
-    // Non Project — Standing JOs (no budget cap)
-    { projectId: projNRow.id, projectWbsId: null, code: "1900000401", name: "General Housekeeping", departmentId: hull.id, budgetedHours: null, status: "active" },
-    { projectId: projNRow.id, projectWbsId: null, code: "1900000402", name: "Administrative / Meeting Time", departmentId: hull.id, budgetedHours: null, status: "active" },
-    { projectId: projNRow.id, projectWbsId: null, code: "1900000403", name: "Training & Induction", departmentId: hull.id, budgetedHours: null, status: "active" },
-    { projectId: projNRow.id, projectWbsId: null, code: "1900000405", name: "Equipment / Machine Maintenance", departmentId: repair.id, budgetedHours: null, status: "active" },
+    // Project A — hull structure WBS, all active
+    { projectCode: "PRJ-A", wbsCode: "A.HULL.0010.100", network: "SAP-NW-91001", code: "1900000107", name: "Pipe Spool Installation", uom: "NOS", qty: 220, hours: 1200, departmentId: hull.id, sectionId: hullSection.id, status: "active" },
+    { projectCode: "PRJ-A", wbsCode: "A.HULL.0010.100", network: "SAP-NW-91001", code: "1900000108", name: "MCB Panel Installation", uom: "NOS", qty: 140, hours: 800, departmentId: hull.id, sectionId: hullSection.id, status: "active" },
+    { projectCode: "PRJ-A", wbsCode: "A.HULL.0010.100", network: "SAP-NW-91001", code: "1900000109", name: "Sea Chest Grating Renewal", uom: "SQM", qty: 310, hours: 1500, departmentId: hull.id, sectionId: hullSection.id, status: "active" },
+    // Project A — second WBS in the same project
+    { projectCode: "PRJ-A", wbsCode: "A.OUTF.0020.100", network: "SAP-NW-91002", code: "1900000114", name: "Accommodation Outfit", uom: "SQM", qty: 480, hours: 950, departmentId: hull.id, sectionId: hullSection.id, status: "active" },
+    // Project B — Block 223, one inactive row to demonstrate the status label
+    { projectCode: "PRJ-B", wbsCode: "B.HULL.0020.150", network: "SAP-NW-92001", code: "1900000204", name: "Block Transfer (Block 223)", uom: "MT", qty: 640, hours: 2000, departmentId: hull.id, sectionId: hullSection.id, status: "active" },
+    { projectCode: "PRJ-B", wbsCode: "B.HULL.0020.150", network: "SAP-NW-92001", code: "1900000205", name: "Block Cleaning (Block 223)", uom: "SQM", qty: 520, hours: 1500, departmentId: hull.id, sectionId: hullSection.id, status: "active" },
+    { projectCode: "PRJ-B", wbsCode: "B.HULL.0020.150", network: "SAP-NW-92001", code: "1900000206", name: "Block Painting (Block 223)", uom: "SQM", qty: 700, hours: 1800, departmentId: hull.id, sectionId: hullSection.id, status: "inactive" },
+    // Project C — surface treatment, split across two departments
+    { projectCode: "PRJ-C", wbsCode: "C.SFR.0045.201", network: "SAP-NW-93001", code: "1900000107", name: "Pipe Spool Installation", uom: "NOS", qty: 220, hours: 900, departmentId: blast.id, sectionId: blastSection.id, status: "active" },
+    { projectCode: "PRJ-C", wbsCode: "C.SFR.0045.201", network: "SAP-NW-93001", code: "1900000110", name: "Block Washing", uom: "SQM", qty: 420, hours: 1100, departmentId: blast.id, sectionId: blastSection.id, status: "active" },
+    { projectCode: "PRJ-C", wbsCode: "C.SFR.0045.201", network: "SAP-NW-93001", code: "1900000112", name: "Hull Blasting", uom: "SQM", qty: 860, hours: 2000, departmentId: blast.id, sectionId: blastSection.id, status: "inactive" },
+    // Project C — repair WBS
+    { projectCode: "PRJ-C", wbsCode: "C.REP.0045.202", network: "SAP-NW-93002", code: "1900000111", name: "Propeller & Rudder Inspection", uom: "NOS", qty: 30, hours: 950, departmentId: repair.id, sectionId: repairSection.id, status: "active" },
+    // Project D
+    { projectCode: "PRJ-D", wbsCode: "D.REP.0030.110", network: "SAP-NW-94001", code: "1900000113", name: "Deck Furniture Installation", uom: "NOS", qty: 90, hours: 600, departmentId: repair.id, sectionId: repairSection.id, status: "active" },
+    // Non Project — standing Job Orders at DEPARTMENT level (no section, no cap)
+    { projectCode: "PRJ-N", wbsCode: "GENERAL", network: "DUMMY", code: "1900000401", name: "General Housekeeping", uom: "NOS", qty: 0, hours: 0, departmentId: hull.id, sectionId: null, status: "active" },
+    { projectCode: "PRJ-N", wbsCode: "GENERAL", network: "DUMMY", code: "1900000402", name: "Administrative / Meeting Time", uom: "NOS", qty: 0, hours: 0, departmentId: hull.id, sectionId: null, status: "active" },
+    { projectCode: "PRJ-N", wbsCode: "GENERAL", network: "DUMMY", code: "1900000403", name: "Training & Induction", uom: "NOS", qty: 0, hours: 0, departmentId: hull.id, sectionId: null, status: "active" },
+    { projectCode: "PRJ-N", wbsCode: "GENERAL", network: "DUMMY", code: "1900000405", name: "Equipment / Machine Maintenance", uom: "NOS", qty: 0, hours: 0, departmentId: repair.id, sectionId: null, status: "active" },
   ];
+
+  const budgetStart = new Date("2026-01-01");
+  const joByKey = new Map<string, number>();
   const joByCode = new Map<string, number>();
   for (const jo of joSeeds) {
-    const created = await prisma.jobOrder.create({ data: jo });
-    joByCode.set(jo.code, created.id);
+    const created = await prisma.jobOrder.create({
+      data: {
+        projectId: projectFor(jo.projectCode),
+        projectWbsId: wbsId[`${jo.projectCode}:${jo.wbsCode}`],
+        networkId: networkId[`${jo.projectCode}:${jo.network}`],
+        code: jo.code,
+        name: jo.name,
+        uomId: uomId[jo.uom],
+        budgetedQuantity: jo.qty,
+        budgetedHours: jo.hours,
+        departmentId: jo.departmentId,
+        sectionId: jo.sectionId,
+        status: jo.status,
+      },
+    });
+    joByKey.set(`${jo.projectCode}:${jo.code}`, created.id);
+    if (!joByCode.has(jo.code)) joByCode.set(jo.code, created.id);
+    // Revision 1 is the opening budget. Revisions are effective-dated; the PM is
+    // the custodian so no approval step is required.
+    await prisma.jobOrderBudgetRevision.create({
+      data: {
+        jobOrderId: created.id,
+        revisionNo: 1,
+        budgetedHours: jo.hours,
+        budgetedQuantity: jo.qty,
+        uomId: uomId[jo.uom],
+        effectiveFrom: budgetStart,
+        reason: "Opening budget",
+      },
+    });
   }
 
+  // --- Quantity progress: the HOD punches the CUMULATIVE figure, the PM approves
+  // A rejected row is kept as history; the correction becomes revision 2.
+  const progressSeeds = [
+    { projectCode: "PRJ-A", code: "1900000107", date: "2026-09-08", qty: 40, revisionNo: 1, status: "APPROVED", sectionId: hullSection.id },
+    { projectCode: "PRJ-A", code: "1900000107", date: "2026-09-10", qty: 95, revisionNo: 1, status: "APPROVED", sectionId: hullSection.id },
+    { projectCode: "PRJ-A", code: "1900000107", date: "2026-09-14", qty: 150, revisionNo: 1, status: "SUBMITTED", sectionId: hullSection.id },
+    { projectCode: "PRJ-A", code: "1900000108", date: "2026-09-12", qty: 60, revisionNo: 1, status: "SUBMITTED", sectionId: hullSection.id },
+    { projectCode: "PRJ-B", code: "1900000204", date: "2026-09-12", qty: 300, revisionNo: 1, status: "APPROVED", sectionId: hullSection.id },
+    { projectCode: "PRJ-C", code: "1900000110", date: "2026-09-11", qty: 120, revisionNo: 1, status: "REJECTED", sectionId: blastSection.id },
+    { projectCode: "PRJ-C", code: "1900000110", date: "2026-09-11", qty: 96, revisionNo: 2, status: "APPROVED", sectionId: blastSection.id },
+  ];
+  for (const p of progressSeeds) {
+    const rejectionRemark = "Quantity does not match the inspected work";
+    const amendmentRemark = "Corrected after the PM rejected revision 1";
+    const punchedRemark = p.revisionNo > 1 ? "Re-punched after the inspection" : "Cumulative shift output";
+    const latest =
+      p.status === "REJECTED" ? rejectionRemark : p.revisionNo > 1 ? amendmentRemark : null;
+
+    const entry = await prisma.jobOrderProgress.create({
+      data: {
+        jobOrderId: joByKey.get(`${p.projectCode}:${p.code}`)!,
+        progressDate: new Date(p.date),
+        cumulativeQuantity: p.qty,
+        revisionNo: p.revisionNo,
+        sectionId: p.sectionId,
+        status: p.status,
+        punchedById: hodUser.id,
+        approvedById: p.status === "APPROVED" ? projectHead.id : null,
+        approvedAt: p.status === "APPROVED" ? new Date(p.date) : null,
+        // The row keeps the LATEST message; the history below keeps every remark.
+        remarks: latest,
+      },
+    });
+
+    // Every remark is a separate row so a report can show the whole exchange.
+    const history: { kind: string; remark: string; authorId: number; authorRole: string }[] = [
+      { kind: "PUNCH", remark: punchedRemark, authorId: hodUser.id, authorRole: "HOD" },
+    ];
+    if (p.status === "REJECTED") {
+      history.push({ kind: "REJECT", remark: rejectionRemark, authorId: projectHead.id, authorRole: "PM" });
+    } else if (p.revisionNo > 1) {
+      history.push({ kind: "AMEND", remark: amendmentRemark, authorId: hodUser.id, authorRole: "HOD" });
+    }
+    for (const row of history) {
+      await prisma.jobOrderProgressRemark.create({ data: { progressId: entry.id, ...row } });
+    }
+  }
   const rateDate = new Date("2026-01-01");
   await prisma.costRate.createMany({
     data: [
@@ -267,6 +391,12 @@ async function main() {
       { category: "ON_ROLL", ratePerHour: 350, effectiveFrom: rateDate },
     ],
   });
+
+  const sectionByDepartment = new Map<number, number>([
+    [hull.id, hullSection.id],
+    [blast.id, blastSection.id],
+    [repair.id, repairSection.id],
+  ]);
 
   const now = new Date();
   const todayUtc = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
@@ -287,7 +417,11 @@ async function main() {
 
   // Summary demo: realistic daily hours (≤ MAX / OT only with remarks).
   // Old plans used 80–160 entry dumps which inflated Summary totals to 26–34h/day.
-  const allProjects = await prisma.projectWbs.findMany({ orderBy: { colorKey: "asc" } });
+  // A Project has many WBS rows, so the demo tags the first WBS of each project.
+  const allProjects = await prisma.project.findMany({
+    orderBy: { sortOrder: "asc" },
+    include: { wbsRows: { orderBy: { sortOrder: "asc" } } },
+  });
   const allSupervisors = await prisma.user.findMany({
     where: { role: "SUPERVISOR", NOT: { email: "r.sharma@company.com" } },
     orderBy: { name: "asc" },
@@ -340,10 +474,21 @@ async function main() {
     employeeId: number;
     workDate: Date;
     hourSlot: number;
-    projectWbsId: number;
+    projectWbsId: number | null;
+    projectId: number | null;
+    departmentId: number | null;
+    sectionId: number | null;
     taggedById: number;
     status: string;
   }[] = [];
+
+  /** Attribution snapshot for a booking row: frozen buckets + project/WBS. */
+  const snapshotFor = (project: { id: number; wbsRows: { id: number }[] }, departmentId: number) => ({
+    projectWbsId: project.wbsRows[0]?.id ?? null,
+    projectId: project.id,
+    departmentId,
+    sectionId: sectionByDepartment.get(departmentId) ?? null,
+  });
 
   // Employees 6–19: ~8h each, split across projects, submitted (under cap)
   const patterns: { keys: ("A" | "B" | "C" | "D")[]; hours: number[] }[] = [
@@ -371,7 +516,7 @@ async function main() {
           employeeId: emp.id,
           workDate: demoDate,
           hourSlot,
-          projectWbsId: project.id,
+          ...snapshotFor(project, emp.departmentId),
           taggedById: sup.id,
           status: "SUBMITTED",
         });
@@ -405,7 +550,7 @@ async function main() {
         employeeId: emp.id,
         workDate: demoDate,
         hourSlot: slots[i],
-        projectWbsId: (i < 6 ? prjByKey.A : prjByKey.B).id,
+        ...snapshotFor(i < 6 ? prjByKey.A : prjByKey.B, emp.departmentId),
         taggedById: sup.id,
         status: "SUBMITTED",
       });
@@ -440,7 +585,6 @@ async function main() {
   const prjD = allProjects.find((p) => p.colorKey === "D")!;
   const kulkarni = allSupervisors.find((s) => s.name === "V. Kulkarni")!;
   const menon = allSupervisors.find((s) => s.name === "S. Menon")!;
-  const hodUser = await prisma.user.findUniqueOrThrow({ where: { email: "hod@company.com" } });
 
   const fiveDaysAgo = new Date(demoDate);
   fiveDaysAgo.setUTCDate(fiveDaysAgo.getUTCDate() - 5);
@@ -479,13 +623,19 @@ async function main() {
       },
     });
     if (opts.slots.length) {
+      const projectIds = [...new Set(opts.slots.map((s) => s.projectId))];
+      const slotProjects = await prisma.project.findMany({
+        where: { id: { in: projectIds } },
+        include: { wbsRows: { orderBy: { sortOrder: "asc" } } },
+      });
+      const projectById = new Map(slotProjects.map((project) => [project.id, project]));
       await prisma.timesheetEntry.createMany({
         data: opts.slots.map((s) => ({
           timesheetDayId: day.id,
           employeeId: opts.employee.id,
           workDate: opts.workDate,
           hourSlot: s.hourSlot,
-          projectWbsId: s.projectId,
+          ...snapshotFor(projectById.get(s.projectId)!, opts.employee.departmentId),
           taggedById: opts.supervisorId,
           status: opts.status,
         })),

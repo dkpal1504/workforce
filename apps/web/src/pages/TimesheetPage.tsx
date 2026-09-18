@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { SHIFT_LABELS, SHIFT_SLOTS, type ShiftSlot } from "@workforce/shared";
 import { api, ApiError } from "../api/client";
@@ -10,14 +10,35 @@ type JobOrderOption = {
   id: number;
   code: string;
   name: string;
-  status: string;
-  budgetedHours: number | null;
+  /** Option text — always `${code}-${name}` (e.g. `1900000107-Pipe Spool Installation`). */
+  label: string;
+  /** WBS number: returned so the picker can disambiguate, never shown by default. */
+  wbsNo: string | null;
+  colorKey: string | null;
+  /** NULL for a standing / Non-Project Job Order, which any section may book. */
+  sectionId: number | null;
+  standing: boolean;
+  /** Sent by the timesheet payload only, not by /timesheet/job-orders. */
+  status?: string;
+  budgetedHours?: number | null;
+  projectId?: number;
+  projectName?: string;
+};
+type SectionOption = {
+  id: number;
+  code: string;
+  name: string;
+};
+type DepartmentOption = {
+  id: number;
+  name: string;
 };
 type ProjectOption = {
   id: number;
   code: string;
   name: string;
   colorKey: string;
+  isNonProject: boolean;
   jobOrders: JobOrderOption[];
 };
 type ShiftSlotRow = {
@@ -29,6 +50,9 @@ type ShiftSlotRow = {
   jobOrderCode: string | null;
   jobOrderName: string | null;
   projectWbsCode: string | null;
+  wbsNo: string | null;
+  sectionId: number | null;
+  departmentId: number | null;
   entryId: number | null;
   status: string | null;
   locked: boolean;
@@ -63,6 +87,7 @@ type Row = {
   otJobOrderId?: number | null;
   otProjectId?: number | null;
   otProjectColorKey?: string | null;
+  otSectionId?: number | null;
   otLocked?: boolean;
   otBookedByOther?: boolean;
   otBookedBySupervisorNames?: string[];
@@ -85,8 +110,11 @@ type LocalRow = Row & {
   // Locally-marked "selected" slots (amber), pending assignment via Assign to Selected.
   // Independent of which slots are already filled (which render as project-colored).
   selectedSlots: Set<ShiftSlot>;
-  // Per-row Allocation: the Project dropdown value. When set, the Job Order dropdown
-  // is filtered to that project's JOs. Defaults to the row's first filled slot's project.
+  // Per-row Allocation: the Section dropdown value. The Job Order list is scoped to
+  // this section + the selected project. Defaults to the row's first filled slot's section.
+  sectionId: number | "";
+  // Per-row Allocation: the Project dropdown value. Defaults to the row's first filled
+  // slot's project.
   projectId: number | "";
   // Per-row selected Job Order for the Assign button.
   jobOrderId: number | "";
@@ -135,6 +163,28 @@ function fullName(first: string) {
   return first;
 }
 
+/** Cache key for the Job Orders of one (project, section) pair. */
+function jobOrderPairKey(projectId: number | "", sectionId: number | "") {
+  return projectId !== "" && sectionId !== "" ? `${projectId}:${sectionId}` : "";
+}
+
+/** Option text for a Job Order: always `Job_Order-Job_Description`. */
+function jobOrderOptionLabel(j: JobOrderOption) {
+  return j.label || `${j.code}-${j.name}`;
+}
+
+/**
+ * The Job Order stored in a row's slot is a frozen booking snapshot: live master data
+ * may no longer offer it for the current (section, project) pair. Keep it selectable
+ * rather than rendering a blank select.
+ */
+function storedSlotJobOrderLabel(row: LocalRow, jobOrderId: number | "") {
+  if (jobOrderId === "") return null;
+  const slot = row.slots.find((s) => s.jobOrderId === jobOrderId);
+  if (!slot?.jobOrderCode) return null;
+  return slot.jobOrderName ? `${slot.jobOrderCode}-${slot.jobOrderName}` : slot.jobOrderCode;
+}
+
 export function TimesheetPage() {
   const ctx = useWorkContext();
   const { user } = useAuth();
@@ -154,8 +204,18 @@ export function TimesheetPage() {
   const [loading, setLoading] = useState(false);
   const [maxDailyHours, setMaxDailyHours] = useState(8);
   const [openReturns, setOpenReturns] = useState<OpenReturn[]>([]);
+  // Booking picker: the supervisor's own department is FIXED (display only) while the
+  // section is freely chosen per row / per bulk action. Both come from the payload.
+  const [department, setDepartment] = useState<DepartmentOption | null>(null);
+  const [sections, setSections] = useState<SectionOption[]>([]);
+  // Job Orders are served per (project, section) pair. Cache each pair so re-picking an
+  // earlier combination is instant and no fetch happens per render.
+  const [jobOrderCache, setJobOrderCache] = useState<Record<string, JobOrderOption[]>>({});
+  // Latest request id per pair key — a late response for a superseded request is dropped.
+  const jobOrderFetchSeq = useRef<Map<string, number>>(new Map());
 
   // Bulk Assignment block state
+  const [bulkSectionId, setBulkSectionId] = useState<number | "">("");
   const [bulkProjectId, setBulkProjectId] = useState<number | "">("");
   const [bulkJobOrderId, setBulkJobOrderId] = useState<number | "">("");
   // Expand/collapse state for the per-row grid (default: collapsed)
@@ -185,23 +245,29 @@ export function TimesheetPage() {
     try {
       const data = await api<{
         rows: Row[];
+        department?: DepartmentOption | null;
+        sections?: SectionOption[];
         projects: ProjectOption[];
         filled: number;
         total: number;
         maxDailyHours: number;
         openReturns?: OpenReturn[];
       }>(`/timesheet?supervisor_id=${ctx.supervisorId}&date=${ctx.date}`);
+      setDepartment(data.department ?? null);
+      setSections(data.sections ?? []);
       setProjects(data.projects);
       setMaxDailyHours(data.maxDailyHours ?? 8);
       setOpenReturns(data.openReturns ?? []);
       setRows(
         data.rows.map((r) => {
-          // Default per-row project to the first filled slot's project.
+          // Default the per-row Section / Project to the first filled slot's pair
+          // (Project also falls back to the row's OT booking), as before.
           const firstFilled = r.slots.find((s) => s.projectId != null);
           return {
             ...r,
             editMode: r.editMode ?? "full",
             selectedSlots: new Set<ShiftSlot>(),
+            sectionId: firstFilled?.sectionId ?? "",
             projectId: firstFilled?.projectId ?? r.otProjectId ?? "",
             jobOrderId: firstFilled?.jobOrderId ?? r.otJobOrderId ?? "",
             otSelected: false,
@@ -229,6 +295,45 @@ export function TimesheetPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // A different supervisor belongs to another department, so Job Order pairs cached
+  // from the previous one must not be reused.
+  useEffect(() => {
+    setJobOrderCache({});
+    jobOrderFetchSeq.current = new Map();
+  }, [ctx.supervisorId]);
+
+  // Fetch the Job Orders of every (project, section) pair currently in play: the per-row
+  // pickers plus the Bulk Assignment picker. Cached pairs are skipped, so this never
+  // fetches on every render.
+  useEffect(() => {
+    if (!ctx.supervisorId) return;
+    const pairs = new Map<string, { projectId: number; sectionId: number }>();
+    const addPair = (projectId: number | "", sectionId: number | "") => {
+      const key = jobOrderPairKey(projectId, sectionId);
+      if (key) pairs.set(key, { projectId: Number(projectId), sectionId: Number(sectionId) });
+    };
+    for (const r of rows) addPair(r.projectId, r.sectionId);
+    addPair(bulkProjectId, bulkSectionId);
+    for (const [key, pair] of pairs) {
+      if (jobOrderCache[key] || jobOrderFetchSeq.current.has(key)) continue;
+      const seq = (jobOrderFetchSeq.current.get(key) ?? 0) + 1;
+      jobOrderFetchSeq.current.set(key, seq);
+      api<{ jobOrders: JobOrderOption[] }>(
+        `/timesheet/job-orders?supervisor_id=${ctx.supervisorId}&project_id=${pair.projectId}&section_id=${pair.sectionId}`
+      )
+        .then((data) => {
+          // Drop a response that a newer request for the same pair superseded.
+          if (jobOrderFetchSeq.current.get(key) !== seq) return;
+          setJobOrderCache((prev) => ({ ...prev, [key]: data.jobOrders ?? [] }));
+        })
+        .catch(() => {
+          if (jobOrderFetchSeq.current.get(key) !== seq) return;
+          // Cache the empty list so a pair without usable Job Orders does not retry.
+          setJobOrderCache((prev) => ({ ...prev, [key]: [] }));
+        });
+    }
+  }, [rows, bulkProjectId, bulkSectionId, jobOrderCache, ctx.supervisorId]);
 
   async function reloadIfAnotherSupervisorWon(error: unknown) {
     if (!(error instanceof ApiError)) return false;
@@ -260,11 +365,14 @@ export function TimesheetPage() {
     return names;
   }, [rows]);
 
-  /** Available Job Orders for the Bulk Assignment dropdown, scoped to selected Project. */
+  /**
+   * Available Job Orders for the Bulk Assignment dropdown: the fetched list for the
+   * selected (Section, Project) pair. Empty until both are chosen.
+   */
   const bulkJobOrders = useMemo(() => {
-    if (!bulkProjectId) return [];
-    return projects.find((p) => p.id === bulkProjectId)?.jobOrders ?? [];
-  }, [projects, bulkProjectId]);
+    const key = jobOrderPairKey(bulkProjectId, bulkSectionId);
+    return key ? jobOrderCache[key] ?? [] : [];
+  }, [jobOrderCache, bulkProjectId, bulkSectionId]);
 
   const bulkJobOrderName = useMemo(() => {
     if (!bulkJobOrderId) return "";
@@ -310,11 +418,23 @@ export function TimesheetPage() {
     );
   }
 
+  function setRowSection(employeeId: number, sectionId: number | "") {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.employeeId !== employeeId) return r;
+        if (rowEditMode(r) === "locked") return r;
+        // A Job Order only fits one (section, project) pair: any change clears it.
+        return { ...r, sectionId, jobOrderId: "" };
+      })
+    );
+  }
+
   function setRowProject(employeeId: number, projectId: number | "") {
     setRows((prev) =>
       prev.map((r) => {
         if (r.employeeId !== employeeId) return r;
         if (rowEditMode(r) === "locked") return r;
+        // A Job Order only fits one (section, project) pair: any change clears it.
         return { ...r, projectId, jobOrderId: "" };
       })
     );
@@ -342,6 +462,9 @@ export function TimesheetPage() {
         return {
           ...r,
           otSelected: selecting,
+          // OT is booked through the same Section / Project / Job Order controls as a
+          // regular slot, preselected from the row's own OT booking.
+          sectionId: selecting && r.otSectionId ? r.otSectionId : r.sectionId,
           projectId: selecting && r.otProjectId ? r.otProjectId : r.projectId,
           jobOrderId: selecting && r.otJobOrderId ? r.otJobOrderId : r.jobOrderId,
         };
@@ -578,7 +701,7 @@ export function TimesheetPage() {
   }
 
   async function applyBulkAssign() {
-    if (!ctx.supervisorId || !bulkProjectId || !bulkJobOrderId) return;
+    if (!ctx.supervisorId || !bulkSectionId || !bulkProjectId || !bulkJobOrderId) return;
     const slots: { employeeId: number; shiftSlot: ShiftSlot }[] = [];
     for (const r of rows) {
       if (rowEditMode(r) === "locked") continue;
@@ -830,7 +953,8 @@ export function TimesheetPage() {
           <header className="bulk-assign__head">
             <h2>Bulk Assignment</h2>
             <p className="bulk-assign__hint">
-              Select slots, pick a Project + Job Order, then apply. Already-assigned rows are skipped.
+              Select slots, pick a Section + Project + Job Order, then apply. Already-assigned
+              rows are skipped. The Department is fixed to your own.
             </p>
           </header>
           <div className="bulk-assign__row">
@@ -843,6 +967,27 @@ export function TimesheetPage() {
               />
               <span>Select All</span>
             </label>
+            <div className="bulk-assign__field bulk-assign__field--readonly">
+              <label>Department</label>
+              <input type="text" readOnly value={department?.name ?? ""} placeholder="—" />
+            </div>
+            <div className="bulk-assign__field">
+              <label>Section</label>
+              <select
+                value={bulkSectionId}
+                onChange={(e) => {
+                  setBulkSectionId(e.target.value ? Number(e.target.value) : "");
+                  setBulkJobOrderId("");
+                }}
+              >
+                <option value="">Select…</option>
+                {sections.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.code} · {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="bulk-assign__field">
               <label>Project</label>
               <select
@@ -865,12 +1010,14 @@ export function TimesheetPage() {
               <select
                 value={bulkJobOrderId}
                 onChange={(e) => setBulkJobOrderId(e.target.value ? Number(e.target.value) : "")}
-                disabled={!bulkProjectId}
+                disabled={!bulkSectionId || !bulkProjectId}
               >
-                <option value="">{bulkProjectId ? "Select…" : "Select a project first"}</option>
+                <option value="">
+                  {bulkSectionId && bulkProjectId ? "Select…" : "Pick a section and a project"}
+                </option>
                 {bulkJobOrders.map((j) => (
-                  <option key={j.id} value={j.id}>
-                    {j.code} - {j.name}
+                  <option key={j.id} value={j.id} title={j.wbsNo ? `WBS ${j.wbsNo}` : undefined}>
+                    {jobOrderOptionLabel(j)}
                   </option>
                 ))}
               </select>
@@ -931,7 +1078,7 @@ export function TimesheetPage() {
                 2nd Half
               </th>
               <th colSpan={2} className="ot-col">Overtime</th>
-              <th colSpan={3} className="alloc-head">
+              <th colSpan={4} className="alloc-head">
                 Allocation
               </th>
               <th>Remarks</th>
@@ -945,8 +1092,9 @@ export function TimesheetPage() {
               <th className="slot-head">4p–6p</th>
               <th className="ot-col sub">Slot</th>
               <th className="ot-hours-col sub">Hrs</th>
+              <th className="alloc-sub">Section</th>
               <th className="alloc-sub">Project</th>
-              <th className="alloc-sub">WBS / Job Order</th>
+              <th className="alloc-sub">Job Order</th>
               <th className="alloc-sub">Assign</th>
               <th className="remarks-sub"></th>
             </tr>
@@ -965,8 +1113,11 @@ export function TimesheetPage() {
               ]
                 .filter(Boolean)
                 .join(" ");
-              const rowProject = projects.find((p) => p.id === r.projectId);
-              const rowJobOrders = rowProject?.jobOrders ?? [];
+              // Job Orders are the fetched list for this row's (section, project) pair.
+              const rowJobOrders = jobOrderCache[jobOrderPairKey(r.projectId, r.sectionId)] ?? [];
+              const keptJobOrderLabel = rowJobOrders.some((j) => j.id === r.jobOrderId)
+                ? null
+                : storedSlotJobOrderLabel(r, r.jobOrderId);
               const otRemarksRequired =
                 Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
               const otAvailable = r.employee.employmentType === "CLMS";
@@ -1119,6 +1270,23 @@ export function TimesheetPage() {
                   <td>
                     <select
                       className="project-select"
+                      value={r.sectionId}
+                      disabled={!isOwner || isLocked}
+                      onChange={(e) =>
+                        setRowSection(r.employeeId, e.target.value ? Number(e.target.value) : "")
+                      }
+                    >
+                      <option value="">Select…</option>
+                      {sections.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.code} · {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <select
+                      className="project-select"
                       value={r.projectId}
                       disabled={!isOwner || isLocked}
                       onChange={(e) =>
@@ -1137,17 +1305,22 @@ export function TimesheetPage() {
                     <select
                       className="jo-select"
                       value={r.jobOrderId}
-                      disabled={!isOwner || isLocked || !r.projectId}
+                      disabled={!isOwner || isLocked || !r.sectionId || !r.projectId}
                       onChange={(e) =>
                         setRowJobOrder(r.employeeId, e.target.value ? Number(e.target.value) : "")
                       }
                     >
-                      <option value="">{r.projectId ? "Select…" : "Pick a project"}</option>
+                      <option value="">
+                        {r.sectionId && r.projectId ? "Select…" : "Pick a section and a project"}
+                      </option>
                       {rowJobOrders.map((j) => (
-                        <option key={j.id} value={j.id}>
-                          {j.code} - {j.name}
+                        <option key={j.id} value={j.id} title={j.wbsNo ? `WBS ${j.wbsNo}` : undefined}>
+                          {jobOrderOptionLabel(j)}
                         </option>
                       ))}
+                      {r.jobOrderId !== "" && keptJobOrderLabel && (
+                        <option value={r.jobOrderId}>{keptJobOrderLabel}</option>
+                      )}
                     </select>
                   </td>
                   <td>
@@ -1179,7 +1352,7 @@ export function TimesheetPage() {
                 </tr>
                 {expanded && r.returnFeedback && (
                   <tr className="row-feedback">
-                    <td colSpan={12}>
+                    <td colSpan={13}>
                       <div className="return-feedback">
                         <div className="return-feedback__label">
                           Feedback from {r.returnFeedback.by}
@@ -1200,7 +1373,7 @@ export function TimesheetPage() {
               );
             })}
             <tr className="add-emp-row">
-              <td colSpan={12}>
+              <td colSpan={13}>
                 <div className="add-dropdown">
                   <input
                     className="add-emp-input"
@@ -1234,8 +1407,11 @@ export function TimesheetPage() {
         {rows.map((r) => {
           const isLocked = rowEditMode(r) === "locked";
           const filledCount = r.slots.filter((s) => s.jobOrderId != null).length;
-          const rowProject = projects.find((p) => p.id === r.projectId);
-          const rowJobOrders = rowProject?.jobOrders ?? [];
+          // Job Orders are the fetched list for this row's (section, project) pair.
+          const rowJobOrders = jobOrderCache[jobOrderPairKey(r.projectId, r.sectionId)] ?? [];
+          const keptJobOrderLabel = rowJobOrders.some((j) => j.id === r.jobOrderId)
+            ? null
+            : storedSlotJobOrderLabel(r, r.jobOrderId);
           const otRemarksRequired =
             Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
           const otAvailable = r.employee.employmentType === "CLMS";
@@ -1367,6 +1543,24 @@ export function TimesheetPage() {
               </div>
               <div className="ts-alloc">
                 <label className="ts-field">
+                  <span>Section</span>
+                  <select
+                    className="project-select"
+                    value={r.sectionId}
+                    disabled={!isOwner || isLocked}
+                    onChange={(e) =>
+                      setRowSection(r.employeeId, e.target.value ? Number(e.target.value) : "")
+                    }
+                  >
+                    <option value="">Select…</option>
+                    {sections.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.code} · {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="ts-field">
                   <span>Project</span>
                   <select
                     className="project-select"
@@ -1385,21 +1579,26 @@ export function TimesheetPage() {
                   </select>
                 </label>
                 <label className="ts-field">
-                  <span>WBS / Job Order</span>
+                  <span>Job Order</span>
                   <select
                     className="jo-select"
                     value={r.jobOrderId}
-                    disabled={!isOwner || isLocked || !r.projectId}
+                    disabled={!isOwner || isLocked || !r.sectionId || !r.projectId}
                     onChange={(e) =>
                       setRowJobOrder(r.employeeId, e.target.value ? Number(e.target.value) : "")
                     }
                   >
-                    <option value="">{r.projectId ? "Select…" : "Pick a project"}</option>
+                    <option value="">
+                      {r.sectionId && r.projectId ? "Select…" : "Pick a section and a project"}
+                    </option>
                     {rowJobOrders.map((j) => (
-                      <option key={j.id} value={j.id}>
-                        {j.code} - {j.name}
+                      <option key={j.id} value={j.id} title={j.wbsNo ? `WBS ${j.wbsNo}` : undefined}>
+                        {jobOrderOptionLabel(j)}
                       </option>
                     ))}
+                    {r.jobOrderId !== "" && keptJobOrderLabel && (
+                      <option value={r.jobOrderId}>{keptJobOrderLabel}</option>
+                    )}
                   </select>
                 </label>
                 {r.slots.some(
@@ -1510,11 +1709,13 @@ export function TimesheetPage() {
           </span>
         </div>
         <p className="help-text">
-          Bulk Assignment applies the chosen Project + Job Order to all amber (selected) slots in
-          one click. The 4 slots per day are 1st Half (9a–11a, 11a–1p) and 2nd Half (2p–4p, 4p–6p).
-          Full Shift selects all 4 empty slots for that employee; it freezes once the row is fully
-          assigned. Click any cell to toggle its selection. Double-click a draft allocation to clear it.
-          Max {maxDailyHours}h/day; overtime requires a Project, WBS / Job Order, and Remarks reason.
+          Bulk Assignment applies the chosen Section + Project + Job Order to all amber (selected)
+          slots in one click. The Department is fixed to your own; Job Orders are listed for the
+          selected Section + Project. The 4 slots per day are 1st Half (9a–11a, 11a–1p) and 2nd Half
+          (2p–4p, 4p–6p). Full Shift selects all 4 empty slots for that employee; it freezes once the
+          row is fully assigned. Click any cell to toggle its selection. Double-click a draft
+          allocation to clear it. Max {maxDailyHours}h/day; overtime requires a Section, a Project,
+          a Job Order, and a Remarks reason.
           On a holiday, OT may be assigned without selecting regular slots; that day has zero overhead.
         </p>
       </div>

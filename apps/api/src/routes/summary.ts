@@ -2,17 +2,36 @@ import { Router } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
-import { endOfFrequency, parseDateOnly, startOfFrequency } from "../utils/date";
+import { endOfFrequency, formatDateOnly, parseDateOnly, startOfFrequency } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours } from "../services/contractWorkHours";
 import { isDepartmentViewRole } from "../services/roleAccess";
+import {
+  balanceOf,
+  latestApprovedProgress,
+  percentOf,
+  resolveBudgetInForce,
+  type BudgetRevisionLike,
+} from "../services/budgetLookup";
 
 export const summaryRouter = Router();
 
 summaryRouter.use(requireAuth, requireRoles("EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "FINANCE", "ADMIN"));
 
-type JoStatus = "all" | "active" | "closed";
+type JoStatus = "all" | "active" | "inactive";
 
+/**
+ * Job Order Summary: Project -> WBS -> Job Order.
+ *
+ * The WBS level is required here. A Job Order number repeats across projects
+ * (`@@unique([projectId, code])` only stops a repeat inside one project), so the
+ * WBS row is what keeps the screen unambiguous.
+ *
+ * Hours and quantity are INDEPENDENT measures and are never blended: the four
+ * hour columns come from approved timesheet/allocation hours, the four quantity
+ * columns come from the effective-dated budget revision and the approved
+ * quantity progress.
+ */
 summaryRouter.get("/job-order", async (req, res) => {
   const role = req.user!.role;
   if (role === "EMPLOYEE") return res.status(403).json({ error: "Employee Summary is limited to own approved My Hours.", code: "FORBIDDEN" });
@@ -20,8 +39,8 @@ summaryRouter.get("/job-order", async (req, res) => {
 
   // Optional filters
   const status = (String(req.query.status || "all") as JoStatus);
-  if (!["all", "active", "closed"].includes(status)) {
-    return res.status(400).json({ error: "status must be one of all|active|closed" });
+  if (!["all", "active", "inactive"].includes(status)) {
+    return res.status(400).json({ error: "status must be one of all|active|inactive" });
   }
   const requestedDeptId =
     typeof req.query.departmentId === "string" && req.query.departmentId.length
@@ -38,25 +57,37 @@ summaryRouter.get("/job-order", async (req, res) => {
     projectIds = req.query.projectIds.split(",").map(Number).filter(Boolean);
   }
 
-  // All Job Orders matching the filters (excludes on_hold per spec).
+  // A row carries one budget, and budgets are effective-dated. The reference date
+  // is the Job Order's own last booked work date - the date its consumption figure
+  // is true at - falling back to its last approved progress date. An explicit
+  // `asOf` overrides it for a back-dated report.
+  let asOf: Date | null = null;
+  if (typeof req.query.asOf === "string" && req.query.asOf.length) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query.asOf)) {
+      return res.status(400).json({ error: "asOf must be a YYYY-MM-DD date" });
+    }
+    asOf = parseDateOnly(req.query.asOf);
+  }
+
+  const scope = role === "SUPERVISOR" ? "own" : "organization";
+
+  // All Job Orders matching the filters. `departmentId` is required on a Job Order
+  // now, so the Department filter is a straight equality (there is no longer a
+  // "any department" standing row to OR in).
   const jobOrders = await prisma.jobOrder.findMany({
     where: {
-      status: status === "all" ? { in: ["active", "closed"] } : status,
+      status: status === "all" ? { in: ["active", "inactive"] } : status,
       projectId: projectIds?.length ? { in: projectIds } : undefined,
-      // If the caller narrowed to a department, restrict JOs to that department.
-      // A null departmentId on the JO means "any department" (e.g. Non-Project standing JOs).
-      ...(filterDeptId != null ? { OR: [{ departmentId: filterDeptId }, { departmentId: null }] } : {}),
+      ...(filterDeptId != null ? { departmentId: filterDeptId } : {}),
     },
-    include: { project: true },
-    orderBy: [{ projectId: "asc" }, { code: "asc" }],
+    // `project` and `projectWbs` are the grouping keys; `uom` labels the quantity
+    // columns so a quantity is never read as hours.
+    include: { project: true, projectWbs: true, uom: true },
+    orderBy: [{ code: "asc" }],
   });
 
   if (jobOrders.length === 0) {
-    return res.json({
-      groups: [],
-      role,
-      scope: role === "SUPERVISOR" ? "own" : "organization",
-    });
+    return res.json({ groups: [], role, scope, asOf: asOf ? formatDateOnly(asOf) : null });
   }
 
   const jobOrderIds = jobOrders.map((j) => j.id);
@@ -82,7 +113,7 @@ summaryRouter.get("/job-order", async (req, res) => {
       } : {}),
       ...(role === "PM" ? { timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } } } : {}),
     },
-    select: { jobOrderId: true, shiftSlot: true, hourSlot: true, otHours: true },
+    select: { jobOrderId: true, shiftSlot: true, hourSlot: true, otHours: true, workDate: true },
   });
 
   // Payroll/My Hours allocations use a separate parent-day model. Include
@@ -103,16 +134,58 @@ summaryRouter.get("/job-order", async (req, res) => {
       },
       ...(["EMPLOYEE", "SUPERVISOR"].includes(role) ? { employeeId: linkedEmployeeId ?? -1 } : {}),
     },
-    select: { jobOrderId: true },
+    select: { jobOrderId: true, workDate: true },
   });
+
+  // Budget revisions are effective-dated, so the screen reads them and picks the
+  // one in force per Job Order instead of trusting the Job Order's current columns.
+  const revisionRows = await prisma.jobOrderBudgetRevision.findMany({
+    where: { jobOrderId: { in: jobOrderIds } },
+    select: {
+      jobOrderId: true,
+      revisionNo: true,
+      budgetedHours: true,
+      budgetedQuantity: true,
+      uomId: true,
+      effectiveFrom: true,
+    },
+  });
+  const revisionsByJo = new Map<number, BudgetRevisionLike[]>();
+  for (const revision of revisionRows) {
+    const list = revisionsByJo.get(revision.jobOrderId);
+    if (list) list.push(revision);
+    else revisionsByJo.set(revision.jobOrderId, [revision]);
+  }
+
+  // Quantity progress: only APPROVED rows count, and the latest one carries the
+  // cumulative achieved quantity.
+  const progressRows = await prisma.jobOrderProgress.findMany({
+    where: { jobOrderId: { in: jobOrderIds }, status: "APPROVED" },
+    select: { id: true, jobOrderId: true, status: true, progressDate: true, cumulativeQuantity: true, revisionNo: true },
+  });
+  const progressByJo = new Map<number, typeof progressRows>();
+  for (const row of progressRows) {
+    const list = progressByJo.get(row.jobOrderId);
+    if (list) list.push(row);
+    else progressByJo.set(row.jobOrderId, [row]);
+  }
 
   // Group true approved hours by JobOrder: shift slots are 2h, legacy slots
   // are 1h, an OT row contributes its explicit hours, and each payroll slot is 2h.
+  // The same pass records each Job Order's last booked work date for the budget pick.
   const consumptionByJo = new Map<number, number>();
+  const lastBookedDateByJo = new Map<number, number>();
+  const noteDate = (map: Map<number, number>, jobOrderId: number, date: Date) => {
+    const at = date.getTime();
+    if (!Number.isFinite(at)) return;
+    const current = map.get(jobOrderId);
+    if (current == null || at > current) map.set(jobOrderId, at);
+  };
   for (const e of entries) {
     if (e.jobOrderId == null) continue;
     const hours = e.otHours ?? (e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0);
     consumptionByJo.set(e.jobOrderId, (consumptionByJo.get(e.jobOrderId) ?? 0) + hours);
+    noteDate(lastBookedDateByJo, e.jobOrderId, e.workDate);
   }
   for (const allocation of allocations) {
     if (allocation.jobOrderId == null) continue;
@@ -120,66 +193,130 @@ summaryRouter.get("/job-order", async (req, res) => {
       allocation.jobOrderId,
       (consumptionByJo.get(allocation.jobOrderId) ?? 0) + 2
     );
+    noteDate(lastBookedDateByJo, allocation.jobOrderId, allocation.workDate);
   }
+  const lastProgressDateByJo = new Map<number, number>();
+  for (const row of progressRows) noteDate(lastProgressDateByJo, row.jobOrderId, row.progressDate);
 
-  // Group Job Orders by Project (preserves the projects' sortOrder).
-  const byProject = new Map<
-    number,
-    {
-      projectId: number;
-      projectName: string;
-      projectCode: string;
-      projectColorKey: string;
-      sortOrder: number;
-      jobOrders: (typeof jobOrders)[number][];
-    }
-  >();
+  const buildRow = (jo: (typeof jobOrders)[number], srNo: number) => {
+    const consumption = consumptionByJo.get(jo.id) ?? 0;
+    const workDate =
+      asOf ?? new Date(lastBookedDateByJo.get(jo.id) ?? lastProgressDateByJo.get(jo.id) ?? Date.now());
+    const budget = resolveBudgetInForce(revisionsByJo.get(jo.id) ?? [], workDate, {
+      budgetedHours: jo.budgetedHours,
+      budgetedQuantity: jo.budgetedQuantity,
+      uomId: jo.uomId,
+    });
+    const progress = latestApprovedProgress(progressByJo.get(jo.id) ?? []);
+    const achievedQuantity = progress?.cumulativeQuantity ?? 0;
+    return {
+      id: jo.id,
+      srNo,
+      code: jo.code,
+      name: jo.name,
+      status: jo.status,
+      wbsId: jo.projectWbs.id,
+      wbsCode: jo.projectWbs.wbsCode,
+      wbsName: jo.projectWbs.name,
+      uom: jo.uom.code,
+      // --- hours (budget vs approved hours booked) ---
+      budgetedHours: budget.budgetedHours,
+      consumption,
+      consumptionPct: percentOf(consumption, budget.budgetedHours),
+      balance: balanceOf(budget.budgetedHours, consumption),
+      // --- quantity (effective-dated budget vs approved cumulative progress) ---
+      budgetedQuantity: budget.budgetedQuantity,
+      achievedQuantity,
+      progressReported: progress != null,
+      balanceQuantity: balanceOf(budget.budgetedQuantity, achievedQuantity),
+      quantityPct: percentOf(achievedQuantity, budget.budgetedQuantity),
+      // Which revision supplied the budget, so the screen is auditable.
+      budgetSource: budget.source,
+      budgetRevisionNo: budget.revisionNo,
+      budgetEffectiveFrom: budget.effectiveFrom ? formatDateOnly(budget.effectiveFrom) : null,
+      budgetWorkDate: formatDateOnly(workDate),
+    };
+  };
+
+  // Group Job Orders by Project, then by WBS row (both ordered by their master
+  // sort order). Sr. No. restarts per Project and runs on across its WBS rows.
+  type WbsGroup = {
+    wbsId: number;
+    wbsCode: string;
+    wbsName: string | null;
+    sortOrder: number;
+    jobOrders: (typeof jobOrders)[number][];
+  };
+  type ProjectGroup = {
+    projectId: number;
+    projectName: string;
+    projectCode: string;
+    projectColorKey: string;
+    sortOrder: number;
+    wbs: Map<number, WbsGroup>;
+  };
+  const byProject = new Map<number, ProjectGroup>();
   for (const jo of jobOrders) {
-    let g = byProject.get(jo.project.id);
-    if (!g) {
-      g = {
+    let project = byProject.get(jo.project.id);
+    if (!project) {
+      project = {
         projectId: jo.project.id,
         projectName: jo.project.name,
         projectCode: jo.project.code,
         projectColorKey: jo.project.colorKey,
         sortOrder: jo.project.sortOrder,
+        wbs: new Map(),
+      };
+      byProject.set(jo.project.id, project);
+    }
+    let wbs = project.wbs.get(jo.projectWbs.id);
+    if (!wbs) {
+      wbs = {
+        wbsId: jo.projectWbs.id,
+        wbsCode: jo.projectWbs.wbsCode,
+        wbsName: jo.projectWbs.name,
+        sortOrder: jo.projectWbs.sortOrder,
         jobOrders: [],
       };
-      byProject.set(jo.project.id, g);
+      project.wbs.set(jo.projectWbs.id, wbs);
     }
-    g.jobOrders.push(jo);
+    wbs.jobOrders.push(jo);
   }
 
+  const byNumber = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
   const groups = Array.from(byProject.values())
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((g) => ({
-      projectId: g.projectId,
-      projectName: g.projectName,
-      projectCode: g.projectCode,
-      projectColorKey: g.projectColorKey,
-      rows: g.jobOrders.map((jo, i) => {
-        const consumption = consumptionByJo.get(jo.id) ?? 0;
-        const budget = jo.budgetedHours ?? 0;
-        const pct = budget > 0 ? Math.round((consumption / budget) * 100) : 0;
-        const balance = budget - consumption;
-        return {
-          id: jo.id,
-          srNo: i + 1,
-          code: jo.code,
-          name: jo.name,
-          status: jo.status,
-          budgetedHours: jo.budgetedHours,
-          consumption,
-          consumptionPct: pct,
-          balance,
-        };
-      }),
-    }));
+    .sort((a, b) => a.sortOrder - b.sortOrder || byNumber(a.projectCode, b.projectCode))
+    .map((project) => {
+      let srNo = 0;
+      const wbsGroups = Array.from(project.wbs.values())
+        .sort((a, b) => a.sortOrder - b.sortOrder || byNumber(a.wbsCode, b.wbsCode))
+        .map((wbs) => ({
+          wbsId: wbs.wbsId,
+          wbsCode: wbs.wbsCode,
+          wbsName: wbs.wbsName,
+          rows: wbs.jobOrders
+            .slice()
+            .sort((a, b) => byNumber(a.code, b.code))
+            .map((jo) => {
+              srNo += 1;
+              return buildRow(jo, srNo);
+            }),
+        }));
+      return {
+        projectId: project.projectId,
+        projectName: project.projectName,
+        projectCode: project.projectCode,
+        projectColorKey: project.projectColorKey,
+        sortOrder: project.sortOrder,
+        wbsGroups,
+      };
+    });
 
   res.json({
     groups,
     role,
-    scope: role === "SUPERVISOR" ? "own" : "organization",
+    scope,
+    asOf: asOf ? formatDateOnly(asOf) : null,
   });
 });
 
@@ -289,9 +426,18 @@ summaryRouter.get("/", async (req, res) => {
     // hours already APPROVED by the Section HODs. Work still sitting with a Section
     // HOD is deliberately excluded (it is not attendance yet) and belongs in the
     // Approvals queue instead.
+    //
+    // The Department is read from the FROZEN booking snapshot (department_id), so a
+    // later transfer does not move approved hours out of this report. Rows written
+    // before the snapshot columns existed have department_id IS NULL and fall back to
+    // the employee's current Department, which keeps that history visible.
+    const departmentId = req.user!.departmentId ?? -1;
     entryScope = {
       status: { in: visibleStatuses },
-      employee: { departmentId: req.user!.departmentId ?? -1 },
+      OR: [
+        { departmentId },
+        { departmentId: null, employee: { departmentId } },
+      ],
     };
   }
   else if (role === "HOD") entryScope = {
@@ -315,12 +461,19 @@ summaryRouter.get("/", async (req, res) => {
     include: {
       employee: { include: { department: true } },
       taggedBy: { include: { department: true } },
-      projectWbs: true,
+      // Frozen attribution snapshot on the booking row: `project_id` and
+      // `department_id` are the grouping keys for this report. The Job Order join is
+      // only the fallback for rows booked before the snapshot columns existed.
+      project: true,
+      department: true,
       jobOrder: { include: { project: true } },
     },
   });
 
   let allocationDayScope: Prisma.EmployeeAllocationDayWhereInput = { status: { in: visibleStatuses } };
+  // Department roll-up for payroll/My Hours rows: the snapshot lives on the
+  // allocation row itself, not on its parent day.
+  let allocationDepartmentScope: Prisma.EmployeeAllocationWhereInput | null = null;
   if (role === "EMPLOYEE") allocationDayScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
   else if (role === "SUPERVISOR") allocationDayScope = {
     employeeId: employeeId ?? -1,
@@ -328,9 +481,15 @@ summaryRouter.get("/", async (req, res) => {
     approvals: { some: { approver: { role: "HOD" } } },
   };
   else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
-    allocationDayScope = {
-      status: { in: visibleStatuses },
-      employee: { departmentId: req.user!.departmentId ?? -1 },
+    const departmentId = req.user!.departmentId ?? -1;
+    allocationDayScope = { status: { in: visibleStatuses } };
+    // Frozen snapshot first; a NULL snapshot is pre-snapshot history and falls back
+    // to the employee's current Department.
+    allocationDepartmentScope = {
+      OR: [
+        { departmentId },
+        { departmentId: null, employee: { departmentId } },
+      ],
     };
   }
   else if (role === "HOD") allocationDayScope = {
@@ -346,11 +505,15 @@ summaryRouter.get("/", async (req, res) => {
     where: {
       workDate: { gte: start, lte: end },
       allocationDay: allocationDayScope,
+      ...(allocationDepartmentScope ?? {}),
     },
     include: {
       employee: { include: { department: true } },
       allocatedBy: { include: { department: true } },
+      // `project` is the booking-time snapshot column on this table, and
+      // `department` the frozen Department for the roll-up.
       project: true,
+      department: true,
       jobOrder: true,
       allocationDay: true,
     },
@@ -369,46 +532,45 @@ summaryRouter.get("/", async (req, res) => {
     return r ? Number(r.ratePerHour) : 0;
   }
 
-  // Build the dynamic project-column set from the entries actually present,
-  // resolving each entry's project via legacy ProjectWbs colorKey OR the
-  // JobOrder→Project colorKey. Keyed by colorKey (code) so A/B/C/D/… all show.
-  const projectMeta = new Map<string, { id: number; code: string; name: string; colorKey: string }>();
-  for (const e of entries) {
-    if (e.projectWbsId != null && e.projectWbs) {
-      projectMeta.set(e.projectWbs.colorKey, {
-        id: e.projectWbs.id,
-        code: e.projectWbs.colorKey,
-        name: e.projectWbs.name,
-        colorKey: e.projectWbs.colorKey,
-      });
-    } else if (e.jobOrderId != null && e.jobOrder?.project) {
-      const ck = String(e.jobOrder.project.colorKey || "").toUpperCase();
-      if (ck) {
-        projectMeta.set(ck, {
-          id: e.jobOrder.project.id,
-          code: ck,
-          name: e.jobOrder.project.name,
-          colorKey: ck,
-        });
-      }
-    }
-  }
-  for (const allocation of allocations) {
-    const ck = String(allocation.project.colorKey || "").toUpperCase();
-    if (ck) projectMeta.set(ck, { id: allocation.project.id, code: ck, name: allocation.project.name, colorKey: ck });
-  }
-  // Only projects explicitly selected when a filter is provided. Filter by
-  // colorKey (code) — the unified identity across BOTH tagging paths (legacy
-  // ProjectWbs and new JobOrder→Project). Numeric ids differ between the two
-  // models (WBS ids vs Project ids), so matching on colorKey avoids the
-  // mismatch that made per-project filters return 0.
+  // Build the dynamic project-column set from the rows actually present. The
+  // project of a row is the FROZEN attribution snapshot captured when the hours
+  // were booked (`project_id`), never a live join through its Job Order, so a later
+  // master-data change cannot move approved history. Rows booked before the snapshot
+  // columns existed fall back to the Job Order's Project.
+  //
+  // Columns are keyed and labelled by the Project's `color_key` (unique across
+  // projects) and ordered by the Project's sort order.
+  type ProjectRef = { id: number; code: string; name: string; colorKey: string; sortOrder: number };
+  const snapshotProject = (row: {
+    project: ProjectRef | null;
+    jobOrder: { project: ProjectRef } | null;
+  }): ProjectRef | null => row.project ?? row.jobOrder?.project ?? null;
+  const projectMeta = new Map<string, ProjectRef>();
+  const rememberProject = (project: ProjectRef | null | undefined) => {
+    if (!project) return;
+    const colorKey = String(project.colorKey || "").toUpperCase();
+    if (!colorKey) return;
+    projectMeta.set(colorKey, {
+      id: project.id,
+      code: project.code,
+      name: project.name,
+      colorKey,
+      sortOrder: project.sortOrder,
+    });
+  };
+  for (const e of entries) rememberProject(snapshotProject(e));
+  for (const allocation of allocations) rememberProject(allocation.project);
+  // Only the projects explicitly selected when a filter is provided, matched on the
+  // same `color_key` token the UI filter uses.
   if (projectIds?.length) {
     const codes = new Set(projectIds);
     for (const k of [...projectMeta.keys()]) {
       if (!codes.has(k)) projectMeta.delete(k);
     }
   }
-  const projects = [...projectMeta.values()].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+  const projects = [...projectMeta.values()].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.colorKey.localeCompare(b.colorKey, undefined, { numeric: true })
+  );
 
   type AggKey = string;
   type Bucket = {
@@ -428,13 +590,24 @@ summaryRouter.get("/", async (req, res) => {
     employee: { name: string; departmentId: number; department: { name: string } };
     taggedById: number;
     taggedBy: { name: string; department: { name: string } | null };
+    /** Frozen Department snapshot on the booking row; null before it existed. */
+    departmentId: number | null;
+    department: { name: string } | null;
   };
+  // Group by the Department frozen on the booking row, so a later transfer does not
+  // move approved hours between Departments. Legacy rows fall back to the employee's
+  // current Department.
+  const departmentOf = (e: GroupSource) => ({
+    id: e.departmentId ?? e.employee.departmentId,
+    name: e.department?.name ?? e.employee.department.name,
+  });
   const groupIdentity = (e: GroupSource) => {
     if (groupBy === "employee") {
-      return { key: `emp-${e.employeeId}`, label: e.employee.name, secondary: e.employee.department.name };
+      return { key: `emp-${e.employeeId}`, label: e.employee.name, secondary: departmentOf(e).name };
     }
     if (groupBy === "department") {
-      return { key: `dept-${e.employee.departmentId}`, label: e.employee.department.name, secondary: "" };
+      const department = departmentOf(e);
+      return { key: `dept-${department.id}`, label: department.name, secondary: "" };
     }
     if (groupBy === "totals") {
       return { key: "totals", label: "All", secondary: "" };
@@ -468,12 +641,8 @@ summaryRouter.get("/", async (req, res) => {
   // Regular and OT hours both remain associated with their booked project.
   // Summary OT is approved-only, matching the approval/reporting contract.
   for (const e of entries) {
-    let colorKey: string | null = null;
-    if (e.projectWbsId != null && e.projectWbs) {
-      colorKey = String(e.projectWbs.colorKey || "").toUpperCase();
-    } else if (e.jobOrderId != null && e.jobOrder?.project) {
-      colorKey = String(e.jobOrder.project.colorKey || "").toUpperCase();
-    }
+    const project = snapshotProject(e);
+    const colorKey = project ? String(project.colorKey || "").toUpperCase() : "";
     if (!colorKey || !projectMeta.has(colorKey)) continue;
 
     const bucket = getBucket(e);
@@ -499,6 +668,8 @@ summaryRouter.get("/", async (req, res) => {
       employee: allocation.employee,
       taggedById: allocation.allocatedById,
       taggedBy: allocation.allocatedBy,
+      departmentId: allocation.departmentId,
+      department: allocation.department,
     };
     const bucket = (() => {
       const identity = groupIdentity(source);
@@ -543,10 +714,10 @@ summaryRouter.get("/", async (req, res) => {
     const projectOtValues: Record<string, number> = {};
     let total = 0;
     for (const p of projects) {
-      const regular = view === "cost" ? b.projectCost[p.code] || 0 : b.projectHours[p.code] || 0;
-      const ot = view === "cost" ? b.projectOtCost[p.code] || 0 : b.projectOtHours[p.code] || 0;
-      values[p.code] = regular;
-      projectOtValues[p.code] = ot;
+      const regular = view === "cost" ? b.projectCost[p.colorKey] || 0 : b.projectHours[p.colorKey] || 0;
+      const ot = view === "cost" ? b.projectOtCost[p.colorKey] || 0 : b.projectOtHours[p.colorKey] || 0;
+      values[p.colorKey] = regular;
+      projectOtValues[p.colorKey] = ot;
       total += regular + ot;
     }
     return {
@@ -565,15 +736,22 @@ summaryRouter.get("/", async (req, res) => {
   const projectOtTotals: Record<string, number> = {};
   let grand = 0;
   for (const p of projects) {
-    totals[p.code] = rows.reduce((acc, r) => acc + (r.values[p.code] || 0), 0);
-    projectOtTotals[p.code] = rows.reduce((acc, r) => acc + (r.projectOtValues[p.code] || 0), 0);
-    grand += totals[p.code] + projectOtTotals[p.code];
+    totals[p.colorKey] = rows.reduce((acc, r) => acc + (r.values[p.colorKey] || 0), 0);
+    projectOtTotals[p.colorKey] = rows.reduce((acc, r) => acc + (r.projectOtValues[p.colorKey] || 0), 0);
+    grand += totals[p.colorKey] + projectOtTotals[p.colorKey];
   }
   const overheadTotalHours = rows.reduce((acc, r) => acc + r.overheadHours, 0);
   const overheadTotalCost = rows.reduce((acc, r) => acc + r.overheadCost, 0);
 
   res.json({
-    projects: projects.map((p) => ({ id: p.id, code: p.code, name: p.name, colorKey: p.colorKey })),
+    // Columns are labelled by `color_key` and ordered by the Project's sort order.
+    projects: projects.map((p) => ({
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      colorKey: p.colorKey,
+      sortOrder: p.sortOrder,
+    })),
     rows,
     totals,
     projectOtTotals,

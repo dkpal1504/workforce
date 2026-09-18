@@ -7,6 +7,14 @@
 --   * users.section_id            (20260915000000_hod_section_and_org_transfer)
 --   * employee_organisation_overrides (same migration)
 --   * hod_delegations             (20260916000000_hod_approval_delegation)
+--   * Project / WBS / Job Order master data            (20260918000000_project_wbs_job_order_master):
+--       project_wbs.project_id + wbs_code uniqueness, uom, networks,
+--       job_orders.uom_id / network_id / budgeted_quantity / section_id and its
+--       active|inactive status, job_order_budget_revisions, job_order_progress,
+--       and the attribution snapshot columns on timesheet_entries and
+--       employee_allocations.
+--   * job_order_progress_remarks           (20260918000001_job_order_progress_remarks)
+--   * the composite foreign key on job_orders (20260918000002_job_order_wbs_project_fk)
 -- After running this file you MUST apply the remaining migrations
 -- (`npx prisma migrate deploy`), or HOD scoping and HOD approval cover will not work.
 -- The authoritative schema is apps/api/prisma/migrations/ — see docs/PRODUCTION_DEPLOYMENT.md

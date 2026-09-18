@@ -20,6 +20,9 @@ function titleForPath(pathname: string, role?: string) {
   if (pathname.startsWith("/role-assignment")) return "Role Assignment";
   if (pathname.startsWith("/account/password")) return "Change Password";
   if (pathname.startsWith("/csv-upload")) return "Employee CSV Upload";
+  if (pathname.startsWith("/master-data")) return "Project Master Data";
+  if (pathname.startsWith("/job-order-upload")) return "Job Order Upload";
+  if (pathname.startsWith("/job-order-progress")) return "Quantity Progress";
   return "Select Team for Today";
 }
 
@@ -100,6 +103,21 @@ export function AppLayout() {
           {capabilities?.manageMasterData && (
             <NavLink to="/departments" className={({ isActive }) => (isActive ? "active" : "")}>
               Organisation
+            </NavLink>
+          )}
+          {capabilities?.manageJobOrderMaster && (
+            <NavLink to="/master-data" className={({ isActive }) => (isActive ? "active" : "")}>
+              Project Master
+            </NavLink>
+          )}
+          {capabilities?.manageJobOrderMaster && (
+            <NavLink to="/job-order-upload" className={({ isActive }) => (isActive ? "active" : "")}>
+              Job Order Upload
+            </NavLink>
+          )}
+          {capabilities?.manageJobOrderProgress && (
+            <NavLink to="/job-order-progress" className={({ isActive }) => (isActive ? "active" : "")}>
+              Qty Progress
             </NavLink>
           )}
           {capabilities?.assignRoles && (

@@ -1,0 +1,50 @@
+/* ============================================================
+   Project / WBS / UoM / Network maintenance.
+   Extends styles/supervisors.css, which supplies the toolbar, table,
+   modal and form classes this screen reuses.
+   ============================================================ */
+
+.md-help {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* The one field that is shown but not edited: the parent Project or the source. */
+.md-readonly {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* The short display token, shown the way Timesheet Entry shows it. */
+.md-color-key {
+  min-width: 34px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.md-check input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+}

@@ -50,6 +50,10 @@ model User {
   delegationsAsDelegate      HodDelegation[] @relation("HodDelegationDelegate")
   delegationsCreated         HodDelegation[] @relation("HodDelegationCreator")
 
+  jobOrderProgressPunched   JobOrderProgress[]         @relation("JobOrderProgressPunchedBy")
+  jobOrderProgressApproved  JobOrderProgress[]         @relation("JobOrderProgressApprovedBy")
+  budgetRevisionsCreated    JobOrderBudgetRevision[]   @relation("JobOrderBudgetRevisionCreator")
+  jobOrderProgressRemarks   JobOrderProgressRemark[]   @relation("JobOrderProgressRemarkAuthor")
   @@index([sectionId])
   @@map("users")
 }
@@ -72,6 +76,8 @@ model Department {
   organisationOverrides EmployeeOrganisationOverride[]
   hodDelegations   HodDelegation[]
 
+  timesheetEntries    TimesheetEntry[]    @relation("TimesheetEntryDepartment")
+  employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationDepartment")
   @@map("departments")
 }
 
@@ -140,6 +146,10 @@ model Section {
   organisationOverrides EmployeeOrganisationOverride[]
   hodDelegations      HodDelegation[]
 
+  jobOrders           JobOrder[]
+  jobOrderProgress    JobOrderProgress[]
+  timesheetEntries    TimesheetEntry[]    @relation("TimesheetEntrySection")
+  employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationSection")
   @@unique([departmentId, code])
   @@unique([departmentId, name])
   @@index([departmentId, active])
@@ -310,6 +320,13 @@ model EmployeeAllocation {
   project         Project               @relation(fields: [projectId], references: [id])
   jobOrderId      Int?                  @map("job_order_id")
   jobOrder        JobOrder?             @relation(fields: [jobOrderId], references: [id])
+  /// Attribution snapshot, same rule as TimesheetEntry: frozen at booking time.
+  projectWbsId    Int?                  @map("project_wbs_id")
+  projectWbs      ProjectWbs?           @relation("EmployeeAllocationProjectWbs", fields: [projectWbsId], references: [id])
+  departmentId    Int?                  @map("department_id")
+  department      Department?           @relation("EmployeeAllocationDepartment", fields: [departmentId], references: [id])
+  sectionId       Int?                  @map("section_id")
+  section         Section?              @relation("EmployeeAllocationSection", fields: [sectionId], references: [id])
   allocatedById   Int                   @map("allocated_by")
   allocatedBy     User                  @relation("EmployeeAllocationAllocatedBy", fields: [allocatedById], references: [id])
   createdAt       DateTime              @default(now()) @map("created_at")
@@ -322,33 +339,55 @@ model EmployeeAllocation {
 
 model ProjectWbs {
   id        Int      @id @default(autoincrement())
-  code      String   @unique
-  name      String
+  projectId Int      @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// WBS number issued by the PM team (the CSV `WBS_NO` column). Unique per
+  /// project, not globally. A WBS only groups Job Orders and carries no budget.
   wbsCode   String   @map("wbs_code")
-  colorKey  String   @map("color_key")
+  name      String?
+  sortOrder Int      @default(0) @map("sort_order")
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  timesheetEntries TimesheetEntry[]
-  jobOrders        JobOrder[]
+  jobOrders           JobOrder[]
+  jobOrdersByProject  JobOrder[]        @relation("JobOrderWbsProject")
+  timesheetEntries    TimesheetEntry[]
+  employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationProjectWbs")
 
-  @@map("projects_wbs")
+  @@unique([projectId, wbsCode])
+  /// Exists only so `job_orders` can carry a composite foreign key to (id, projectId),
+  /// which makes "the Job Order's Project must be the WBS's own Project" a database
+  /// guarantee. Prisma needs the parent pair to be unique to reference it.
+  @@unique([id, projectId])
+  @@index([projectId, sortOrder])
+  @@map("project_wbs")
 }
 
 /// Top-level Project — drives the new Job Order master (1900000xxx codes).
 /// Separate from ProjectWbs (which is the legacy Project row used by the
 /// existing Project Summary page); the two are kept in sync by hand for now.
 model Project {
-  id        Int      @id @default(autoincrement())
-  code      String   @unique // PRJ-A / PRJ-N
-  name      String // Project A / Non Project
-  colorKey  String   @map("color_key") // A / B / C / D / N
-  sortOrder Int      @default(0) @map("sort_order")
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now()) @map("created_at")
+  id           Int      @id @default(autoincrement())
+  /// ERP Project number (the CSV `Project_ID` column).
+  code         String   @unique
+  name         String
+  /// Short display token for the Timesheet Entry screen, 1-4 characters, unique
+  /// across all projects (A, B, C, D as shown today).
+  colorKey     String   @unique @map("color_key")
+  /// The single flagged row that holds standing / idle-hours Job Orders. It is
+  /// not a commercial project; reports include or exclude it by this flag.
+  isNonProject Boolean  @default(false) @map("is_non_project")
+  sortOrder    Int      @default(0) @map("sort_order")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
+  wbsRows             ProjectWbs[]
+  networks            Network[]
   jobOrders           JobOrder[]
   employeeAllocations EmployeeAllocation[]
+  timesheetEntries    TimesheetEntry[]     @relation("TimesheetEntryProject")
 
   @@map("projects")
 }
@@ -357,27 +396,50 @@ model Project {
 /// `status` is one of: active, closed, on_hold.
 /// `budgetedHours` is in clock hours; null for Non-Project / Standing JOs.
 model JobOrder {
-  id            Int         @id @default(autoincrement())
-  projectId     Int         @map("project_id")
-  project       Project     @relation(fields: [projectId], references: [id])
-  /// Optional pointer into the legacy ProjectWbs row so existing Project
-  /// Summary totals stay consistent. New code should use projectId directly.
-  projectWbsId  Int?        @map("project_wbs_id")
-  projectWbs    ProjectWbs? @relation(fields: [projectWbsId], references: [id])
-  code          String      @unique // 1900000107 (all-numeric)
-  name          String // Pipe Spool Installation
-  departmentId  Int?        @map("department_id")
-  department    Department? @relation(fields: [departmentId], references: [id])
-  budgetedHours Float?      @map("budgeted_hours")
-  status        String      @default("active") // active | closed | on_hold
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
+  id               Int         @id @default(autoincrement())
+  projectId        Int         @map("project_id")
+  project          Project     @relation(fields: [projectId], references: [id])
+  projectWbsId     Int         @map("project_wbs_id")
+  projectWbs       ProjectWbs  @relation(fields: [projectWbsId], references: [id])
+  /// Declared ONLY so the database enforces that the Job Order's Project owns its WBS
+  /// (a composite foreign key on (project_wbs_id, project_id)). Never navigate through
+  /// this field in code - use `projectWbs` and `project`. Removing it would drop the
+  /// constraint and silently reopen the inconsistency.
+  projectWbsOfProject ProjectWbs @relation("JobOrderWbsProject", fields: [projectWbsId, projectId], references: [id, projectId])
+  /// SAP-sourced network, validated against the per-project Network master.
+  /// Several Job Orders may share one network; Non-Project rows use a dummy.
+  networkId        Int         @map("network_id")
+  network          Network     @relation(fields: [networkId], references: [id])
+  /// Job Order number, generated manually by the PM team. It repeats across
+  /// projects, so it is unique per project only - never globally.
+  code             String
+  /// `Job_Description` from the CSV.
+  name             String
+  uomId            Int         @map("uom_id")
+  uom              Uom         @relation(fields: [uomId], references: [id])
+  budgetedQuantity Float       @default(0) @map("budgeted_quantity")
+  budgetedHours    Float       @default(0) @map("budgeted_hours")
+  departmentId     Int         @map("department_id")
+  department       Department  @relation(fields: [departmentId], references: [id])
+  /// Required for project Job Orders. Null only for standing / Non-Project Job
+  /// Orders, which any section of the department may book.
+  sectionId        Int?        @map("section_id")
+  section          Section?    @relation(fields: [sectionId], references: [id])
+  /// active | inactive
+  status           String      @default("active")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
 
   timesheetEntries    TimesheetEntry[]
   employeeAllocations EmployeeAllocation[]
+  budgetRevisions     JobOrderBudgetRevision[]
+  progressEntries     JobOrderProgress[]
 
-  @@index([projectId, status])
-  @@index([departmentId])
+  @@unique([projectId, code])
+  @@index([projectWbsId, status])
+  @@index([departmentId, status])
+  @@index([sectionId])
+  @@index([networkId])
   @@map("job_orders")
 }
 
@@ -439,6 +501,16 @@ model TimesheetEntry {
   projectWbs     ProjectWbs?  @relation(fields: [projectWbsId], references: [id])
   jobOrderId     Int?         @map("job_order_id")
   jobOrder       JobOrder?    @relation(fields: [jobOrderId], references: [id])
+  /// Attribution SNAPSHOT captured when the hours are booked. These buckets are
+  /// frozen so a later master-data remap never moves approved history. Do NOT add
+  /// a composite FK tying them to the live Job Order: a snapshot may legally
+  /// diverge from it after a remap.
+  projectId      Int?         @map("project_id")
+  project        Project?     @relation("TimesheetEntryProject", fields: [projectId], references: [id])
+  departmentId   Int?         @map("department_id")
+  department     Department?  @relation("TimesheetEntryDepartment", fields: [departmentId], references: [id])
+  sectionId      Int?         @map("section_id")
+  section        Section?     @relation("TimesheetEntrySection", fields: [sectionId], references: [id])
   taggedById     Int          @map("tagged_by")
   taggedBy       User         @relation("TaggedBy", fields: [taggedById], references: [id])
   status         String       @default("DRAFT")
@@ -575,4 +647,120 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@map("audit_log")
+}
+
+/// Unit of measure master (MT, SQM, NOS ...). Maintained by PM and ADMIN with an
+/// example string per row so the maintenance form can explain the field.
+model Uom {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  /// Help text shown on the maintenance form.
+  example   String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  jobOrders       JobOrder[]
+  budgetRevisions JobOrderBudgetRevision[]
+
+  @@map("uom")
+}
+
+/// Network master, scoped per project. Manual until the SAP sync lands in phase 2
+/// (then `source` becomes 'SAP'). Validated on Job Order upload.
+model Network {
+  id        Int      @id @default(autoincrement())
+  projectId Int      @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id])
+  code      String
+  name      String?
+  source    String   @default("MANUAL")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  jobOrders JobOrder[]
+
+  @@unique([projectId, code])
+  @@index([projectId, active])
+  @@map("networks")
+}
+
+/// Effective-dated budget revision. Revision 1 is the budget set when the Job
+/// Order was created. Consumption is always compared against the revision in
+/// force on the WORK DATE, so a past month keeps the budget it was measured
+/// against. No approval step: the PM is the custodian.
+model JobOrderBudgetRevision {
+  id               Int      @id @default(autoincrement())
+  jobOrderId       Int      @map("job_order_id")
+  jobOrder         JobOrder @relation(fields: [jobOrderId], references: [id], onDelete: Cascade)
+  revisionNo       Int      @map("revision_no")
+  budgetedHours    Float    @default(0) @map("budgeted_hours")
+  budgetedQuantity Float    @default(0) @map("budgeted_quantity")
+  uomId            Int?     @map("uom_id")
+  uom              Uom?     @relation(fields: [uomId], references: [id])
+  effectiveFrom    DateTime @map("effective_from")
+  reason           String?
+  createdById      Int?     @map("created_by")
+  createdBy        User?    @relation("JobOrderBudgetRevisionCreator", fields: [createdById], references: [id])
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([jobOrderId, revisionNo])
+  @@index([jobOrderId, effectiveFrom])
+  @@map("job_order_budget_revisions")
+}
+
+/// Daily cumulative quantity punched by an HOD and approved by a PM.
+/// `revisionNo` keeps superseded rows: a rejected or sent-back entry stays as
+/// history and the correction is added as the next revision.
+model JobOrderProgress {
+  id                 Int       @id @default(autoincrement())
+  jobOrderId         Int       @map("job_order_id")
+  jobOrder           JobOrder  @relation(fields: [jobOrderId], references: [id], onDelete: Cascade)
+  progressDate       DateTime  @map("progress_date")
+  /// Cumulative quantity as punched (not a daily increment).
+  cumulativeQuantity Float     @map("cumulative_quantity")
+  revisionNo         Int       @default(1) @map("revision_no")
+  /// The section the progress was punched for. A department-level HOD selects it;
+  /// a section-scoped HOD has it pre-selected.
+  sectionId          Int?      @map("section_id")
+  section            Section?  @relation(fields: [sectionId], references: [id])
+  /// SUBMITTED | APPROVED | REJECTED | SENT_BACK
+  status             String    @default("SUBMITTED")
+  punchedById        Int       @map("punched_by")
+  punchedBy          User      @relation("JobOrderProgressPunchedBy", fields: [punchedById], references: [id])
+  approvedById       Int?      @map("approved_by")
+  approvedBy         User?     @relation("JobOrderProgressApprovedBy", fields: [approvedById], references: [id])
+  approvedAt         DateTime? @map("approved_at")
+  remarks            String?
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  remarkHistory      JobOrderProgressRemark[]
+
+  @@unique([jobOrderId, progressDate, revisionNo])
+  @@index([status, progressDate])
+  @@index([jobOrderId, status])
+  @@map("job_order_progress")
+}
+
+/// Every remark written against a quantity progress entry, kept in order and never
+/// overwritten. The progress row also keeps the latest one in `remarks` for
+/// convenience; this table is the reportable history (who wrote what, when, and at
+/// which stage: punched, amended, approved, rejected or sent back).
+model JobOrderProgressRemark {
+  id         Int              @id @default(autoincrement())
+  progressId Int              @map("progress_id")
+  progress   JobOrderProgress @relation(fields: [progressId], references: [id], onDelete: Cascade)
+  /// PUNCH | AMEND | APPROVE | REJECT | SEND_BACK
+  kind       String
+  remark     String
+  authorId   Int?             @map("author_id")
+  author     User?            @relation("JobOrderProgressRemarkAuthor", fields: [authorId], references: [id])
+  authorRole String           @map("author_role")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  @@index([progressId, createdAt])
+  @@map("job_order_progress_remarks")
 }

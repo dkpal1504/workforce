@@ -82,6 +82,33 @@
   border-top: 1px solid var(--border-light);
 }
 
+/* Project Summary columns are labelled by the Project's color_key token; the
+   Project name stays readable underneath as a muted subtitle. */
+.summary-table .project-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.summary-table .project-name-sub {
+  display: block;
+  margin-top: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
 
 .summary-table .total-col {
   background: var(--total-bg);
@@ -265,6 +292,54 @@
   flex-wrap: wrap;
 }
 
+/* The two measure groups (Hours | Quantity) are labelled, never merged. */
+.jo-summary-table thead .jo-measure-head {
+  text-align: center;
+  border-left: 1px solid var(--border);
+}
+
+.jo-summary-table thead .jo-measure-head--qty {
+  background: color-mix(in srgb, var(--navy) 6%, var(--bg-elevated));
+}
+
+.jo-summary-table .jo-qty-col {
+  background: color-mix(in srgb, var(--navy) 3%, transparent);
+}
+
+.jo-summary-table .jo-uom-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+/* WBS rows sit between the Project group header and its Job Orders. */
+.jo-summary-table .jo-wbs-header td {
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border-light);
+  font-size: 12px;
+  padding: 7px 14px 7px 26px;
+}
+
+.jo-wbs-label {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.jo-table-note {
+  margin: 10px 2px 0;
+  line-height: 1.5;
+}
+
 .jo-summary-table .jo-status-superscript {
   font-size: 9.5px;
   font-weight: 700;
@@ -282,7 +357,7 @@
   background: color-mix(in srgb, #16a34a 12%, transparent);
 }
 
-.jo-summary-table .jo-status-closed {
+.jo-summary-table .jo-status-inactive {
   color: var(--text-muted);
   background: var(--bg-subtle);
 }
@@ -498,3 +573,29 @@
 }
 
 
+
+/* Mobile: the WBS level inside a Project card */
+.jo-cards-wbs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.jo-cards-wbs__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border-light);
+}
+
+.jo-cards .jo-card__grid--qty {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-light);
+}
+
+.jo-cards .jo-card__grid--qty strong {
+  font-size: 13px;
+}

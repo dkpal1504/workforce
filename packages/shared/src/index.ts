@@ -1,8 +1,11 @@
 import { z } from "zod";
 
 export const UserRole = {
+  EMPLOYEE: "EMPLOYEE",
   SUPERVISOR: "SUPERVISOR",
   HOD: "HOD",
+  /// Department-wide HOD oversight, and punches quantity progress by choosing a section.
+  DEPT_HEAD: "DEPT_HEAD",
   PM: "PM",
   HR: "HR",
   FINANCE: "FINANCE",

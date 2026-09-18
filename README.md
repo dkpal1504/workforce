@@ -88,6 +88,20 @@ Default bulk-fill shift windows are set with `SHIFTS` in `.env` (e.g. `GENERAL:0
 
 Default date filters use **today’s local date**. Seed data uses yesterday’s team for carry-over demo.
 
+## Master data and reporting
+
+**Project → WBS → Job Order** is the master-data hierarchy. A WBS belongs to one project, and **a Job Order number is unique per project only** — it repeats across projects, so `1900000107` in Project A and in Project C are two different Job Orders. Job Order status is **`Active`** or **`In-Active`** only.
+
+| Capability | Screen | Roles |
+|---|---|---|
+| **Project Master Data** — tabs Project, WBS, UoM, Network; every field carries example help text; a duplicate is refused with a message that names the conflicting row; rows are deactivated instead of deleted | `/master-data` | ADMIN, PM |
+| **Job Order Upload** — fixed 12-column CSV template (`Project_ID … Job_Order_Status`); per-row `created` / `skipped` / `rejected` report with the reason; an existing Job Order is **skipped, never overwritten** | `/job-order-upload` | ADMIN, PM |
+| **Quantity Progress** — the HOD punches the **cumulative** quantity achieved to date (never a daily increment, and the figure may never go down); the Project Head approves, rejects or sends back; the HOD amends only after a rejection or a send-back, and the refused revision stays as history | `/job-order-progress` | punch: HOD, DEPT_HEAD, ADMIN — decide: PM, ADMIN |
+| **Booking** — on Daily Timesheet Entry the Department is fixed to the supervisor's own department, the Section is chosen from that department, the Project is chosen, and each Job Order option reads `Job_Order-Job_Description`. A standing / Non-Project Job Order can be booked by any section of its department | `/timesheet`, `/allocations` | Timesheet: SUPERVISOR, ADMIN — My Hours: EMPLOYEE and SUPERVISOR for themselves, HOD / DEPT_HEAD / PM / HR / ADMIN for others |
+| **Job Order Summary** — grouped Project → WBS → Job Order with **both measures side by side**: Budgeted hours / Consumption / Consumption % / Balance and Budget Qty / Achieved Qty / Balance Qty / Qty %. Status filter `All` / `Active` / `In-Active`. A Job Order with no approved progress shows a dash, not `0 %` | Summary → Job Order | every signed-in role except EMPLOYEE |
+
+Reports group by the attribution **frozen when the hours were booked**, so editing a Job Order's mapping later does not move hours that are already in a past report. Full detail, field by field: [`docs/MANUAL.md`](docs/MANUAL.md).
+
 ## Monorepo layout
 
 ```
@@ -105,6 +119,7 @@ packages/shared   Shared Zod schemas & constants
 |---|---|
 | `npm run dev:api` | API with hot reload |
 | `npm run dev:web` | Vite dev server (proxies API) |
+| `npm run db:migrate` | Provider-aware schema step: `prisma db push` on a `file:` URL, `prisma migrate deploy` on PostgreSQL |
 | `npm run db:migrate:deploy` | Apply reviewed PostgreSQL migrations |
 | `npm run db:seed` | Load demo data (never use in production) |
 | `npm run test:e2e -w @workforce/web` | Playwright smoke tests |

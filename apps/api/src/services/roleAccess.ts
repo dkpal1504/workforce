@@ -30,6 +30,10 @@ export type CapabilityMap = {
   assignRoles: boolean;
   /** Department-wide approved-hours oversight (Department HOD / Department Head). */
   viewDepartmentSummary: boolean;
+  /** Project / WBS / UoM / Network masters and the Job Order CSV upload (PM + Admin). */
+  manageJobOrderMaster: boolean;
+  /** Punch quantity progress (HOD, Department Head) and approve it (PM, Admin). */
+  manageJobOrderProgress: boolean;
 };
 
 export function capabilitiesFor(role: string): CapabilityMap {
@@ -48,6 +52,10 @@ export function capabilitiesFor(role: string): CapabilityMap {
     allocateHours: ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "ADMIN"].includes(role),
     assignRoles: admin,
     viewDepartmentSummary: isDepartmentViewRole(role) || admin,
+    // Master data for the Job Order hierarchy is owned by the PM team and Admin.
+    manageJobOrderMaster: admin || role === "PM",
+    // HODs punch the cumulative quantity progress; PMs approve, reject or send it back.
+    manageJobOrderProgress: admin || role === "PM" || role === "HOD" || role === "DEPT_HEAD",
   };
 }
 

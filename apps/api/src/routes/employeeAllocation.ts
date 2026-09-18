@@ -5,7 +5,15 @@ import { writeAudit } from "../audit";
 import { parseDateOnly } from "../utils/date";
 import { getMaxDailyHours } from "../config";
 import { canSubmitRetainedDraft, inactiveEmployeePayload, rejectionStatusForEmployee } from "../services/employeeEligibility";
-import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrderEligibility";
+import {
+  assignableJobOrders,
+  invalidJobOrderPayload,
+  jobOrderMatchesSection,
+  jobOrderOptionLabel,
+  loadDepartmentSections,
+  loadSlotJobOrders,
+} from "../services/jobOrderEligibility";
+import { resolveAttributionSnapshot } from "../services/attributionSnapshot";
 import { hodScopeMatches } from "../services/roleAccess";
 
 /**
@@ -70,7 +78,7 @@ employeeAllocationRouter.get("/", async (req, res) => {
     include: {
       allocations: {
         include: {
-          project: { select: { id: true, name: true, colorKey: true } },
+          project: { select: { id: true, name: true, colorKey: true, isNonProject: true } },
           jobOrder: { select: { id: true, code: true, name: true } },
           allocatedBy: { select: { id: true, name: true } },
         },
@@ -82,7 +90,66 @@ employeeAllocationRouter.get("/", async (req, res) => {
     take: 200,
   });
 
-  res.json({ days });
+  // `projectWbsId` / `departmentId` / `sectionId` are the attribution snapshot of
+  // the booking; `jobOrderLabel` is the required `Job_Order-Job_Description`.
+  res.json({
+    days: days.map((day) => ({
+      ...day,
+      allocations: day.allocations.map((slot) => ({
+        ...slot,
+        jobOrderLabel: slot.jobOrder ? jobOrderOptionLabel(slot.jobOrder) : null,
+      })),
+    })),
+  });
+});
+
+/**
+ * Picker rows for the employee's OWN Department: active Sections, active
+ * Projects, and the Job Orders offered for the selected Section + Project.
+ * A standing Job Order (no Section) is offered for any Section of the
+ * Department. Every Job Order carries its `Job_Order-Job_Description` label,
+ * plus `wbsNo` and the Project `colorKey` (the WBS is not shown by default).
+ */
+employeeAllocationRouter.get("/job-orders", async (req, res) => {
+  const role = req.user!.role;
+  const userId = req.user!.id;
+  const queryEmpId = req.query.employeeId ? Number(req.query.employeeId) : null;
+
+  let employeeId = queryEmpId;
+  if (role !== "ADMIN") {
+    const ownEmpId = await employeeIdForUser(userId);
+    if (ownEmpId == null) return res.status(403).json({ error: "No linked employee record for this account.", code: "NO_LINKED_EMPLOYEE" });
+    if (employeeId != null && employeeId !== ownEmpId) {
+      return res.status(403).json({ error: "You can only allocate hours to yourself.", code: "NOT_OWNER" });
+    }
+    employeeId = ownEmpId;
+  }
+  if (!employeeId) return res.status(400).json({ error: "employeeId is required" });
+
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { id: true, departmentId: true },
+  });
+  if (!employee) return res.status(404).json({ error: "Employee not found" });
+
+  const departmentId = employee.departmentId;
+  const department = departmentId == null
+    ? null
+    : await prisma.department.findUnique({ where: { id: departmentId }, select: { id: true, name: true } });
+  const sections = departmentId == null ? [] : await loadDepartmentSections(departmentId);
+  const projects = await prisma.project.findMany({
+    where: { active: true },
+    orderBy: { sortOrder: "asc" },
+    select: { id: true, code: true, name: true, colorKey: true, isNonProject: true, active: true },
+  });
+  const projectId = Number(req.query.project_id);
+  const sectionId = Number(req.query.section_id);
+  const jobOrders =
+    departmentId != null && Number.isInteger(projectId) && projectId > 0 && Number.isInteger(sectionId) && sectionId > 0
+      ? await loadSlotJobOrders({ departmentId, projectId, sectionId })
+      : [];
+
+  res.json({ department, sections, projects, jobOrders });
 });
 
 /** POST /api/allocations/slot — atomic upsert of one slot on the parent day. */
@@ -90,7 +157,15 @@ employeeAllocationRouter.post("/slot", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
 
-  const { employeeId: bodyEmpId, workDate: bodyDate, shiftSlot, projectId: bodyProjectId, jobOrderId: bodyJobOrderId, remarks } = req.body ?? {};
+  const {
+    employeeId: bodyEmpId,
+    workDate: bodyDate,
+    shiftSlot,
+    projectId: bodyProjectId,
+    jobOrderId: bodyJobOrderId,
+    sectionId: bodySectionId,
+    remarks,
+  } = req.body ?? {};
 
   if (!bodyDate || !/^\d{4}-\d{2}-\d{2}$/.test(bodyDate)) {
     return res.status(400).json({ error: "workDate required (YYYY-MM-DD)" });
@@ -116,18 +191,65 @@ employeeAllocationRouter.post("/slot", async (req, res) => {
   }
   if (!employeeId) return res.status(400).json({ error: "employeeId is required" });
 
-  const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: {
+      id: true,
+      active: true,
+      departmentId: true,
+      sectionAssignment: { select: { sectionId: true } },
+    },
+  });
   if (!employee) return res.status(400).json({ error: "Employee not found" });
   if (!employee.active) return res.status(409).json(inactiveEmployeePayload());
 
   const project = await prisma.project.findUnique({ where: { id: Number(bodyProjectId) } });
   if (!project) return res.status(400).json({ error: "Project not found" });
+  if (!project.active) {
+    return res.status(400).json({ error: "Project is inactive and cannot accept hours.", code: "PROJECT_NOT_ASSIGNABLE" });
+  }
+
+  // The Section is freely chosen among the employee's OWN department's active
+  // sections. It only feeds the attribution snapshot of a booking that has no
+  // Job Order to take its Department/Section from.
+  let fallbackSectionId = employee.sectionAssignment?.sectionId ?? null;
+  if (bodySectionId != null && bodySectionId !== "") {
+    const section = await prisma.section.findFirst({
+      where: { id: Number(bodySectionId), departmentId: employee.departmentId ?? -1, active: true },
+      select: { id: true },
+    });
+    if (!section) {
+      return res.status(400).json({
+        error: "Section is inactive or belongs to another Department.",
+        code: "SECTION_NOT_ASSIGNABLE",
+      });
+    }
+    fallbackSectionId = section.id;
+  }
+
+  // Attribution snapshot (contract section 3): the chosen Job Order is the
+  // source of truth; an optional Job Order falls back to the screen Project and
+  // the employee's own organisation.
+  let snapshot = resolveAttributionSnapshot(null, {
+    projectId: project.id,
+    departmentId: employee.departmentId,
+    sectionId: fallbackSectionId,
+  });
   if (bodyJobOrderId != null) {
     const jo = (await assignableJobOrders([Number(bodyJobOrderId)])).get(Number(bodyJobOrderId));
     if (!jo) return res.status(400).json(invalidJobOrderPayload());
     if (jo.projectId !== project.id) {
       return res.status(400).json({ error: "Work order does not belong to the selected project." });
     }
+    // A project Job Order belongs to one Section; a standing Job Order (no
+    // Section) serves any Section of its Department.
+    if (fallbackSectionId != null && !jobOrderMatchesSection(jo.sectionId, fallbackSectionId)) {
+      return res.status(400).json({
+        error: "Work order belongs to another Section.",
+        code: "JOB_ORDER_SECTION_MISMATCH",
+      });
+    }
+    snapshot = resolveAttributionSnapshot(jo);
   }
 
   const wd = parseDateOnly(bodyDate);
@@ -154,11 +276,15 @@ employeeAllocationRouter.post("/slot", async (req, res) => {
         employeeId,
         workDate: wd,
         shiftSlot,
+        // The snapshot is spread first so the screen's Project wins the id
+        // (resolving a Job Order always yields the same Project).
+        ...snapshot,
         projectId: project.id,
         jobOrderId: bodyJobOrderId != null ? Number(bodyJobOrderId) : null,
         allocatedById: userId,
       },
       update: {
+        ...snapshot,
         projectId: project.id,
         jobOrderId: bodyJobOrderId != null ? Number(bodyJobOrderId) : null,
         allocatedById: userId,

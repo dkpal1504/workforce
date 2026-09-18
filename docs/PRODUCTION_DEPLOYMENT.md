@@ -30,9 +30,11 @@ login needs schema-owner DDL rights when migrations run.
 
 > **Only valid for a fresh database, and only applies the 2026-09-13 baseline.**
 > `database/01-schema.sql` predates the later migrations — it has **no `users.section_id`**
-> (HOD scope) and **no `hod_delegations`**. After running it you must still apply the
-> later migrations (option C below), otherwise HOD scoping and approval cover will not
-> work. Prefer option A.
+> (HOD scope), **no `hod_delegations`** and **none of the Project / WBS / Job Order master
+> data** (no `project_wbs.project_id`, no `uom`, no `networks`, no
+> `job_order_budget_revisions`, no `job_order_progress`, no attribution snapshot columns).
+> After running it you must still apply the later migrations (option C below), otherwise
+> HOD scoping, approval cover and the Job Order screens will not work. Prefer option A.
 
 `database/01-schema.sql` contains the baseline tables, keys, indexes, foreign keys and
 PostgreSQL integrity constraints. Run it against an empty database:
@@ -62,6 +64,9 @@ The repository's migrations are the authoritative, reviewed DDL. Current history
 | `20260914000000_role_based_access` | `employee_allocation_approvals` |
 | `20260915000000_hod_section_and_org_transfer` | `users.section_id` (HOD scope), `employee_organisation_overrides` |
 | `20260916000000_hod_approval_delegation` | `hod_delegations` (HOD approval cover) |
+| `20260918000001_job_order_progress_remarks` | `job_order_progress_remarks` — every quantity remark kept as its own row (stage, author, role, time), with the remarks that already existed backfilled. |
+| `20260918000002_job_order_wbs_project_fk` | Composite foreign key on `job_orders (project_wbs_id, project_id)` → `project_wbs (id, project_id)` with the supporting unique index, so a Job Order's Project must be the Project that owns its WBS. Declared in the Prisma schema (`projectWbsOfProject`), so `migrate dev` will not drop it. |
+| `20260918000000_project_wbs_job_order_master` | Project → WBS → Job Order master data: renames `projects_wbs` to `project_wbs` and links it to its Project, adds `uom` and `networks`, adds `uom_id` / `network_id` / `budgeted_quantity` / `section_id` to `job_orders` and limits its status to active / inactive, adds `job_order_budget_revisions` and `job_order_progress`, and adds the attribution snapshot columns to `timesheet_entries` and `employee_allocations`. It backfills everything it makes required, so it runs against a populated database. See `docs/MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`. |
 
 Apply them with the `migrate` container (option A) or directly:
 
@@ -143,6 +148,11 @@ Also required, and easy to miss:
 - **Configure `SMTP_*` and `CREDENTIAL_DELIVERY_ENABLED=true`** if you intend to
   onboard users from the UI. With delivery off, the credential queue only accumulates
   and no new Employee/HOD/Supervisor can log in.
+- **`BADGEVIEW_SYNC_ACTIVE_ONLY`** controls whether terminated workers are imported. It
+  defaults to `true`, which means only active workers are fetched: a terminated worker never
+  gets an `Employee` row or a login. Leave it at `true` unless you specifically want the
+  inactive rows back, and note that a worker who leaves is still retired by the absence
+  sweep either way.
 - **`BADGEVIEW_DB_*`** (host, port, user, password, database, view, encryption) if the
   sync is enabled.
 

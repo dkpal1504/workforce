@@ -15,7 +15,9 @@ export type BadgeViewRow = {
   WorkmenName: string | null;
   NatureOfWork: string | null;
   mobile: string | number | null;
-  IsTerminated: boolean;
+  /// SQL Server may return a bit, 0/1, or the text "true"/"yes". `sourceTerminated`
+  /// interprets all of those, so the type stays open rather than claiming `boolean`.
+  IsTerminated: unknown;
 };
 
 export type SyncResult = {
@@ -181,6 +183,29 @@ async function uniqueSyncEmail(tx: Tx, ecNo: string): Promise<string> {
     suffix += 1;
   }
   return email;
+}
+
+/**
+ * Keep only workers who are still active in LabourWorks.
+ *
+ * A terminated worker must not enter the system: no Employee row, no login, no
+ * place in any picker or report. Filtering the SOURCE SNAPSHOT is what makes that
+ * true, and it is safe because the exit path does not depend on the terminated flag:
+ * a worker who leaves LabourWorks (or becomes terminated there) is simply ABSENT from
+ * the snapshot, and the absence sweep further down soft-terminates the row we already
+ * hold. So history for someone who already booked hours is still preserved, and a
+ * worker who is terminated BEFORE our first sync is never created at all.
+ *
+ * Controlled by BADGEVIEW_SYNC_ACTIVE_ONLY (default true). Set it to "false" to go
+ * back to importing terminated workers as inactive rows.
+ */
+export function activeWorkersOnly(rows: BadgeViewRow[]): { rows: BadgeViewRow[]; skippedTerminated: number } {
+  const kept = rows.filter((row) => !sourceTerminated(row.IsTerminated));
+  return { rows: kept, skippedTerminated: rows.length - kept.length };
+}
+
+function activeOnlyEnabled(): boolean {
+  return String(process.env.BADGEVIEW_SYNC_ACTIVE_ONLY ?? "true").toLowerCase() !== "false";
 }
 
 async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
@@ -547,7 +572,19 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
 export async function runBadgeViewSync(): Promise<SyncResult> {
   const startedAt = new Date();
   try {
-    return await syncBadgeViewRows(await fetchBadgeViewRows());
+    const fetched = await fetchBadgeViewRows();
+    let snapshot = fetched;
+    if (activeOnlyEnabled()) {
+      const filtered = activeWorkersOnly(fetched);
+      snapshot = filtered.rows;
+      if (filtered.skippedTerminated > 0) {
+        console.log(
+          `[badgeViewSync] skipped ${filtered.skippedTerminated} terminated worker(s) out of ${fetched.length}; ` +
+            `importing ${snapshot.length} active worker(s). Set BADGEVIEW_SYNC_ACTIVE_ONLY=false to import them as inactive rows.`
+        );
+      }
+    }
+    return await syncBadgeViewRows(snapshot);
   } catch (error) {
     return {
       ok: false,

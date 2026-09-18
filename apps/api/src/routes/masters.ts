@@ -43,12 +43,35 @@ mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "PM", "ADMIN",
   res.json({ employees });
 });
 
+/**
+ * Project -> WBS picker feed. The retired `projects_wbs` table held one row per
+ * project and carried the display token itself. The WBS level now hangs under
+ * `projects`, so the token (`color_key`) belongs to the project and its WBS rows
+ * come back nested inside it; `wbs_code` is what a Job Order is disambiguated by.
+ * `projects` keeps its old key and shape (id, code, name, colorKey) because the
+ * Project Summary filter chips read it. `wbs` is the same data as a flat list.
+ */
 mastersRouter.get("/projects-wbs", async (_req, res) => {
-  const projects = await prisma.projectWbs.findMany({
+  const projects = await prisma.project.findMany({
     where: { active: true },
-    orderBy: { colorKey: "asc" },
+    orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
+    include: {
+      wbsRows: {
+        where: { active: true },
+        orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }],
+        select: { id: true, projectId: true, wbsCode: true, name: true, sortOrder: true },
+      },
+    },
   });
-  res.json({ projects });
+  res.json({
+    projects: projects.map((project) => ({ ...project, wbs: project.wbsRows })),
+    wbs: projects.flatMap((project) =>
+      project.wbsRows.map((row) => ({
+        ...row,
+        project: { id: project.id, code: project.code, name: project.name, colorKey: project.colorKey },
+      }))
+    ),
+  });
 });
 
 /**
@@ -61,7 +84,10 @@ mastersRouter.get("/projects", async (_req, res) => {
     orderBy: { sortOrder: "asc" },
     include: {
       jobOrders: {
-        where: { status: { in: ["active", "closed"] }, department: { name: { contains: " - " }, active: true } },
+        // Only the two Job Order states exist now, and assignability is
+        // "Job Order active + Project active + Department active". The old
+        // `name contains " - "` test was dropped when the picker stopped using it.
+        where: { status: { in: ["active", "inactive"] }, department: { active: true } },
         orderBy: { code: "asc" },
         select: {
           id: true,
@@ -70,8 +96,15 @@ mastersRouter.get("/projects", async (_req, res) => {
           status: true,
           budgetedHours: true,
           departmentId: true,
+          // The WBS number is RETURNED so the picker can disambiguate two Job
+          // Orders that share a number across projects. The UI hides it by default.
+          projectWbs: { select: { id: true, wbsCode: true } },
         },
       },
+      // The WBS level and the per-project Network list, for the pickers that
+      // filter a Job Order by project.
+      wbsRows: { where: { active: true }, orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }], select: { id: true, wbsCode: true, name: true, sortOrder: true } },
+      networks: { where: { active: true }, orderBy: { code: "asc" }, select: { id: true, code: true, name: true, source: true } },
     },
   });
   res.json({ projects });
@@ -105,4 +138,56 @@ mastersRouter.get("/cost-centers", async (req, res) => {
     orderBy: { code: "asc" },
   });
   res.json({ costCenters });
+});
+
+/**
+ * UoM picker. The Job Order form needs the unit of measure and, on screen, the
+ * `example` string that explains it. Inactive units are withheld unless
+ * `?include_inactive=true` is asked for by a maintenance screen.
+ */
+mastersRouter.get("/uom", async (req, res) => {
+  const includeInactive = req.query.include_inactive === "true";
+  const uom = await prisma.uom.findMany({
+    ...(includeInactive ? {} : { where: { active: true } }),
+    select: { id: true, code: true, name: true, example: true, active: true },
+    orderBy: { code: "asc" },
+  });
+  res.json({ uom });
+});
+
+/**
+ * Network picker, scoped to one project (`?project_id=`, or the project resolved
+ * from `?project_code=`). A Network code is unique inside its project only.
+ */
+mastersRouter.get("/networks", async (req, res) => {
+  const includeInactive = req.query.include_inactive === "true";
+  const projectId = req.query.project_id ? Number(req.query.project_id) : undefined;
+  const projectCode = typeof req.query.project_code === "string" && req.query.project_code.trim()
+    ? req.query.project_code.trim().toUpperCase()
+    : undefined;
+  const networks = await prisma.network.findMany({
+    where: {
+      ...(includeInactive ? {} : { active: true }),
+      ...(projectId ? { projectId } : {}),
+      ...(projectCode ? { project: { code: projectCode } } : {}),
+    },
+    select: { id: true, projectId: true, code: true, name: true, source: true, active: true },
+    orderBy: { code: "asc" },
+  });
+  res.json({ networks });
+});
+
+/**
+ * WBS picker, optionally scoped to one project. `wbs_code` is unique per project,
+ * so the project must be known before a code can be trusted.
+ */
+mastersRouter.get("/project-wbs", async (req, res) => {
+  const includeInactive = req.query.include_inactive === "true";
+  const projectId = req.query.project_id ? Number(req.query.project_id) : undefined;
+  const wbs = await prisma.projectWbs.findMany({
+    where: { ...(includeInactive ? {} : { active: true }), ...(projectId ? { projectId } : {}) },
+    select: { id: true, projectId: true, wbsCode: true, name: true, sortOrder: true, active: true },
+    orderBy: [{ projectId: "asc" }, { sortOrder: "asc" }, { wbsCode: "asc" }],
+  });
+  res.json({ wbs });
 });

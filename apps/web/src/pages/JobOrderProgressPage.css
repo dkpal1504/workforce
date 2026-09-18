@@ -1,0 +1,712 @@
+/* ============================================================
+   Job Order quantity progress — page-specific styles.
+   Mobile-first, design tokens only. Breakpoints follow the house
+   convention: phone <=767px, tablet 768-1199px, desktop >=1200px.
+   The table/cards switch happens at 1024px, the breakpoint of
+   .sup-table in supervisors.css.
+
+   Reused, not redefined here: .btn / .btn-primary / .btn-ghost /
+   .btn-danger / .btn-sm / .error-banner / .carry-banner / .empty-state /
+   .loading-state / .muted (global.css + supervisors.css) and
+   .sup-table / .sup-table__actions / .modal* / .badge (supervisors.css).
+   ============================================================ */
+
+.jop {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.jop__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.jop__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.jop__hint {
+  margin: 0;
+  font-size: 12px;
+  max-width: 72ch;
+}
+
+.jop-tiny {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.jop-warn {
+  color: var(--warning);
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
+.jop-qty {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- Tabs --------------------------------------------------- */
+.jop-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--border-light);
+  overflow-x: auto;
+}
+
+.jop-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 10px 18px;
+  font-weight: 650;
+  font-size: 14px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  white-space: nowrap;
+}
+
+.jop-tab:hover {
+  color: var(--primary);
+}
+
+.jop-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.jop-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- Panels ------------------------------------------------- */
+.jop-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.jop-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--primary) 6%, var(--bg-elevated));
+}
+
+.jop-panel__header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.jop-panel__count {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.jop-panel__body {
+  padding: 16px;
+}
+
+.jop-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.jop-filters select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  min-height: 38px;
+}
+
+.jop-filters select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+/* ---- Punch form --------------------------------------------- */
+.jop-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.jop-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jop-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.jop-field > label,
+.jop-field__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.jop-field input,
+.jop-field select,
+.jop-field textarea {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  min-height: 42px;
+  width: 100%;
+  font: inherit;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.jop-field textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.jop-field input:focus,
+.jop-field select:focus,
+.jop-field textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.jop-field--wide {
+  grid-column: 1 / -1;
+}
+
+/* ---- Quantity facts (kept deliberately separate from hours) -- */
+.jop-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.jop-fact {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.jop-fact em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.jop-fact--budget {
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+  color: var(--primary-ink);
+}
+
+.jop-fact--budget em {
+  color: color-mix(in srgb, var(--primary-ink) 75%, transparent);
+}
+
+.jop-fact--warn {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  color: color-mix(in srgb, var(--warning) 88%, #000);
+}
+
+.jop-fact--warn em {
+  color: color-mix(in srgb, var(--warning) 88%, #000);
+}
+
+.jop-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Department Head oversight panel: informational, never an error. */
+.jop-oversight {
+  margin: 0 0 14px;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.jop-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.jop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---- Status chips ------------------------------------------- */
+.jop-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.jop-chip--submitted {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+}
+
+.jop-chip--approved {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+}
+
+.jop-chip--rejected {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 26%, transparent);
+}
+
+.jop-chip--sent-back {
+  background: var(--warning-soft);
+  color: color-mix(in srgb, var(--warning) 88%, #000);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+/* ---- Project colour key ------------------------------------- */
+.jop-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.jop-key i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* ---- History disclosure ------------------------------------- */
+.jop-disclosure {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.jop-disclosure:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+.jop-history {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jop-history__item {
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--bg-subtle) 55%, var(--bg-elevated));
+  font-size: 12.5px;
+}
+
+.jop-history__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.jop-history__meta {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.jop-history-row td {
+  padding-top: 0 !important;
+}
+
+/* ---- Entry table (desktop, via .sup-table) ------------------ */
+.jop-table-wrap {
+  overflow-x: auto;
+}
+
+/* ---- Entry cards (phone + tablet) -------------------------- */
+.jop-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.jop-card__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.jop-stats,
+.jop-entry__meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.jop-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.jop-stat em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.jop-stat > span,
+.jop-stat > strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Approval queue ---------------------------------------- */
+.jop-group {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.jop-group__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--primary) 6%, var(--bg-elevated));
+}
+
+.jop-group__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.jop-group__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.jop-group__meta strong {
+  color: var(--text);
+}
+
+.jop-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.jop-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+}
+
+.jop-entry__remarks {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.jop-field textarea.jop-remark-input {
+  min-height: 56px;
+}
+
+.jop-entry__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- Tablet (768-1199px) ----------------------------------- */
+@media (min-width: 768px) {
+  .jop-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---- Desktop (>=1200px) ------------------------------------ */
+@media (min-width: 1200px) {
+  .jop-form {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .jop-panel__body {
+    padding: 18px;
+  }
+}
+
+/* The card list gives way to the .sup-table at the same breakpoint. */
+@media (min-width: 1024px) {
+  .jop-cards {
+    display: none;
+  }
+}
+
+/* ---- Phone (<=767px) --------------------------------------- */
+@media (max-width: 767px) {
+  .jop__title {
+    font-size: 18px;
+  }
+
+  .jop-panel__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .jop-filters {
+    width: 100%;
+  }
+
+  .jop-filters select {
+    flex: 1;
+  }
+
+  .jop-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .jop-actions .btn {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
+
+  .jop-entry__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .jop-entry__actions .btn {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
+
+  .jop-stats,
+  .jop-entry__meta {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  }
+}
+
+/* ---- Remark history (job_order_progress_remarks) ------------ */
+.jop-chip--remark-punch {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+}
+
+.jop-chip--remark-amend {
+  background: color-mix(in srgb, var(--primary-soft) 60%, var(--bg-subtle));
+  color: var(--primary-ink);
+  border-color: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.jop-chip--remark-approve {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+}
+
+.jop-chip--remark-reject {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 26%, transparent);
+}
+
+.jop-chip--remark-send-back {
+  background: var(--warning-soft);
+  color: color-mix(in srgb, var(--warning) 88%, #000);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+.jop-remark-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.jop-remark {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+}
+
+.jop-remark__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.jop-remark__author {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.jop-remark__when {
+  margin-left: auto;
+}
+
+.jop-remark__text {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.jop-entry-detail {
+  display: grid;
+  gap: 14px;
+  padding: 10px 0 4px;
+}
+
+.jop-detail__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.jop-entry__history {
+  margin-top: 10px;
+}
+
+@media (min-width: 1024px) {
+  .jop-entry-detail {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+}

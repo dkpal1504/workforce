@@ -1,8 +1,8 @@
 # Workforce — Application Manual
 
-> **Version:** CR#2 unified Employee + HOD scope + HOD approval cover (`feature/cr2-unified-employee`, `6f3eea4`)
-> **Scope:** End-user guide + developer/admin reference for the Workforce timesheet, approvals, OT, summary, CR#2 unified-Employee + slot-based payroll allocations, HOD registration/scope and HOD approval cover (delegation).
-> **Databases:** local development/testing runs on **SQLite**; production runs on **PostgreSQL** (`prisma migrate deploy`). See [14](#14-database--migrations) and [docs/DEV_SQLITE_TESTING.md](DEV_SQLITE_TESTING.md).
+> **Version:** Project → WBS → Job Order master data and quantity progress (working tree on `feature/cr2-unified-employee`, HEAD `56f0910`), on top of CR#2 unified Employee + HOD scope + HOD approval cover
+> **Scope:** End-user guide + developer/admin reference for the Workforce timesheet, approvals, OT, summary, the Project / WBS / Job Order master data screens and Job Order quantity progress, CR#2 unified-Employee + slot-based payroll allocations, HOD registration/scope and HOD approval cover (delegation).
+> **Databases:** local development/testing runs on **SQLite**; production runs on **PostgreSQL** (`prisma migrate deploy`). See [21](#21-database--migrations) and [docs/DEV_SQLITE_TESTING.md](DEV_SQLITE_TESTING.md).
 
 ---
 
@@ -21,19 +21,23 @@
 10. [CSV Upload (admin)](#10-csv-upload-admin)
 11. [Summary Reports](#11-summary-reports)
 12. [BadgeView Sync](#12-badgeview-sync)
+13. [Master Data: Project, WBS and Job Order](#13-master-data-project-wbs-and-job-order)
+14. [Project Master Data (ADMIN/PM)](#14-project-master-data-adminpm)
+15. [Job Order Upload (ADMIN/PM)](#15-job-order-upload-adminpm)
+16. [Quantity Progress (HOD / DEPT_HEAD / PM)](#16-quantity-progress-hod--dept_head--pm)
 
 **Part II — Developer / Admin Reference**
-13. [Architecture & stack](#13-architecture--stack)
-14. [Repository layout](#14-repository-layout)
-15. [Local setup (WSL Ubuntu)](#15-local-setup-wsl-ubuntu)
-16. [Local setup (PowerShell / Windows)](#16-local-setup-powershell--windows)
-17. [Database & migrations](#17-database--migrations)
-18. [Environment variables](#18-environment-variables)
-19. [Ports & proxy](#19-ports--proxy)
-20. [Schema overview (Prisma)](#20-schema-overview-prisma)
-21. [API endpoints](#21-api-endpoints)
-22. [Security model](#22-security-model)
-23. [Troubleshooting](#23-troubleshooting)
+17. [Architecture & stack](#17-architecture--stack)
+18. [Repository layout](#18-repository-layout)
+19. [Local setup (WSL Ubuntu)](#19-local-setup-wsl-ubuntu)
+20. [Local setup (PowerShell / Windows)](#20-local-setup-powershell--windows)
+21. [Database & migrations](#21-database--migrations)
+22. [Environment variables](#22-environment-variables)
+23. [Ports & proxy](#23-ports--proxy)
+24. [Schema overview (Prisma)](#24-schema-overview-prisma)
+25. [API endpoints](#25-api-endpoints)
+26. [Security model](#26-security-model)
+27. [Troubleshooting](#27-troubleshooting)
 
 ---
 
@@ -90,17 +94,31 @@ A supervisor manages their team's manhour allocation for a single day. The flow 
 3. Click **Assign** (or use **Bulk Assignment**: select slots → pick project/WO → **Assign to Selected**).
 4. The slot fills with the project color.
 
-### 2.3 Reassign / unassign on editable days
+### 2.3 Booking a Job Order (Department, Section, Project)
+
+The picker is constrained so that the wrong Job Order cannot be booked:
+
+- **Department is fixed to the supervisor's own department.** The department shown at the top of the screen is the supervisor's own, not a selector, and the API derives it from the signed-in supervisor — so another department cannot be booked.
+- **Section** is chosen from the active sections of that department.
+- **Project** is chosen freely among the active projects.
+- **Job Order** is filtered by all three, and each option reads `Job_Order-Job_Description` — for example `1900000107-Pipe Spool Installation`.
+- A **standing / Non-Project** Job Order (one with no Section) is offered for **any** Section of its Department. A project Job Order is offered only for its own Section.
+- Only an `Active` Job Order on an `Active` Project in an `Active` Department can be booked; anything else does not appear in the list.
+- Consumption and quantity do not mix here: this screen books **hours** only. The quantity figure is punched separately on Quantity Progress ([16](#16-quantity-progress-hod--dept_head--pm)).
+
+The Job Order number is unique **per project only** — `1900000107` exists in Project A and in Project C as two different Job Orders — so always read the option together with the Project you selected. The WBS number is returned by the API but is not shown in the dropdown.
+
+### 2.4 Reassign / unassign on editable days
 
 On a `DRAFT` or `REJECTED` day, clicking a colored slot re-selects it. Picking a new Project + Work Order and clicking **Assign** replaces the assignment. Use **Remove** on a row to clear that employee's allocations.
 
 On a `SUBMITTED` / approved day the cells are **locked** — only HOD/PM reject can re-open them.
 
-### 2.4 Over-allocation guard
+### 2.5 Over-allocation guard
 
 The 8-hour daily cap is structural (only 4 slots × 2 h). Submitting a day with **total > 8 h** triggers `MAX_DAILY_HOURS_REMARKS_REQUIRED` — a **mandatory Remarks** reason is required before submission can succeed.
 
-### 2.5 OT (Overtime)
+### 2.6 OT (Overtime)
 
 A supervisor can also assign **OT hours** to a contract workman (CLMS employee) on a given date:
 
@@ -110,11 +128,11 @@ A supervisor can also assign **OT hours** to a contract workman (CLMS employee) 
 
 For holiday attendance, OT may be entered without selecting any regular shift slot. The complete entered time is booked as project OT and overhead is `0`. On a mixed regular-plus-OT day, OT stays additive and unused regular capacity retains its normal overhead calculation. OT entry is disabled and rejected for Payroll Employees.
 
-### 2.6 Supervisor self-row
+### 2.7 Supervisor self-row
 
 Supervisors appear as a **non-removable "You" row** in their own timesheet, so they can allocate their own hours via the same flow. The Remove button is disabled for the self-row.
 
-### 2.7 Submit
+### 2.8 Submit
 
 Click **Submit for Approval**. If any day exceeds the configured daily cap, a mandatory Remarks reason is required first. After successful submit:
 
@@ -169,13 +187,16 @@ Payroll employees allocate their own manhours in a slot-based grid (same 4-slot 
 ### 4.1 Flow
 
 1. Pick a **date**.
-2. Click an empty slot — pick **Project** (mandatory) and optional **Work Order**.
-3. Click **Assign**. Repeat for additional slots with different Project/WO combinations.
+2. Click an empty slot — pick **Project** (mandatory) and an optional **Job Order**.
+3. Click **Assign**. Repeat for additional slots with different Project / Job Order combinations.
 4. **Submit for HOD Approval** when the day is complete.
+
+The Department, Section, Project and Job Order picker behaves exactly as on Daily Timesheet Entry — see [2.3](#23-booking-a-job-order-department-section-project).
 
 ### 4.2 Rules
 
-- **Project is mandatory**, Work Order is optional.
+- **Project is mandatory**, the Job Order is optional.
+- Department is fixed to the employee's own department, the Section is chosen from that department, and the Job Order list is filtered by department, Section and Project ([2.3](#23-booking-a-job-order-department-section-project)).
 - **OT is NOT applicable** for payroll — the daily cap is **strict 8 hours** (4 slots × 2 h); an attempt to exceed is rejected by the API.
 - Slots become **locked** once Submitted; only HOD/PM can re-open them via reject.
 - Submit triggers the same `SUBMITTED → HOD_APPROVED → PM_APPROVED` lifecycle as the supervisor timesheet.
@@ -184,7 +205,7 @@ Payroll employees allocate their own manhours in a slot-based grid (same 4-slot 
 
 A single employee can split a day across multiple projects:
 
-| Project | Work Order | Hours |
+| Project | Job Order | Hours |
 |---|---|---:|
 | Project A | (optional) | 2 |
 | Project C | (optional) | 4 |
@@ -315,7 +336,7 @@ A deputy sees a banner on Approvals — *"You are acting as deputy HOD for IT un
 
 **Path:** `/summary` (top nav: **Summary**).
 
-- **Project Summary** — hours by project (A/B/C/D…) for the selected date / week / month.
+- **Project Summary** — hours by project (A/B/C/D…, the project colour key) for the selected date / week / month. Grouping uses the attribution frozen when the hours were booked ([11.2](#112-project-summary-and-the-frozen-booking-snapshot)).
 - **Group by Employee / Supervisor / Department / Totals** — switchable.
 - **Project filter** — multi-select dropdown that filters per project column.
 - **OT column** — dynamic, auto-hides when no row has OT. Shows **effective OT** (manual or auto-derived) for **approved days only**.
@@ -324,7 +345,30 @@ A deputy sees a banner on Approvals — *"You are acting as deputy HOD for IT un
 
 ### 11.1 Job Order Summary
 
-A complementary view (top of the Summary page) showing each job order's **consumed hours, approved hours, budgeted hours, and % consumption**. Filter by status (`active` / `closed` / `all`) and department.
+The Job Order Summary shows **hours and quantity side by side**. The two measures are independent and are never blended, so one Job Order can be 80 % on hours and 40 % on quantity at the same moment.
+
+Rows are grouped **Project → WBS → Job Order**. The same Job Order number in two projects appears twice, once under each project, and the WBS level keeps the row unambiguous.
+
+| Measure | Columns |
+|---|---|
+| Hours | Budgeted hours · Consumption · Consumption % · Balance |
+| Quantity | Budget Qty · Achieved Qty · Balance Qty · Qty % |
+
+- The **status filter** is `All` / `Active` / `In-Active`, plus a department filter. An HOD (department-level or Section) and a Department Head are pinned to their own department server-side; PM, HR, FINANCE, ADMIN and SUPERVISOR may use the department filter.
+- **Consumption** counts only hours that reached the **final Project Head approval** — timesheet entries and My Hours allocations with the last approval stage. Hours still waiting for approval are not consumption yet.
+- **Consumption** is measured against the budget revision **in force on the work date**. The work date is the Job Order's own last booked work date, or its last progress date; an explicit `asOf` overrides it for a back-dated report. So a past month keeps the budget it was measured against, and the row also carries which revision supplied the budget.
+- **Achieved Qty** is the cumulative quantity of the latest **approved** progress entry.
+- A Job Order with **no approved progress shows a dash (—)**, not `0 %`. The API returns `0` with a "progress not reported" flag and the screen renders the dash.
+- Percentages never fall below 0 when the budget is 0, and a figure above the budget stays above 100 %.
+
+### 11.2 Project Summary and the frozen booking snapshot
+
+Project Summary groups by the attribution **frozen when the hours were booked**: `project_id`, `project_wbs_id`, `department_id` and `section_id` on the timesheet entry or the allocation row. What that means in use:
+
+- Editing a Job Order's mapping later **does not move hours that are already booked**, so a past report does not change under the user.
+- Renaming a project or changing its colour key re-labels a column; it does not move a single hour.
+- A Job Order that already has booked hours therefore **cannot be moved to another WBS**: the API refuses the move and the answer is to deactivate the Job Order and create a new one.
+- Rows booked before the snapshot columns existed have no stored attribution and fall back to the employee's current Department, so that history stays visible.
 
 ---
 
@@ -334,6 +378,8 @@ Source-of-truth for **contract workers and supervisors** is the external **Labou
 
 - **Twice-daily** (`0 6,18 * * *`) — controlled by `BADGEVIEW_SYNC_ENABLED` and `BADGEVIEW_SYNC_CRON` in `.env`.
 - Re-upserts unified `Employee` rows keyed by the canonical **`ecNo`** (LabourWorks `IDCardNo`). The old `idCardNo` column was retired.
+- **Only ACTIVE workers are imported.** Rows carrying `IsTerminated` are dropped from the snapshot before anything is written, so a terminated worker gets no `Employee` row and no login at all. Controlled by `BADGEVIEW_SYNC_ACTIVE_ONLY` (default `true`); set it to `false` to import terminated workers as inactive rows instead. The run logs how many were skipped, for example *"skipped 31 terminated worker(s) out of 523; importing 492 active worker(s)"*.
+- **A worker who leaves later is still handled.** The exit path does not depend on the terminated flag: anyone absent from the snapshot is soft-terminated (`active = false`, `terminatedAt` stamped) and any login they had is disabled, with the row and its history kept for the liability trail. So a departure after they have booked hours is recorded, while a worker already terminated before the first sync is never created.
 - **Completeness guards** run before any write: a snapshot below `BADGEVIEW_SYNC_MIN_ROWS` or below `BADGEVIEW_SYNC_MIN_RATIO` (default 0.9) of the existing SYNC population aborts the run. Absence from a validated snapshot is a soft-depart (`active = false`) that preserves history, never a delete.
 - **Identity is never guessed**: duplicate source EcNo, EcNo collisions with non-CLMS rows, and mobile numbers matching more than one candidate are recorded in `sync_exceptions` (`DUPLICATE_SOURCE_ECNO`, `ECNO_SOURCE_COLLISION`, `MOBILE_IDENTITY_CONFLICT`, …) and skipped for review in **Admin → Sync Exceptions**.
 - Surfaces supervisors from `Nature Of Work = Supervisor`; new SUPERVISOR accounts get an unknown random password plus a queued credential e-mail.
@@ -343,9 +389,213 @@ Source-of-truth for **contract workers and supervisors** is the external **Labou
 
 ---
 
+## 13. Master Data: Project, WBS and Job Order
+
+**Screens:** `/master-data` (maintenance), `/job-order-upload` (bulk create), `/job-order-progress` (quantity achieved), and Summary → **Job Order**.
+
+### 13.1 The hierarchy
+
+```
+Project  ──►  WBS  ──►  Job Order
+```
+
+- A **Project** is the commercial container. `Project_ID` is the ERP project number, and the **colour key** (A, B, C, D…) is the short token shown on Timesheet Entry and as the Project Summary column heading. A colour key is unique across all projects.
+- A **WBS** belongs to exactly one Project and only groups Job Orders. It carries no budget. The WBS number is unique **inside a project**, so the same WBS number may exist in another project.
+- A **Job Order** belongs to one WBS. **A Job Order number is unique per project only — it REPEATS across projects.** `1900000107` in Project A is a different Job Order from `1900000107` in Project C. Always read the Job Order together with its project.
+- **UoM** is a global master (NOS, MT, SQM, MTR…). Its `example` text is the help string shown on the maintenance screen.
+- **Network** is a per-project reference (an SAP network). Several Job Orders may share one Network.
+- One flagged **Non-Project** project holds standing / idle-hours work. Its Job Orders carry no Section, so any Section of their Department may book them.
+
+### 13.2 Job Order status
+
+Job Order status is **`Active`** or **`In-Active`** only. `closed` and `on_hold` no longer exist.
+
+- Only an `Active` Job Order on an `Active` Project in an `Active` Department can be booked or have quantity punched. Anything else does not appear in a picker.
+- The status is set when the Job Order is created by the upload (stored as `active` / `inactive`). No screen changes the status of an existing Job Order: an upload **skips** a Job Order that already exists, so it never overwrites the row or its budget.
+
+### 13.3 Two independent measures
+
+| Measure | Where it comes from | Columns on the Job Order Summary |
+|---|---|---|
+| **Hours** | Timesheet entries and My Hours allocations, counted after the final Project Head approval | Budgeted hours · Consumption · Consumption % · Balance |
+| **Quantity** | The cumulative figure the HOD punches and the Project Head approves | Budget Qty · Achieved Qty · Balance Qty · Qty % |
+
+The two are never blended. A Job Order can be 80 % on hours and 40 % on quantity at the same moment.
+
+### 13.4 Budget revisions are effective-dated
+
+A budget change is a new revision with an effective date. The Project Head is the custodian, so a revision needs no approval. Consumption is compared against the revision **in force on the work date** (the latest revision dated on or before the work date), so a past month keeps the budget it was measured against. Creating a Job Order writes revision 1 with its opening budget.
+
+### 13.5 Attribution is frozen at booking time
+
+A booked timesheet entry or allocation row stores `project_id`, `project_wbs_id`, `department_id` and `section_id` as they were **at the moment of booking**. Every report groups by those stored ids.
+
+- Editing a Job Order's mapping later does not move hours that are already booked.
+- Renaming a project or changing its colour key re-labels a report column without moving an hour.
+- A Job Order that already has booked hours cannot be moved to another WBS: the ADMIN-only `PUT /api/admin/job-orders/:id/remap` refuses the move and names the booked rows. Deactivate the Job Order and create a new one instead.
+
+---
+
+## 14. Project Master Data (ADMIN/PM)
+
+**Path:** `/master-data` (top nav: **Project Master**).
+
+Four tabs: **Project**, **WBS**, **UoM**, **Network**. Reads are open to any signed-in user; every create, update, activate/deactivate and delete is limited to **ADMIN and PM**, and every write is audited.
+
+### 14.1 Fields and example help text
+
+| Tab | Fields (labels on the form) | Example shown as help text |
+|---|---|---|
+| **Project** | Project code (ERP project number), Project name, Colour key (display token), Sort order, Standing / non-project row | code `PRJ-A`, name `Project A`, colour key `A` ("shows as A on Timesheet Entry") |
+| **WBS** | Project, WBS number, WBS name, Sort order | code `A.HULL.0010.100`, name `Hull structure` |
+| **UoM** | UoM code, UoM name, Example (shown as help text) | code `NOS`, name `Numbers`, example `Count of pieces, e.g. 12 spools` |
+| **Network** | Project, Network code, Network name, Source | code `SAP-NW-91001`, name `Hull networks` |
+
+Every field carries its own help line, for example `Unique across all projects. Example: PRJ-A` on the Project code, or `1-4 uppercase characters or digits, unique across all projects` on the Colour key. Each tab lists its rows with a Status column and an Actions column: **Edit** and **Deactivate** / **Activate**.
+
+- Codes are stored in upper case, and allow letters, digits, dot, underscore and hyphen (a Project, UoM or Network code may also contain a slash).
+- **Colour key** must be 1–4 characters, upper case letters or digits (for example `A` or `B2`), and is unique across all projects.
+- The **UoM example** is the on-screen help string; the screen shows it as `Example: NOS — Count of pieces, e.g. 12 spools`.
+- **Non-project** marks the single project that holds standing / idle-hours work. Its Job Orders may omit a Section.
+- A **Network** row written from this screen is always stored with source `MANUAL`; SAP-sourced rows will come from the ERP feed.
+- Each tab is scoped per row: a **WBS** or **Network** code is unique **inside one project**, so the same code may be reused in another project.
+
+### 14.2 A duplicate is refused, and the reason names the row
+
+A duplicate answers `409` with a message that names the row it collided with. The screen shows that message in an inline error banner.
+
+| Tab | Must be unique | Message shown |
+|---|---|---|
+| Project | code, across all projects | `Project code "PRJ-A" is already used by project "Project A" (project #2). Project codes are unique.` |
+| Project | colour key, across all projects | `Colour key "A" is already used by project "Project A" (PRJ-A, project #2). Colour keys are unique across all projects.` |
+| WBS | WBS code **inside one project** | `WBS code "A.HULL.0010.100" already exists in project "Project A" (PRJ-A, WBS #4). WBS codes are unique inside one project.` |
+| UoM | code, across all projects | `UoM code "NOS" is already used by "Numbers" (uom #1). UoM codes are unique.` |
+| Network | Network code **inside one project** | `Network code "SAP-NW-91001" already exists in project "Project A" (PRJ-A, network #2). Network codes are unique inside one project.` |
+
+The same WBS or Network code in a **different** project is accepted, not a duplicate.
+
+### 14.3 Deactivate instead of delete
+
+- **Deactivate** sets the row inactive and keeps it. The row disappears from the pickers, so it can no longer be booked. **Activate** puts it back.
+- **Delete** is refused while any other row points at the master row. The answer is `409` with the reference counts, for example
+  `project "Project A" (PRJ-A) is referenced by 7 WBS rows, 2 Networks, 4 Job Orders and 12 timesheet rows. Deactivate it instead of deleting it.`
+  Only a row that nothing references can be deleted, and the screen offers Deactivate / Activate rather than Delete.
+
+---
+
+## 15. Job Order Upload (ADMIN/PM)
+
+**Path:** `/job-order-upload` (top nav: **Job Order Upload**).
+
+The screen downloads the template, uploads a CSV of Job Orders and shows a result panel. Every run is audited (`JOB_ORDER_CSV_UPLOAD`).
+
+### 15.1 Template columns, in this exact order
+
+```
+Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty,
+Budgeted_hours, Department, Section, Job_Order_Status
+```
+
+Download it with **Download Template** (`job_order_upload_template.csv`). The template also carries one example row, copied from a real Job Order, so every value in it exists in the masters. Leaving that row in the file is safe: it is reported as a duplicate and no second Job Order is created.
+
+The header must match, in order. Case and surrounding spaces are ignored; a missing, extra, reordered or duplicated column is refused with `400 HEADER_MISMATCH`, the expected column list is returned, and **nothing in the file is imported**. Files are limited to 2 MB.
+
+### 15.2 Row rules
+
+A row is either created, skipped or rejected. A rejected row always names its row number, the column and the reason.
+
+| Column | Rule | What happens when it fails |
+|---|---|---|
+| `Project_ID` | Must exist in the Project master (matched by code) | Row rejected. An upload **never creates a Project**. |
+| `Project_Name` | Must agree with `Project_ID` | Row rejected, and the message shows the master name. |
+| `WBS_NO` | Must exist **under that project** | Row rejected. An upload **never creates a WBS**. |
+| `Network_ID` | Must exist **in that project** and be active | Row rejected. An upload never creates a Network. |
+| `Job_Order` | Required | Row rejected. |
+| `Job_Description` | Required | Row rejected. |
+| `UoM` | Must exist in the UoM master and be active | Row rejected. |
+| `Qty` / `Budgeted_hours` | Number 0 or greater; a blank cell means 0 | Row rejected. |
+| `Department` | Must be the **full organisation-master name**, for example `BuName - Workmen Division` | Row rejected. Matching ignores case and extra spaces, and accepts a hyphen typed without spaces. The **master** spelling is stored. |
+| `Section` | Must exist **under that Department**. **Required**, except on a Non-Project row | Row rejected when it is missing or unknown. On a Non-Project row the Section is stored as **null**, so any Section of the Department may book the Job Order. |
+| `Job_Order_Status` | `Active` or `In-Active` | Row rejected. Stored as `active` / `inactive`. |
+
+A cell that starts with `=`, `+`, `-` or `@` (a possible CSV injection) rejects its row.
+
+### 15.3 The duplicate rule, and why a row is skipped
+
+- A row is **rejected** when the same `Project_ID` + `WBS_NO` + `Job_Order` **already exists**.
+  `Row 3: Job_Order — Job Order '1900000107' already exists in Project_ID 'PRJ-A' under WBS_NO 'A.HULL.0010.100'; the Project_ID + WBS_NO + Job_Order combination is a duplicate.`
+- A row whose Job Order number already exists in that project **under a different WBS** is **skipped**: the existing Job Order and its budget are left untouched. **An upload never overwrites an existing Job Order or its budget.**
+- The same Job Order number repeated **inside one file** for one project is rejected on the later row.
+- The same Job Order number in a **different project** is a new Job Order, and it is created.
+- A created row receives budget revision 1 in the same transaction, so it has an effective-dated budget from day one.
+
+### 15.4 The result panel
+
+The panel header shows the counts: `N created · M skipped · K rejected`.
+
+| Outcome | Meaning | What the panel shows |
+|---|---|---|
+| **created** | The Job Order was inserted | `✓ N Job Orders created.` |
+| **skipped** | The Job Order already exists in that project under another WBS | `M rows skipped because the Job Order already exists — an existing budget is never overwritten by an upload.` |
+| **rejected** | The row was refused | One line per rejected row: `Row 7: Section — Section is required for a Job Order on a project; only the non-project Project may omit it.` |
+
+- Row numbers are 1-based and count the header, so they match the file the operator is looking at.
+- Good rows are imported and bad rows are reported — a file is never partially accepted in silence, and no row is ever silently dropped.
+- The API answers `201` when at least one Job Order was created, `200` when every row already existed, and `400` when at least one row was refused. The body carries `total`, `created`, `skipped`, `rejected`, `createdRows`, `skippedRows` and `errors`.
+- If two uploads race for the same Job Order, the losing row is reported as a problem; it is never retried blindly against a budget that already exists.
+
+---
+
+## 16. Quantity Progress (HOD / DEPT_HEAD / PM)
+
+**Path:** `/job-order-progress` (top nav: **Qty Progress**).
+
+This is the **quantity** measure, and it is separate from hours. Nobody moves hours here.
+
+| Who | May do |
+|---|---|
+| `HOD`, `DEPT_HEAD`, `ADMIN` | Punch the cumulative quantity, amend an entry after a rejection or a send-back, and read the entries they punched (tab **Punch progress**) |
+| `PM`, `ADMIN` | Approve, reject or send back a punched entry, and read the whole `SUBMITTED` queue (tab **Approval queue**) |
+| other roles | The screen is not in their navigation; the API refuses them |
+
+### 16.1 Punch the cumulative quantity
+
+Tab **Punch progress**. Fields: **Section**, **Project**, **Job Order**, **Progress date**, **Cumulative quantity to date (UOM)**, **Remarks**.
+
+- The figure is the **CUMULATIVE quantity achieved to date**, not the day's increment. The helper text under the button states it: *"One entry per Job Order per date. The cumulative figure may never go below the achieved quantity."*
+- **The figure may never go down.** The API compares it with the last **approved** cumulative figure (and with an existing entry for the same day) and refuses a lower value: `Cumulative quantity cannot decrease: the last approved figure is 95 NOS. Punch the total achieved to date, not a daily increment.`
+- **One entry per Job Order per date.** A second punch for the same day is refused with the reason; the existing entry can be amended only after a rejection or a send-back.
+- A Job Order must be `Active` on an `Active` Project in an `Active` Department, and the Section must belong to the HOD's own Department, or the punch is refused (`403 SECTION_OUT_OF_SCOPE`).
+- A new punch is saved as `SUBMITTED` and waits for the Project Head. It is **not** part of the achieved quantity until it is approved.
+
+### 16.2 A Department Head selects the Section
+
+- A **Section HOD** punches for his own Section; it is pre-selected.
+- A **Department Head** (`DEPT_HEAD`) owns every Section of his Department, so the **Section picker is shown and he chooses the Section he is punching for**. The screen states it: *"As Department Head you own every section of your department: pick the section you are punching for. The Project Head (PM) approves, rejects or sends the figure back."*
+- Section choices are limited to the Department, and a Section outside it is refused.
+
+### 16.3 Approve, reject or send back (Project Head)
+
+Tab **Approval queue**. The Project Head sees every `SUBMITTED` entry in scope, with the figure, the previous figure, the revision, the budget in force and the Job Order.
+
+| Button | Result | Requirement |
+|---|---|---|
+| **Approve** | The entry becomes `APPROVED` and joins the achieved quantity | no remark needed |
+| **Send back** | The entry becomes `SENT_BACK`; the HOD may correct it | a remark is **required** |
+| **Reject** | The entry becomes `REJECTED`; the HOD must correct it | a remark is **required** |
+
+Only a `SUBMITTED` entry can be decided. The status shows in the list as `Submitted`, `Approved`, `Rejected` or `Sent back`.
+
+### 16.4 Amend only after a rejection or a send-back
+
+- The **Amend** button appears on an entry **only when its status is `REJECTED` or `SENT_BACK`**. A `SUBMITTED` or `APPROVED` entry can only be followed by a new day's punch.
+- The modal shows the approved figure to date and the corrected cumulative quantity, and states: *"The refused revision stays in the history. This amendment is saved as revision {n} and goes back to the Project Head for a decision."*
+- The amendment is a **new revision** (`revision_no + 1`): **the refused row stays visible as history**, and the list shows `History (N revisions)` with the figure, status, who decided it and the remark of each revision.
+- The corrected figure is held to the same floor: it may not fall below the last approved figure.
+
 # Part II — Developer / Admin Reference
 
-## 13. Architecture & stack
+## 17. Architecture & stack
 
 - **Monorepo**: npm workspaces (`apps/api`, `apps/web`, `apps/jobs`, `packages/shared`).
 - **Backend**: Node 22 + Express + TypeScript + Prisma. Auth: bcrypt + JWT. Slot-based timesheets + slot-based allocations.
@@ -354,7 +604,7 @@ Source-of-truth for **contract workers and supervisors** is the external **Labou
 - **Shared types**: Zod schemas and TS types in `packages/shared` (consumed by both api and web).
 - **Sync**: in-process cron (`node-cron` inside the API process) for the BadgeView source.
 
-## 14. Repository layout
+## 18. Repository layout
 
 ```
 workforce/
@@ -380,7 +630,7 @@ workforce/
 └── package.json    # workspaces, db:setup, db:seed, dev:api, dev:web
 ```
 
-## 15. Local setup (WSL Ubuntu)
+## 19. Local setup (WSL Ubuntu)
 
 ```bash
 cd /mnt/c/data/comp/workforce
@@ -406,7 +656,7 @@ npm run dev:web          # Vite picks a free port (5173 → 5174 if 5173 is take
 
 Open `http://localhost:5174/` (or whichever port Vite reports) and log in as one of the seeded accounts.
 
-## 16. Local setup (PowerShell / Windows)
+## 20. Local setup (PowerShell / Windows)
 
 ```powershell
 cd C:\data\comp\workforce
@@ -426,7 +676,7 @@ npm run dev:web
 # (the proxy target must match the API_PORT).
 ```
 
-## 17. Database & migrations
+## 21. Database & migrations
 
 **Development / testing runs on SQLite; production runs on PostgreSQL.**
 
@@ -435,7 +685,8 @@ npm run dev:web
 - **Migrations** live under `apps/api/prisma/migrations/` and are **PostgreSQL**; `migration_lock.toml` is `postgresql`. Never regenerate or delete them to make SQLite work.
 - **Production schema**: `apps/api/prisma/schema.postgresql.prisma` holds the PostgreSQL datasource variant. Restore with `cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma` then `npm run db:generate`.
 - **Seed** with `npm run db:seed -w @workforce/api`. It is **destructive** (a `deleteMany` chain in FK order) and refuses to run when `NODE_ENV=production`.
-- **Reset DB**: `npm run db:seed`, or `npm run db:setup` for the full path (shared build → `prisma generate` → provider-aware schema step → seed).
+- **Reset DB**: `npm run db:seed`, or `npm run db:setup` for the full path (shared build → `prisma generate` → provider-aware schema step → seed). The seed is destructive: it wipes every table and reloads the demo data.
+- **Dev SQLite rebuild**: `npm run db:migrate` (a `file:` URL runs `prisma db push --skip-generate`) plus `npm run db:seed`. The seed creates the full master-data hierarchy — 5 projects, 7 WBS rows (two of them in Project A), 4 UoMs, 7 Networks, 16 Job Orders with `1900000107` deliberately repeated in Projects A and C, 16 budget revisions and 7 quantity-progress rows — and prints the dev logins it created. Recipe: [`docs/DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md).
 - **Adding a model on the dev box?** `prisma db push` writes **no** migration, so production would never get the table. Generate the DDL with `prisma migrate diff --from-schema-datamodel <old>.pg --to-schema-datamodel <new>.pg --script` and commit it under `migrations/<timestamp>_<name>/`.
 
 Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md).
@@ -448,9 +699,9 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 - **`EmployeeAllocationDay`** (parent per employee/day) with `status`, and **`EmployeeAllocation`** (child rows) keyed by `(allocationDayId, shiftSlot)`: mandatory `projectId`, optional `jobOrderId`, no OT. **`EmployeeAllocationApproval`** stores the immutable decision history.
 - **`HodDelegation`** — dated, reasoned HOD approval cover (delegator, delegate, Department+Section, from/to, revoke). Migration `20260916000000_hod_approval_delegation`.
 - **`CredentialDelivery`** — durable queue for one-time credentials (no password is ever stored in it).
-- Latest migrations: `20260913000000_postgresql_baseline`, `20260914000000_role_based_access`, `20260915000000_hod_section_and_org_transfer`, `20260916000000_hod_approval_delegation`.
+- Latest migrations: `20260913000000_postgresql_baseline`, `20260914000000_role_based_access`, `20260915000000_hod_section_and_org_transfer`, `20260916000000_hod_approval_delegation`, `20260918000000_project_wbs_job_order_master` (renames `projects_wbs` to `project_wbs`, adds `uom`, `networks`, `job_order_budget_revisions`, `job_order_progress` and the attribution snapshot columns, maps `closed`/`on_hold` to `inactive`, and writes revision 1 of every existing Job Order).
 
-## 18. Environment variables
+## 22. Environment variables
 
 `.env` (root) and `apps/api/.env`:
 
@@ -470,6 +721,7 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 | `MAX_OT_HOURS` | OT validation upper bound | `12` |
 | `SHIFTS` | Shift window config | `GENERAL:09:00-17:00` |
 | `BADGEVIEW_SYNC_ENABLED` | Enable sync cron | `false` |
+| `BADGEVIEW_SYNC_ACTIVE_ONLY` | Import active workers only; a terminated worker is never fetched and never gets a row or a login. The absence sweep still retires anyone who leaves | `true` |
 | `BADGEVIEW_SYNC_CRON` | Sync schedule | `0 6,18 * * *` |
 | `BADGEVIEW_DB_HOST` | Source SQL Server | `10.5.1.106` |
 | `BADGEVIEW_DB_USER` / `_PASSWORD` / `_NAME` / `_VIEW` | Source credentials | (set in `.env`, git-ignored) |
@@ -479,18 +731,19 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 | `CREDENTIAL_DELIVERY_RECIPIENT` | Default recipient for queued credentials | IT Support mailbox |
 | `SMTP_*` | Mail transport for credential delivery | unset ⇒ delivery stays pending |
 
-## 19. Ports & proxy
+## 23. Ports & proxy
 
 - **API**: `API_PORT` (default `4000`; use `4100` if `4000` is OS-occupied).
 - **Vite web**: `apps/web/vite.config.ts` `server.port` (default `5173`; Vite auto-falls-back to `5174` if taken).
 - **Vite proxy target**: must match `API_PORT`. If you change one, change the other.
 - Common Windows issue: `4000` and `5173` may be held by `svchost` — pick free ports (`4100`, `5174`) and update the proxy.
 
-## 20. Schema overview (Prisma)
+## 24. Schema overview (Prisma)
 
 Key models in `apps/api/prisma/schema.prisma`:
 
-- `Department`, `Project`, `ProjectWbs`, `JobOrder`
+- `Department`, `Project`, `ProjectWbs`, `JobOrder`, `Uom`, `Network` (Project → WBS → Job Order master data; a Job Order number is unique **per project** only)
+- `JobOrderBudgetRevision` (effective-dated budget per Job Order), `JobOrderProgress` (cumulative quantity to date, `SUBMITTED` / `APPROVED` / `REJECTED` / `SENT_BACK`)
 - `Employee` (unified, CR#2) + `EmployeeSectionAssignment`, `EmployeeOrganisationOverride`, `SupervisorOverride`
 - `User` (login accounts; role-gated; `source` for sync vs manual; `departmentId` + `sectionId` = HOD scope)
 - `HodDelegation` (dated HOD approval cover)
@@ -499,7 +752,7 @@ Key models in `apps/api/prisma/schema.prisma`:
 - `Approval`, `AuditLog`, `DailyTeamSelection`, `ManpowerRequest`, `CostRate`, `AttendanceFeed`, `Conflict`
 - `CredentialDelivery`, `SyncException`, `Section`, `CostCenter`
 
-## 21. API endpoints
+## 25. API endpoints
 
 Selected routes (all under `/api/`):
 
@@ -525,9 +778,22 @@ Selected routes (all under `/api/`):
 | `/allocations/:dayId/reject` | POST | HOD/PM/ADMIN | Stage-scoped reject |
 | `/allocations/pending` | GET | HOD/PM/ADMIN/HR | Role-aware, department-scoped queue |
 | `/summary` | GET | auth | Hours by project/employee/supervisor/department; effective OT |
-| `/summary/job-order` | GET | auth | Job-order consumption |
+| `/summary/job-order?status=all\|active\|inactive&departmentId=&asOf=` | GET | auth (not EMPLOYEE) | Job Order Summary: Project → WBS → Job Order, hours and quantity; HOD / DEPT_HEAD pinned to their own department |
 | `/projects` | GET | auth | Project master list |
 | `/job-order` | GET | auth | Job-order list (filter by project / status / department) |
+| `/master-data/projects`, `/projects/:id/wbs`, `/projects/:id/networks`, `/uom` | GET | auth | Master-data lists (Project, WBS, Network per project, UoM) |
+| `/master-data/projects`, `/projects/:projectId/wbs`, `/projects/:projectId/networks`, `/uom` | POST | ADMIN/PM | Create a master row; a duplicate answers `409` and names the conflicting row |
+| `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | PUT | ADMIN/PM | Update a master row |
+| `/master-data/.../:id/deactivate`, `/activate` | POST | ADMIN/PM | Retire or restore a master row (`active = false` / `true`) |
+| `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | DELETE | ADMIN/PM | Hard delete; refused with the reference counts while another row points at it |
+| `/job-order-upload/template` | GET | ADMIN/PM | Job Order CSV template (fixed header + one real example row) |
+| `/job-order-upload` | POST | ADMIN/PM | Import Job Orders; per-row `created` / `skipped` / `rejected` report |
+| `/job-order-progress/mine` | GET | HOD/DEPT_HEAD/ADMIN | Own quantity-progress entries, achieved-to-date figures and history |
+| `/job-order-progress` | POST | HOD/DEPT_HEAD/ADMIN | Punch the CUMULATIVE quantity for a Job Order and date |
+| `/job-order-progress/:id/amend` | POST | HOD/DEPT_HEAD/ADMIN | Amend an entry that is `REJECTED` or `SENT_BACK` (new revision, old row kept) |
+| `/job-order-progress/pending` | GET | PM/ADMIN | Quantity entries awaiting a decision |
+| `/job-order-progress/:id/decision` | POST | PM/ADMIN | `action`: `APPROVE` / `REJECT` / `SEND_BACK` (a remark is required for the last two) |
+| `/admin/job-orders/:id/remap` | PUT | ADMIN | Re-map a Job Order's WBS / Department / Section; refused once it has booked hours |
 | `/supervisors?department_id=` | GET | auth | Supervisor list |
 | `/employees?department_id=` | GET | auth | Employee list (department- and HOD-section scoped) |
 | `/admin/employees` | POST | HOD/PM/ADMIN/HR | Register a payroll Employee **+ EMPLOYEE login account** (atomic) |
@@ -547,7 +813,7 @@ Selected routes (all under `/api/`):
 
 All write routes enforce **owner + role + status-lock + audit** via shared middleware.
 
-## 22. Security model
+## 26. Security model
 
 - **Owner enforcement** — supervisors only edit their own timesheets/allocations (`NOT_OWNER` 403 otherwise). HOD/PM/Admin can act on behalf.
 - **Status lock** — once `SUBMITTED` / approved, the day is locked from edits except via HOD/PM reject.
@@ -564,7 +830,7 @@ All write routes enforce **owner + role + status-lock + audit** via shared middl
 - **Login throttling** — `/api/auth/login` is rate-limited per IP (default 10 per 15 min). `AUTH_RATE_LIMIT_ENABLED=false` disables it for local testing and is **rejected when `NODE_ENV=production`**.
 - **Database guard** — a `file:` (SQLite) `DATABASE_URL` is rejected when `NODE_ENV=production`.
 
-### 22.1 Production deployment checklist (mandatory)
+### 26.1 Production deployment checklist (mandatory)
 
 Before exposing this app to any network beyond localhost, complete every item below:
 
@@ -579,14 +845,14 @@ Before exposing this app to any network beyond localhost, complete every item be
 - [ ] **Audit logs are rotated and backed up** off-host — `AuditLog` is the only record of who approved what.
 - [ ] **Run the latest migration** — production must use a managed PostgreSQL instance with `prisma migrate deploy` (never `db push`). Confirm `20260916000000_hod_approval_delegation` has been applied.
 
-### 22.2 Credential hygiene
+### 26.2 Credential hygiene
 
 - `.env` is in `.gitignore`; do not commit it. Do not paste its contents into chat, screenshots, or issue trackers.
 - Rotate the `JWT_SECRET` (if configured) and the seeded admin password before any production deploy.
 - Source DB credentials (`BADGEVIEW_DB_PASSWORD`) belong only in the runtime `.env` of the deploy host — never in code, comments, or transcripts.
 - If a credential is exposed (e.g. typed into chat), revoke it immediately and rotate.
 
-## 23. Troubleshooting
+## 27. Troubleshooting
 
 ### App won't start — `EADDRINUSE` on 4000 or 5173
 - On Windows, `svchost` often holds 4000 and 5173. Use `API_PORT=4100` and let Vite auto-fallback to `5174`. Update `apps/web/vite.config.ts` proxy target to match.
@@ -645,12 +911,34 @@ Before exposing this app to any network beyond localhost, complete every item be
 ### `BADGEVIEW_DB_*` sync fails to connect
 - Verify `.env` has `BADGEVIEW_DB_HOST=10.5.1.106`, port `1433`, and the correct user/password. `BADGEVIEW_DB_ENCRYPT=false` is fine for internal segments only.
 
+### A Job Order is missing from the booking picker
+- The picker offers only an `Active` Job Order on an `Active` Project in an `Active` Department, filtered by the supervisor's fixed Department, the chosen Section and the chosen Project. A project Job Order appears only for its own Section; a standing / Non-Project Job Order appears for any Section of its Department. Check the Job Order's status and Section in the Job Order Summary or in the master data.
+
+### Quantity punch refused — "Cumulative quantity cannot decrease"
+- The figure is the total achieved **to date**, not the day's increment. The API compares it with the last **approved** cumulative figure (or with an existing entry for the same day) and refuses anything lower. Punch the corrected total, or wait for the Project Head to reject or send back the entry and then amend it.
+
+### No **Amend** button on a quantity entry
+- An HOD may amend only after the Project Head **rejects** or **sends back** the entry. A `SUBMITTED` or `APPROVED` entry can only be followed by a new day's punch. The API answers `AMENDMENT_NOT_ALLOWED` otherwise.
+
+### The Job Order Summary shows a dash instead of a percentage
+- That Job Order has **no approved quantity progress** yet, so there is no achieved figure to compare with the budget. The API returns `0` with `progressReported: false`; the screen deliberately renders a dash rather than a false `0 %`. It is not a rendering fault — punch and approve a quantity entry, or check with the responsible HOD.
+
+### A Job Order cannot be moved to another WBS
+- The Job Order already has booked hours, and every booked row keeps the attribution frozen at booking time, so the move would re-point live work. The API answers `JOB_ORDER_WBS_LOCKED` with the booked counts. Deactivate the Job Order and create a new one under the correct WBS.
+
 ---
 
 ## Appendix A — Glossary
 
 - **HOD** — Head of Department/Section. Owns stage-1 approval for one Department + Section. Logs in with the linked payroll Employee's **ecNo**.
-- **PM** — Project Manager / Project Head. Stage-2 approver with a global (cross-department) view.
+- **PM** — Project Manager / Project Head. Stage-2 approver with a global (cross-department) view, and the approver of Job Order quantity progress.
+- **DEPT_HEAD** — Department Head. Owns every Section of one Department; punches Job Order quantity progress with an explicitly selected Section. He never approves the figure he punched.
+- **Project / WBS / Job Order** — the master-data hierarchy. A Job Order number is unique **per project only**, so it repeats across projects.
+- **Non-Project (standing) Job Order** — a Job Order of the Non-Project project with no Section; any Section of its Department may book it.
+- **Budget revision** — an effective-dated budget for a Job Order. Consumption is measured against the revision in force on the work date, not the current one.
+- **Cumulative quantity** — the total quantity achieved to date as punched by the HOD, never a daily increment.
+- **Achieved quantity** — the cumulative quantity of the latest **approved** progress entry. No approved entry means no achieved figure (shown as a dash).
+- **Attribution snapshot** — the `project_id`, `project_wbs_id`, `department_id` and `section_id` stored on a booking row when the hours are booked; the grouping keys of every report.
 - **Admin / HR** — Admin = global visibility, can act at either stage and manages HOD mapping. HR = legacy admin screens only (not a workforce approver).
 - **Approval cover** — a dated, reasoned delegation naming another HOD of the same Section as a stand-in; it records who is covering, it does not change who is authorized.
 - **SUBMITTED / HOD_APPROVED / PM_APPROVED / REJECTED** — stages of the approval lifecycle. `PLANNING_RETURNED` = a PM return awaiting HOD action.
@@ -688,4 +976,4 @@ Passwords — **they differ by account type**:
 
 ---
 
-_Document version: CR#2 unified Employee + HOD scope + HOD approval cover (`feature/cr2-unified-employee`, `6f3eea4`). Maintained alongside the codebase; update when schema, routes, roles or lifecycle change. Companion documents: [`ROLE_BASED_ACCESS.md`](ROLE_BASED_ACCESS.md) (enforced role matrix), [`DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md) (local SQLite dev), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md)._
+_Document version: Project → WBS → Job Order master data and quantity progress (working tree on `feature/cr2-unified-employee`, HEAD `56f0910`), including CR#2 unified Employee + HOD scope + HOD approval cover. Maintained alongside the codebase; update when schema, routes, roles or lifecycle change. Companion documents: [`MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`](MASTER_DATA_PROJECT_WBS_JOB_ORDER.md) (hierarchy design and operating reference), [`MASTER_DATA_BUILD_CONTRACT.md`](MASTER_DATA_BUILD_CONTRACT.md) (build contract), [`ROLE_BASED_ACCESS.md`](ROLE_BASED_ACCESS.md) (enforced role matrix), [`DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md) (local SQLite dev), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md)._

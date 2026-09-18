@@ -9,7 +9,20 @@ import { getMaxDailyHours } from "../config";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
 import { canSubmitRetainedDraft, inactiveEmployeePayload } from "../services/employeeEligibility";
-import { assignableJobOrders, invalidJobOrderPayload } from "../services/jobOrderEligibility";
+import {
+  assignableJobOrders,
+  invalidJobOrderPayload,
+  isAssignableJobOrder,
+  jobOrderOptionLabel,
+  loadDepartmentSections,
+  loadSlotJobOrders,
+} from "../services/jobOrderEligibility";
+import {
+  loadAttributionSnapshots,
+  resolveAttributionSnapshot,
+  snapshotForBooking,
+  snapshotsFromJobOrders,
+} from "../services/attributionSnapshot";
 
 export const timesheetRouter = Router();
 
@@ -219,13 +232,20 @@ async function discardCompetingExternalDrafts(
 type ShiftSlotRow = {
   shiftSlot: ShiftSlot;
   jobOrderId: number | null;
-  /** Convenience fields flattened from the jobOrder relation. */
+  /** Attribution snapshot of the booking, so the picker can preselect Section. */
   projectId: number | null;
+  departmentId: number | null;
+  sectionId: number | null;
+  /** Convenience fields flattened from the jobOrder relation. */
   projectColorKey: string | null;
   projectName: string | null;
   jobOrderCode: string | null;
   jobOrderName: string | null;
+  /** Display form of the booking: `Job_Order-Job_Description`. */
+  jobOrderLabel: string | null;
   projectWbsCode: string | null;
+  /** WBS number of the booked Job Order (returned, not shown by default). */
+  wbsNo: string | null;
   /** Entry row id (for per-slot edit) — null if no row yet. */
   entryId: number | null;
   status: string | null;
@@ -238,6 +258,9 @@ function buildShiftRows(
     shiftSlot: string | null;
     jobOrderId: number | null;
     projectWbsId: number | null;
+    projectId: number | null;
+    departmentId: number | null;
+    sectionId: number | null;
     status: string;
     jobOrder: {
       id: number;
@@ -246,7 +269,13 @@ function buildShiftRows(
       project: { id: number; name: string; colorKey: string };
       projectWbs: { id: number; wbsCode: string } | null;
     } | null;
-    projectWbs: { id: number; wbsCode: string; name: string; colorKey: string } | null;
+    projectWbs: {
+      id: number;
+      wbsCode: string;
+      name: string | null;
+      projectId: number;
+      project: { name: string; colorKey: string } | null;
+    } | null;
   }[]
 ): ShiftSlotRow[] {
   const byShift = new Map<string, (typeof entries)[number]>();
@@ -261,33 +290,52 @@ function buildShiftRows(
         shiftSlot,
         jobOrderId: null,
         projectId: null,
+        departmentId: null,
+        sectionId: null,
         projectColorKey: null,
         projectName: null,
         jobOrderCode: null,
         jobOrderName: null,
+        jobOrderLabel: null,
         projectWbsCode: null,
+        wbsNo: null,
         entryId: null,
         status: null,
         locked: false,
       };
     }
     // Prefer the JobOrder relation (new model); fall back to legacy ProjectWbs.
+    // Labels stay live on the Project; ProjectWbs itself carries no colour.
     const jo = e.jobOrder;
     const pw = e.projectWbs;
     return {
       shiftSlot,
       jobOrderId: e.jobOrderId,
-      projectId: jo?.project.id ?? null,
-      projectColorKey: jo?.project.colorKey ?? pw?.colorKey ?? null,
-      projectName: jo?.project.name ?? pw?.name ?? null,
+      projectId: e.projectId ?? jo?.project.id ?? pw?.projectId ?? null,
+      departmentId: e.departmentId,
+      sectionId: e.sectionId,
+      projectColorKey: jo?.project.colorKey ?? pw?.project?.colorKey ?? null,
+      projectName: jo?.project.name ?? pw?.project?.name ?? pw?.name ?? null,
       jobOrderCode: jo?.code ?? null,
       jobOrderName: jo?.name ?? null,
+      jobOrderLabel: jo ? jobOrderOptionLabel(jo) : null,
       projectWbsCode: jo?.projectWbs?.wbsCode ?? pw?.wbsCode ?? null,
+      wbsNo: jo?.projectWbs?.wbsCode ?? pw?.wbsCode ?? null,
       entryId: e.id,
       status: e.status,
       locked: (e.projectWbsId != null || e.jobOrderId != null) && isProtectedEntryStatus(e.status),
     };
   });
+}
+
+/**
+ * A booking is copyable only when its Job Order, Project and Department are all
+ * active, the same rule the write paths enforce.
+ */
+function isAssignableBooking(
+  jobOrder: { status: string; project: { active: boolean } | null; department: { active: boolean } | null } | null
+): boolean {
+  return jobOrder != null && isAssignableJobOrder(jobOrder);
 }
 
 /**
@@ -312,7 +360,7 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     where: { taggedById: supervisorId, workDate: sourceDate },
     include: {
       employee: { select: { id: true, active: true } },
-      entries: { include: { jobOrder: { select: { id: true, status: true, project: { select: { active: true } }, department: { select: { active: true, name: true } } } } } },
+      entries: { include: { jobOrder: { select: { id: true, status: true, projectId: true, projectWbsId: true, departmentId: true, sectionId: true, project: { select: { active: true } }, department: { select: { active: true } } } } } },
     },
   });
   const sourceTeam = await prisma.dailyTeamSelection.findMany({
@@ -338,16 +386,15 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
   const activeSourceDays = sourceDays.filter(
     (day) => day.employee.active && visibleEmployeeIds.has(day.employeeId)
   );
+  // The copy is a NEW booking on the target day, so the attribution snapshot is
+  // resolved from the live Job Order at copy time, not inherited from the source row.
+  const sourceSnapshots = await loadAttributionSnapshots(
+    activeSourceDays.flatMap((day) => day.entries.map((entry) => entry.jobOrderId))
+  );
   const regularClaims: SlotClaim[] = activeSourceDays.flatMap((day) =>
     day.entries
       .filter(
-        (entry) =>
-          entry.otHours == null &&
-          entry.shiftSlot != null &&
-          entry.jobOrder?.status === "active" &&
-          entry.jobOrder.project.active &&
-          entry.jobOrder.department?.active === true &&
-          entry.jobOrder.department.name.includes(" - ")
+        (entry) => entry.otHours == null && entry.shiftSlot != null && isAssignableBooking(entry.jobOrder)
       )
       .map((entry) => ({
         employeeId: day.employeeId,
@@ -441,13 +488,7 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
           otRowsSkipped += 1;
           continue;
         }
-        if (
-          entry.jobOrderId != null &&
-          (entry.jobOrder?.status !== "active" ||
-            !entry.jobOrder.project.active ||
-            entry.jobOrder.department?.active !== true ||
-            !entry.jobOrder.department.name.includes(" - "))
-        ) {
+        if (entry.jobOrderId != null && !isAssignableBooking(entry.jobOrder)) {
           closedJobOrderSlots += 1;
           continue;
         }
@@ -465,6 +506,7 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
         }
 
         if (entry.shiftSlot != null) {
+          const snapshot = snapshotForBooking(sourceSnapshots, entry.jobOrderId);
           await tx.timesheetEntry.upsert({
             where: {
               timesheet_entry_shiftSlot_unique: {
@@ -480,15 +522,15 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
               workDate,
               shiftSlot: entry.shiftSlot,
               hourSlot: null,
-              projectWbsId: entry.projectWbsId,
               jobOrderId: entry.jobOrderId,
+              ...snapshot,
               taggedById: supervisorId,
               status: "DRAFT",
             },
             update: {
               timesheetDayId: targetDay.id,
-              projectWbsId: entry.projectWbsId,
               jobOrderId: entry.jobOrderId,
+              ...snapshot,
               status: "DRAFT",
             },
           });
@@ -519,6 +561,39 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
   res.json({ ok: true, sourceDate: formatDateOnly(sourceDate), ...result });
 });
 
+/**
+ * Job Order picker rows for ONE Department + Section + Project selection.
+ *
+ * The Department is the supervisor's own and is never taken from the client.
+ * Section is freely chosen among that Department's active sections and Project
+ * is freely chosen; together they narrow the Job Order list. Every row is
+ * returned as `Job_Order-Job_Description`, plus `wbsNo` and the Project
+ * `colorKey`, so the client can disambiguate without showing the WBS.
+ */
+timesheetRouter.get("/job-orders", async (req, res) => {
+  const supervisorId = Number(req.query.supervisor_id);
+  if (!supervisorId) return res.status(400).json({ error: "supervisor_id required" });
+  if (req.user!.role !== "ADMIN" && supervisorId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only list your own Job Orders.", code: "NOT_OWNER" });
+  }
+  const departmentId = await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId);
+  if (departmentId == null) return teamAccessDenied(res);
+
+  const department = await prisma.department.findUnique({
+    where: { id: departmentId },
+    select: { id: true, name: true },
+  });
+  const sections = await loadDepartmentSections(departmentId);
+  const projectId = Number(req.query.project_id);
+  const sectionId = Number(req.query.section_id);
+  const jobOrders =
+    Number.isInteger(projectId) && projectId > 0 && Number.isInteger(sectionId) && sectionId > 0
+      ? await loadSlotJobOrders({ departmentId, projectId, sectionId })
+      : [];
+
+  res.json({ department, sections, jobOrders });
+});
+
 timesheetRouter.get("/", async (req, res) => {
   const supervisorId = Number(req.query.supervisor_id);
   const dateStr = String(req.query.date || "");
@@ -532,6 +607,14 @@ timesheetRouter.get("/", async (req, res) => {
   const supervisorDepartmentId = await supervisorDepartmentForActor(req.user!.role, req.user!.id, supervisorId);
   if (supervisorDepartmentId == null) return teamAccessDenied(res);
   const maxDailyHours = getMaxDailyHours();
+
+  // The supervisor's Department is FIXED to his own; Section and Project are
+  // freely chosen from that Department's active sections and the active projects.
+  const department = await prisma.department.findUnique({
+    where: { id: supervisorDepartmentId },
+    select: { id: true, name: true },
+  });
+  const sections = await loadDepartmentSections(supervisorDepartmentId);
 
   const team = await prisma.dailyTeamSelection.findMany({
     where: {
@@ -550,7 +633,7 @@ timesheetRouter.get("/", async (req, res) => {
     include: {
       entries: {
         include: {
-          projectWbs: true,
+          projectWbs: { include: { project: { select: { name: true, colorKey: true } } } },
           jobOrder: { include: { project: true, projectWbs: true } },
         },
       },
@@ -584,7 +667,7 @@ timesheetRouter.get("/", async (req, res) => {
         },
         include: {
           taggedBy: { select: { id: true, name: true } },
-          projectWbs: true,
+          projectWbs: { include: { project: { select: { name: true, colorKey: true } } } },
           jobOrder: { include: { project: true, projectWbs: true } },
         },
       })
@@ -600,10 +683,26 @@ timesheetRouter.get("/", async (req, res) => {
   const projects = await prisma.project.findMany({
     where: { active: true },
     orderBy: { sortOrder: "asc" },
-    include: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      colorKey: true,
+      isNonProject: true,
+      // Job Orders of the supervisor's own Department; the Section filter is
+      // applied when the supervisor picks a section (see GET /job-orders).
       jobOrders: {
-        where: { status: { in: ["active"] }, department: { name: { contains: " - " }, active: true } },
+        where: { status: "active", departmentId: supervisorDepartmentId, department: { active: true } },
         orderBy: { code: "asc" },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          status: true,
+          budgetedHours: true,
+          sectionId: true,
+          projectWbs: { select: { wbsCode: true } },
+        },
       },
     },
   });
@@ -626,7 +725,7 @@ timesheetRouter.get("/", async (req, res) => {
         otherBookingSubmitted: bookings.some((entry) => BOOKED_ENTRY_STATUSES.includes(entry.status)),
         otherBookingStatus: displayBooking?.status ?? null,
         otherProjectColorKey:
-          displayBooking?.projectWbs?.colorKey ?? displayBooking?.jobOrder?.project.colorKey ?? null,
+          displayBooking?.jobOrder?.project.colorKey ?? displayBooking?.projectWbs?.project?.colorKey ?? null,
       };
     });
     const ownOtEntry = day?.entries.find((e) => e.otHours != null) ?? null;
@@ -664,7 +763,9 @@ timesheetRouter.get("/", async (req, res) => {
       slots,
       otHours: otEntry?.otHours ?? null,
       otJobOrderId: otEntry?.jobOrderId ?? null,
-      otProjectId: otEntry?.jobOrder?.project.id ?? null,
+      otProjectId: otEntry?.projectId ?? otEntry?.jobOrder?.project.id ?? null,
+      otSectionId: otEntry?.sectionId ?? null,
+      otDepartmentId: otEntry?.departmentId ?? null,
       otProjectColorKey: otEntry?.jobOrder?.project.colorKey ?? null,
       otLocked:
         externalOtEntry != null || (ownOtEntry != null && isProtectedEntryStatus(ownOtEntry.status)),
@@ -722,15 +823,25 @@ timesheetRouter.get("/", async (req, res) => {
     filled: filledCount,
     total: rows.length,
     rejectedCount,
+    department,
+    sections,
     projects: projects.map((p) => ({
       id: p.id,
       code: p.code,
       name: p.name,
       colorKey: p.colorKey,
+      isNonProject: p.isNonProject,
       jobOrders: p.jobOrders.map((j) => ({
         id: j.id,
         code: j.code,
         name: j.name,
+        label: jobOrderOptionLabel(j),
+        wbsNo: j.projectWbs?.wbsCode ?? null,
+        colorKey: p.colorKey,
+        projectId: p.id,
+        projectName: p.name,
+        sectionId: j.sectionId,
+        standing: j.sectionId == null,
         status: j.status,
         budgetedHours: j.budgetedHours,
       })),
@@ -791,6 +902,8 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
   if ([...new Set(requestedJobOrderIds)].some((id) => !assignable.has(id))) {
     return res.status(400).json(invalidJobOrderPayload());
   }
+  // Attribution snapshot per requested Job Order, written on every create AND update.
+  const snapshots = snapshotsFromJobOrders([...assignable.values()]);
   const requestedClaims: SlotClaim[] = rows.filter((row) => !inactiveIds.has(row.employeeId)).flatMap((row) =>
     row.slots
       .filter((slot) => slot.jobOrderId != null)
@@ -934,11 +1047,13 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
               shiftSlot: s.shiftSlot,
               hourSlot: null,
               jobOrderId: s.jobOrderId,
+              ...snapshotForBooking(snapshots, s.jobOrderId),
               taggedById: supervisorId,
               status: "DRAFT",
             },
             update: {
               jobOrderId: s.jobOrderId,
+              ...snapshotForBooking(snapshots, s.jobOrderId),
               timesheetDayId: existing.id,
               status: "DRAFT",
             },
@@ -968,11 +1083,13 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
               shiftSlot: s.shiftSlot,
               hourSlot: null,
               jobOrderId: s.jobOrderId,
+              ...snapshotForBooking(snapshots, s.jobOrderId),
               taggedById: supervisorId,
               status: "DRAFT",
             },
             update: {
               jobOrderId: s.jobOrderId,
+              ...snapshotForBooking(snapshots, s.jobOrderId),
               timesheetDayId: existing.id,
               status: "DRAFT",
             },
@@ -1030,11 +1147,13 @@ timesheetRouter.put("/day", serializeTimesheetMutation, async (req, res) => {
             shiftSlot: s.shiftSlot,
             hourSlot: null,
             jobOrderId: s.jobOrderId,
+            ...snapshotForBooking(snapshots, s.jobOrderId),
             taggedById: supervisorId,
             status: "DRAFT",
           },
           update: {
             jobOrderId: s.jobOrderId,
+            ...snapshotForBooking(snapshots, s.jobOrderId),
             timesheetDayId: day.id,
             status: "DRAFT",
           },
@@ -1114,6 +1233,7 @@ timesheetRouter.post("/bulk-assign", serializeTimesheetMutation, async (req, res
   if (jo.projectId !== projectId) {
     return res.status(400).json({ error: "JobOrder does not belong to the selected project" });
   }
+  const snapshot = resolveAttributionSnapshot(jo);
 
   // Group slots by employee for edit-lock check + day upsert.
   const byEmployee = new Map<number, ShiftSlot[]>();
@@ -1181,11 +1301,13 @@ timesheetRouter.post("/bulk-assign", serializeTimesheetMutation, async (req, res
           shiftSlot,
           hourSlot: null,
           jobOrderId,
+          ...snapshot,
           taggedById: supervisorId,
           status: "DRAFT",
         },
         update: {
           jobOrderId,
+          ...snapshot,
           timesheetDayId: day.id,
           status: "DRAFT",
         },
@@ -1228,8 +1350,11 @@ timesheetRouter.put("/entry", serializeTimesheetMutation, async (req, res) => {
   const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { active: true } });
   if (!employee?.active) return res.status(409).json(inactiveEmployeePayload());
 
+  let snapshot = resolveAttributionSnapshot(null);
   if (jobOrderId != null) {
-    if (!(await assignableJobOrders([jobOrderId])).has(jobOrderId)) return res.status(400).json(invalidJobOrderPayload());
+    const jo = (await assignableJobOrders([jobOrderId])).get(jobOrderId);
+    if (!jo) return res.status(400).json(invalidJobOrderPayload());
+    snapshot = resolveAttributionSnapshot(jo);
     const externalConflicts = await findExternalBookedConflicts(supervisorId, workDate, [
       { employeeId, shiftSlot, hourSlot: null },
     ]);
@@ -1274,10 +1399,11 @@ timesheetRouter.put("/entry", serializeTimesheetMutation, async (req, res) => {
       shiftSlot,
       hourSlot: null,
       jobOrderId,
+      ...snapshot,
       taggedById: supervisorId,
       status: "DRAFT",
     },
-    update: { jobOrderId, timesheetDayId: day.id, status: "DRAFT" },
+    update: { jobOrderId, ...snapshot, timesheetDayId: day.id, status: "DRAFT" },
   });
 
   res.json({ ok: true });
@@ -1325,6 +1451,8 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
 
   // Validate OT hours: integer 1-12 (configurable cap), or null to clear.
   const maxOt = Number(process.env.MAX_OT_HOURS || 12);
+  // OT is booked to a Job Order, so it carries the same attribution snapshot.
+  let otSnapshot = resolveAttributionSnapshot(null);
   if (otHours != null) {
     if (!Number.isInteger(otHours) || otHours < 1 || otHours > maxOt) {
       return res.status(400).json({
@@ -1335,9 +1463,11 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     if (jobOrderId == null) {
       return res.status(400).json({ error: "A project / work order is required when adding OT hours.", code: "OT_REQUIRES_JOBORDER" });
     }
-    if (!(await assignableJobOrders([jobOrderId])).has(jobOrderId)) {
+    const otJobOrder = (await assignableJobOrders([jobOrderId])).get(jobOrderId);
+    if (!otJobOrder) {
       return res.status(400).json(invalidJobOrderPayload());
     }
+    otSnapshot = resolveAttributionSnapshot(otJobOrder);
 
     const externalOt = await prisma.timesheetEntry.findFirst({
       where: {
@@ -1420,7 +1550,7 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
     // Update existing OT row.
     await prisma.timesheetEntry.update({
       where: { id: existingOt.id },
-      data: { jobOrderId, otHours, status: "DRAFT" },
+      data: { jobOrderId, otHours, ...otSnapshot, status: "DRAFT" },
     });
   } else {
     // Create OT row (shiftSlot=null, hourSlot=null, otHours=N).
@@ -1433,6 +1563,7 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
         hourSlot: null,
         jobOrderId,
         otHours,
+        ...otSnapshot,
         taggedById: supervisorId,
         status: "DRAFT",
       },

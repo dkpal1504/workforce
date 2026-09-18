@@ -9,6 +9,7 @@ import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
 import { initialCredentialState } from "../services/defaultLoginCredentials";
 import { canCreatePayrollEmployee } from "../services/roleAccess";
+import { jobOrderSectionError, jobOrderWbsMoveError } from "../services/masterDataRules";
 import { ASSIGNABLE_ROLES, planRoleChange, type OpenWorkload, type RoleTarget } from "../services/roleAssignment";
 
 export const adminRouter = Router();
@@ -360,19 +361,10 @@ adminRouter.put("/departments/:id", requireRoles("ADMIN"), async (req, res) => {
   res.json({ department });
 });
 
-adminRouter.get("/projects-wbs", requireRoles("ADMIN"), async (_req, res) => {
-  const projects = await prisma.projectWbs.findMany({ orderBy: { colorKey: "asc" } });
-  res.json({ projects });
-});
-
-adminRouter.post("/projects-wbs", requireRoles("ADMIN"), async (req, res) => {
-  const { code, name, wbsCode, colorKey } = req.body;
-  const project = await prisma.projectWbs.create({
-    data: { code, name, wbsCode, colorKey },
-  });
-  await writeAudit(req.user!.id, "ADMIN_CREATE_PROJECT", "projects_wbs", project.id);
-  res.status(201).json({ project });
-});
+// The legacy `projects_wbs` pair (GET + POST) was removed here. `projects_wbs`
+// was renamed to `project_wbs` and is now a child of `projects`, so the Project
+// read lives at GET /masters/projects-wbs and the whole Project / WBS / UoM /
+// Network maintenance surface lives in routes/masterData.ts (ADMIN + PM).
 
 adminRouter.get("/cost-rates", requireRoles("ADMIN"), async (_req, res) => {
   const rates = await prisma.costRate.findMany({ orderBy: [{ category: "asc" }, { effectiveFrom: "desc" }] });
@@ -698,34 +690,101 @@ adminRouter.get("/job-orders", requireRoles("ADMIN"), async (_req, res) => {
   res.json({ jobOrders });
 });
 
-/** Remap a Job Order. sectionId/costCenterId are accepted and resolve to the owning department. */
+/**
+ * Remap a Job Order. `sectionId`/`costCenterId` are accepted and resolve to the
+ * owning department.
+ *
+ * The hierarchy rules that are enforced here:
+ *  - The WBS row owns the Project. `project_wbs_id` is required, and a supplied
+ *    `projectId` must be the WBS's own Project.
+ *  - `section_id` may be NULL only for a standing / Non-Project Job Order; a
+ *    project Job Order must name a Section of its Department.
+ *  - A Job Order that already has booked hours may NOT move to another WBS. Each
+ *    booked row carries a frozen attribution snapshot, so the move would quietly
+ *    re-point live work at a different WBS.
+ */
 adminRouter.put("/job-orders/:id/remap", requireRoles("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
-  if (!await prisma.jobOrder.findUnique({ where: { id } })) return res.status(404).json({ error: "Job order not found" });
+  const existing = await prisma.jobOrder.findUnique({
+    where: { id },
+    select: { id: true, code: true, projectId: true, projectWbsId: true, departmentId: true, sectionId: true },
+  });
+  if (!existing) return res.status(404).json({ error: "Job order not found" });
+
   const { projectId, projectWbsId, departmentId, sectionId, costCenterId } = req.body ?? {};
-  let resolvedDepartmentId = departmentId === null ? null : departmentId !== undefined ? Number(departmentId) : undefined;
-  if (sectionId !== undefined) {
-    const section = await prisma.section.findUnique({ where: { id: Number(sectionId) } });
+
+  const requestedWbsId = projectWbsId === undefined ? existing.projectWbsId : projectWbsId === null ? null : Number(projectWbsId);
+  if (requestedWbsId === null || !Number.isInteger(requestedWbsId)) {
+    return res.status(400).json({ error: "A Job Order must stay on a WBS row.", code: "WBS_REQUIRED" });
+  }
+  const targetWbs = await prisma.projectWbs.findUnique({
+    where: { id: requestedWbsId },
+    select: { id: true, projectId: true, wbsCode: true, project: { select: { id: true, code: true, name: true, isNonProject: true } } },
+  });
+  if (!targetWbs) return res.status(404).json({ error: "WBS row not found", code: "WBS_NOT_FOUND" });
+  if (projectId !== undefined && projectId !== null && Number(projectId) !== targetWbs.projectId) {
+    return res.status(400).json({
+      error: `Project ${projectId} does not own WBS "${targetWbs.wbsCode}". A Job Order takes its Project from its WBS row.`,
+      code: "WBS_PROJECT_MISMATCH",
+    });
+  }
+
+  const [bookedEntries, bookedAllocations] = await Promise.all([
+    prisma.timesheetEntry.count({ where: { jobOrderId: id } }),
+    prisma.employeeAllocation.count({ where: { jobOrderId: id } }),
+  ]);
+  const moveError = jobOrderWbsMoveError({
+    jobOrderCode: existing.code,
+    currentWbsId: existing.projectWbsId,
+    targetWbsId: targetWbs.id,
+    bookedTimesheetEntries: bookedEntries,
+    bookedAllocationSlots: bookedAllocations,
+  });
+  if (moveError) return res.status(409).json({ error: moveError, code: "JOB_ORDER_WBS_LOCKED" });
+
+  let resolvedDepartmentId = departmentId === null ? null : departmentId !== undefined ? Number(departmentId) : existing.departmentId;
+  let resolvedSectionId = sectionId === undefined ? existing.sectionId : sectionId === null ? null : Number(sectionId);
+  if (sectionId !== undefined && sectionId !== null) {
+    const section = await prisma.section.findUnique({ where: { id: Number(sectionId) }, select: { id: true, departmentId: true } });
     if (!section) return res.status(404).json({ error: "Section not found" });
     resolvedDepartmentId = section.departmentId;
   }
-  if (costCenterId !== undefined) {
+  if (costCenterId !== undefined && costCenterId !== null) {
     const cc = await prisma.costCenter.findUnique({ where: { id: Number(costCenterId) }, include: { section: true } });
     if (!cc) return res.status(404).json({ error: "Cost center not found" });
     resolvedDepartmentId = cc.section.departmentId;
+    resolvedSectionId = cc.sectionId;
   }
   if (!resolvedDepartmentId) return res.status(400).json({ error: "A combined Department is required", code: "DEPARTMENT_REQUIRED" });
   const targetDepartment = await prisma.department.findUnique({ where: { id: resolvedDepartmentId } });
   if (!targetDepartment?.active || !targetDepartment.name.includes(" - ")) {
     return res.status(400).json({ error: "Job Orders must map to an active BuName - Division Department.", code: "COMBINED_DEPARTMENT_REQUIRED" });
   }
-  const jobOrder = await prisma.jobOrder.update({ where: { id }, data: {
-    ...(projectId !== undefined ? { projectId: Number(projectId) } : {}),
-    ...(projectWbsId !== undefined ? { projectWbsId: projectWbsId === null ? null : Number(projectWbsId) } : {}),
-    ...(resolvedDepartmentId !== undefined ? { departmentId: resolvedDepartmentId } : {}),
-  } });
-  await writeAudit(req.user!.id, "ADMIN_REMAP_JOB_ORDER", "job_order", id, { projectId, projectWbsId, departmentId: resolvedDepartmentId, sectionId, costCenterId });
-  res.json({ jobOrder });
+  if (resolvedSectionId !== null) {
+    const section = await prisma.section.findUnique({ where: { id: resolvedSectionId }, select: { id: true, departmentId: true, active: true } });
+    if (!section) return res.status(404).json({ error: "Section not found" });
+    if (section.departmentId !== resolvedDepartmentId) {
+      return res.status(400).json({ error: "The Section does not belong to the mapped Department.", code: "WRONG_SECTION" });
+    }
+  }
+  const sectionError = jobOrderSectionError({ isNonProject: targetWbs.project.isNonProject, sectionId: resolvedSectionId });
+  if (sectionError) return res.status(400).json({ error: sectionError, code: "SECTION_REQUIRED" });
+
+  const updated = await prisma.jobOrder.update({
+    where: { id },
+    data: {
+      projectId: targetWbs.projectId,
+      projectWbsId: targetWbs.id,
+      departmentId: resolvedDepartmentId,
+      sectionId: resolvedSectionId,
+    },
+  });
+  await writeAudit(req.user!.id, "ADMIN_REMAP_JOB_ORDER", "job_order", id, {
+    previous: { projectId: existing.projectId, projectWbsId: existing.projectWbsId, departmentId: existing.departmentId, sectionId: existing.sectionId },
+    next: { projectId: targetWbs.projectId, projectWbsId: targetWbs.id, departmentId: resolvedDepartmentId, sectionId: resolvedSectionId },
+    costCenterId: costCenterId ?? null,
+  });
+  res.json({ jobOrder: updated });
 });
 
 adminRouter.post("/sync/badgeview", requireRoles("ADMIN"), async (req, res) => {

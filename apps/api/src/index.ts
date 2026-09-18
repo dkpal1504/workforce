@@ -19,6 +19,9 @@ import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
 import { employeeAllocationRouter } from "./routes/employeeAllocation";
 import { csvUploadRouter } from "./routes/csvUpload";
+import { masterDataRouter } from "./routes/masterData";
+import { jobOrderCsvRouter } from "./routes/jobOrderCsv";
+import { jobOrderProgressRouter } from "./routes/jobOrderProgress";
 import { delegationRouter } from "./routes/delegations";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { prisma } from "./db";
@@ -122,6 +125,10 @@ api.use("/admin", adminRouter);
 api.use("/supervisors", supervisorRegistrationRouter);
 api.use("/allocations", employeeAllocationRouter);
 api.use("/csv-upload", csvUploadRouter);
+// CR master data: Job Order upload, quantity progress, Project/WBS/UoM/Network masters
+api.use("/job-order-upload", jobOrderCsvRouter);
+api.use("/job-order-progress", jobOrderProgressRouter);
+api.use("/master-data", masterDataRouter);
 api.use("/delegations", delegationRouter);
 app.use("/api", api);
 

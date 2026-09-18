@@ -29,7 +29,10 @@ function hodEmployeeScope(departmentId: number | null, sectionId: number | null)
   return { departmentId, sectionAssignment: { sectionId } };
 }
 
-type ProjectWbsRef = { colorKey: string; name: string } | null;
+/** Legacy WBS link on a booking row. The WBS carries no colour of its own. */
+type ProjectWbsRef = { wbsCode: string; name: string | null } | null;
+/** Frozen project snapshot captured when the hours were booked. */
+type ProjectRef = { colorKey: string } | null;
 type JobOrderRef = {
   project: { colorKey: string; name: string };
 } | null;
@@ -41,6 +44,8 @@ type EntryLike = {
   shiftSlot: string | null;
   hourSlot: number | null;
   otHours: number | null;
+  /** Snapshot first: a later master-data change must not move booked hours. */
+  project: ProjectRef;
   projectWbs: ProjectWbsRef;
   jobOrder: JobOrderRef;
 };
@@ -102,7 +107,9 @@ function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
   const projectOtHours: Record<string, number> = {};
   for (const e of entries) {
     if (e.projectWbsId == null && e.jobOrderId == null) continue;
-    const colorKey = e.projectWbs?.colorKey ?? e.jobOrder?.project.colorKey ?? null;
+    // The Project of a booking row is the frozen attribution snapshot; the Job
+    // Order path is only the fallback for rows booked before the snapshot existed.
+    const colorKey = e.project?.colorKey ?? e.jobOrder?.project.colorKey ?? null;
     if (!colorKey) continue;
     const key = String(colorKey).toUpperCase();
     if (e.otHours != null) {
@@ -345,7 +352,7 @@ const dayInclude = {
     where: {
       OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }],
     },
-    include: { projectWbs: true, jobOrder: { include: { project: true } } },
+    include: { project: true, projectWbs: true, jobOrder: { include: { project: true } } },
   },
   approvals: {
     include: { approver: { select: { id: true, name: true, role: true } } },
@@ -450,10 +457,11 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
       .filter((row): row is NonNullable<typeof row> => row != null);
   }
 
-  const projects = await prisma.projectWbs.findMany({
-    where: { active: true },
-    orderBy: { colorKey: "asc" },
-    select: { id: true, code: true, name: true, colorKey: true, wbsCode: true },
+  // Project columns are labelled by the Project's `color_key` and ordered by its
+  // sort order. The colour lives on the Project, not on the WBS row.
+  const projects = await prisma.project.findMany({
+    orderBy: { sortOrder: "asc" },
+    select: { id: true, code: true, name: true, colorKey: true, isNonProject: true },
   });
 
   res.json({
@@ -479,7 +487,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
           taggedBy: { select: { id: true, name: true, email: true } },
           entries: {
             where: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
-            include: { projectWbs: true, jobOrder: { include: { project: true } } },
+            include: { project: true, projectWbs: true, jobOrder: { include: { project: true } } },
           },
         },
       },

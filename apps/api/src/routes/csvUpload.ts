@@ -6,6 +6,7 @@ import { canonicalEcNo, canonicalEcNoKey } from "../services/employeeIdentity";
 import { initialCredentialState } from "../services/defaultLoginCredentials";
 import { credentialRecipientFor, sendInitialCredentialEmail } from "../services/credentialEmail";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
+import { columnIndexByName, isCsvInjection, readCsvFile, rowReader } from "../services/csvParser";
 
 /**
  * CSV upload for employee master data (CR#2) — future HRMS integration path.
@@ -17,6 +18,9 @@ import { processCredentialDeliveries } from "../services/credentialDelivery";
  *
  * Expected columns (order):
  *   ecNo, name, departmentName, sectionName, designation, category, email, mobile
+ *
+ * File reading (RFC-ish quoting, the 2MB ceiling) and the formula-injection check
+ * are shared with the Job Order import in `services/csvParser.ts`.
  *
  * Each row provisions the Employee master data AND the login account, exactly like
  * the Employee Registration screen: role EMPLOYEE, ecNo login, the local dev
@@ -30,53 +34,6 @@ export const csvUploadRouter = Router();
 csvUploadRouter.use(requireAuth, requireRoles("ADMIN", "HR"));
 
 const EXPECTED_HEADERS = ["ecNo", "name", "departmentName", "sectionName", "designation", "category", "email", "mobile"];
-
-/** Neutralize CSV injection: a cell starting with =,+,-,@ is a formula-injection risk. */
-function isCsvInjection(value: string): boolean {
-  const first = value.trim().charAt(0);
-  return first === "=" || first === "+" || first === "-" || first === "@";
-}
-
-/** Parse a CSV string (handles quoted fields and embedded commas). */
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') {
-          cell += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cell += ch;
-      }
-    } else if (ch === '"') {
-      inQuotes = true;
-    } else if (ch === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (ch === "\n" || ch === "\r") {
-      if (ch === "\r" && text[i + 1] === "\n") i++;
-      if (cell !== "" || row.length > 0) row.push(cell);
-      if (row.length > 0 || cell !== "") rows.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += ch;
-    }
-  }
-  if (cell !== "" || row.length > 0) {
-    row.push(cell);
-    rows.push(row);
-  }
-  return rows.filter((r) => r.some((c) => c.trim() !== ""));
-}
 
 /**
  * Download the CSV template (GET /api/csv-upload/template).
@@ -107,18 +64,15 @@ csvUploadRouter.get("/template", async (_req, res) => {
 
 /** Upload employee master data via CSV (ADMIN/HR gated, audited, validated). */
 csvUploadRouter.post("/", async (req, res) => {
-  const text = typeof req.body?.csv === "string" ? req.body.csv : null;
-  if (!text?.trim()) return res.status(400).json({ error: "csv data is required (send raw CSV text).", code: "EMPTY_CSV" });
-  if (text.length > 2 * 1024 * 1024) return res.status(400).json({ error: "CSV file exceeds 2MB limit.", code: "FILE_TOO_LARGE" });
-  const rows = parseCsv(text);
-  if (rows.length < 2) return res.status(400).json({ error: "CSV must have a header row + at least one data row.", code: "INVALID_CSV" });
-  const header = rows[0].map((h) => h.trim().toLowerCase());
-  const expectedLower = EXPECTED_HEADERS.map((h) => h.toLowerCase());
-  const missing = expectedLower.filter((h) => !header.includes(h));
+  const file = readCsvFile(req.body?.csv);
+  if (!file.ok) return res.status(file.status).json({ error: file.error, code: file.code });
+  const rows = file.rows;
+  const columns = columnIndexByName(rows[0]);
+  // Lower-cased on purpose: this message is the contract the Employee page shows.
+  const missing = EXPECTED_HEADERS.map((h) => h.toLowerCase()).filter((h) => !columns.has(h));
   if (missing.length) return res.status(400).json({ error: `CSV missing required columns: ${missing.join(", ")}`, code: "MISSING_COLUMNS" });
   // idCardNo was retired. Reject old contracts rather than silently ignoring an identity field.
-  if (header.includes("idcardno")) return res.status(400).json({ error: "idCardNo is no longer supported; ecNo is the canonical employee identifier.", code: "LEGACY_IDCARD_COLUMN" });
-  const colIndex = (name: string) => header.indexOf(name.toLowerCase());
+  if (columns.has("idcardno")) return res.status(400).json({ error: "idCardNo is no longer supported; ecNo is the canonical employee identifier.", code: "LEGACY_IDCARD_COLUMN" });
   const created: number[] = [];
   const errors: { row: number; error: string }[] = [];
   const emailsSent: { row: number; to: string }[] = [];
@@ -146,7 +100,7 @@ csvUploadRouter.post("/", async (req, res) => {
 
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
-    const get = (name: string) => (r[colIndex(name)] || "").trim();
+    const get = rowReader(r, columns);
     const ecNo = canonicalEcNo(get("ecNo"));
     const name = get("name");
     const departmentName = get("departmentName");

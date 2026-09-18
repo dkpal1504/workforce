@@ -15,6 +15,9 @@ import { DepartmentsPage } from "./pages/DepartmentsPage";
 import { CsvUploadPage } from "./pages/CsvUploadPage";
 import { EmployeesPage } from "./pages/EmployeesPage";
 import { RoleAssignmentPage } from "./pages/RoleAssignmentPage";
+import { MasterDataPage } from "./pages/MasterDataPage";
+import { JobOrderProgressPage } from "./pages/JobOrderProgressPage";
+import { JobOrderUploadPage } from "./pages/JobOrderUploadPage";
 
 function LoadingSession() {
   return <div className="loading-state" style={{ margin: "20vh auto", maxWidth: 420 }}>Checking your session…</div>;
@@ -93,6 +96,15 @@ export function App() {
           </Route>
           <Route element={<RequireCapability capability="manageMasterData" />}>
             <Route path="/departments" element={<DepartmentsPage />} />
+          </Route>
+          {/* CR master data: Project / WBS / UoM / Network maintenance (PM + Admin). */}
+          <Route element={<RequireCapability capability="manageJobOrderMaster" />}>
+            <Route path="/master-data" element={<MasterDataPage />} />
+            <Route path="/job-order-upload" element={<JobOrderUploadPage />} />
+          </Route>
+          {/* Quantity progress: HOD punches, PM approves. */}
+          <Route element={<RequireCapability capability="manageJobOrderProgress" />}>
+            <Route path="/job-order-progress" element={<JobOrderProgressPage />} />
           </Route>
           {/* Offered, not forced: accounts on the shared dev password can change it
               whenever they like, and are not trapped in the flow. */}

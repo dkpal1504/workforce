@@ -4,7 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 import "../styles/summary.css";
 
-type Project = { id: number; code: string; name: string; colorKey: string };
+type Project = { id: number; code: string; name: string; colorKey: string; sortOrder?: number };
 type Row = {
   srNo: number;
   name: string;
@@ -20,7 +20,13 @@ type GroupBy = "employee" | "supervisor" | "department" | "totals";
 type View = "hours" | "cost";
 type Frequency = "daily" | "weekly" | "monthly";
 type Tab = "project" | "jobOrder";
-type JoStatus = "all" | "active" | "closed";
+type JoStatus = "all" | "active" | "inactive";
+
+const JO_STATUS_OPTIONS: { value: JoStatus; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "In-Active" },
+];
 
 type Department = { id: number; name: string; code: string };
 
@@ -29,18 +35,44 @@ type JoRow = {
   srNo: number;
   code: string;
   name: string;
-  status: string; // active | closed | on_hold
-  budgetedHours: number | null;
+  status: string; // active | inactive
+  /** The WBS row that disambiguates a repeated Job Order number. */
+  wbsId: number;
+  wbsCode: string;
+  wbsName: string | null;
+  /** Unit of measure for the quantity columns; hours are always hours. */
+  uom: string;
+  // Hours - an independent measure of the approved booked hours.
+  budgetedHours: number;
   consumption: number;
   consumptionPct: number;
   balance: number;
+  // Quantity - an independent measure of the effective-dated budget and the
+  // approved cumulative progress.
+  budgetedQuantity: number;
+  achievedQuantity: number;
+  progressReported: boolean;
+  balanceQuantity: number;
+  quantityPct: number;
+  // Which budget revision supplied the row, for the cell tooltip.
+  budgetSource: "revision" | "current";
+  budgetRevisionNo: number | null;
+  budgetEffectiveFrom: string | null;
+  budgetWorkDate: string;
+};
+type JoWbsGroup = {
+  wbsId: number;
+  wbsCode: string;
+  wbsName: string | null;
+  rows: JoRow[];
 };
 type JoGroup = {
   projectId: number;
   projectName: string;
   projectCode: string;
   projectColorKey: string;
-  rows: JoRow[];
+  sortOrder: number;
+  wbsGroups: JoWbsGroup[];
 };
 
 export function SummaryPage() {
@@ -78,27 +110,24 @@ export function SummaryPage() {
   const [joError, setJoError] = useState("");
   const [joLoading, setJoLoading] = useState(false);
 
+  // One Project master list for both tabs. The Project filter is keyed by the
+  // Project's `color_key` and ordered by its sort order.
   useEffect(() => {
-    api<{ projects: Project[] }>("/projects-wbs").then((d) => setAllProjects(d.projects));
+    api<{ projects: Project[] }>("/projects").then((d) =>
+      setAllProjects(
+        d.projects.map((p) => ({ id: p.id, code: p.code, name: p.name, colorKey: p.colorKey }))
+      )
+    );
   }, []);
 
   useEffect(() => {
     if (employeeView) { setGroupBy("employee"); setView("hours"); }
   }, [employeeView]);
 
-  // Job Order Summary needs a list of (new) Projects for the Select Projects multi-select,
-  // and a list of departments for the Department filter.
+  // The Job Order Summary Department filter is the only extra lookup it needs; the
+  // Project list comes from the shared master list above.
   useEffect(() => {
     if (tab !== "jobOrder") return;
-    api<{ projects: { id: number; code: string; name: string; colorKey: string }[] }>(
-      "/projects"
-    ).then((d) => {
-      // Only keep the shape the dropdown needs (don't carry jobOrders into the
-      // filter state — keeps the chip list lean and the projectIds valid).
-      setAllProjects(
-        d.projects.map((p) => ({ id: p.id, code: p.code, name: p.name, colorKey: p.colorKey }))
-      );
-    });
     api<{ departments: Department[] }>("/departments").then((d) => setJoDepartments(d.departments));
   }, [tab]);
 
@@ -209,9 +238,33 @@ export function SummaryPage() {
     return String(n);
   }
 
-  function formatJoBudget(n: number | null) {
-    if (n == null) return "—";
+  // Hours and quantity are formatted by separate helpers so the two measures can
+  // never be read as one figure.
+  function joHours(n: number) {
     return `${n.toLocaleString()} hrs`;
+  }
+
+  function joHoursBalance(n: number) {
+    return n < 0 ? `(${Math.abs(n).toLocaleString()} hrs)` : `${n.toLocaleString()} hrs`;
+  }
+
+  function joQuantity(n: number, uom: string | null) {
+    const value = n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return uom ? `${value} ${uom}` : value;
+  }
+
+  function joQuantityBalance(n: number, uom: string | null) {
+    return n < 0 ? `(${joQuantity(Math.abs(n), uom)})` : joQuantity(n, uom);
+  }
+
+  // The Budgeted cells carry the revision the figure came from, so an
+  // effective-dated budget is auditable from the screen.
+  function budgetBasisTitle(r: JoRow) {
+    const basis =
+      r.budgetSource === "revision"
+        ? `Budget revision ${r.budgetRevisionNo} effective ${r.budgetEffectiveFrom}`
+        : "Job Order's own budget (no revision in force)";
+    return `${basis} · work date ${r.budgetWorkDate}`;
   }
 
   function consumptionColorClass(pct: number) {
@@ -338,8 +391,19 @@ export function SummaryPage() {
                     </th>
                   )}
                   {projects.map((project) => (
-                    <th key={project.id} colSpan={2} className="num project-group-head">
-                      {project.name}
+                    <th
+                      key={project.id}
+                      colSpan={2}
+                      className="num project-group-head"
+                      title={project.name}
+                    >
+                      <span
+                        className="project-key"
+                        style={{ background: `var(--project-${project.colorKey.toLowerCase()})` }}
+                      >
+                        {project.colorKey}
+                      </span>
+                      <span className="project-name-sub">{project.name}</span>
                     </th>
                   ))}
                   <th rowSpan={2} className="num total-col" onClick={() => toggleSort("total")}>
@@ -350,10 +414,10 @@ export function SummaryPage() {
                 <tr className="project-subhead-row">
                   {projects.map((project) => (
                     <Fragment key={project.id}>
-                      <th className="num" onClick={() => toggleSort(`proj:${project.code}`)}>
+                      <th className="num" onClick={() => toggleSort(`proj:${project.colorKey}`)}>
                         Regular
                       </th>
-                      <th className="num project-ot-col" onClick={() => toggleSort(`projectOt:${project.code}`)}>
+                      <th className="num project-ot-col" onClick={() => toggleSort(`projectOt:${project.colorKey}`)}>
                         OT
                       </th>
                     </Fragment>
@@ -375,11 +439,11 @@ export function SummaryPage() {
                       {groupBy !== "department" && groupBy !== "totals" && <td>{r.department}</td>}
                       {projects.map((project) => (
                         <Fragment key={project.id}>
-                          <td className="num">{formatVal(r.values[project.code] || 0)}</td>
+                          <td className="num">{formatVal(r.values[project.colorKey] || 0)}</td>
                           <td className="num project-ot-col">
-                            {(r.projectOtValues[project.code] || 0) > 0 ? (
+                            {(r.projectOtValues[project.colorKey] || 0) > 0 ? (
                               <span className="project-ot-badge">
-                                {formatVal(r.projectOtValues[project.code])}
+                                {formatVal(r.projectOtValues[project.colorKey])}
                               </span>
                             ) : "—"}
                           </td>
@@ -398,11 +462,11 @@ export function SummaryPage() {
                   <td colSpan={groupBy === "department" || groupBy === "totals" ? 2 : 3}>Total</td>
                   {projects.map((project) => (
                     <Fragment key={project.id}>
-                      <td className="num">{formatVal(totals[project.code] || 0)}</td>
+                      <td className="num">{formatVal(totals[project.colorKey] || 0)}</td>
                       <td className="num project-ot-col">
-                        {(projectOtTotals[project.code] || 0) > 0 ? (
+                        {(projectOtTotals[project.colorKey] || 0) > 0 ? (
                           <span className="project-ot-badge">
-                            {formatVal(projectOtTotals[project.code])}
+                            {formatVal(projectOtTotals[project.colorKey])}
                           </span>
                         ) : "—"}
                       </td>
@@ -439,8 +503,8 @@ export function SummaryPage() {
                   </header>
                   <div className="summary-chips">
                     {projects.map((project) => {
-                      const regular = r.values[project.code] || 0;
-                      const ot = r.projectOtValues[project.code] || 0;
+                      const regular = r.values[project.colorKey] || 0;
+                      const ot = r.projectOtValues[project.colorKey] || 0;
                       if (!regular && !ot) return null;
                       return (
                         <span key={project.id} className="summary-chip summary-chip--split">
@@ -454,7 +518,7 @@ export function SummaryPage() {
                     })}
                     {projects.every(
                       (project) =>
-                        !(r.values[project.code] || 0) && !(r.projectOtValues[project.code] || 0)
+                        !(r.values[project.colorKey] || 0) && !(r.projectOtValues[project.colorKey] || 0)
                     ) && <span className="muted tiny">No project hours</span>}
                   </div>
                   {(r.overheadHours ?? 0) > 0 && (
@@ -474,9 +538,9 @@ export function SummaryPage() {
                       <em style={{ background: `var(--project-${project.colorKey.toLowerCase()})` }}>
                         {project.colorKey}
                       </em>
-                      Regular {formatVal(totals[project.code] || 0)} · OT{" "}
-                      {(projectOtTotals[project.code] || 0) > 0 ? (
-                        <span className="project-ot-badge">{formatVal(projectOtTotals[project.code])}</span>
+                      Regular {formatVal(totals[project.colorKey] || 0)} · OT{" "}
+                      {(projectOtTotals[project.colorKey] || 0) > 0 ? (
+                        <span className="project-ot-badge">{formatVal(projectOtTotals[project.colorKey])}</span>
                       ) : "—"}
                     </span>
                   ))}
@@ -515,14 +579,14 @@ export function SummaryPage() {
             <div className="filter-field">
               <label>Job Order Status</label>
               <div className="toggle-group toggle-group--inline">
-                {(["all", "active", "closed"] as const).map((s) => (
+                {JO_STATUS_OPTIONS.map((option) => (
                   <button
-                    key={s}
+                    key={option.value}
                     type="button"
-                    className={joStatus === s ? "active" : ""}
-                    onClick={() => setJoStatus(s)}
+                    className={joStatus === option.value ? "active" : ""}
+                    onClick={() => setJoStatus(option.value)}
                   >
-                    {s === "all" ? "All" : s === "active" ? "Active" : "Closed"}
+                    {option.label}
                   </button>
                 ))}
               </div>
@@ -548,30 +612,44 @@ export function SummaryPage() {
           {joError && <div className="error-banner">{joError}</div>}
           {joLoading && <p className="muted">Loading…</p>}
 
+          {/* Project -> WBS -> Job Order. The WBS level stays visible because a Job
+              Order number repeats across projects. */}
           <div className="summary-table-wrap summary-desktop-only">
             <table className="jo-summary-table">
               <thead>
                 <tr>
-                  <th>Sr. No.</th>
-                  <th>Job Order</th>
-                  <th className="num">Budgeted</th>
+                  <th rowSpan={2}>Sr. No.</th>
+                  <th rowSpan={2}>Job Order</th>
+                  <th colSpan={4} className="num jo-measure-head">
+                    Hours
+                  </th>
+                  <th colSpan={4} className="num jo-measure-head jo-measure-head--qty">
+                    Quantity
+                  </th>
+                </tr>
+                <tr>
+                  <th className="num">Budgeted hours</th>
                   <th className="num">Consumption</th>
                   <th className="num">Consumption %</th>
                   <th className="num">Balance</th>
+                  <th className="num jo-qty-col">Budget Qty</th>
+                  <th className="num jo-qty-col">Achieved Qty</th>
+                  <th className="num jo-qty-col">Balance Qty</th>
+                  <th className="num jo-qty-col">Qty %</th>
                 </tr>
               </thead>
               <tbody>
                 {joGroups.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="muted">
+                    <td colSpan={10} className="muted">
                       No job orders match the current filters.
                     </td>
                   </tr>
                 ) : (
                   joGroups.map((g) => (
-                    <>
-                      <tr key={`proj-${g.projectId}`} className="jo-group-header">
-                        <td colSpan={6}>
+                    <Fragment key={`proj-${g.projectId}`}>
+                      <tr className="jo-group-header">
+                        <td colSpan={10}>
                           <span
                             className="jo-color-dot"
                             style={{ background: `var(--project-${g.projectColorKey.toLowerCase()})` }}
@@ -582,33 +660,45 @@ export function SummaryPage() {
                           </span>
                         </td>
                       </tr>
-                      {g.rows.map((r) => {
-                        const colorClass = consumptionColorClass(r.consumptionPct);
-                        return (
-                          <tr key={r.id} className="jo-row">
-                            <td>{r.srNo}</td>
-                            <td>
-                              <span className="jo-name-cell">
-                                <strong>{r.code}</strong> · {r.name}
-                                {r.status === "active" && (
-                                  <span className="jo-status-superscript jo-status-active">ACTIVE</span>
-                                )}
-                                {r.status === "closed" && (
-                                  <span className="jo-status-superscript jo-status-closed">CLOSED</span>
-                                )}
-                              </span>
+                      {g.wbsGroups.map((wbs) => (
+                        <Fragment key={`wbs-${wbs.wbsId}`}>
+                          <tr className="jo-wbs-header">
+                            <td colSpan={10}>
+                              <span className="jo-wbs-label">WBS</span>
+                              <strong>{wbs.wbsCode}</strong>
+                              {wbs.wbsName && (
+                                <span className="muted tiny" style={{ marginLeft: 8 }}>
+                                  {wbs.wbsName}
+                                </span>
+                              )}
                             </td>
-                            <td className="num">{formatJoBudget(r.budgetedHours)}</td>
-                            <td className="num">{r.consumption} hrs</td>
-                            <td className="num">
-                              {r.budgetedHours == null ? (
-                                <span className="muted tiny">—</span>
-                              ) : (
+                          </tr>
+                          {wbs.rows.map((r) => (
+                            <tr key={r.id} className="jo-row">
+                              <td>{r.srNo}</td>
+                              <td>
+                                <span className="jo-name-cell">
+                                  <strong title={`WBS ${r.wbsCode}`}>
+                                    {r.code}-{r.name}
+                                  </strong>
+                                  <span
+                                    className={`jo-status-superscript ${
+                                      r.status === "active" ? "jo-status-active" : "jo-status-inactive"
+                                    }`}
+                                  >
+                                    {r.status === "active" ? "ACTIVE" : "IN-ACTIVE"}
+                                  </span>
+                                  {r.uom && <span className="jo-uom-tag">{r.uom}</span>}
+                                </span>
+                              </td>
+                              <td className="num" title={budgetBasisTitle(r)}>
+                                {joHours(r.budgetedHours)}
+                              </td>
+                              <td className="num">{joHours(r.consumption)}</td>
+                              <td className="num">
                                 <span className="jo-bar-cell">
-                                  <span className={`jo-bar ${colorClass}`}>
-                                    <span
-                                      style={{ width: `${Math.min(100, r.consumptionPct)}%` }}
-                                    />
+                                  <span className={`jo-bar ${consumptionColorClass(r.consumptionPct)}`}>
+                                    <span style={{ width: `${Math.min(100, r.consumptionPct)}%` }} />
                                   </span>
                                   <span
                                     className={`jo-bar-label ${consumptionLabelClass(r.consumptionPct)}`}
@@ -616,26 +706,58 @@ export function SummaryPage() {
                                     {r.consumptionPct}%
                                   </span>
                                 </span>
-                              )}
-                            </td>
-                            <td className={`num ${r.balance < 0 ? "jo-balance-negative" : ""}`}>
-                              {r.budgetedHours == null
-                                ? "—"
-                                : r.balance < 0
-                                  ? `(${Math.abs(r.balance).toLocaleString()} hrs)`
-                                  : `${r.balance.toLocaleString()} hrs`}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </>
+                              </td>
+                              <td className={`num ${r.balance < 0 ? "jo-balance-negative" : ""}`}>
+                                {joHoursBalance(r.balance)}
+                              </td>
+                              <td className="num jo-qty-col">{joQuantity(r.budgetedQuantity, r.uom)}</td>
+                              <td className="num jo-qty-col">
+                                {r.progressReported ? (
+                                  joQuantity(r.achievedQuantity, r.uom)
+                                ) : (
+                                  <span className="muted tiny" title="No approved progress yet">
+                                    —
+                                  </span>
+                                )}
+                              </td>
+                              <td
+                                className={`num jo-qty-col ${
+                                  r.progressReported && r.balanceQuantity < 0 ? "jo-balance-negative" : ""
+                                }`}
+                              >
+                                {r.progressReported ? (
+                                  joQuantityBalance(r.balanceQuantity, r.uom)
+                                ) : (
+                                  <span className="muted tiny">—</span>
+                                )}
+                              </td>
+                              <td className="num jo-qty-col">
+                                {r.progressReported ? (
+                                  <span className={`jo-bar-label ${consumptionLabelClass(r.quantityPct)}`}>
+                                    {r.quantityPct}%
+                                  </span>
+                                ) : (
+                                  <span className="muted tiny">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </Fragment>
                   ))
                 )}
               </tbody>
             </table>
           </div>
 
-          {/* Mobile cards */}
+          <p className="muted tiny jo-table-note summary-desktop-only">
+            Hours and quantity are separate measures and are never added together. Quantities carry each
+            Job Order's UoM. A Budgeted figure is the budget revision in force on that Job Order's last
+            booked work date (hover the cell for the revision).
+          </p>
+
+          {/* Mobile: same three levels, WBS as a sub-heading inside the Project card. */}
           <div className="jo-cards summary-mobile-only">
             {joGroups.length === 0 ? (
               <p className="muted empty-card">No job orders match the current filters.</p>
@@ -650,53 +772,78 @@ export function SummaryPage() {
                     <strong>{g.projectName}</strong>
                     <span className="muted tiny">({g.projectCode})</span>
                   </header>
-                  {g.rows.map((r) => {
-                    const colorClass = consumptionColorClass(r.consumptionPct);
-                    return (
-                      <article key={r.id} className="jo-card">
-                        <header className="jo-card__head">
-                          <div>
-                            <strong>
-                              {r.code} · {r.name}
-                            </strong>
-                            <div className="muted tiny">
-                              {r.status === "active" ? "Active" : r.status === "closed" ? "Closed" : "On Hold"}
+                  {g.wbsGroups.map((wbs) => (
+                    <div key={`mobile-wbs-${wbs.wbsId}`} className="jo-cards-wbs">
+                      <div className="jo-cards-wbs__head">
+                        <span className="jo-wbs-label">WBS</span>
+                        <strong>{wbs.wbsCode}</strong>
+                        {wbs.wbsName && <span className="muted tiny">{wbs.wbsName}</span>}
+                      </div>
+                      {wbs.rows.map((r) => (
+                        <article key={r.id} className="jo-card">
+                          <header className="jo-card__head">
+                            <div>
+                              <strong>
+                                {r.code}-{r.name}
+                              </strong>
+                              <div className="muted tiny">
+                                {r.status === "active" ? "Active" : "In-Active"}
+                                {r.uom ? ` · ${r.uom}` : ""}
+                              </div>
+                            </div>
+                            <span className={`jo-bar-label ${consumptionLabelClass(r.consumptionPct)}`}>
+                              {r.consumptionPct}%
+                            </span>
+                          </header>
+                          <div className="jo-card__grid">
+                            <div>
+                              <span className="muted tiny">Budgeted hours</span>
+                              <strong>{joHours(r.budgetedHours)}</strong>
+                            </div>
+                            <div>
+                              <span className="muted tiny">Consumption</span>
+                              <strong>{joHours(r.consumption)}</strong>
+                            </div>
+                            <div>
+                              <span className="muted tiny">Balance</span>
+                              <strong className={r.balance < 0 ? "jo-balance-negative" : ""}>
+                                {joHoursBalance(r.balance)}
+                              </strong>
                             </div>
                           </div>
-                          <span
-                            className={`jo-bar-label ${consumptionLabelClass(r.consumptionPct)}`}
-                          >
-                            {r.budgetedHours == null ? "—" : `${r.consumptionPct}%`}
-                          </span>
-                        </header>
-                        <div className="jo-card__grid">
-                          <div>
-                            <span className="muted tiny">Budgeted</span>
-                            <strong>{formatJoBudget(r.budgetedHours)}</strong>
+                          <div className="jo-card__grid jo-card__grid--qty">
+                            <div>
+                              <span className="muted tiny">Budget Qty</span>
+                              <strong>{joQuantity(r.budgetedQuantity, r.uom)}</strong>
+                            </div>
+                            <div>
+                              <span className="muted tiny">Achieved Qty</span>
+                              <strong>{r.progressReported ? joQuantity(r.achievedQuantity, r.uom) : "—"}</strong>
+                            </div>
+                            <div>
+                              <span className="muted tiny">Balance Qty</span>
+                              <strong
+                                className={
+                                  r.progressReported && r.balanceQuantity < 0 ? "jo-balance-negative" : ""
+                                }
+                              >
+                                {r.progressReported ? joQuantityBalance(r.balanceQuantity, r.uom) : "—"}
+                              </strong>
+                            </div>
+                            <div>
+                              <span className="muted tiny">Qty %</span>
+                              <strong className={consumptionLabelClass(r.quantityPct)}>
+                                {r.progressReported ? `${r.quantityPct}%` : "—"}
+                              </strong>
+                            </div>
                           </div>
-                          <div>
-                            <span className="muted tiny">Consumption</span>
-                            <strong>{r.consumption} hrs</strong>
-                          </div>
-                          <div>
-                            <span className="muted tiny">Balance</span>
-                            <strong className={r.balance < 0 ? "jo-balance-negative" : ""}>
-                              {r.budgetedHours == null
-                                ? "—"
-                                : r.balance < 0
-                                  ? `(${Math.abs(r.balance).toLocaleString()} hrs)`
-                                  : `${r.balance.toLocaleString()} hrs`}
-                            </strong>
-                          </div>
-                        </div>
-                        {r.budgetedHours != null && (
-                          <div className={`jo-bar ${colorClass}`} style={{ marginTop: 8 }}>
+                          <div className={`jo-bar ${consumptionColorClass(r.consumptionPct)}`} style={{ marginTop: 8 }}>
                             <span style={{ width: `${Math.min(100, r.consumptionPct)}%` }} />
                           </div>
-                        )}
-                      </article>
-                    );
-                  })}
+                        </article>
+                      ))}
+                    </div>
+                  ))}
                 </section>
               ))
             )}

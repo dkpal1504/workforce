@@ -22,6 +22,72 @@ Demo logins (seeded, password `WorkforceDev@2026`):
 
 `npm run db:seed` wipes and reloads the demo data at any time.
 
+## Rebuilding the dev database
+
+> **After upgrading past the Project / WBS / Job Order change, an existing `dev.db` needs
+> one extra flag.** Adding the unique index on `project_wbs (id, project_id)` makes
+> `prisma db push` report a possible data loss on an already-populated SQLite file, so
+> `npm run db:migrate` stops with *"Use the --accept-data-loss flag"*. The index cannot
+> fail here — `id` is already the primary key — so either delete `dev.db` and rebuild, or
+> run once:
+>
+> ```bash
+> cd apps/api && npx prisma db push --accept-data-loss && npm run db:seed
+> ```
+>
+> The migrations under `prisma/migrations` never run on SQLite, so the dev database is
+> built from `schema.prisma` alone. That is why the migration backfills (for example the
+> quantity remark history) do not appear there: the dev seed creates equivalent rows
+> instead.
+
+Two commands rebuild the dev SQLite database:
+
+```bash
+npm run db:migrate     # schema step: a `file:` URL runs `prisma db push`
+npm run db:seed        # data step: the deleteMany chain, then the demo data below
+```
+
+- `npm run db:migrate` is provider-aware. On SQLite it runs `prisma db push
+  --skip-generate`, so run `npm run db:generate -w @workforce/api` yourself after a
+  `schema.prisma` change. It does **not** apply the PostgreSQL migrations.
+- `npm run db:setup` runs the whole path: `shared` build, `prisma generate`, the
+  provider-aware schema step, then the seed.
+
+### Demo master data (Project | WBS | Job Order)
+
+The seed loads the hierarchy and both measures that reporting uses:
+
+| Table | Rows | What it holds |
+|---|---|---|
+| `projects` | 5 | Project A, B, C, D and the **Non-Project** row; colour keys A, B, C, D, N |
+| `project_wbs` | 7 | **two WBS rows belong to Project A**; one each for B and D, two for C, and `GENERAL` for standing work |
+| `uom` | 4 | NOS, MT, SQM, MTR (MTR is unused by any seeded Job Order) |
+| `networks` | 7 | one or two per project, plus the `DUMMY` network for standing work |
+| `job_orders` | 16 | 14 `active`, 2 `inactive`; the 4 standing rows carry no Section |
+| `job_order_budget_revisions` | 16 | revision 1 (`Opening budget`, effective 2026-01-01) for every Job Order |
+| `job_order_progress` | 7 | 4 `APPROVED`, 2 `SUBMITTED`, 1 `REJECTED` |
+
+Job Order **`1900000107` is deliberately repeated in Project A and Project C**. That
+exercises the rule that a Job Order number is unique **per project only**. It is the
+only duplicated number in the seed.
+
+### Dev accounts
+
+The seed prints the accounts it creates, with the password in use — log in with those
+lines:
+
+```
+Employee: EC1011 / <password>
+Supervisor: EC1001 / <password>
+HOD: hod@company.com / <password>
+Project Head: pm@company.com / <password>
+Admin: admin@company.com / <password>
+```
+
+The password is `WorkforceDev@2026` unless `DEV_SEED_PASSWORD` overrides it. The seed
+imports no `dotenv`, so `DEV_SEED_PASSWORD` is only seen when it is exported in the
+shell or set in `apps/api/.env`; a value only in the root `.env` is not read.
+
 ## What makes this work
 
 | Piece | Note |

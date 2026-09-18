@@ -1,17 +1,38 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 import "../styles/allocations.css";
 
-type JobOrder = { id: number; code: string; name: string; status: string };
-type Project = { id: number; code: string; name: string; colorKey: string; jobOrders: JobOrder[] };
+type Department = { id: number; name: string };
+type Section = { id: number; code: string; name: string };
+type Project = { id: number; code: string; name: string; colorKey: string; isNonProject: boolean; active: boolean };
+type JobOrder = {
+  id: number;
+  code: string;
+  name: string;
+  label: string;
+  wbsNo: string;
+  colorKey: string;
+  projectId: number;
+  projectName: string;
+  sectionId: number | null;
+  standing: boolean;
+};
+/** Payload of GET /api/allocations/job-orders: the picker's single source of truth. */
+type JobOrderPicker = {
+  department: Department | null;
+  sections: Section[];
+  projects: Project[];
+  jobOrders: JobOrder[];
+};
 type ShiftSlot = "am1" | "am2" | "pm1" | "pm2";
 type AllocationSlot = {
   id: number;
   shiftSlot: ShiftSlot;
   project: { id: number; name: string; colorKey: string };
   jobOrder: { id: number; code: string; name: string } | null;
+  jobOrderLabel: string | null;
   allocatedBy: { id: number; name: string };
 };
 type AllocationDay = {
@@ -75,18 +96,33 @@ function projectBadge(project: { colorKey?: string | null; name?: string | null;
   return first ? first.toUpperCase() : "?";
 }
 
+/**
+ * Job Order display text: the API label in `Job_Order-Job_Description` form
+ * (for example `1900000107-Pipe Spool Installation`), falling back to code and
+ * name for retained rows written before the label existed.
+ */
+function slotJobOrderLabel(allocation: AllocationSlot): string | null {
+  if (allocation.jobOrderLabel) return allocation.jobOrderLabel;
+  return allocation.jobOrder ? `${allocation.jobOrder.code}-${allocation.jobOrder.name}` : null;
+}
+
 export function AllocationsPage() {
   const { user } = useAuth();
   const ownEmployeeId = user?.employeeId ?? user?.employee?.id ?? null;
   const employeeInactive = user?.employeeActive === false || user?.employee?.active === false;
 
   const [days, setDays] = useState<AllocationDay[]>([]);
+  const [department, setDepartment] = useState<Department | null>(null);
+  const [sections, setSections] = useState<Section[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [jobOrders, setJobOrders] = useState<JobOrder[]>([]);
+  const pickerRequest = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [workDate, setWorkDate] = useState(todayDateString());
+  const [sectionId, setSectionId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [jobOrderId, setJobOrderId] = useState("");
   const [remarks, setRemarks] = useState("");
@@ -98,15 +134,11 @@ export function AllocationsPage() {
     setError("");
     try {
       const allocationPath = ownEmployeeId ? `/allocations?employeeId=${ownEmployeeId}` : "/allocations";
-      const [allocationResult, projectResult] = await Promise.all([
-        api<{ days?: AllocationDay[]; note?: string }>(allocationPath),
-        api<{ projects?: Project[] }>("/projects"),
-      ]);
-      if (!Array.isArray(allocationResult.days) || !Array.isArray(projectResult.projects)) {
+      const allocationResult = await api<{ days?: AllocationDay[]; note?: string }>(allocationPath);
+      if (!Array.isArray(allocationResult.days)) {
         throw new Error("The allocations service returned an invalid response. Please restart the API and try again.");
       }
       setDays(ownEmployeeId ? allocationResult.days.filter((day) => day.employeeId === ownEmployeeId) : []);
-      setProjects(projectResult.projects);
       setNotice(allocationResult.note ?? (!ownEmployeeId ? "No linked employee record for this account." : ""));
     } catch (e) {
       setDays([]);
@@ -120,18 +152,43 @@ export function AllocationsPage() {
     void load();
   }, [load]);
 
+  /**
+   * The picker's single source: department, sections, projects and the Job Order
+   * list. Loaded once without filters, then refetched when the chosen section or
+   * project changes. Out-of-order responses are dropped.
+   */
+  useEffect(() => {
+    if (!ownEmployeeId) {
+      setDepartment(null);
+      setSections([]);
+      setProjects([]);
+      setJobOrders([]);
+      return;
+    }
+    const requestId = ++pickerRequest.current;
+    const params = new URLSearchParams({ employeeId: String(ownEmployeeId) });
+    if (sectionId) params.set("section_id", sectionId);
+    if (projectId) params.set("project_id", projectId);
+    void api<JobOrderPicker>(`/allocations/job-orders?${params.toString()}`)
+      .then((result) => {
+        if (requestId !== pickerRequest.current) return;
+        setDepartment(result.department ?? null);
+        setSections(Array.isArray(result.sections) ? result.sections : []);
+        setProjects(Array.isArray(result.projects) ? result.projects : []);
+        setJobOrders(Array.isArray(result.jobOrders) ? result.jobOrders : []);
+      })
+      .catch((e) => {
+        if (requestId !== pickerRequest.current) return;
+        setJobOrders([]);
+        setError(messageFor(e, "Failed to load the Job Order list"));
+      });
+  }, [ownEmployeeId, sectionId, projectId]);
+
   const selectedDay = useMemo(
     () => days.find((day) => day.workDate.slice(0, 10) === workDate) ?? null,
     [days, workDate]
   );
-  const selectedProject = useMemo(
-    () => projects.find((project) => String(project.id) === projectId) ?? null,
-    [projects, projectId]
-  );
-  const selectedJobOrder = useMemo(
-    () => selectedProject?.jobOrders.find((order) => String(order.id) === jobOrderId) ?? null,
-    [jobOrderId, selectedProject]
-  );
+  const jobOrdersReady = Boolean(sectionId && projectId);
   const dayEditable = !selectedDay || ["DRAFT", "REJECTED"].includes(selectedDay.status);
   const canEditSlots = Boolean(ownEmployeeId && dayEditable && !employeeInactive);
   const filledCount = selectedDay?.allocations.length ?? 0;
@@ -183,6 +240,7 @@ export function AllocationsPage() {
             shiftSlot,
             projectId: Number(projectId),
             jobOrderId: jobOrderId ? Number(jobOrderId) : null,
+            sectionId: sectionId ? Number(sectionId) : null,
             remarks,
           }),
         });
@@ -239,7 +297,7 @@ export function AllocationsPage() {
 
   const employeeName = selectedDay?.employee.name ?? user?.name ?? "Logged-in employee";
   const ecNo = selectedDay?.employee.ecNo ?? user?.employee?.ecNo ?? "—";
-  const sectionName = user?.section?.name ?? selectedDay?.employee.department?.name ?? user?.department?.name ?? "Not assigned";
+  const departmentName = department?.name ?? user?.department?.name ?? selectedDay?.employee.department?.name ?? "Not assigned";
   const fullShiftChecked = filledCount + selectedSlots.size === SHIFT_SLOTS.length;
 
   return (
@@ -260,8 +318,8 @@ export function AllocationsPage() {
           {formErr.workDate && <small>{formErr.workDate}</small>}
         </label>
         <label className="alloc-context__field">
-          <span>Section</span>
-          <input aria-label="Section" type="text" value={sectionName} readOnly />
+          <span>Department</span>
+          <input aria-label="Department" type="text" value={departmentName} readOnly />
         </label>
         <div className="alloc-context__summary">
           <span className={`alloc-status alloc-status--${(selectedDay?.status ?? "draft").toLowerCase()}`}>
@@ -282,12 +340,29 @@ export function AllocationsPage() {
       <section className="alloc-bulk" aria-labelledby="alloc-bulk-title">
         <header className="alloc-bulk__head">
           <h2 id="alloc-bulk-title">Assignment</h2>
-          <p>Select empty 2-hour cells, then assign the project and optional Job Order.</p>
+          <p>Select empty 2-hour cells, then assign the section, the project and the optional Job Order.</p>
         </header>
         <div className="alloc-bulk__row">
+          <label className="alloc-bulk__field">
+            <span>Section</span>
+            <select
+              aria-label="Section"
+              value={sectionId}
+              disabled={!canEditSlots}
+              onChange={(event) => {
+                setSectionId(event.target.value);
+                setJobOrderId("");
+                setFormErr({});
+              }}
+            >
+              <option value="">None / not applicable</option>
+              {sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}
+            </select>
+          </label>
           <label className={`alloc-bulk__field ${formErr.projectId ? "is-error" : ""}`}>
             <span>Project</span>
             <select
+              aria-label="Project"
               value={projectId}
               disabled={!canEditSlots}
               onChange={(event) => {
@@ -304,19 +379,16 @@ export function AllocationsPage() {
           <label className="alloc-bulk__field">
             <span>Job Order</span>
             <select
+              aria-label="Job Order"
               value={jobOrderId}
-              disabled={!canEditSlots || !selectedProject}
+              disabled={!canEditSlots || !jobOrdersReady}
               onChange={(event) => setJobOrderId(event.target.value)}
             >
-              <option value="">{selectedProject ? "None / not applicable" : "Select a project first"}</option>
-              {(selectedProject?.jobOrders ?? []).map((order) => (
-                <option key={order.id} value={order.id}>{order.code} - {order.name}</option>
+              <option value="">{jobOrdersReady ? "None / not applicable" : "Select a section and project first"}</option>
+              {jobOrders.map((order) => (
+                <option key={order.id} value={order.id}>{order.label}</option>
               ))}
             </select>
-          </label>
-          <label className="alloc-bulk__field alloc-bulk__field--readonly">
-            <span>Job Order Name</span>
-            <input type="text" readOnly value={selectedJobOrder?.name ?? ""} placeholder="—" />
           </label>
           <div className="alloc-bulk__apply">
             <button
@@ -351,7 +423,7 @@ export function AllocationsPage() {
               <tr>
                 <td className="alloc-employee-col">
                   <strong>{employeeName}</strong>
-                  <span>{ecNo} · {sectionName}</span>
+                  <span>{ecNo} · {departmentName}</span>
                 </td>
                 <td className="alloc-fullshift-col">
                   <label className="alloc-fullshift">
@@ -368,6 +440,7 @@ export function AllocationsPage() {
                 {SHIFT_SLOTS.map((slot) => {
                   const allocation = selectedDay?.allocations.find((item) => item.shiftSlot === slot.id);
                   const selected = selectedSlots.has(slot.id);
+                  const jobOrderText = allocation ? slotJobOrderLabel(allocation) : null;
                   return (
                     <td key={slot.id} className="alloc-slot-td">
                       <button
@@ -376,8 +449,8 @@ export function AllocationsPage() {
                         disabled={!canEditSlots || busy || Boolean(allocation)}
                         onClick={() => toggleSlot(slot.id)}
                         aria-pressed={selected}
-                        aria-label={`${slot.time}: ${allocation ? `${allocation.project.name}, ${allocation.jobOrder?.code ?? "no Job Order"}` : selected ? "selected" : "empty"}`}
-                        title={allocation ? `${allocation.project.name}${allocation.jobOrder ? ` · ${allocation.jobOrder.code}` : ""}` : "Select this 2-hour slot"}
+                        aria-label={`${slot.time}: ${allocation ? `${allocation.project.name}, ${jobOrderText ?? "no Job Order"}` : selected ? "selected" : "empty"}`}
+                        title={allocation ? `${allocation.project.name}${jobOrderText ? ` · ${jobOrderText}` : ""}` : "Select this 2-hour slot"}
                       >
                         {allocation ? projectBadge(allocation.project) : selected ? "✓" : ""}
                       </button>
@@ -414,7 +487,7 @@ export function AllocationsPage() {
 
         <div className="alloc-mobile-row">
           <header>
-            <div><strong>{employeeName}</strong><span>{ecNo} · {sectionName}</span></div>
+            <div><strong>{employeeName}</strong><span>{ecNo} · {departmentName}</span></div>
             <label className="alloc-fullshift">
               <input
                 type="checkbox"
@@ -430,6 +503,7 @@ export function AllocationsPage() {
             {SHIFT_SLOTS.map((slot) => {
               const allocation = selectedDay?.allocations.find((item) => item.shiftSlot === slot.id);
               const selected = selectedSlots.has(slot.id);
+              const jobOrderText = allocation ? slotJobOrderLabel(allocation) : null;
               return (
                 <div key={slot.id} className="alloc-mobile-slot-wrap">
                   <button
@@ -442,7 +516,7 @@ export function AllocationsPage() {
                     <span>{slot.half}</span>
                     <strong>{slot.time}</strong>
                     <small>{allocation ? allocation.project.name : selected ? "Selected" : "Empty · 2h"}</small>
-                    {allocation?.jobOrder && <small>{allocation.jobOrder.code}</small>}
+                    {jobOrderText && <small>{jobOrderText}</small>}
                   </button>
                   {allocation && canEditSlots && (
                     <button type="button" className="alloc-clear-slot" disabled={busy} onClick={() => removeSlot(allocation)}>

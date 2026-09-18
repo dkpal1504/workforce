@@ -15,6 +15,8 @@ export type AuthCapabilities = {
   allocateHours: boolean;
   assignRoles: boolean;
   viewDepartmentSummary: boolean;
+  manageJobOrderMaster: boolean;
+  manageJobOrderProgress: boolean;
 };
 
 export type AuthUser = {
