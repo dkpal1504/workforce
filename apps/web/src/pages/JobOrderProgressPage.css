@@ -571,6 +571,16 @@
   }
 }
 
+/* Below 1024px this screen shows `.jop-cards` instead of the table. The shared
+   `.sup-table` rule in supervisors.css now keeps every other table visible and
+   scrollable on a narrow screen, so opt this one back out or the same entries
+   would render twice (once as rows, once as cards). */
+@media (max-width: 1023px) {
+  .jop-table-wrap {
+    display: none;
+  }
+}
+
 /* ---- Phone (<=767px) --------------------------------------- */
 @media (max-width: 767px) {
   .jop__title {

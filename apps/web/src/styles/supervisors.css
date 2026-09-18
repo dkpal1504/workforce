@@ -397,6 +397,33 @@
   }
 }
 
+/* Below 1024px the table used to be hidden outright, on the assumption that a page
+   would render `.sup-card` rows instead. No page ever did, so every list screen
+   (Departments, Employees, Supervisors, Project Master Data, Job Order Upload)
+   showed an empty area on a phone or tablet and the data was unreachable.
+   The table now stays visible and scrolls sideways inside its own box, so the page
+   itself still never overflows. Keep `.sup-card` for a future card layout. */
+@media (max-width: 1023px) {
+  .sup-table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    /* Cells stay on one line; the long text wraps inside its own cell instead of
+       squeezing the first column into a five-line stack. */
+    white-space: nowrap;
+  }
+  .sup-table th,
+  .sup-table td {
+    white-space: normal;
+    min-width: 108px;
+  }
+  /* The first column carries the row identity, so give it more room. */
+  .sup-table tbody td:first-child,
+  .sup-table thead th:first-child {
+    min-width: 130px;
+  }
+}
+
 /* Desktop: modal centered, wider */
 @media (min-width: 768px) {
   .modal {

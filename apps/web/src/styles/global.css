@@ -370,6 +370,11 @@ a {
 
 .panel__header {
   display: flex;
+  /* On a narrow screen the title and the right-hand count used to be squeezed onto
+     one nowrap line, wrapping the title into a five-line stack that ran into the
+     count text. Wrapping keeps both readable. */
+  flex-wrap: wrap;
+  gap: 4px 10px;
   justify-content: space-between;
   align-items: center;
   padding: 14px 16px;
