@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+/** Same source as the seed: E2E_PASSWORD, else DEV_SEED_PASSWORD, else the seed default. */
+const PASSWORD = process.env.E2E_PASSWORD || process.env.DEV_SEED_PASSWORD || "WorkforceDev@2026";
+
 /**
  * Master data is maintained only through this screen, so these are the paths a PM or
  * Admin actually depends on:
@@ -17,7 +20,7 @@ import type { Page } from "@playwright/test";
 async function login(page: Page, id = "admin@company.com") {
   await page.goto("/login");
   await page.getByLabel("EC No or email").fill(id);
-  await page.getByLabel("Password").fill("WorkforceDev@2026");
+  await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForLoadState("networkidle");
 }

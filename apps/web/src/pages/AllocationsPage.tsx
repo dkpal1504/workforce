@@ -190,13 +190,28 @@ export function AllocationsPage() {
   );
   const jobOrdersReady = Boolean(sectionId && projectId);
   const dayEditable = !selectedDay || ["DRAFT", "REJECTED"].includes(selectedDay.status);
-  const canEditSlots = Boolean(ownEmployeeId && dayEditable && !employeeInactive);
+  // `loading` matters: until the day list has arrived we do not know which slots are
+  // already allocated, so a click here would select a slot that may turn out to be
+  // filled. The cells stay disabled for that moment.
+  const canEditSlots = Boolean(ownEmployeeId && dayEditable && !employeeInactive && !loading);
   const filledCount = selectedDay?.allocations.length ?? 0;
 
+  /**
+   * Clear the pending selection when the DAY changes.
+   *
+   * `selectedDay` is a fresh object on every `/api/allocations` response, so keying this
+   * on the object cleared a slot the user had just clicked while the first response was
+   * still in flight: the click vanished. The key below changes only when the day itself
+   * changes — the date, the row id, or its status (an editable day becoming locked must
+   * still drop the selection), and an in-place refetch no longer wipes it.
+   */
+  const selectedDayKey = selectedDay ? `${selectedDay.id}:${selectedDay.status}` : "none";
   useEffect(() => {
     setSelectedSlots(new Set());
     setRemarks(selectedDay?.remarks ?? "");
-  }, [selectedDay]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- remarks are read for the
+    // day identified by selectedDayKey; adding them would reset while the user types.
+  }, [workDate, selectedDayKey]);
 
   function toggleSlot(slot: ShiftSlot) {
     if (!canEditSlots || selectedDay?.allocations.some((item) => item.shiftSlot === slot)) return;

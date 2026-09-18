@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+/** Same source as the seed: E2E_PASSWORD, else DEV_SEED_PASSWORD, else the seed default. */
+const PASSWORD = process.env.E2E_PASSWORD || process.env.DEV_SEED_PASSWORD || "WorkforceDev@2026";
+
 /**
  * The new master-data screens must be usable on a phone and a tablet.
  *
@@ -29,7 +32,7 @@ const SCREENS: Array<[string, string, string]> = [
 async function login(page: Page, id: string) {
   await page.goto("/login");
   await page.getByLabel("EC No or email").fill(id);
-  await page.getByLabel("Password").fill("WorkforceDev@2026");
+  await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForLoadState("networkidle");
 }
