@@ -22,6 +22,7 @@ import {
   validateProjectInput,
   validateUomInput,
   validateWbsInput,
+  jobOrderWbsMoveError,
   wbsCodeConflictMessage,
   type FieldError,
   type MasterEntity,
@@ -541,8 +542,17 @@ masterDataRouter.get("/job-orders", async (req, res) => {
     orderBy: [{ projectId: "asc" }, { code: "asc" }],
     select: {
       id: true, code: true, name: true, status: true, budgetedHours: true, budgetedQuantity: true, sectionId: true,
-      project: { select: { id: true, code: true, name: true, colorKey: true } },
+      project: {
+        select: {
+          id: true, code: true, name: true, colorKey: true,
+          // Sent with each row so the mapping form can offer only the WBS rows and
+          // Networks that belong to THIS Job Order's project.
+          wbsRows: { select: { id: true, wbsCode: true, name: true, active: true }, orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }] },
+          networks: { select: { id: true, code: true, name: true, active: true }, orderBy: { code: "asc" } },
+        },
+      },
       projectWbs: { select: { id: true, wbsCode: true, name: true } },
+      _count: { select: { timesheetEntries: true, employeeAllocations: true } },
       department: { select: { id: true, name: true } },
       section: { select: { id: true, name: true } },
       uom: { select: { id: true, code: true } },
@@ -589,5 +599,112 @@ masterDataRouter.post("/job-orders/:id/status", writeOnly, async (req, res) => {
     return res.json({ jobOrder, changed: true });
   } catch (error) {
     return failed(res, "The Job Order status", error, "job_order");
+  }
+});
+
+/**
+ * Change an existing Job Order's WBS row and/or Network.
+ *
+ * The CSV import creates a Job Order and then SKIPS it, so without this there was no
+ * way to correct a wrong WBS or Network afterwards: the ADMIN remap screen handles the
+ * department, and nothing handled the Network at all.
+ *
+ * Rules:
+ *  - The Project is fixed. An uploaded Job Order is keyed on (project, code), so moving
+ *    it to another Project would change its identity and could collide. A WBS row or
+ *    Network from another Project is refused with a clear message.
+ *  - A WBS move is refused once hours are booked, because every booked row carries a
+ *    frozen attribution snapshot. Use the Admin mapping screen if the Project itself
+ *    has to change. The Network is informational and may always be corrected.
+ *  - ADMIN and PM only, and audited with the previous and next values.
+ */
+masterDataRouter.put("/job-orders/:id/mapping", writeOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return notFound(res, "Job Order not found.", "JOB_ORDER_NOT_FOUND");
+
+  const jobOrder = await prisma.jobOrder.findUnique({
+    where: { id },
+    select: {
+      id: true, code: true, name: true, projectId: true, projectWbsId: true, networkId: true,
+      project: { select: { id: true, code: true, name: true } },
+      projectWbs: { select: { id: true, wbsCode: true } },
+      network: { select: { id: true, code: true } },
+    },
+  });
+  if (!jobOrder) return notFound(res, "Job Order not found.", "JOB_ORDER_NOT_FOUND");
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const wantsWbs = body.projectWbsId !== undefined && body.projectWbsId !== null;
+  const wantsNetwork = body.networkId !== undefined && body.networkId !== null;
+  if (!wantsWbs && !wantsNetwork) {
+    return res.status(400).json({ error: "Send a WBS row, a Network, or both.", code: "NOTHING_TO_UPDATE" });
+  }
+
+  let nextWbsId = jobOrder.projectWbsId;
+  if (wantsWbs) {
+    const target = await prisma.projectWbs.findUnique({
+      where: { id: Number(body.projectWbsId) },
+      select: { id: true, projectId: true, wbsCode: true },
+    });
+    if (!target) return notFound(res, "WBS row not found.", "WBS_NOT_FOUND");
+    if (target.projectId !== jobOrder.projectId) {
+      return res.status(400).json({
+        error: `WBS "${target.wbsCode}" belongs to another project. A Job Order keeps its own Project; ask an Admin to use the Job Order Mapping screen if the Project itself must change.`,
+        code: "WBS_OTHER_PROJECT",
+      });
+    }
+    nextWbsId = target.id;
+  }
+
+  let nextNetworkId = jobOrder.networkId;
+  if (wantsNetwork) {
+    const target = await prisma.network.findUnique({
+      where: { id: Number(body.networkId) },
+      select: { id: true, projectId: true, code: true },
+    });
+    if (!target) return notFound(res, "Network row not found.", "NETWORK_NOT_FOUND");
+    if (target.projectId !== jobOrder.projectId) {
+      return res.status(400).json({
+        error: `Network "${target.code}" belongs to another project.`,
+        code: "NETWORK_OTHER_PROJECT",
+      });
+    }
+    nextNetworkId = target.id;
+  }
+
+  if (nextWbsId !== jobOrder.projectWbsId) {
+    const [bookedTimesheetEntries, bookedAllocationSlots] = await Promise.all([
+      prisma.timesheetEntry.count({ where: { jobOrderId: id } }),
+      prisma.employeeAllocation.count({ where: { jobOrderId: id } }),
+    ]);
+    const moveError = jobOrderWbsMoveError({
+      jobOrderCode: jobOrder.code,
+      currentWbsId: jobOrder.projectWbsId,
+      targetWbsId: nextWbsId,
+      bookedTimesheetEntries,
+      bookedAllocationSlots,
+    });
+    if (moveError) return res.status(409).json({ error: moveError, code: "JOB_ORDER_WBS_LOCKED" });
+  }
+
+  try {
+    const updated = await prisma.jobOrder.update({
+      where: { id },
+      data: { projectWbsId: nextWbsId, networkId: nextNetworkId },
+      select: {
+        id: true, code: true, name: true, status: true,
+        projectWbs: { select: { id: true, wbsCode: true } },
+        network: { select: { id: true, code: true } },
+      },
+    });
+    await writeAudit(req.user!.id, "ADMIN_UPDATE_JOB_ORDER_MAPPING", "job_order", id, {
+      by: req.user!.role,
+      projectCode: jobOrder.project.code,
+      previous: { wbsCode: jobOrder.projectWbs.wbsCode, networkCode: jobOrder.network.code },
+      next: { wbsCode: updated.projectWbs.wbsCode, networkCode: updated.network.code },
+    });
+    return res.json({ jobOrder: updated });
+  } catch (error) {
+    return failed(res, "The Job Order mapping", error, "job_order");
   }
 });

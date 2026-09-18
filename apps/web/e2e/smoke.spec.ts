@@ -1,10 +1,18 @@
 import { test, expect } from "@playwright/test";
 
+/**
+ * The seeded accounts share one password. It used to be written here as a literal
+ * ("password@SDHI"), which went stale when the seed's default changed and broke these
+ * tests. Read it from the environment instead, with the same fallback the seed uses
+ * (`DEV_SEED_PASSWORD`, default "WorkforceDev@2026"; the seed prints it when it runs).
+ */
+const PASSWORD = process.env.E2E_PASSWORD || process.env.DEV_SEED_PASSWORD || "WorkforceDev@2026";
+
 test.describe("Workforce happy paths", () => {
   test("login → select team → timesheet → summary", async ({ page }) => {
     await page.goto("/login");
     await page.getByLabel("EC No or email").fill("EC1001");
-    await page.getByLabel("Password").fill("password@SDHI");
+    await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
 
     await expect(page.getByRole("heading", { name: "Select Team for Today" })).toBeVisible();
@@ -62,7 +70,7 @@ test.describe("Supervisor My Hours", () => {
 
     await page.goto("/login");
     await page.getByLabel("EC No or email").fill("ec1001");
-    await page.getByLabel("Password").fill("password@SDHI");
+    await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("link", { name: "My Hours" }).click();
 

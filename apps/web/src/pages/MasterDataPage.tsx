@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { cloneElement, isValidElement, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import "../styles/supervisors.css";
 import "./MasterDataPage.css";
@@ -15,7 +15,7 @@ import "./MasterDataPage.css";
    foreign keys and the frozen attribution snapshots on booked hours must survive.
    ============================================================================ */
 
-type Tab = "project" | "wbs" | "uom" | "network";
+type Tab = "project" | "wbs" | "uom" | "network" | "joborder";
 
 type WbsRow = {
   id: number;
@@ -35,6 +35,21 @@ type NetworkRow = {
   source: string;
   active: boolean;
   _count?: { jobOrders: number };
+};
+
+/** A Job Order row for the mapping tab: its WBS and Network can be corrected here. */
+type JobOrderRow = {
+  id: number;
+  code: string;
+  name: string;
+  status: string;
+  project: (ProjectRow & { wbsRows: WbsRow[]; networks: NetworkRow[] }) | null;
+  projectWbs: { id: number; wbsCode: string; name?: string | null } | null;
+  network: { id: number; code: string } | null;
+  uom: { id: number; code: string } | null;
+  section: { id: number; name: string } | null;
+  department: { id: number; name: string } | null;
+  _count?: { timesheetEntries: number; employeeAllocations: number };
 };
 
 type ProjectRow = {
@@ -64,7 +79,8 @@ type EditorState =
   | { type: "project"; item?: ProjectRow }
   | { type: "wbs"; item?: WbsRow }
   | { type: "uom"; item?: UomRow }
-  | { type: "network"; item?: NetworkRow };
+  | { type: "network"; item?: NetworkRow }
+  | { type: "joborder"; item: JobOrderRow };
 
 /** Literal placeholder examples for the fields the UoM master cannot speak for. */
 const PROJECT_CODE_EXAMPLE = "PRJ-A";
@@ -77,7 +93,7 @@ const UOM_EXAMPLE_FALLBACK = "Count of pieces, e.g. 12 spools";
 const NETWORK_CODE_EXAMPLE = "SAP-NW-91001";
 const NETWORK_NAME_EXAMPLE = "Hull networks";
 
-const TAB_LABELS: Record<Tab, string> = { project: "Project", wbs: "WBS", uom: "UoM", network: "Network" };
+const TAB_LABELS: Record<Tab, string> = { project: "Project", wbs: "WBS", uom: "UoM", network: "Network", joborder: "Job Order" };
 
 function errorText(e: unknown) {
   return e instanceof ApiError && e.payload && typeof e.payload === "object" && "error" in e.payload
@@ -99,6 +115,7 @@ export function MasterDataPage() {
   const [tab, setTab] = useState<Tab>("project");
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [uom, setUom] = useState<UomRow[]>([]);
+  const [jobOrders, setJobOrders] = useState<JobOrderRow[]>([]);
   const [projectFilter, setProjectFilter] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -109,12 +126,15 @@ export function MasterDataPage() {
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [projectData, uomData] = await Promise.all([
+      const [projectData, uomData, jobOrderData] = await Promise.all([
         api<{ projects: ProjectRow[] }>("/master-data/projects"),
         api<{ uom: UomRow[] }>("/master-data/uom"),
+        // The mapping tab lists every Job Order; the project selector filters it.
+        api<{ jobOrders: JobOrderRow[] }>("/master-data/job-orders").catch(() => ({ jobOrders: [] as JobOrderRow[] })),
       ]);
       setProjects(projectData.projects);
       setUom(uomData.uom);
+      setJobOrders(jobOrderData.jobOrders);
       setProjectFilter((current) => current || String(projectData.projects[0]?.id ?? ""));
     } catch (e) { setError(errorText(e)); } finally { setLoading(false); }
   }, []);
@@ -155,9 +175,24 @@ export function MasterDataPage() {
     [allNetworks, projectFilter, q]
   );
 
-  const needsProject = tab === "wbs" || tab === "network";
+  const visibleJobOrders = useMemo(
+    () => jobOrders.filter((row) => (!projectFilter || String(row.project?.id) === projectFilter) &&
+      matches(row.code, row.name, row.project?.code, row.project?.name, row.projectWbs?.wbsCode, row.network?.code)),
+    [jobOrders, projectFilter, q]
+  );
+
+  // A WBS row and a Network live inside a project, so those tabs need one selected.
+  const needsProject = tab === "wbs" || tab === "network" || tab === "joborder";
+  // A Job Order is created by the CSV upload, never here.
+  const creatable = tab !== "joborder";
   const addLabel = tab === "wbs" ? "WBS row" : TAB_LABELS[tab];
-  const counts = { project: visibleProjects.length, wbs: visibleWbs.length, uom: visibleUom.length, network: visibleNetworks.length };
+  const counts = {
+    project: visibleProjects.length,
+    wbs: visibleWbs.length,
+    uom: visibleUom.length,
+    network: visibleNetworks.length,
+    joborder: visibleJobOrders.length,
+  };
 
   function deactivatePath(type: Tab, id: number) {
     if (type === "project") return `/master-data/projects/${id}/deactivate`;
@@ -202,15 +237,19 @@ export function MasterDataPage() {
           </select>
         )}
         <input className="search-input" style={{ marginBottom: 0, minWidth: 180, maxWidth: 260 }} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search ${TAB_LABELS[tab].toLowerCase()}…`} />
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={needsProject && !selectedProject}
-          title={needsProject && !selectedProject ? "Select a project first" : undefined}
-          onClick={() => setEditor({ type: tab })}
-        >
-          + Add {addLabel}
-        </button>
+        {creatable ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={needsProject && !selectedProject}
+            title={needsProject && !selectedProject ? "Select a project first" : undefined}
+            onClick={() => setEditor({ type: tab })}
+          >
+            + Add {addLabel}
+          </button>
+        ) : (
+          <a className="btn btn-ghost" href="/job-order-upload">Job Orders are created by CSV upload →</a>
+        )}
       </div>
     </div>
 
@@ -219,12 +258,13 @@ export function MasterDataPage() {
       {tab === "wbs" && `A WBS row groups Job Orders inside one project. The WBS number (example: ${WBS_CODE_EXAMPLE}) is unique inside the project, not globally.`}
       {tab === "uom" && "Unit of measure, with the example string that is shown as help text wherever a quantity is entered."}
       {tab === "network" && `A Network is scoped to one project. Codes are maintained by hand (example: ${NETWORK_CODE_EXAMPLE}); SAP-fed networks arrive from the ERP feed and are read-only here.`}
+      {tab === "joborder" && "Job Orders come from the CSV upload, which never updates an existing row. Use Edit on a row to correct its WBS or Network. A WBS may not change once hours are booked, because every booked row keeps the attribution it was given. The Project itself is changed by an Admin from the Job Order Mapping screen."}
     </p>
 
     {error && !editor && <div className="error-banner" role="alert">{error}</div>}
     {loading ? <div className="loading-state">Loading master data…</div> : counts[tab] === 0 ? (
       <div className="empty-state">
-        {needsProject && !selectedProject ? "Select a project to see its rows." : `No ${addLabel.toLowerCase()} rows found.`}
+        {needsProject && !selectedProject ? "Select a project to see its rows." : tab === "joborder" ? "No Job Order matches this filter." : `No ${addLabel.toLowerCase()} rows found.`}
       </div>
     ) : (
       <table className="sup-table">
@@ -233,6 +273,7 @@ export function MasterDataPage() {
           {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "uom" && <tr><th>Code</th><th>Name</th><th>Example (on-screen help)</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "network" && <tr><th>Network code</th><th>Project</th><th>Source</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
+          {tab === "joborder" && <tr><th>Job Order</th><th>Project</th><th>WBS</th><th>Network</th><th>Booked hours</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
         </thead>
         <tbody>
           {tab === "project" && visibleProjects.map((row) => (
@@ -264,6 +305,24 @@ export function MasterDataPage() {
               <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "uom", item: row })} onToggle={() => run(() => api(deactivatePath("uom", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("uom", row.id), { method: "POST" }))} /></td>
             </tr>
           ))}
+          {tab === "joborder" && visibleJobOrders.map((row) => {
+            const booked = (row._count?.timesheetEntries ?? 0) + (row._count?.employeeAllocations ?? 0);
+            return (
+              <tr key={row.id}>
+                <td><strong>{row.code}</strong><div className="muted">{row.name}</div></td>
+                <td>{row.project ? <><span className="badge badge--manual md-color-key">{row.project.colorKey}</span> {row.project.code}</> : "—"}</td>
+                <td>{row.projectWbs?.wbsCode ?? "—"}</td>
+                <td>{row.network?.code ?? "—"}</td>
+                <td>{booked === 0 ? <span className="muted">None</span> : booked}</td>
+                <td><span className={`badge badge--${row.status === "active" ? "manual" : "sync"}`}>{row.status === "active" ? "Active" : "In-Active"}</span></td>
+                <td>
+                  <div className="sup-table__actions">
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "joborder", item: row })}>Edit WBS / Network</button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
           {tab === "network" && visibleNetworks.map((row) => (
             <tr key={row.id}>
               <td><strong>{row.code}</strong>{row.name && <div className="muted">{row.name}</div>}</td>
@@ -314,17 +373,26 @@ function Actions({ active, busy, onEdit, onToggle, onActivate }: { active: boole
   );
 }
 
+/**
+ * A labelled field. The label is tied to the control by id, so clicking the label
+ * focuses the input and a screen reader can announce it. Without that the fields were
+ * only visually labelled, and the example help text was the only cue.
+ */
 function Field({ label, help, children }: { label: string; help: string; children: React.ReactNode }) {
+  const id = useId();
+  const control = isValidElement(children)
+    ? cloneElement(children as React.ReactElement<{ id?: string }>, { id })
+    : children;
   return (
     <div className="sup-field">
-      <label>{label}</label>
-      {children}
+      <label htmlFor={id}>{label}</label>
+      {control}
       <p className="md-help">{help}</p>
     </div>
   );
 }
 
-function Modal({ title, busy, error, onClose, onSubmit, children }: { title: string; busy: boolean; error: string; onClose: () => void; onSubmit: () => void; children: React.ReactNode }) {
+function Modal({ title, busy, error, onClose, onSubmit, submitDisabled, submitTitle, children }: { title: string; busy: boolean; error: string; onClose: () => void; onSubmit: () => void; submitDisabled?: boolean; submitTitle?: string; children: React.ReactNode }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -337,7 +405,9 @@ function Modal({ title, busy, error, onClose, onSubmit, children }: { title: str
           {children}
           <div className="modal__footer" style={{ padding: 0, borderTop: "none" }}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+            <button type="submit" className="btn btn-primary" disabled={busy || submitDisabled} title={submitDisabled ? submitTitle : undefined}>
+              {busy ? "Saving…" : "Save"}
+            </button>
           </div>
         </form>
       </div>
@@ -357,6 +427,7 @@ function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClos
 }) {
   if (editor.type === "project") return <ProjectForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
   if (editor.type === "uom") return <UomForm item={editor.item} uom={uom} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
+  if (editor.type === "joborder") return <JobOrderForm item={editor.item} projects={projects} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
 
   const parent = editor.item ? projects.find((project) => project.id === editor.item!.projectId) : projects.find((project) => String(project.id) === projectFilter);
   if (!parent) {
@@ -372,6 +443,83 @@ function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClos
 }
 
 type SaveFn = (path: string, method: "POST" | "PUT", body: Record<string, unknown>) => void;
+
+/**
+ * Correct an existing Job Order's WBS row and Network.
+ *
+ * The CSV upload creates a Job Order and then skips it, so a wrong WBS or Network had
+ * no path to correction. The Project stays fixed: an uploaded Job Order is keyed on its
+ * Project and its number. A WBS may not change once hours are booked, because each
+ * booked row keeps the attribution it was given (the server refuses it too).
+ */
+function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: JobOrderRow; projects: ProjectRow[]; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
+  // Take the options from the LIVE project list, not from the row's own copy: a WBS row
+  // or Network added on the other tabs a moment ago must be selectable straight away.
+  const liveProject = projects.find((project) => project.id === item.project?.id) ?? item.project;
+  const wbsOptions = liveProject?.wbsRows ?? [];
+  const networkOptions = liveProject?.networks ?? [];
+  const booked = (item._count?.timesheetEntries ?? 0) + (item._count?.employeeAllocations ?? 0);
+  const [projectWbsId, setProjectWbsId] = useState(String(item.projectWbs?.id ?? ""));
+  const [networkId, setNetworkId] = useState(String(item.network?.id ?? ""));
+  const wbsChanged = projectWbsId !== String(item.projectWbs?.id ?? "");
+  const wbsLocked = wbsChanged && booked > 0;
+
+  return (
+    <Modal
+      title={`Edit ${item.code} — WBS and Network`}
+      busy={busy}
+      error={error}
+      onClose={onClose}
+      submitDisabled={wbsLocked}
+      submitTitle="This Job Order already has booked hours, so its WBS cannot change."
+      onSubmit={() => onSave(`/master-data/job-orders/${item.id}/mapping`, "PUT", {
+        projectWbsId: Number(projectWbsId),
+        networkId: Number(networkId),
+      })}
+    >
+      <div className="sup-field">
+        <p className="md-readonly">{item.code} · {item.name}</p>
+        <p className="md-help">
+          {item.project ? `${item.project.colorKey} · ${item.project.code} · ${item.project.name}. ` : ""}
+          The Project is fixed, because an uploaded Job Order is identified by its Project and its number.
+        </p>
+      </div>
+      <Field
+        label="WBS number"
+        help={wbsLocked
+          ? `This Job Order already has ${booked} booked row(s), so its WBS cannot change. Deactivate it and raise a new Job Order if the work really moved.`
+          : `Only the WBS rows of ${item.project?.code ?? "this project"} are listed. Example: ${WBS_CODE_EXAMPLE}`}
+      >
+        <select value={projectWbsId} onChange={(e) => setProjectWbsId(e.target.value)} required>
+          {wbsOptions.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.wbsCode}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Network" help={`Only the Networks of ${item.project?.code ?? "this project"} are listed. A Network is informational, so it can be corrected at any time.`}>
+        <select value={networkId} onChange={(e) => setNetworkId(e.target.value)} required>
+          {networkOptions.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.code}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {wbsOptions.length === 0 && (
+        <p className="md-help">This project has no WBS row yet. Add one on the WBS tab first.</p>
+      )}
+      {networkOptions.length === 0 && (
+        <p className="md-help">This project has no Network yet. Add one on the Network tab first.</p>
+      )}
+      {booked > 0 && !wbsChanged && (
+        <p className="md-help">Booked rows on record: {booked}. The Network can still be corrected; the WBS is locked.</p>
+      )}
+    </Modal>
+  );
+}
+
 
 function ProjectForm({ item, busy, error, onClose, onSave }: { item?: ProjectRow; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
   const [code, setCode] = useState(item?.code ?? "");
