@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/supervisors.css";
+import "./EmployeesPage.css";
 
 type Department = { id: number; name: string };
 type Section = { id: number; departmentId: number; code: string; name: string; costCenter: { code: string } | null };
@@ -157,6 +158,7 @@ export function EmployeesPage() {
     <div className="supervisors-toolbar"><p className="muted">Register payroll employees. HOD access is restricted to the assigned Department and Section.</p><input className="search-input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search employees…" /></div>
     {hodMissingScope && <div className="error-banner">Your HOD account has no Department/Section mapping. Ask PM or Admin to assign it.</div>}
     {error && <div className="error-banner">{error}</div>}{notice && <div className="alloc-note">{notice}</div>}
+    <div className="employees-forms">
     <div className="panel"><div className="panel__header"><span>Register Payroll Employee</span></div>
       <form className="panel__body sup-form" onSubmit={registerEmployee}>
         <div className="sup-form__grid">
@@ -171,22 +173,23 @@ export function EmployeesPage() {
         </div><button className="btn btn-primary" disabled={busy || hodMissingScope}>{busy ? "Saving…" : "Register Employee"}</button>
       </form>
     </div>
-    {canTransfer && <div className="panel" style={{ marginTop: 16 }}><div className="panel__header"><span>HOD Registration &amp; Department / Section Mapping</span><span className="panel__count">{hods.length}</span></div>
+    {canTransfer && <div className="panel"><div className="panel__header"><span>HOD Registration &amp; Department / Section Mapping</span><span className="panel__count">{hods.length}</span></div>
       <form className="panel__body sup-form" onSubmit={(e) => { e.preventDefault(); void registerHod(); }}>
-        <p className="muted" style={{ margin: "0 0 8px" }}>An HOD is an existing payroll Employee promoted to a Department/Section scope — register the Employee first, then create the HOD account here. HOD login uses the employee&apos;s ecNo. A one-time credential is queued; no password is shown or emailed until delivery is configured.</p>
+        <p className="muted employees-hod-note">An HOD is an existing payroll Employee promoted to a Department/Section scope — register the Employee first, then create the HOD account here. HOD login uses the employee&apos;s ecNo. A one-time credential is queued; no password is shown or emailed until delivery is configured.</p>
         <div className="sup-form__grid">
           <div className="sup-field"><label>Department</label><select required value={newHodDepartmentId} onChange={(e) => { setNewHodDepartmentId(e.target.value); setNewHodSectionId(""); setNewHodId(""); setNewHodSectionFilter(""); }}><option value="">Select Department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div>
           <div className="sup-field"><label>Filter by Section (optional)</label><select disabled={!newHodDepartmentId} value={newHodSectionFilter} onChange={(e) => { setNewHodSectionFilter(e.target.value); setNewHodId(""); }}><option value="">All sections</option>{newHodSections.map((section) => <option key={section.id} value={section.id}>{section.code} · {section.name}</option>)}</select></div>
           <div className="sup-field"><label>Employee (payroll in this Department)</label><select required disabled={!newHodDepartmentId} value={newHodId} onChange={(e) => { const c = newHodCandidates.find((x) => String(x.id) === e.target.value); if (c) openHodRegistration(c); else setNewHodId(e.target.value); }}><option value="">{newHodDepartmentId ? (newHodCandidates.length ? "Select Employee" : "No eligible payroll employee matches this Department/Section") : "Select a Department first"}</option>{newHodCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.ecNo} · {candidate.name}{candidate.sectionAssignment ? ` · ${candidate.sectionAssignment.section.name}` : ""}{candidate.user ? ` (${candidate.user.role})` : ""}</option>)}</select></div>
           <div className="sup-field"><label>Section (HOD scope)</label><select required disabled={!newHodDepartmentId} value={newHodSectionId} onChange={(e) => setNewHodSectionId(e.target.value)}><option value="">{newHodDepartmentId ? "Select Section" : "Select a Department first"}</option>{newHodSections.map((section) => <option key={section.id} value={section.id}>{section.code} · {section.name}</option>)}</select></div>
         </div>
-        {selectedCandidate && <p className="muted" style={{ margin: "0 0 8px" }}>{selectedCandidate.ecNo} · {selectedCandidate.name} · {selectedCandidate.department.name}{selectedCandidate.sectionAssignment ? ` · currently ${selectedCandidate.sectionAssignment.section.name}` : " · no Section assigned"}{selectedCandidate.user?.role === "EMPLOYEE" ? " · will be promoted from Employee to HOD" : selectedCandidate.user?.role === "HOD" ? " · already an HOD (scope will be updated)" : ""}</p>}
+        {selectedCandidate && <p className="muted employees-hod-note">{selectedCandidate.ecNo} · {selectedCandidate.name} · {selectedCandidate.department.name}{selectedCandidate.sectionAssignment ? ` · currently ${selectedCandidate.sectionAssignment.section.name}` : " · no Section assigned"}{selectedCandidate.user?.role === "EMPLOYEE" ? " · will be promoted from Employee to HOD" : selectedCandidate.user?.role === "HOD" ? " · already an HOD (scope will be updated)" : ""}</p>}
         <button className="btn btn-primary" disabled={busy || !newHodId || !newHodDepartmentId || !newHodSectionId}>{busy ? "Saving…" : "Register HOD"}</button>
       </form>
       <table className="sup-table"><thead><tr><th>HOD</th><th>ecNo</th><th>Department</th><th>Section</th><th>Action</th></tr></thead><tbody>{hods.map((hod) => <tr key={hod.id}><td>{hod.name}</td><td>{employees.find((employee) => employee.user?.id === hod.id)?.ecNo || "—"}</td><td>{hod.department?.name || "Not mapped"}</td><td>{hod.scopeSection?.name || "Not mapped"}</td><td><button className="btn btn-secondary" onClick={() => openHodMapping(hod)}>Map scope</button></td></tr>)}</tbody></table>
       <p className="muted" style={{ margin: "0 8px 8px" }}>Credential e-mail is off in this environment (CREDENTIAL_DELIVERY_ENABLED=false), so a newly registered HOD cannot log in until a password is set locally: <code>node apps/api/set-dev-password.cjs &lt;ecNo&gt;</code>.</p>
       {!hods.length && <div className="empty-state">No HOD accounts yet. Register one above.</div>}
     </div>}
+    </div>
     <div className="panel" style={{ marginTop: 16 }}><div className="panel__header"><span>Active Employees</span><span className="panel__count">{shown.length}</span></div>
       {shown.length ? <table className="sup-table"><thead><tr><th>ecNo</th><th>Name</th><th>Type / Role</th><th>Department</th><th>Section</th><th>Designation</th>{canTransfer && <th>Action</th>}</tr></thead><tbody>
         {shown.map((employee) => <tr key={employee.id}><td><strong>{employee.ecNo}</strong></td><td>{employee.name}</td><td>{employee.user?.role === "SUPERVISOR" ? "Supervisor" : employee.user?.role === "HOD" ? "HOD" : employee.employmentType}</td><td>{employee.department.name}</td><td>{employee.sectionAssignment?.section.name || "Not assigned"}</td><td>{employee.designation || "—"}</td>{canTransfer && <td><button className="btn btn-secondary" onClick={() => openTransfer(employee)}>Transfer</button>{employee.employmentType === "PAYROLL" && <button className="btn btn-secondary" style={{ marginLeft: 6 }} onClick={() => startHodFromEmployee(employee)}>{employee.user?.role === "HOD" ? "Change HOD scope" : "Set as HOD"}</button>}</td>}</tr>)}

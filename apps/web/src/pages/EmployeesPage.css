@@ -1,0 +1,74 @@
+/* ============================================================
+   Employees — registration forms.
+   On a wide screen the two registration forms sit side by side, each one with its
+   fields in two columns, so the page opens without a long scroll. Below 1200px every
+   rule here is inert: the panels stack exactly as they did before, with the same 16px
+   gap and the same margins that the markup used to carry inline.
+   ============================================================ */
+
+.employees-forms > .panel + .panel {
+  margin-top: 16px;
+}
+
+/* The HOD help text: one rule for both bands, so the desktop card styling below can
+   take over without changing the phone spacing. */
+.employees-hod-note {
+  margin: 0 0 8px;
+}
+
+@media (min-width: 1200px) {
+  .employees-forms {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  .employees-forms > .panel + .panel {
+    margin-top: 0;
+  }
+
+  .employees-forms > .panel .panel__body {
+    padding: 16px 18px 18px;
+  }
+
+  /* Two fields per row: eight fields become four rows. */
+  .employees-forms > .panel .sup-form__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px 16px;
+  }
+
+  .employees-forms > .panel .sup-form {
+    gap: 16px;
+  }
+
+  /* The submit button spans the form, as in the design. */
+  .employees-forms > .panel .panel__body > .btn {
+    width: 100%;
+    margin-top: auto;
+    min-height: 44px;
+  }
+
+  /* A form is a column so the button can sit on the baseline of the tallest panel. */
+  .employees-forms > .panel .panel__body.sup-form {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .employees-forms > .panel .employees-hod-note {
+    line-height: 1.5;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    color: var(--text-muted);
+  }
+
+  /* The HOD list inside the right-hand panel keeps the table treatment, but the panel
+     is narrower now, so the cells get a lighter padding. */
+  .employees-forms > .panel .sup-table th,
+  .employees-forms > .panel .sup-table td {
+    padding: 10px 12px;
+  }
+}
