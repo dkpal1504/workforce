@@ -672,3 +672,323 @@ a {
     font-size: 16px;
   }
 }
+
+/* ============================================================================
+   Desktop shell: the left navigation rail (>=1200px ONLY).
+
+   Below 1200px the rail, its re-open handle and the page head are display:none
+   and .app-header is untouched, so the phone (<=767px) and tablet (768-1199px)
+   layouts render exactly the boxes they rendered before. Every rule that could
+   change a narrower layout lives inside the single min-width:1200px block at the
+   end of this file, which is the last thing in the CSS bundle.
+   ============================================================================ */
+
+.app-rail,
+.app-rail-handle,
+.page-head {
+  display: none;
+}
+
+@media (min-width: 1200px) {
+  /* The rail is an overlay: the shell reserves its width only while it is open,
+     so a collapsed rail gives the content the whole window. */
+  /* The width change is animated only AFTER the first paint (`.rail-ready`, set by
+     AppLayout). Animating it during the initial render made the content slide under
+     the rail for ~300ms on every dev page load. */
+  .app-shell {
+    display: block;
+    padding-left: 0;
+    transition: none;
+  }
+
+  .app-shell.rail-ready {
+    transition: padding-left 0.28s var(--ease);
+  }
+
+  .app-shell.rail-open {
+    padding-left: var(--rail-w);
+  }
+
+  /* The top bar is replaced by the rail at this width. It is hidden, not restyled,
+     so it cannot contribute a second copy of a nav link or of the page <h1>. */
+  .app-header {
+    display: none;
+  }
+
+  .app-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--rail-w);
+    padding: 16px 12px 14px;
+    background: var(--rail-bg);
+    color: var(--rail-text);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateX(-100%);
+    transition: none;
+    z-index: 45;
+  }
+
+  .app-shell.rail-open .app-rail {
+    transform: translateX(0);
+  }
+
+  .app-shell.rail-ready .app-rail {
+    transition: transform 0.28s var(--ease);
+  }
+
+  /* Re-open handle, shown only while the rail is collapsed. */
+  .app-rail-handle {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 76px;
+    padding: 0;
+    border: 1px solid var(--rail-border);
+    border-left: none;
+    border-radius: 0 10px 10px 0;
+    background: var(--rail-bg);
+    color: var(--rail-muted);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s var(--ease), color 0.2s var(--ease);
+    z-index: 44;
+  }
+
+  .app-shell:not(.rail-open) .app-rail-handle {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .app-rail-handle:hover,
+  .app-rail-handle:focus-visible {
+    color: var(--rail-text);
+  }
+
+  .app-rail__brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 8px 2px;
+  }
+
+  .app-rail__name {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--rail-text);
+  }
+
+  .app-rail__org {
+    margin: 1px 0 0;
+    font-size: 12px;
+    color: var(--rail-muted);
+  }
+
+  .app-rail__nav {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .app-rail__group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .app-rail__group-label {
+    margin: 0 0 4px;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rail-group);
+  }
+
+  .app-rail__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    padding: 0 10px;
+    border-radius: 10px;
+    color: var(--rail-text);
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 550;
+    transition: background 0.18s var(--ease);
+  }
+
+  .app-rail__item:hover {
+    background: var(--rail-hover);
+  }
+
+  .app-rail__item.is-active {
+    background: var(--rail-active);
+    font-weight: 700;
+  }
+
+  .app-rail__item.is-active .app-rail__icon {
+    color: var(--rail-accent);
+  }
+
+  .app-rail__icon {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: var(--rail-muted);
+  }
+
+  .app-rail__foot {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--rail-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .app-rail__avatar {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background: var(--rail-active);
+    color: var(--rail-text);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .app-rail__who {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .app-rail__who strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--rail-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .app-rail__who span {
+    display: block;
+    font-size: 11.5px;
+    color: var(--rail-muted);
+  }
+
+  .app-rail__iconbtn {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--rail-border);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--rail-muted);
+    cursor: pointer;
+    transition: background 0.18s var(--ease), color 0.18s var(--ease);
+  }
+
+  .app-rail__iconbtn:hover,
+  .app-rail__iconbtn:focus-visible {
+    background: var(--rail-hover);
+    color: var(--rail-text);
+  }
+
+  .app-rail__iconbtn[aria-pressed="true"] {
+    background: var(--rail-active);
+    color: var(--rail-accent);
+    border-color: transparent;
+  }
+
+  /* ---- Desktop page head ------------------------------------------------ */
+  .page {
+    max-width: 1280px;
+  }
+
+  .page-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px 28px;
+    margin: 2px 0 20px;
+  }
+
+  .page-head__text {
+    min-width: 0;
+    max-width: 74ch;
+  }
+
+  .page-head__title {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    color: var(--text);
+  }
+
+  .page-head__lede {
+    margin: 6px 0 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    max-width: 62ch;
+  }
+
+  .page-head__action {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 10px;
+    background: var(--primary);
+    color: #fff;
+    border: 1px solid var(--primary);
+    font-size: 14px;
+    font-weight: 650;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .page-head__action:hover {
+    background: var(--primary-hover);
+  }
+
+  .page-head__action-icon {
+    display: grid;
+    place-items: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell,
+  .app-rail,
+  .app-rail-handle {
+    transition: none;
+  }
+}

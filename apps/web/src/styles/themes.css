@@ -210,3 +210,63 @@
   --theme-swatch-2: #38bdf8;
   --theme-swatch-3: #fbbf24;
 }
+
+/* ============================================================================
+   Desktop rail tokens.
+   The left navigation rail only exists at >=1200px (see global.css). These are
+   tokens only, so adding them changes nothing at any other width. Every rail
+   colour comes from here, which is why all five themes restyle together.
+   ============================================================================ */
+
+:root,
+[data-theme="harbor"] {
+  --rail-w: 264px;
+  --rail-bg: #0c3a42;
+  --rail-bg-soft: #12454e;
+  --rail-text: #eaf2f4;
+  --rail-muted: #93b3b9;
+  --rail-group: #7fa3a9;
+  --rail-hover: rgba(255, 255, 255, 0.07);
+  --rail-active: rgba(255, 255, 255, 0.13);
+  --rail-border: rgba(255, 255, 255, 0.10);
+  --rail-accent: #7fd8e2;
+}
+
+[data-theme="atlas"] {
+  --rail-bg: #0f172a;
+  --rail-bg-soft: #172036;
+  --rail-text: #eef2f8;
+  --rail-muted: #94a3b8;
+  --rail-group: #8494ab;
+  --rail-accent: #93c5fd;
+}
+
+[data-theme="daybreak"] {
+  --rail-bg: #1c2a1a;
+  --rail-bg-soft: #26371f;
+  --rail-text: #f0f4ec;
+  --rail-muted: #a3b096;
+  --rail-group: #93a586;
+  --rail-accent: #8fd0f0;
+}
+
+[data-theme="forge"] {
+  --rail-bg: #292524;
+  --rail-bg-soft: #383130;
+  --rail-text: #f7f3ef;
+  --rail-muted: #b3a79c;
+  --rail-group: #a3948a;
+  --rail-accent: #e2a86a;
+}
+
+[data-theme="nocturne"] {
+  --rail-bg: #0a0f16;
+  --rail-bg-soft: #131b26;
+  --rail-text: #e8eef6;
+  --rail-muted: #8194a8;
+  --rail-group: #7488a0;
+  --rail-hover: rgba(255, 255, 255, 0.06);
+  --rail-active: rgba(255, 255, 255, 0.10);
+  --rail-border: rgba(255, 255, 255, 0.08);
+  --rail-accent: #38bdf8;
+}

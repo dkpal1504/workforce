@@ -430,3 +430,45 @@
     max-width: 520px;
   }
 }
+
+/* ============================================================================
+   Desktop table treatment (>=1200px only).
+   .sup-table stays visible at every width and is shared by seven screens, so this
+   block must stay inside min-width:1200px: the phone and tablet table rules above
+   (scrolling block, min-widths) are untouched.
+   ============================================================================ */
+
+@media (min-width: 1200px) {
+  .sup-table th,
+  .sup-table td {
+    padding: 14px 16px;
+  }
+
+  .sup-table thead th {
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-subtle) 55%, var(--bg-elevated));
+    letter-spacing: 0.07em;
+  }
+
+  .sup-table tbody tr {
+    transition: background 0.18s var(--ease);
+  }
+
+  .sup-table__actions {
+    gap: 8px;
+    align-items: center;
+  }
+
+  .sup-table__actions .btn-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 8px;
+    padding: 6px 12px;
+  }
+
+  /* A read-only or deactivated row reads as secondary without changing its data. */
+  .sup-table tbody tr.sup-row--readonly td {
+    color: var(--text-muted);
+  }
+}
