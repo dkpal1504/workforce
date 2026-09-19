@@ -203,7 +203,10 @@ function statusBadge(group: SupervisorGroup) {
 
 export function ApprovalsPage() {
   const { user } = useAuth();
-  const canApprove = user && ["HOD", "PM", "ADMIN"].includes(user.role);
+  /** Who may LOOK at this screen. Admin is read-only oversight: it sees every queue. */
+  const canView = user && ["HOD", "PM", "ADMIN"].includes(user.role);
+  /** Who may DECIDE. The chain is Supervisor -> HOD -> Project Head; Admin has no part in it. */
+  const canDecide = user && ["HOD", "PM"].includes(user.role);
   const isHodLike = user && (user.role === "HOD" || user.role === "ADMIN");
   const isProjectHead = user?.role === "PM";
 
@@ -229,7 +232,11 @@ export function ApprovalsPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const title = isProjectHead ? "Project Head Approvals" : `${roleLabel === "Admin" ? "HOD" : roleLabel} Approvals`;
+  const title = isProjectHead
+    ? "Project Head Approvals"
+    : user?.role === "ADMIN"
+      ? "Approvals (view only)"
+      : `${roleLabel} Approvals`;
 
   const allEmployeeIds = useMemo(
     () => received.flatMap((g) => g.employees.map((e) => e.id)),
@@ -268,7 +275,7 @@ export function ApprovalsPage() {
   }, [history]);
 
   const loadPending = useCallback(async () => {
-    if (!canApprove) return;
+    if (!canView) return;
     setLoading(true);
     setError("");
     try {
@@ -299,10 +306,10 @@ export function ApprovalsPage() {
     } finally {
       setLoading(false);
     }
-  }, [canApprove]);
+  }, [canView]);
 
   const loadHistory = useCallback(async () => {
-    if (!canApprove) return;
+    if (!canView) return;
     setLoading(true);
     setError("");
     try {
@@ -316,7 +323,7 @@ export function ApprovalsPage() {
     } finally {
       setLoading(false);
     }
-  }, [canApprove]);
+  }, [canView]);
 
   useEffect(() => {
     if (tab === "pending") loadPending();
@@ -355,6 +362,11 @@ export function ApprovalsPage() {
 
   async function batchAct(action: "approve" | "reject", ids: number[], comment?: string) {
     if (!ids.length) return;
+    // Admin is read-only oversight: it sees every queue and decides nothing.
+    if (!canDecide) {
+      setMessage("Admin accounts can see every approval but do not decide. Approval is the HOD's and the Project Head's job.");
+      return;
+    }
     setMessage("");
     setError("");
     try {
@@ -383,6 +395,10 @@ export function ApprovalsPage() {
   }
 
   async function actPayroll(id: number, action: "approve" | "reject") {
+    if (!canDecide) {
+      setMessage("Admin accounts can see every approval but do not decide. Approval is the HOD's and the Project Head's job.");
+      return;
+    }
     const comment = action === "reject" ? window.prompt("Rejection comment")?.trim() : "";
     if (action === "reject" && !comment) return;
     setError("");
@@ -414,18 +430,21 @@ export function ApprovalsPage() {
     }
   }
 
-  if (!canApprove) {
+  if (!canView) {
     return (
       <div className="error-banner">
-        Approvals are available for HOD, Project Head, and Admin accounts.
+        Approvals are visible to HOD, Project Head and Admin accounts.
       </div>
     );
   }
 
   const flatEmployees = received.flatMap((g) => g.employees);
+  const readOnlyNote = !canDecide
+    ? "You can see every approval and its history. Deciding is the HOD's and the Project Head's job, so the action buttons here do nothing for an Admin account."
+    : null;
 
   return (
-    <div className="hod-approvals">
+    <div className={`hod-approvals${canDecide ? "" : " approvals-readonly"}`}>
       <div className="hod-approvals__head">
         <h2 className="hod-approvals__title">{title}</h2>
         <p className="muted hod-approvals__hint">
@@ -457,6 +476,7 @@ export function ApprovalsPage() {
 
       {error && <div className="error-banner">{error}</div>}
       {message && <div className="carry-banner">{message}</div>}
+      {readOnlyNote && <div className="alloc-note">{readOnlyNote}</div>}
       {loading && <p className="muted">Loading…</p>}
 
       {tab === "pending" && (

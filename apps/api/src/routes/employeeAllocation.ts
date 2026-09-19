@@ -466,7 +466,8 @@ employeeAllocationRouter.get("/history", requireRoles("HOD", "PM", "ADMIN"), asy
  *   Wrong-stage role or cross-department HOD attempts return 403 (FORBIDDEN/WRONG_STAGE).
  *   Null department fails closed.
  */
-employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+// Admin observes the approval screens but does not decide, so it is absent here.
+employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "HR"), async (req, res) => {
   const dayId = Number(req.params.dayId);
   const userId = req.user!.id;
   const role = req.user!.role;
@@ -530,7 +531,7 @@ employeeAllocationRouter.post("/:dayId/approve", requireRoles("HOD", "PM", "ADMI
  *   consistency, but the per-stage check below rejects HR attempts on either stage).
  *   Null department fails closed.
  */
-employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {
+employeeAllocationRouter.post("/:dayId/reject", requireRoles("HOD", "PM", "HR"), async (req, res) => {
   const dayId = Number(req.params.dayId);
   const userId = req.user!.id;
   const role = req.user!.role;

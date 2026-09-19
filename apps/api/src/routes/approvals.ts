@@ -13,7 +13,19 @@ export const approvalsRouter = Router();
 
 approvalsRouter.use(requireAuth);
 
+/**
+ * Who may LOOK at the approval screens: the two approvers plus Admin, who is read-only
+ * oversight ("Admin sees everything; Admin approves nothing").
+ */
 const APPROVER_ROLES = ["HOD", "PM", "ADMIN"] as const;
+
+/**
+ * Who may DECIDE. The chain is Supervisor -> HOD -> Project Head, and Admin has no part in
+ * it: an Admin account previously sat in BOTH queues, so approving from its own queue moved
+ * a sheet to HOD_APPROVED and left it there, and approving again completed it as
+ * PM_APPROVED. A sheet could therefore be finished without the Project Head ever seeing it.
+ */
+const DECIDER_ROLES = ["HOD", "PM"] as const;
 
 /**
  * The labour an approver may act on.
@@ -84,8 +96,8 @@ function pendingStatusesForRole(role: string): string[] {
 }
 
 function nextStatusOnApprove(role: string, current: string): string | null {
-  if ((role === "HOD" || role === "ADMIN") && current === "SUBMITTED") return "HOD_APPROVED";
-  if ((role === "PM" || role === "ADMIN") && current === "HOD_APPROVED") return "PM_APPROVED";
+  if (role === "HOD" && current === "SUBMITTED") return "HOD_APPROVED";
+  if (role === "PM" && current === "HOD_APPROVED") return "PM_APPROVED";
   return null;
 }
 
@@ -735,7 +747,7 @@ async function applyReject(ids: number[], userId: number, role: string, departme
       continue;
     }
 
-    const isPlanningReturn = (role === "PM" || role === "ADMIN") && day.status === "HOD_APPROVED";
+    const isPlanningReturn = role === "PM" && day.status === "HOD_APPROVED";
     const nextStatus = rejectionStatusForEmployee(day.employee.active, isPlanningReturn ? "PLANNING_RETURNED" : "REJECTED");
     const action = !day.employee.active ? "REJECT" : isPlanningReturn ? "PLANNING_RETURN" : "REJECT";
 
@@ -785,7 +797,7 @@ async function applyReject(ids: number[], userId: number, role: string, departme
   return { results, errors };
 }
 
-approvalsRouter.post("/batch", requireRoles(...APPROVER_ROLES), async (req, res) => {
+approvalsRouter.post("/batch", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const ids = Array.isArray(req.body?.ids)
     ? req.body.ids.map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0)
     : [];
@@ -802,7 +814,7 @@ approvalsRouter.post("/batch", requireRoles(...APPROVER_ROLES), async (req, res)
   res.json({ ok: outcome.errors.length === 0, ...outcome });
 });
 
-approvalsRouter.post("/:id/approve", requireRoles(...APPROVER_ROLES), async (req, res) => {
+approvalsRouter.post("/:id/approve", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
   const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionId, comment);
@@ -810,7 +822,7 @@ approvalsRouter.post("/:id/approve", requireRoles(...APPROVER_ROLES), async (req
   res.json({ ok: true, status: results[0].status });
 });
 
-approvalsRouter.post("/:id/reject", requireRoles(...APPROVER_ROLES), async (req, res) => {
+approvalsRouter.post("/:id/reject", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
   const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionId, comment);
@@ -818,7 +830,7 @@ approvalsRouter.post("/:id/reject", requireRoles(...APPROVER_ROLES), async (req,
   res.json({ ok: true, status: results[0].status });
 });
 
-approvalsRouter.post("/:id/send-back", requireRoles("HOD", "ADMIN"), async (req, res) => {
+approvalsRouter.post("/:id/send-back", requireRoles("HOD"), async (req, res) => {
   const id = Number(req.params.id);
   const day = await prisma.timesheetDay.findUnique({ where: { id }, include: { employee: { select: { active: true, departmentId: true, sectionAssignment: { select: { sectionId: true } } } } } });
   if (!day) return res.status(404).json({ error: "Not found" });

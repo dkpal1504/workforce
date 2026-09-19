@@ -397,7 +397,8 @@ export function JobOrderProgressPage() {
   const { user } = useAuth();
   const role = user?.role ?? "";
   const canPunch = role === "HOD" || role === "DEPT_HEAD" || role === "ADMIN";
-  const canDecide = role === "PM" || role === "ADMIN";
+  // Approval is the PM's alone. An Admin may watch the queue but decides nothing.
+  const canDecide = role === "PM";
   // A Department Head owns every section under his department, so he punches with an
   // explicitly selected section; the decision on the figure stays with the PM.
   const isDeptHead = role === "DEPT_HEAD";

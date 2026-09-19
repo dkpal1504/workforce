@@ -771,3 +771,11 @@
   }
 }
 
+/* An Admin observes the approvals and decides nothing, so the decide buttons are removed
+   for a read-only viewer rather than left looking clickable. The API refuses the action
+   too (approve / reject / batch / send-back all require HOD or PM). */
+.approvals-readonly .btn-approve,
+.approvals-readonly .btn-reject,
+.approvals-readonly .btn-send-back {
+  display: none;
+}

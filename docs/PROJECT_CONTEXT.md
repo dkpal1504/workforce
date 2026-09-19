@@ -63,6 +63,7 @@ projects (1) ──► project_wbs (1) ──► job_orders  ──► job_order
 | `timesheet_entries` / `employee_allocations` carry a FROZEN attribution snapshot (`project_id`, `project_wbs_id`, `department_id`, `section_id`) | reports group by the snapshot, so editing a Job Order's mapping later cannot move already-booked hours. Buckets frozen, labels (name, colour) live |
 | A Job Order with booked hours may not move to another WBS | `409 JOB_ORDER_WBS_LOCKED`; the snapshot would be re-pointed |
 | Assignability | a Job Order is bookable only when the Job Order, its Project and its Department are all active |
+| Approval authority | Supervisor submits -> **HOD** approves -> **PM** approves. **Admin decides nothing.** It sees every queue and all history, and its decision buttons are removed; the API refuses approve/reject/batch/send-back with 403. Quantity progress matches: the HOD punches, the PM decides, the Admin only reads |
 
 ## 3. How to run it
 
@@ -153,6 +154,10 @@ match the employee's own Section.
    (`JobOrderProgressPage` does). `e2e/mobile-screens.spec.ts` guards it.
 8. The **Employees page labels are not linked to their inputs** (no `htmlFor`), so clicking a
    label does not focus the field. The master-data screen was fixed; this page was not.
+9. **Do the HOD step with an HOD account, not an Admin.** An Admin no longer can approve, and
+   it never could do the chain correctly: it used to sit in both stages of its own queue, so
+   approving twice completed a sheet as `PM_APPROVED` and the PM never saw it. Every department
+   whose supervisors submit needs its own HOD, otherwise those sheets cannot be approved at all.
 
 ## 6. Open items
 

@@ -10,7 +10,8 @@ control which links are shown in the browser.
 | Select contract labour by Department Section | — | Any Section in own Department | — | — | Any Supervisor |
 | Fill assigned-labour timesheet | — | Own daily team | — | — | Any Supervisor |
 | Timesheet decision Summary | Own approved | Own HOD decisions | Own decisions and PM returns for mapped Department/Section | Own decisions, all Departments | All |
-| Approval queue | — | — | Submitted, mapped Department/Section | HOD-approved, all Departments | Both stages |
+| Approval queue | — | — | Submitted, mapped Department/Section | HOD-approved, all Departments | Both stages, **read only** |
+| Can decide (approve / reject / send back) | — | — | Submitted, own Department+Section | HOD-approved, all Departments | **No** - Admin observes only; the API refuses with 403 |
 | Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section |
 | Organisation and supervisor administration | — | — | — | — | Yes |
 

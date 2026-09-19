@@ -162,15 +162,24 @@ Click **Submit for Approval**. If any day exceeds the configured daily cap, a ma
 - **HOD** is scoped to a **Department + Section** (`User.departmentId` + `User.sectionId`), matched against the employee's organisation. Each Section has its own HOD; HODs see only submissions for their Section. An HOD with no mapping fails closed (empty queue, `403` on mutation).
 - **PM (Project Head)** is the central authority: sees all departments once `HOD_APPROVED`.
 - **Admin** is global and can act at either stage.
-- **HR** is *not* a workforce approver: `/approvals/*` is gated to HOD/PM/ADMIN. HR keeps the legacy admin screens (CSV upload, supervisor registration) only.
+- **HR** is *not* a workforce approver: `/approvals/*` is gated to HOD/PM/ADMIN for reading, and only HOD/PM may decide. HR keeps the legacy admin screens (CSV upload, supervisor registration) only.
+- **ADMIN is read-only on approvals**: it sees every queue and all history, and no action buttons are offered. Approving is the HOD's and the Project Head's job.
 - **Approval cover** — an HOD may name another HOD of the same Section as cover; see [7](#7-hod-approval-cover-delegation). The cover record does not change who is authorized, only who is formally standing in.
 
 ### 3.2 Two stages
 
 | Stage | From | To | Approver | Effect |
 |---|---|---|---|---|
-| 1 | `SUBMITTED` | `HOD_APPROVED` | HOD/Admin | moves to PM queue |
-| 2 | `HOD_APPROVED` | `PM_APPROVED` | PM/Admin | terminal approval |
+| 1 | `SUBMITTED` | `HOD_APPROVED` | **HOD only** | moves to the PM queue |
+| 2 | `HOD_APPROVED` | `PM_APPROVED` | **PM only** | terminal approval |
+
+**Admin does not approve.** It has no part in the chain (Supervisor -> HOD -> Project Head);
+an Admin account can *see* every queue and its history, and its decision buttons are
+removed on screen. The API refuses `approve`, `reject`, `batch` and `send-back` for an Admin
+with `403`. This was tightened after a real case: an Admin sat in BOTH stages of its own
+queue, so approving once moved a sheet to `HOD_APPROVED` and left it there, and approving
+again completed it as `PM_APPROVED` - the Project Head never saw it. Use an HOD account for
+the HOD step.
 
 Rejection at either stage moves the day to `REJECTED` (supervisor can re-edit and resubmit).
 
@@ -607,7 +616,8 @@ This is the **quantity** measure, and it is separate from hours. Nobody moves ho
 | Who | May do |
 |---|---|
 | `HOD`, `DEPT_HEAD`, `ADMIN` | Punch the cumulative quantity, amend an entry after a rejection or a send-back, and read the entries they punched (tab **Punch progress**) |
-| `PM`, `ADMIN` | Approve, reject or send back a punched entry, and read the whole `SUBMITTED` queue (tab **Approval queue**) |
+| `PM` | **Only the PM decides** a punched entry: approve, reject or send it back, from the Approval queue |
+| `ADMIN` | Reads the queue and the whole remark history; cannot decide (the action is refused with `403`) |
 | other roles | The screen is not in their navigation; the API refuses them |
 
 ### 16.1 Punch the cumulative quantity
@@ -825,7 +835,7 @@ Selected routes (all under `/api/`):
 | `/timesheet/bulk-assign` | POST | owner / editable | Bulk slot assignment |
 | `/timesheet/entry` | PUT | owner / editable | Per-slot assignment |
 | `/approvals/pending` | GET | HOD/PM/ADMIN/HR | Role-aware, department-scoped queue |
-| `/approvals/:id/approve` | POST | HOD/PM/ADMIN | Stage-scoped approve |
+| `/approvals/:id/approve` | POST | HOD/PM | Stage-scoped approve (Admin is refused) |
 | `/approvals/:id/reject` | POST | HOD/PM/ADMIN | Stage-scoped reject |
 | `/approvals/job-order-consumption` | GET | approver | Grouped by Project → JobOrder |
 | `/allocations` | GET | auth | List allocations (server-derives `employeeId` for self-service) |

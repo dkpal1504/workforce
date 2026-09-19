@@ -34,8 +34,11 @@ export const AMENDABLE_STATUSES: readonly ProgressStatus[] = ["REJECTED", "SENT_
  */
 export const PUNCH_ROLES: readonly string[] = ["HOD", "DEPT_HEAD", "ADMIN"];
 
-/** Approval is a PM duty. An Admin may decide as a fallback. */
-export const DECISION_ROLES: readonly string[] = ["PM", "ADMIN"];
+/**
+ * Approval is a PM duty and ONLY a PM duty. An Admin account may look at the queue
+ * (`GET /pending` allows it) but must not decide: the chain is HOD punches, PM approves.
+ */
+export const DECISION_ROLES: readonly string[] = ["PM"];
 
 export type DecisionAction = "APPROVE" | "REJECT" | "SEND_BACK";
 

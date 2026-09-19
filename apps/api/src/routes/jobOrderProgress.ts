@@ -761,7 +761,7 @@ jobOrderProgressRouter.post("/:id/amend", requireRoles("HOD", "DEPT_HEAD", "ADMI
 });
 
 /** POST /api/job-order-progress/:id/decision — PM approve / reject / send back. */
-jobOrderProgressRouter.post("/:id/decision", requireRoles("PM", "ADMIN"), async (req, res) => {
+jobOrderProgressRouter.post("/:id/decision", requireRoles("PM"), async (req, res) => {
   const actor = actorOf(req);
   const id = pathId(req.params.id);
   if (id == null) return res.status(400).json({ error: "Invalid progress entry id.", code: "INVALID_ID" });
