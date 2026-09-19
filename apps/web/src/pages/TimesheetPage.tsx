@@ -5,6 +5,7 @@ import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { FilterBar, useWorkContext } from "../hooks/useWorkContext";
 import "../styles/timesheet.css";
+import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
 
 type JobOrderOption = {
   id: number;
@@ -256,6 +257,8 @@ export function TimesheetPage() {
       setDepartment(data.department ?? null);
       setSections(data.sections ?? []);
       setProjects(data.projects);
+      // A project's colour token is free-form, so publish a colour for every token in use.
+      applyProjectColorVars(data.projects.map((p) => p.colorKey));
       setMaxDailyHours(data.maxDailyHours ?? 8);
       setOpenReturns(data.openReturns ?? []);
       setRows(
@@ -1193,15 +1196,21 @@ export function TimesheetPage() {
                     const slotLocked = isLocked || s.locked || Boolean(s.otherBookingSubmitted);
                     let cls = "slot-cell";
                     let label = "";
+                    let style: React.CSSProperties | undefined;
                     if (selected) {
                       cls += " selected";
                       label = "✓";
                     } else if (s.jobOrderId != null) {
-                      cls += ` assigned-${(colorKey || "n").toLowerCase()}`;
-                      label = (colorKey || "•").toUpperCase();
+                      // The token is free-form, so the colour comes from the token rather
+                      // than from a class that only exists for a-f: `assigned-aina` used to
+                      // match no rule, which left an assigned slot looking blank.
+                      cls += " assigned";
+                      style = { background: projectColorToken(colorKey), borderColor: projectColorToken(colorKey) };
+                      label = (colorKey || "•").toString().slice(0, 4).toUpperCase();
                     } else if (s.bookedByOther) {
-                      cls += ` booked-other assigned-${(s.otherProjectColorKey || "n").toLowerCase()}`;
-                      label = (s.otherProjectColorKey || "•").toUpperCase();
+                      cls += " booked-other assigned";
+                      style = { background: projectColorToken(s.otherProjectColorKey), borderColor: projectColorToken(s.otherProjectColorKey) };
+                      label = (s.otherProjectColorKey || "•").toString().slice(0, 4).toUpperCase();
                     }
                     if (s.bookedByOther && s.jobOrderId != null) cls += " slot-cell--conflict";
                     if (s.otherBookingSubmitted) cls += " booked-other--submitted";
@@ -1211,6 +1220,7 @@ export function TimesheetPage() {
                         <button
                           type="button"
                           className={cls}
+                          style={style}
                           disabled={!isOwner || slotLocked || (s.jobOrderId != null && !isEditableForReassign(r.status))}
                           onClick={() => toggleSlotSelection(r.employeeId, s.shiftSlot)}
                           onDoubleClick={() => clearDraftSlot(r.employeeId, s.shiftSlot)}
@@ -1230,12 +1240,11 @@ export function TimesheetPage() {
                     <button
                       type="button"
                       className={`slot-cell ot-slot ${
-                        r.otSelected
-                          ? "selected"
-                          : r.otHours != null
-                            ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
-                            : ""
+                        r.otSelected ? "selected" : r.otHours != null ? "assigned" : ""
                       } ${r.otBookedByOther ? "booked-other booked-other--submitted" : ""} ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
+                      style={r.otHours != null && !r.otSelected
+                        ? { background: projectColorToken(r.otProjectColorKey), borderColor: projectColorToken(r.otProjectColorKey) }
+                        : undefined}
                       disabled={!isOwner || !otAvailable || isLocked || r.otLocked}
                       onClick={() => toggleOtSelection(r.employeeId)}
                       onDoubleClick={() => clearDraftOt(r.employeeId)}
@@ -1504,12 +1513,11 @@ export function TimesheetPage() {
                 <button
                   type="button"
                   className={`slot-cell ot-slot ${
-                    r.otSelected
-                      ? "selected"
-                      : r.otHours != null
-                        ? `assigned-${(r.otProjectColorKey || "n").toLowerCase()}`
-                        : ""
+                    r.otSelected ? "selected" : r.otHours != null ? "assigned" : ""
                   } ${r.otBookedByOther ? "booked-other booked-other--submitted" : ""} ${r.otLocked ? "slot-cell--locked" : ""}`.trim()}
+                  style={r.otHours != null && !r.otSelected
+                    ? { background: projectColorToken(r.otProjectColorKey), borderColor: projectColorToken(r.otProjectColorKey) }
+                    : undefined}
                   disabled={!isOwner || !otAvailable || isLocked || r.otLocked}
                   onClick={() => toggleOtSelection(r.employeeId)}
                   onDoubleClick={() => clearDraftOt(r.employeeId)}

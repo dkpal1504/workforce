@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 import "../styles/summary.css";
+import { applyProjectColorVars } from "../theme/projectColors";
 
 type Project = { id: number; code: string; name: string; colorKey: string; sortOrder?: number };
 type Row = {
@@ -151,6 +152,8 @@ export function SummaryPage() {
         overheadTotalCost?: number;
       }>(`/summary?${qs.toString()}`);
       setProjects(data.projects);
+      // The project columns are painted with var(--project-<token>); publish every token.
+      applyProjectColorVars(data.projects.map((project) => project.colorKey));
       setRows(data.rows);
       setTotals(data.totals);
       setProjectOtTotals(data.projectOtTotals ?? {});

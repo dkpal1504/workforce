@@ -3,6 +3,7 @@ import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 import "../styles/allocations.css";
+import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
 
 type Department = { id: number; name: string };
 type Section = { id: number; code: string; name: string };
@@ -175,6 +176,9 @@ export function AllocationsPage() {
         setDepartment(result.department ?? null);
         setSections(Array.isArray(result.sections) ? result.sections : []);
         setProjects(Array.isArray(result.projects) ? result.projects : []);
+        // Publish a colour for every colour token in use: the token is free-form, and the
+        // class-based colours only exist for a-f. See theme/projectColors.ts.
+        applyProjectColorVars((result.projects ?? []).map((project) => project.colorKey));
         setJobOrders(Array.isArray(result.jobOrders) ? result.jobOrders : []);
       })
       .catch((e) => {
@@ -461,6 +465,7 @@ export function AllocationsPage() {
                       <button
                         type="button"
                         className={`alloc-slot-cell ${selected ? "is-selected" : ""} ${allocation ? `is-assigned ${projectClass(allocation.project.colorKey)}` : ""}`}
+                        style={allocation ? { background: projectColorToken(allocation.project.colorKey), borderColor: projectColorToken(allocation.project.colorKey) } : undefined}
                         disabled={!canEditSlots || busy || Boolean(allocation)}
                         onClick={() => toggleSlot(slot.id)}
                         aria-pressed={selected}
@@ -524,6 +529,7 @@ export function AllocationsPage() {
                   <button
                     type="button"
                     className={`alloc-mobile-slot ${selected ? "is-selected" : ""} ${allocation ? `is-assigned ${projectClass(allocation.project.colorKey)}` : ""}`}
+                    style={allocation ? { background: projectColorToken(allocation.project.colorKey), borderColor: projectColorToken(allocation.project.colorKey) } : undefined}
                     disabled={!canEditSlots || busy || Boolean(allocation)}
                     onClick={() => toggleSlot(slot.id)}
                     aria-pressed={selected}
