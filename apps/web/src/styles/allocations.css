@@ -90,14 +90,14 @@
   border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
   border-radius: var(--radius-sm);
   background: var(--warning-soft);
-  color: var(--warning);
+  color: var(--warning-ink);
   font-size: 13px;
 }
 
 .alloc-inactive {
   border-color: color-mix(in srgb, var(--danger) 28%, transparent);
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .alloc-status {
@@ -118,7 +118,7 @@
 .alloc-status--draft,
 .alloc-status--rejected {
   background: var(--warning-soft);
-  color: var(--warning);
+  color: var(--warning-ink);
 }
 
 .alloc-status--submitted,
@@ -129,7 +129,7 @@
 
 .alloc-status--pm_approved {
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--success-ink);
 }
 
 /* Assignment strip mirrors the Timesheet bulk assignment block. */
@@ -283,7 +283,7 @@
   border: 1.5px dashed color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 7px;
   background: transparent;
-  color: #fff;
+  color: var(--project-ink);
   cursor: pointer;
   font-size: 11px;
   font-weight: 800;
@@ -303,13 +303,13 @@
   border-color: var(--orange-selected);
   border-style: solid;
   background: var(--orange-selected);
-  color: #fff;
+  color: var(--project-ink);
 }
 
 .alloc-slot-cell.is-assigned,
 .alloc-mobile-slot.is-assigned {
   border-style: solid;
-  color: #fff;
+  color: var(--project-ink);
 }
 
 .alloc-slot-cell--project-a { border-color: var(--project-a); background: var(--project-a); }
@@ -318,7 +318,7 @@
 .alloc-slot-cell--project-d { border-color: var(--project-d); background: var(--project-d); }
 .alloc-slot-cell--project-e { border-color: var(--project-e); background: var(--project-e); }
 .alloc-slot-cell--project-f { border-color: var(--project-f); background: var(--project-f); }
-.alloc-slot-cell--project-n { border-color: var(--text-muted); background: var(--text-muted); }
+.alloc-slot-cell--project-n { border-color: var(--project-n); background: var(--project-n); }
 
 .alloc-clear-slot {
   display: block;
@@ -551,7 +551,7 @@
   .alloc-mobile-slot.is-selected > span,
   .alloc-mobile-slot.is-selected > strong,
   .alloc-mobile-slot.is-selected > small {
-    color: #fff;
+    color: var(--project-ink);
   }
 
   .alloc-clear-slot {

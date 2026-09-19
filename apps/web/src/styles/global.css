@@ -297,7 +297,7 @@ a {
 .status-pill {
   margin-left: auto;
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--success-ink);
   border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
   border-radius: 999px;
   padding: 8px 14px;
@@ -330,7 +330,8 @@ a {
 
 .btn-primary {
   background: var(--primary);
-  color: #fff;
+  /* Nocturne's primary is a light blue, so the ink has to come from the theme. */
+  color: var(--on-primary);
   border-color: var(--primary);
 }
 
@@ -541,13 +542,13 @@ a {
 
 .warning-banner {
   background: var(--warning-soft);
-  color: var(--warning);
+  color: var(--warning-ink);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
 .error-banner {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
 }
 

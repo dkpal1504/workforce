@@ -285,3 +285,89 @@
 [data-theme="nocturne"] {
   --on-primary: #04121f;
 }
+
+/* ============================================================================
+   Theme-completeness tokens (added with the desktop refresh, 2026-09-19).
+
+   --project-n   : the colour of the STANDING / NON-PROJECT row. `color_key` is a
+                   free-form token and "n" (also the empty key) is the curated one for
+                   a non-project row, but the stylesheets referenced `var(--project-n)`
+                   without any theme ever defining it. An undefined custom property makes
+                   the declaration invalid at computed-value time, so those inline
+                   `background: var(--project-n)` styles were DROPPED: the Summary chip
+                   rendered white-on-transparent, the Approvals dot was invisible and the
+                   Timesheet/Allocations slot fell back to grey. It is defined here for
+                   every theme, so the non-project row now carries a colour like any other.
+   --project-ink : the text/icon colour that sits ON a project colour. Nocturne's project
+                   palette is light (--project-e is #facc15), where white text is unreadable,
+                   so ink is dark there and white in the light themes.
+   --on-primary  : as above, for text that sits on --primary (Nocturne's primary is a light
+                   blue).
+   --scrim       : the modal backdrop wash, so a dark theme can darken it properly.
+   ============================================================================ */
+
+:root,
+[data-theme="harbor"] {
+  --project-n: #64748b;
+  --project-ink: #ffffff;
+  --scrim: rgba(10, 18, 24, 0.5);
+}
+
+[data-theme="atlas"] {
+  --project-n: #64748b;
+  --project-ink: #ffffff;
+  --scrim: rgba(10, 18, 24, 0.5);
+}
+
+[data-theme="daybreak"] {
+  --project-n: #6b7263;
+  --project-ink: #ffffff;
+  --scrim: rgba(16, 22, 12, 0.5);
+}
+
+[data-theme="forge"] {
+  --project-n: #7a6a5d;
+  --project-ink: #ffffff;
+  --scrim: rgba(20, 14, 12, 0.52);
+}
+
+[data-theme="nocturne"] {
+  --project-n: #94a3b8;
+  --project-ink: #0b1220;
+  --scrim: rgba(0, 0, 0, 0.66);
+}
+
+/* Ink for text drawn in the accent colour on an --accent-soft surface (the pin badge,
+   the accent note). The light themes darken the accent toward black, which is what those
+   rules did with a literal; Nocturne's accent is already light, so it is used as is. */
+:root,
+[data-theme="harbor"],
+[data-theme="atlas"],
+[data-theme="daybreak"],
+[data-theme="forge"] {
+  --accent-ink: color-mix(in srgb, var(--accent) 85%, #000);
+}
+
+[data-theme="nocturne"] {
+  --accent-ink: var(--accent);
+}
+
+/* Ink variants: the same hue as the semantic token, but guaranteed to be readable as
+   TEXT on that token's soft/pale surface. In the light themes the token is darkened
+   toward black; in Nocturne the token is already the light variant, so it is used as is.
+   FILLS keep using the base token, so button/slot backgrounds are unchanged. */
+:root,
+[data-theme="harbor"],
+[data-theme="atlas"],
+[data-theme="daybreak"],
+[data-theme="forge"] {
+  --success-ink: color-mix(in srgb, var(--success) 82%, #000);
+  --danger-ink: color-mix(in srgb, var(--danger) 82%, #000);
+  --warning-ink: color-mix(in srgb, var(--warning) 82%, #000);
+}
+
+[data-theme="nocturne"] {
+  --success-ink: var(--success);
+  --danger-ink: var(--danger);
+  --warning-ink: var(--warning);
+}

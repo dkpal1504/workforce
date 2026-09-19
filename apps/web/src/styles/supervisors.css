@@ -51,7 +51,7 @@
 
 .badge--pin {
   background: var(--accent-soft);
-  color: color-mix(in srgb, var(--accent) 85%, #000);
+  color: var(--accent-ink);
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
@@ -86,8 +86,8 @@
   place-items: center;
   font-weight: 700;
   font-size: 15px;
-  color: #fff;
-  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 70%, white), var(--primary));
+  color: var(--on-primary);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 70%, var(--bg-elevated)), var(--primary));
 }
 
 .sup-card__avatar--sync {
@@ -144,7 +144,7 @@
 
 .btn-danger {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   border-color: color-mix(in srgb, var(--danger) 26%, transparent);
 }
 
@@ -216,7 +216,7 @@
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(10, 18, 24, 0.5);
+  background: var(--scrim);
   backdrop-filter: blur(3px);
   animation: fadeIn 0.2s var(--ease);
 }
@@ -342,7 +342,7 @@
 
 .sup-form__note {
   background: var(--accent-soft);
-  color: color-mix(in srgb, var(--accent) 85%, #000);
+  color: var(--accent-ink);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -364,7 +364,7 @@
 /* ---- Error / empty states ----------------------------------- */
 .error-banner {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   border: 1px solid color-mix(in srgb, var(--danger) 26%, transparent);
   border-radius: var(--radius-sm);
   padding: 11px 14px;

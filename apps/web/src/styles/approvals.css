@@ -95,7 +95,7 @@
 
 .view-toggle button.active {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .bulk-bar {
@@ -234,12 +234,12 @@
 
 .badge-conflict {
   background: var(--warning-soft);
-  color: color-mix(in srgb, var(--warning) 80%, #000);
+  color: var(--warning-ink);
 }
 
 .badge-ok {
-  background: color-mix(in srgb, #16a34a 18%, transparent);
-  color: #15803d;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success-ink);
 }
 
 .comment-input {
@@ -270,13 +270,13 @@
 }
 
 .btn-approve {
-  background: #16a34a;
-  color: #fff;
-  border-color: #15803d;
+  background: var(--success);
+  color: var(--on-primary);
+  border-color: var(--success);
 }
 
 .btn-approve:hover:not(:disabled) {
-  background: #15803d;
+  background: var(--success);
 }
 
 .btn-approve:disabled,
@@ -286,19 +286,19 @@
 }
 
 .btn-reject {
-  background: #dc2626;
-  color: #fff;
-  border-color: #b91c1c;
+  background: var(--danger);
+  color: var(--on-primary);
+  border-color: var(--danger);
 }
 
 .btn-reject:hover {
-  background: #b91c1c;
+  background: var(--danger);
 }
 
 .btn-danger-outline {
   background: transparent;
-  color: #dc2626;
-  border: 1px solid #dc2626;
+  color: var(--danger);
+  border: 1px solid var(--danger);
   border-radius: 6px;
   padding: 6px 12px;
   font-weight: 650;
@@ -306,13 +306,13 @@
 }
 
 .btn-send-back {
-  background: #fff;
+  background: var(--bg-elevated);
   color: var(--primary);
   border: 1px solid var(--primary);
 }
 
 .btn-send-back:hover {
-  background: color-mix(in srgb, var(--primary) 8%, #fff);
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-elevated));
 }
 
 .planning-comment {
@@ -375,15 +375,15 @@
 }
 
 .hour-chips__ot {
-  background: color-mix(in srgb, #dc2626 14%, var(--bg-elevated)) !important;
-  border-color: color-mix(in srgb, #dc2626 35%, var(--border)) !important;
-  color: #b91c1c;
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elevated)) !important;
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border)) !important;
+  color: var(--danger-ink);
 }
 
 .ot-alert {
   font-size: 11px;
   font-weight: 650;
-  color: #b91c1c;
+  color: var(--danger);
   margin-top: 4px;
   line-height: 1.35;
 }
@@ -392,7 +392,7 @@
 .ot-badge {
   display: inline-block;
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: 999px;
   padding: 2px 9px;
@@ -420,7 +420,7 @@
 .hod-table th.ot-col,
 .hod-table td.ot-col {
   background: color-mix(in srgb, var(--danger-soft) 55%, transparent);
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .project-ot-inline {
@@ -437,7 +437,7 @@
 
 /* === Conflict reason (why a row is flagged) === */
 .conflict-reason {
-  color: var(--danger, #b91c1c);
+  color: var(--danger);
   margin-top: 2px;
 }
 
@@ -484,8 +484,8 @@
 }
 
 .jo-status-active {
-  color: #15803d;
-  background: color-mix(in srgb, #16a34a 12%, transparent);
+  color: var(--success-ink);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 
 .jo-status-closed {
@@ -517,15 +517,15 @@
 }
 
 .jo-bar--green > span {
-  background: #16a34a;
+  background: var(--success);
 }
 
 .jo-bar--amber > span {
-  background: #d97706;
+  background: var(--warning);
 }
 
 .jo-bar--red > span {
-  background: #dc2626;
+  background: var(--danger);
 }
 
 .jo-bar-label {
@@ -535,15 +535,15 @@
 }
 
 .jo-bar-label--green {
-  color: #15803d;
+  color: var(--success);
 }
 
 .jo-bar-label--amber {
-  color: #b45309;
+  color: var(--warning);
 }
 
 .jo-bar-label--red {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .jo-footnote {
@@ -689,7 +689,7 @@
     left: 0;
     z-index: 2;
     background: var(--bg-elevated);
-    box-shadow: 2px 0 6px rgba(15, 23, 42, 0.06);
+    box-shadow: var(--shadow-sm);
   }
 
   .hod-table thead th:nth-child(2) {
@@ -757,7 +757,7 @@
     padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
     border-radius: 0;
     border-top: 1px solid var(--border);
-    box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.12);
+    box-shadow: var(--shadow-md);
     background: var(--bg-elevated);
   }
 

@@ -226,7 +226,7 @@ export function SelectTeamPage() {
                   }
                   style={
                     teamSelected.has(e.id)
-                      ? { outline: "2px solid var(--primary)", background: "#dbeafe" }
+                      ? { outline: "2px solid var(--primary)", background: "var(--primary-soft)" }
                       : undefined
                   }
                 >

@@ -261,18 +261,18 @@
 }
 
 .emp-status-chip.status-edit-locked {
-  background: color-mix(in srgb, #64748b 18%, transparent);
-  color: #475569;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted);
 }
 
 .emp-status-chip.status-edit-addOnly {
-  background: color-mix(in srgb, #ca8a04 18%, transparent);
-  color: #a16207;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning-ink);
 }
 
 .emp-status-chip.status-assigned {
   background: color-mix(in srgb, var(--success) 18%, transparent);
-  color: var(--success);
+  color: var(--success-ink);
 }
 
 .slot-cell--locked,
@@ -296,31 +296,31 @@
 }
 
 .emp-status-chip.status-hod_approved {
-  background: color-mix(in srgb, #ca8a04 18%, transparent);
-  color: #a16207;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning-ink);
 }
 
 .emp-status-chip.status-pm_approved {
-  background: color-mix(in srgb, #16a34a 18%, transparent);
-  color: #15803d;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success-ink);
 }
 
 .row-rejected .emp-col {
-  background: color-mix(in srgb, #dc2626 6%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-elevated));
 }
 
 .return-feedback {
   margin-top: 6px;
   padding: 6px 8px;
   border-radius: 6px;
-  border: 1px solid color-mix(in srgb, #dc2626 30%, var(--border));
-  background: color-mix(in srgb, #dc2626 8%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
   font-size: 11px;
 }
 
 .return-feedback__label {
   font-weight: 700;
-  color: #b91c1c;
+  color: var(--danger);
   margin-bottom: 2px;
 }
 
@@ -333,13 +333,13 @@
   margin-bottom: 14px;
   padding: 12px 14px;
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, #dc2626 35%, var(--border));
-  background: color-mix(in srgb, #dc2626 8%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
 }
 
 .returns-panel__title {
   font-weight: 700;
-  color: #b91c1c;
+  color: var(--danger);
   margin-bottom: 4px;
 }
 
@@ -406,7 +406,7 @@
   user-select: none;
   font-size: 12px;
   font-weight: 800;
-  color: #fff;
+  color: var(--project-ink);
   background: transparent;
   transition: transform 0.12s var(--ease);
   margin: 0 auto;
@@ -420,7 +420,7 @@
   background: var(--orange-selected);
   border-style: solid;
   border-color: var(--orange-selected);
-  color: #fff;
+  color: var(--project-ink);
 }
 
 .slot-cell.assigned-a,
@@ -431,7 +431,7 @@
 .slot-cell.assigned-f,
 .slot-cell.assigned-n {
   border-style: solid;
-  color: #fff;
+  color: var(--project-ink);
 }
 
 .slot-cell.assigned-a { background: var(--project-a); border-color: var(--project-a); }
@@ -440,7 +440,7 @@
 .slot-cell.assigned-d { background: var(--project-d); border-color: var(--project-d); }
 .slot-cell.assigned-e { background: var(--project-e); border-color: var(--project-e); }
 .slot-cell.assigned-f { background: var(--project-f); border-color: var(--project-f); }
-.slot-cell.assigned-n { background: var(--text-muted); border-color: var(--text-muted); }
+.slot-cell.assigned-n { background: var(--project-n); border-color: var(--project-n); }
 
 .slot-td {
   text-align: center;
@@ -501,7 +501,7 @@
   border-style: solid;
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   font-weight: 700;
 }
 
@@ -553,7 +553,7 @@
 /* Allocation owned by another supervisor remains visible in every grid. */
 .slot-cell.booked-other,
 .ts-shift-chip.booked-other {
-  outline: 2px dashed color-mix(in srgb, var(--primary) 65%, #fff);
+  outline: 2px dashed color-mix(in srgb, var(--primary) 65%, var(--bg-elevated));
   outline-offset: 2px;
 }
 
@@ -572,7 +572,7 @@
 .other-booking-swatch {
   background: repeating-linear-gradient(135deg, var(--primary-soft) 0 4px, var(--bg-elevated) 4px 8px);
   color: var(--primary);
-  outline: 2px dashed color-mix(in srgb, var(--primary) 65%, #fff);
+  outline: 2px dashed color-mix(in srgb, var(--primary) 65%, var(--bg-elevated));
 }
 
 /* ---- Full Shift checkbox ---- */
@@ -649,13 +649,13 @@
 
 .assign-btn.is-ready {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .assign-btn.is-done {
   background: var(--success-soft);
   border-color: color-mix(in srgb, var(--success) 40%, transparent);
-  color: var(--success);
+  color: var(--success-ink);
 }
 
 .assign-btn.is-idle {
@@ -711,7 +711,7 @@
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  color: #fff;
+  color: var(--project-ink);
   font-size: 11px;
   font-weight: 700;
   display: inline-flex;
@@ -781,8 +781,8 @@
 }
 
 .ts-card.row-rejected {
-  border-color: color-mix(in srgb, #dc2626 35%, var(--border));
-  background: color-mix(in srgb, #dc2626 6%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-elevated));
 }
 
 .ts-card.row-done {
@@ -876,11 +876,11 @@
   background: var(--orange-selected);
   border-style: solid;
   border-color: var(--orange-selected);
-  color: #fff;
+  color: var(--project-ink);
 }
 .ts-shift-chip.selected .ts-shift-chip__half,
 .ts-shift-chip.selected .ts-shift-chip__time {
-  color: #fff;
+  color: var(--project-ink);
 }
 
 .ts-shift-chip.assigned-a,
@@ -892,7 +892,7 @@
 .ts-shift-chip.assigned-f,
 .ts-shift-chip.assigned-n {
   border-style: solid;
-  color: #fff;
+  color: var(--project-ink);
 }
 .ts-shift-chip.assigned-a { background: var(--project-a); border-color: var(--project-a); }
 .ts-shift-chip.assigned-b { background: var(--project-b); border-color: var(--project-b); }
@@ -900,7 +900,7 @@
 .ts-shift-chip.assigned-d { background: var(--project-d); border-color: var(--project-d); }
 .ts-shift-chip.assigned-e { background: var(--project-e); border-color: var(--project-e); }
 .ts-shift-chip.assigned-f { background: var(--project-f); border-color: var(--project-f); }
-.ts-shift-chip.assigned-n { background: var(--text-muted); border-color: var(--text-muted); }
+.ts-shift-chip.assigned-n { background: var(--project-n); border-color: var(--project-n); }
 
 .ts-shift-chip.assigned-a .ts-shift-chip__half,
 .ts-shift-chip.assigned-a .ts-shift-chip__time,
@@ -916,7 +916,7 @@
 .ts-shift-chip.assigned-f .ts-shift-chip__time,
 .ts-shift-chip.assigned-n .ts-shift-chip__half,
 .ts-shift-chip.assigned-n .ts-shift-chip__time {
-  color: #fff;
+  color: var(--project-ink);
   opacity: 0.9;
 }
 

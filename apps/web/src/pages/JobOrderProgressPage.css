@@ -254,11 +254,11 @@
 .jop-fact--warn {
   background: var(--warning-soft);
   border-color: color-mix(in srgb, var(--warning) 30%, transparent);
-  color: color-mix(in srgb, var(--warning) 88%, #000);
+  color: var(--warning-ink);
 }
 
 .jop-fact--warn em {
-  color: color-mix(in srgb, var(--warning) 88%, #000);
+  color: var(--warning-ink);
 }
 
 .jop-summary {
@@ -311,19 +311,19 @@
 
 .jop-chip--approved {
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--success-ink);
   border-color: color-mix(in srgb, var(--success) 28%, transparent);
 }
 
 .jop-chip--rejected {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   border-color: color-mix(in srgb, var(--danger) 26%, transparent);
 }
 
 .jop-chip--sent-back {
   background: var(--warning-soft);
-  color: color-mix(in srgb, var(--warning) 88%, #000);
+  color: var(--warning-ink);
   border-color: color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
@@ -641,19 +641,19 @@
 
 .jop-chip--remark-approve {
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--success-ink);
   border-color: color-mix(in srgb, var(--success) 28%, transparent);
 }
 
 .jop-chip--remark-reject {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-ink);
   border-color: color-mix(in srgb, var(--danger) 26%, transparent);
 }
 
 .jop-chip--remark-send-back {
   background: var(--warning-soft);
-  color: color-mix(in srgb, var(--warning) 88%, #000);
+  color: var(--warning-ink);
   border-color: color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
