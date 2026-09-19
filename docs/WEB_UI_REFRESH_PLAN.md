@@ -376,3 +376,79 @@ never overflows).
    the `min-width:1200px` block, so the desktop title stayed hidden — exactly risk R3. The fix is
    trivial (bare rule first, desktop block last), but it shows the rule must be enforced by review:
    desktop overrides are always the **last** declarations for a selector.
+
+---
+
+## 13. Implemented on branch `feature/web-ui-desktop-refresh`
+
+Three commits on top of `main` (`4515b64`); `main` is untouched, so the current state can be
+kept or discarded by switching branches.
+
+| Commit | Content |
+|---|---|
+| `8b82f2b` | **Desktop shell**: the `>=1200px` left rail, grouped capability-gated nav, rail footer (avatar, pin, themes, logout), desktop page head (title, lede, CTA), `--rail-*` tokens for all five themes, desktop `.sup-table` treatment |
+| `65fb88c` | The plan in §1–§12 of this document |
+| `b0bfd37` | **Project master page polish** (segmented tabs, one toolbar row, collapsible help card, table card), `e2e/desktop-shell.spec.ts`, `e2e/mobile-shell-guard.spec.ts`, `--on-primary` token |
+
+### 13.1 The auto-hide rail (as requested)
+
+* The rail **starts open**, so the first paint is the same as before and no layout animation runs
+  on load. The width transition is armed only after the first paint (`.rail-ready`).
+* When the pointer **leaves the rail to the right**, it slides away and the content takes the whole
+  window: measured at 1600×900 → `padding-left: 0px`, `main.page` x = 0, width = 1600, rail x = −264,
+  page overflow 0.
+* A slim handle stays at the left edge; hovering it (or the left edge) brings the rail back.
+* **Keyboard focus** inside the rail keeps it open; the **pin** button keeps it open permanently and
+  remembers the choice in `localStorage` (`workforce_rail_pinned`).
+* `prefers-reduced-motion: reduce` turns the slide off.
+* Reading width: 1280px while the rail is open (the reference width), up to 1600px while it is
+  hidden — so hiding the rail genuinely gains working space on a wide screen.
+
+### 13.2 Measured result (same database state, back-to-back captures)
+
+| Gate | Result |
+|---|---|
+| **Mobile isolation, admin routes** (10 routes × phone 390 + tablet 768) | metrics identical except that `.app-rail` exists and reports `display:none`; **18 of 20 screenshots byte-identical**; the other 2 differ on 52 and 44 pixels at **≤2/255 per channel** (a control run with identical code also diffed one of them, so this is rasterisation jitter) |
+| **Mobile isolation, supervisor routes** (`/select-team`, `/timesheet`, `/allocations`, `/approvals` × 390 + 768) | metrics identical (same single `railDisplay` entry); **8 of 8 screenshots byte-identical** |
+| `e2e/mobile-screens.spec.ts` + `e2e/master-data.spec.ts` | **10 passed / 0 failed** (same as the pre-change baseline) |
+| `e2e/mobile-shell-guard.spec.ts` (new) | **12 passed** — below 1200px the rail, its handle and the page head are not visible, the top bar stays, exactly one heading, no horizontal overflow |
+| `e2e/desktop-shell.spec.ts` (new) | **6 passed** at 1440×900 and 1280×720 — rail visible, top bar hidden, one `<h1>`, no page overflow on 12 routes, auto-hide to the right and return from the left, pin survives a reload |
+| `e2e/smoke.spec.ts` | same 2 pre-existing `EC1001` seed-data failures as the baseline (§3.1) — no new failure |
+| Visual | `final2/rail-open.png` (rail, page head, segmented tabs, toolbar row, help card) and `final2/rail-hidden.png` (full-width content, handle at the edge) |
+
+### 13.3 How to re-run the gates
+
+```bash
+# servers first: Vite does not see edits under /mnt/c (drvfs has no inotify), so restart it
+cd /mnt/c/data/comp/workforce && npm run dev:api & npm run dev:web &
+curl -s localhost:5173/src/styles/global.css | grep -c app-rail   # must be 1 after the shell landed
+
+cd apps/web
+npx playwright test                        # smoke (2 known EC1001 failures) + master-data + mobile + both new specs
+npx playwright test e2e/mobile-shell-guard.spec.ts
+npx playwright test e2e/desktop-shell.spec.ts
+
+# pixel proof against the unmodified main branch (worktree + its own dev server on another port)
+git worktree add /tmp/wf-baseline main
+ln -sfn $PWD/node_modules /tmp/wf-baseline/node_modules
+cd /tmp/wf-baseline/apps/web && npx vite --port 5174 --strictPort &
+BASE_URL=http://localhost:5174 OUT_DIR=/tmp/ui_refresh/rm/base node /tmp/ui_refresh/rm/capture.cjs
+BASE_URL=http://localhost:5175 OUT_DIR=/tmp/ui_refresh/rm/shell node /tmp/ui_refresh/rm/capture.cjs
+```
+`/tmp/ui_refresh/rm/capture.cjs` captures phone+tablet with `reducedMotion: "reduce"` and measures
+after the screenshot, so its numbers are stable.
+
+### 13.4 Still open
+
+1. **P2** — roll the same page anatomy to the other list screens (Supervisors, Employees,
+   Organisation, Job Order Upload, Qty Progress, Role Assignment, CSV Upload).
+2. **P3 / §5.1** — the theme-correctness defects (T2–T5) still change the **phone** colours if fixed
+   globally; the decision is still yours. T1 (`--project-n` undefined) is a genuine bug.
+3. The Project master toolbar is a single row at the reference width; between roughly 1200 and 1450px
+   it wraps to two lines. A hard one-row rule at 1280 costs the stat pair or the tab labels.
+4. The desktop title reads `Project Master Data` (the same string the phone shows); the mock's shorter
+   "Project master" would need a second label source, which §8 R9 argues against.
+5. Dev-database note: to capture the supervisor routes for verification, the account `FRNEGJ063`
+   (`users.id = 6`) was given the seed password with the repo's own `apps/api/set-dev-password.cjs`.
+   Its previous `password_hash` is recorded in `/tmp/ui_refresh/verify/README.md` and can be restored
+   with one `UPDATE users SET password_hash=... WHERE id=6`.
