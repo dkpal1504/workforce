@@ -20,6 +20,30 @@ sudo -u postgres psql \
 Do not put the real password in shell history. In a real deployment, read it from
 a protected secret file or your secret manager.
 
+### Point the API at that server
+
+The API reaches PostgreSQL only through `DATABASE_URL`. There is **no database
+container in production**: `infra/docker/compose.production.yml` starts `migrate`,
+`api` and `web` only. (`infra/docker/docker-compose.yml`, which does run a local
+PostgreSQL container, is the **development** stack and is not used in production.)
+
+For a database server at `10.5.1.178`, `infra/docker/.env.production` carries:
+
+```
+DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5432/workforce?schema=public&sslmode=require
+```
+
+- URL encode the password (`@` becomes `%40`). Use `sslmode=verify-full` with your
+  CA when the server presents a certificate you can verify.
+- Allow port 5432 from the Docker host to `10.5.1.178` in the firewall, and grant
+  `workforce_app` `CONNECT` on `workforce`. The containers need no other route to
+  the database.
+- The `migrate` container applies the schema over that same URL, so the two must
+  match. After changing `DATABASE_URL`, run the migrate step again (section 3)
+  before restarting the API.
+- Nothing else in the stack needs editing for an external database: no published
+  port, no volume and no service is added.
+
 ### Schema option A: Prisma migration (recommended)
 
 The `migrate` container applies the complete baseline before the API starts.
