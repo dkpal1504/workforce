@@ -483,3 +483,70 @@ export function uomHelpText(rows: UomRow[], code: string): string {
   const example = exampleForUomCode(rows, code);
   return example ? `Example: ${normalizeCode(code)} — ${example}` : `Example: ${normalizeCode(code)}`;
 }
+
+/* ---------------------------------------------------------------------------
+   Job Order budget revision (the PM revises Budget hours and Quantity).
+   --------------------------------------------------------------------------- */
+
+export type JobOrderBudgetInput = {
+  budgetedHours: number;
+  budgetedQuantity: number;
+  reason: string | null;
+};
+
+/**
+ * A revised budget must be a number of hours and a quantity, both zero or more. The two
+ * figures are in the Job Order's own unit of measure and are independent: hours and
+ * quantity are never blended.
+ */
+export function validateJobOrderBudgetInput(payload: Record<string, unknown>): Validation<JobOrderBudgetInput> {
+  const errors: FieldError[] = [];
+  const readNumber = (field: "budgetedHours" | "budgetedQuantity", label: string): number | null => {
+    const raw = payload[field];
+    if (raw === undefined || raw === null || String(raw).trim() === "") {
+      errors.push({ field, message: `${label} is required.` });
+      return null;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      errors.push({ field, message: `${label} must be a number.` });
+      return null;
+    }
+    if (value < 0) {
+      errors.push({ field, message: `${label} must be zero or greater.` });
+      return null;
+    }
+    // Keep the stored value clean: two decimals is plenty for hours or a quantity.
+    return Math.round(value * 100) / 100;
+  };
+
+  const budgetedHours = readNumber("budgetedHours", "Budget hours");
+  const budgetedQuantity = readNumber("budgetedQuantity", "Budget quantity");
+  const reason = normalizeText(payload.reason);
+
+  if (reason.length > 240) {
+    errors.push({ field: "reason", message: "The reason must be 240 characters or fewer." });
+  }
+  if (errors.length || budgetedHours === null || budgetedQuantity === null) {
+    return { ok: false, errors: errors.length ? errors : [{ field: "budgetedHours", message: "Invalid budget." }] };
+  }
+  return { ok: true, data: { budgetedHours, budgetedQuantity, reason: reason || null } };
+}
+
+/**
+ * The next revision number for a Job Order: one more than its highest, so the first revision
+ * a PM saves after the opening budget (revision 1) is revision 2 and nothing is overwritten.
+ */
+export function nextBudgetRevisionNo(revisions: { revisionNo: number }[]): number {
+  return revisions.reduce((highest, row) => Math.max(highest, row.revisionNo), 0) + 1;
+}
+
+/** True when a revised budget is identical to the current one, so no revision is worth writing. */
+export function isUnchangedBudget(
+  current: { budgetedHours: number | null; budgetedQuantity: number | null },
+  next: { budgetedHours: number; budgetedQuantity: number }
+): boolean {
+  const round = (value: number | null | undefined) => Math.round(Number(value ?? 0) * 100) / 100;
+  return round(current.budgetedHours) === round(next.budgetedHours)
+    && round(current.budgetedQuantity) === round(next.budgetedQuantity);
+}

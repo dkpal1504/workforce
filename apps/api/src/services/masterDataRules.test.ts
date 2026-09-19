@@ -31,6 +31,9 @@ import {
   validateWbsInput,
   wbsCodeConflictMessage,
   NETWORK_SOURCE,
+  validateJobOrderBudgetInput,
+  nextBudgetRevisionNo,
+  isUnchangedBudget,
 } from "./masterDataRules";
 
 /* --- fixtures: the seed masters, without a database ---------------------- */
@@ -341,4 +344,49 @@ test("only a standing / Non-Project Job Order may have no Section", () => {
   assert.equal(jobOrderSectionError({ isNonProject: false, sectionId: 4 }), null);
   assert.equal(jobOrderSectionError({ isNonProject: true, sectionId: null }), null);
   assert.match(String(jobOrderSectionError({ isNonProject: false, sectionId: null })), /Section is required/);
+});
+
+test("a revised budget needs hours and a quantity, both zero or more", () => {
+  const good = validateJobOrderBudgetInput({ budgetedHours: 120, budgetedQuantity: 40 });
+  assert.equal(good.ok, true);
+  if (good.ok) assert.deepEqual(good.data, { budgetedHours: 120, budgetedQuantity: 40, reason: null });
+
+  assert.equal(validateJobOrderBudgetInput({ budgetedQuantity: 40 }).ok, false, "hours are required");
+  assert.equal(validateJobOrderBudgetInput({ budgetedHours: 120 }).ok, false, "quantity is required");
+  assert.equal(validateJobOrderBudgetInput({ budgetedHours: -1, budgetedQuantity: 0 }).ok, false, "negative hours");
+  assert.equal(validateJobOrderBudgetInput({ budgetedHours: 1, budgetedQuantity: -5 }).ok, false, "negative quantity");
+  assert.equal(validateJobOrderBudgetInput({ budgetedHours: "abc", budgetedQuantity: 1 }).ok, false, "not a number");
+  assert.equal(validateJobOrderBudgetInput({ budgetedHours: 0, budgetedQuantity: 0 }).ok, true, "zero is allowed");
+});
+
+test("a revised budget is rounded to two decimals and keeps a trimmed reason", () => {
+  const parsed = validateJobOrderBudgetInput({ budgetedHours: 12.3456, budgetedQuantity: 3.999, reason: "  extra steel  " });
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.data.budgetedHours, 12.35);
+    assert.equal(parsed.data.budgetedQuantity, 4);
+    assert.equal(parsed.data.reason, "extra steel");
+  }
+  const blank = validateJobOrderBudgetInput({ budgetedHours: 1, budgetedQuantity: 1, reason: "   " });
+  assert.equal(blank.ok, true);
+  if (blank.ok) assert.equal(blank.data.reason, null, "a blank reason is stored as null");
+  assert.equal(
+    validateJobOrderBudgetInput({ budgetedHours: 1, budgetedQuantity: 1, reason: "x".repeat(241) }).ok,
+    false,
+    "an over-long reason is refused"
+  );
+});
+
+test("a revision number is always one more than the highest", () => {
+  assert.equal(nextBudgetRevisionNo([]), 1, "no revision yet -> the opening budget is 1");
+  assert.equal(nextBudgetRevisionNo([{ revisionNo: 1 }]), 2);
+  assert.equal(nextBudgetRevisionNo([{ revisionNo: 3 }, { revisionNo: 1 }]), 4, "gaps do not reuse a number");
+});
+
+test("an unchanged budget is recognised, so no revision is written for nothing", () => {
+  assert.equal(isUnchangedBudget({ budgetedHours: 100, budgetedQuantity: 10 }, { budgetedHours: 100, budgetedQuantity: 10 }), true);
+  assert.equal(isUnchangedBudget({ budgetedHours: 100.001, budgetedQuantity: 10 }, { budgetedHours: 100, budgetedQuantity: 10 }), true, "rounds to 2 decimals first");
+  assert.equal(isUnchangedBudget({ budgetedHours: 100, budgetedQuantity: 10 }, { budgetedHours: 101, budgetedQuantity: 10 }), false);
+  assert.equal(isUnchangedBudget({ budgetedHours: null, budgetedQuantity: null }, { budgetedHours: 0, budgetedQuantity: 0 }), true, "null reads as zero");
+  assert.equal(isUnchangedBudget({ budgetedHours: null, budgetedQuantity: null }, { budgetedHours: 5, budgetedQuantity: 0 }), false);
 });

@@ -117,9 +117,9 @@ accepted, and the drift check stays clean.
 7. **Achieved quantity** is the `cumulative_quantity` of the latest **approved** entry. A
    Job Order with no approved progress shows a dash, not a false 0%.
 8. **A Network belongs to one WBS.** `networks.wbs_id` is required, the Network tab asks for
-   the WBS of the Network and shows it in a WBS column, the Job Order mapping form offers
-   only the Networks of the selected WBS (changing the WBS reloads the list), and the CSV
-   upload validates `Network_ID` against the `WBS_NO` **on the same row**. A Network of
+   the WBS of the Network and shows it in a WBS column, and the CSV upload validates
+   `Network_ID` against the `WBS_NO` **on the same row** (the `PUT .../mapping` route enforces
+   the same rule when it is called directly). A Network of
    another WBS of the same project is **rejected**, never moved, so one Network number never
    spans two WBS rows. `(project_id, code)` uniqueness is unchanged.
 
@@ -168,9 +168,10 @@ Budgeted_hours, Department, Section, Job_Order_Status
 
 | Screen | Route | Who | What it does |
 |---|---|---|---|
-| Project Master Data | `/master-data` | ADMIN, PM | Tabs Project, WBS, UoM, Network, Job Order. Example help text on every field. Duplicates refused with the conflicting row named. A **Network row requires a WBS** (a select limited to the chosen project's WBS rows, and the list shows a WBS column); the **Job Order** tab corrects a Job Order's WBS / Network, offering **only the Networks of the selected WBS**, and changing the WBS reloads that list. Deactivate instead of delete; a hard delete is offered only when nothing references the row. |
+| Project Master Data | `/master-data` | ADMIN, PM | Tabs Project, WBS, UoM, Network, Job Order. Example help text on every field. Duplicates refused with the conflicting row named. A **Network row requires a WBS** (a select limited to the chosen project's WBS rows, and the list shows a WBS column); the **Job Order** tab lists a project's Job Orders and offers **Edit Job Order**, where the mapping is shown read-only and only the **budget** is revised (a new effective-dated revision each save). Deactivate instead of delete; a hard delete is offered only when nothing references the row. |
 | Job Order Upload | `/job-order-upload` | ADMIN, PM | Template download plus upload, with created / skipped / rejected counts and per-row reasons. `Network_ID` is checked against the `WBS_NO` on its own row, so a Network of another WBS of the same project is rejected with both WBS codes in the message. |
 | Quantity Progress | `/job-order-progress` | HOD, DEPT_HEAD, PM, ADMIN | HOD punch screen with a Section picker for a Department Head, plus the PM approval queue (approve / reject / send back). |
+| Job Order tab (Project Master Data) | `/master-data` → Job Order | ADMIN, PM | Lists a project's Job Orders and offers **Edit Job Order**: the mapping (Project, WBS, Network, UoM, Department, Section, Status) is shown read-only and only **Budget hours** and **Budget quantity** can be revised. Saving writes a new effective-dated revision with the date, time and author. |
 | Job Order Summary | Summary → Job Order | as before | Groups Project → WBS → Job Order. Hours and quantity side by side. Status filter All / Active / In-Active. |
 | Project Summary | Summary → Project | as before | Now grouped by the frozen booking snapshot. Column headings are the project colour key. |
 

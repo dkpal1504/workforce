@@ -25,7 +25,10 @@ const VIEWPORTS = [
 const SCREENS: Array<[string, string, string]> = [
   ["Project Master Data", "admin@company.com", "/master-data"],
   ["Job Order Upload", "admin@company.com", "/job-order-upload"],
-  ["Quantity Progress", "hod@company.com", "/job-order-progress"],
+  // Admin rather than an HOD: the minimal seed creates only the four office accounts, and an
+  // Admin may view the punch screen (the API allows ADMIN on /mine). An HOD account exists
+  // only in the demo seed or after the team registers one.
+  ["Quantity Progress", "admin@company.com", "/job-order-progress"],
   ["Summary", "admin@company.com", "/summary"],
 ];
 

@@ -460,7 +460,7 @@ A booked timesheet entry or allocation row stores `project_id`, `project_wbs_id`
 
 **Path:** `/master-data` (top nav: **Project Master**).
 
-Five tabs: **Project**, **WBS**, **UoM**, **Network** and **Job Order**. Reads are open to any signed-in user; every create, update, activate/deactivate and delete is limited to **ADMIN and PM**, and every write is audited. The **Job Order** tab is read-only apart from one action, **Edit WBS / Network** (section 14.4).
+Five tabs: **Project**, **WBS**, **UoM**, **Network** and **Job Order**. Reads are open to any signed-in user; every create, update, activate/deactivate and delete is limited to **ADMIN and PM**, and every write is audited. The **Job Order** tab is read-only apart from one action, **Edit Job Order**, which revises the budget (section 14.4).
 
 ### 14.1 Fields and example help text
 
@@ -506,16 +506,33 @@ The **WBS is not part of the Network duplicate rule**: a Network code is unique 
   Only a row that nothing references can be deleted, and the screen offers Deactivate / Activate rather than Delete.
 - Deactivating a **WBS row** that owns Networks leaves those Networks in place, but the WBS can no longer own a new one; a Network row is deactivated on its own tab.
 
-### 14.4 The Job Order tab — correcting a WBS / Network mapping
+### 14.4 The Job Order tab — revising a Job Order's budget
 
-The CSV upload creates a Job Order and then skips it, so this tab is the only screen that corrects a wrong WBS or Network on an existing Job Order. It lists every Job Order with its Project, WBS, Network, booked hours and status, and offers **Edit WBS / Network**.
+The CSV upload creates a Job Order and then skips it, so this tab is where an existing Job Order
+is looked at and its **budget** is revised. It lists every Job Order of the selected project with
+its Project, WBS, Network, booked rows and status, and offers **Edit Job Order**.
 
-- **The Network list follows the WBS.** The form offers only the Networks of the WBS you select, because a Network belongs to one WBS element: changing the WBS **reloads** that list and clears the Network choice, so you cannot keep a Network of the old WBS by accident.
-- The API refuses a Network of another WBS with `NETWORK_WBS_MISMATCH` and names both WBS codes, for example
-  `Network "SAP-NW-93001" belongs to WBS "C.SFR.0045.201", but Job Order "1900000111" is mapped to WBS "C.REP.0045.202". Pick another Network: only the Networks of WBS "C.REP.0045.202" are valid for this Job Order.`
-- Only the WBS rows of the Job Order's **own Project** are listed. The Project itself is not changed on this tab: an Admin changes that on the Job Order Mapping screen.
-- **A Job Order that already has booked hours cannot move to another WBS** (section 13.5). Save stays disabled and explains why.
-- The change is audited as `ADMIN_UPDATE_JOB_ORDER_MAPPING` with the previous and the new WBS / Network, and it does not move hours that are already booked (section 11.2).
+The form shows the whole Job Order, but **only the budget is editable**:
+
+| Shown, not editable | Editable |
+|---|---|
+| Project, WBS number, Network, Unit of measure, Department, Section, Status, booked rows | **Budget hours**, **Budget quantity**, and an optional **Reason** |
+
+- The identifying fields are printed rather than offered as controls: there is **no** select on the
+  form, so an existing Job Order can never be re-pointed here. Booked hours keep the attribution
+  they were given (section 11.2).
+- The API refuses any attempt to change the mapping through this route, and refuses a budget with a
+  missing, non-numeric or negative figure. A budget that is **unchanged** is refused with
+  `BUDGET_UNCHANGED`, so no revision is written for nothing.
+- **Saving writes a new effective-dated revision**, one more than the highest, stamped with the
+  **date and time**, the user who made it and the reason if one was given. The form lists the last
+  five revisions, so you can see what the budget is and when it last changed, and the audit entry is
+  `ADMIN_UPDATE_JOB_ORDER_BUDGET` with the previous and the new figures.
+- Because revisions are effective-dated, the **Job Order Summary still measures an earlier month
+  against the budget that was in force then** (section 11.1); a revision never rewrites past
+  consumption.
+- The Project / WBS / Network of an existing Job Order are changed by an **Admin** on the Job Order
+  Mapping screen, and a Job Order that already has booked hours cannot move to another WBS (13.5).
 
 ---
 
@@ -852,7 +869,8 @@ Selected routes (all under `/api/`):
 | `/master-data/projects`, `/projects/:projectId/wbs`, `/projects/:projectId/networks`, `/uom` | POST | ADMIN/PM | Create a master row; a duplicate answers `409` and names the conflicting row. A Network create **requires `wbsId`** — an active WBS row of that project |
 | `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | PUT | ADMIN/PM | Update a master row. A Network update takes `wbsId`, so a Network can be moved to another WBS row of its own project |
 | `/master-data/job-orders?projectId=&status=&q=` | GET | auth | Job Order maintenance list (Project, WBS, Network, booked hours). Each row carries its project's WBS rows and, inside each WBS row, that WBS's Networks |
-| `/master-data/job-orders/:id/mapping` | PUT | ADMIN/PM | Correct a Job Order's WBS and Network; refused with `NETWORK_WBS_MISMATCH` when the Network is not of the chosen WBS, and with `JOB_ORDER_WBS_LOCKED` once hours are booked |
+| `/master-data/job-orders/:id/mapping` | PUT | ADMIN/PM | Correct a Job Order's WBS and Network without a screen of its own (the Job Order tab has no mapping controls); refused with `NETWORK_WBS_MISMATCH` when the Network is not of the chosen WBS, and with `JOB_ORDER_WBS_LOCKED` once hours are booked |
+| `/master-data/job-orders/:id/budget` | PUT | ADMIN/PM | **Edit Job Order** on the Job Order tab: revises Budget hours and Budget quantity and writes a new effective-dated revision with the date, time and author. Refused with `BUDGET_UNCHANGED` when nothing changed |
 | `/master-data/.../:id/deactivate`, `/activate` | POST | ADMIN/PM | Retire or restore a master row (`active = false` / `true`) |
 | `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | DELETE | ADMIN/PM | Hard delete; refused with the reference counts while another row points at it |
 | `/job-order-upload/template` | GET | ADMIN/PM | Job Order CSV template (fixed header + one real example row) |

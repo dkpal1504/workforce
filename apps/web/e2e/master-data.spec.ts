@@ -9,8 +9,8 @@ const PASSWORD = process.env.E2E_PASSWORD || process.env.DEV_SEED_PASSWORD || "W
  * Admin actually depends on:
  *
  *   1. create a WBS row and a Network inside a project,
- *   2. correct an existing Job Order's WBS and Network (the CSV import creates a Job
- *      Order and then skips it, so this is the only way to fix a wrong one),
+ *   2. revise an existing Job Order's BUDGET - the mapping (Project, WBS, Network,
+ *      organisation) is shown read-only, and saving writes an effective-dated revision,
  *   3. refuse a WBS change once hours are booked.
  *
  * The test cleans up after itself: it restores the Job Order it touched and deactivates
@@ -45,8 +45,11 @@ test("a Project Head can create a WBS and a Network, and correct a Job Order", a
   await page.goto("/master-data");
   await expect(page.getByRole("tab", { name: "Project", exact: true })).toBeVisible();
 
-  // 1. Create a WBS row in the first project of the selector.
+  // 1. Create a WBS row in the project the selector shows by default. Its value is kept
+  // so the cleanup can come back to the same project: the WBS and Network tabs both follow
+  // the selector, and step 3 changes it to reach a project that has Job Orders.
   await page.getByRole("tab", { name: "WBS", exact: true }).click();
+  const createdUnderProject = await page.locator("select[aria-label='Project']").inputValue();
   await page.getByRole("button", { name: /Add WBS/i }).click();
   await page.getByLabel("WBS number").fill(wbsCode);
   await page.getByLabel("WBS name").fill("Created by the e2e test");
@@ -64,61 +67,111 @@ test("a Project Head can create a WBS and a Network, and correct a Job Order", a
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByRole("cell", { name: networkCode })).toBeVisible();
 
-  // 3. The Job Order tab offers only that project's rows and Networks in the mapping form.
+  // 3. The Job Order tab: the mapping is read-only and only the BUDGET can be revised.
   await page.getByRole("tab", { name: "Job Order", exact: true }).click();
   await expect(page.getByRole("cell", { name: networkCode }).or(page.getByText("Job Orders are created by CSV upload"))).toBeVisible();
 
-  // Pick a Job Order with no booked hours, so the WBS may move.
-  const targetRow = page.locator("table tbody tr").filter({ hasText: "None" }).first();
+  // The tab lists the Job Orders of the SELECTED project, so pick a project that has some.
+  const projectSelect = page.locator("select[aria-label='Project']");
+  const projectValues = await projectSelect.locator("option").evaluateAll((options) =>
+    options.map((option) => (option as HTMLOptionElement).value).filter((value) => value)
+  );
+  let found = false;
+  for (const value of projectValues) {
+    await projectSelect.selectOption(value);
+    await page.waitForTimeout(900);
+    if ((await page.locator("table tbody tr").count()) > 0) { found = true; break; }
+  }
+  if (!found) test.skip(true, "no project in this database has a Job Order");
+
+  const targetRow = page.locator("table tbody tr").first();
   const targetCode = (await targetRow.locator("td").first().innerText()).split("\n")[0].trim();
-  const originalWbs = (await targetRow.locator("td").nth(2).innerText()).trim();
-  const originalNetwork = (await targetRow.locator("td").nth(3).innerText()).trim();
+  await targetRow.getByRole("button", { name: /Edit Job Order/i }).click();
+  await expect(page.getByRole("heading", { name: new RegExp(`Edit Job Order ${targetCode}`) })).toBeVisible();
 
-  await targetRow.getByRole("button", { name: /Edit WBS/i }).click();
-  await pickByText(page, "WBS number", wbsCode);
-  await pickByText(page, "Network", networkCode);
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.locator("table tbody tr").filter({ hasText: targetCode }).first()).toContainText(wbsCode);
+  // Everything that identifies the Job Order is shown, and nothing of it is a control:
+  // no <select> at all, three inputs (Budget hours, Budget quantity, Reason).
+  const formShape = await page.evaluate(() => {
+    const modal = document.querySelector(".modal") as HTMLElement;
+    return {
+      selects: modal.querySelectorAll("select").length,
+      inputs: modal.querySelectorAll("input").length,
+      readonlyLabels: Array.from(modal.querySelectorAll(".sup-field label")).map((l) => (l.textContent || "").trim()),
+    };
+  });
+  expect(formShape.selects, "the mapping must not be editable here").toBe(0);
+  for (const label of ["Project", "WBS number", "Network", "Unit of measure", "Department", "Section", "Status"]) {
+    expect(formShape.readonlyLabels).toContain(label);
+  }
 
-  // 4. Put it back and deactivate the two rows this test created.
-  const movedRow = page.locator("table tbody tr").filter({ hasText: targetCode }).first();
-  await movedRow.getByRole("button", { name: /Edit WBS/i }).click();
-  await pickByText(page, "WBS number", originalWbs);
-  await pickByText(page, "Network", originalNetwork);
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.locator("table tbody tr").filter({ hasText: targetCode }).first()).toContainText(originalWbs);
+  // Saving needs a change: an unchanged budget writes no revision.
+  const save = page.getByRole("button", { name: "Save" });
+  await expect(save).toBeDisabled();
+  const currentHours = await page.getByLabel("Budget hours").inputValue();
+  await page.getByLabel("Budget hours").fill(String(Number(currentHours) + 1));
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(page.locator("table tbody tr").filter({ hasText: targetCode }).first()).toBeVisible();
+
+  // Reopening shows the revision that was just written, with its date and time.
+  await page.locator("table tbody tr").filter({ hasText: targetCode }).first().getByRole("button", { name: /Edit Job Order/i }).click();
+  await expect(page.locator(".modal li").first()).toContainText(/Revision \d+ ·/);
+  await page.getByRole("button", { name: "Cancel" }).click();
 
   // Deactivating asks for confirmation through a native dialog, which Playwright
   // dismisses unless the test accepts it.
   page.on("dialog", (dialog) => void dialog.accept());
   for (const [tab, code] of [["WBS", wbsCode], ["Network", networkCode]] as Array<[string, string]>) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
+    await page.locator("select[aria-label='Project']").selectOption(createdUnderProject);
+    await page.waitForTimeout(900);
     const row = page.locator("table tbody tr").filter({ hasText: code }).first();
     await row.getByRole("button", { name: /Deactivate/i }).click();
     await expect(row).toContainText("Inactive");
   }
 });
 
-test("a WBS cannot change once the Job Order has booked hours", async ({ page }) => {
+test("the Job Order form keeps the mapping read-only, even for a Job Order with booked hours", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page);
   await page.goto("/master-data");
   await page.getByRole("tab", { name: "Job Order", exact: true }).click();
 
-  const bookedRow = page.locator("table tbody tr").filter({ hasNotText: "None" }).first();
-  if (!(await bookedRow.count())) test.skip(true, "no Job Order with booked hours in this database");
+  // The tab lists one project at a time, so walk the selector until a project with Job
+  // Orders is shown, then take the first row whose Booked-hours cell is not "None".
+  const projectSelect = page.locator("select[aria-label='Project']");
+  const projectValues = await projectSelect.locator("option").evaluateAll((options) =>
+    options.map((option) => (option as HTMLOptionElement).value).filter((value) => value)
+  );
+  let bookedIndex = -1;
+  for (const value of projectValues) {
+    await projectSelect.selectOption(value);
+    await page.waitForTimeout(900);
+    bookedIndex = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("table tbody tr"));
+      return rows.findIndex((row) => {
+        const cell = (row.children[4] as HTMLElement | undefined)?.innerText.trim();
+        return Boolean(cell) && cell !== "None";
+      });
+    });
+    if (bookedIndex >= 0) break;
+  }
+  if (bookedIndex < 0) test.skip(true, "no Job Order with booked hours in this database");
 
-  await bookedRow.getByRole("button", { name: /Edit WBS/i }).click();
-  const current = await page.getByLabel("WBS number").inputValue();
-  const other = await page.getByLabel("WBS number").locator("option").evaluateAll((options, value) => {
-    const hit = options.find((option) => (option as HTMLOptionElement).value !== value);
-    return hit ? (hit as HTMLOptionElement).value : null;
-  }, current);
-  if (!other) test.skip(true, "this Job Order has only one WBS row to choose from");
+  const bookedRow = page.locator("table tbody tr").nth(bookedIndex);
 
-  await page.getByLabel("WBS number").selectOption(other as string);
-  const save = page.getByRole("button", { name: "Save" });
-  await expect(save).toBeDisabled();
-  await expect(save).toHaveAttribute("title", /booked hours/i);
+  await bookedRow.getByRole("button", { name: /Edit Job Order/i }).click();
+  // No control can re-point an existing Job Order: no <select>, and the identifying fields
+  // are printed. Its booked rows keep the attribution they were given.
+  const shape = await page.evaluate(() => {
+    const modal = document.querySelector(".modal") as HTMLElement;
+    return {
+      selects: modal.querySelectorAll("select").length,
+      readonlyText: Array.from(modal.querySelectorAll(".md-readonly")).map((p) => (p as HTMLElement).innerText.trim()),
+    };
+  });
+  expect(shape.selects).toBe(0);
+  // The budget stays editable: a revision is a forward-looking correction, not a re-point.
+  await expect(page.getByLabel("Budget hours")).toBeEnabled();
   await page.getByRole("button", { name: "Cancel" }).click();
 });

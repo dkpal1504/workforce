@@ -24,6 +24,9 @@ import {
   validateWbsInput,
   jobOrderNetworkWbsError,
   jobOrderWbsMoveError,
+  validateJobOrderBudgetInput,
+  nextBudgetRevisionNo,
+  isUnchangedBudget,
   resolveNetworkWbs,
   wbsCodeConflictMessage,
   type FieldError,
@@ -615,6 +618,17 @@ masterDataRouter.get("/job-orders", async (req, res) => {
       },
       projectWbs: { select: { id: true, wbsCode: true, name: true } },
       _count: { select: { timesheetEntries: true, employeeAllocations: true } },
+      // The last few budget revisions, newest first, so the form can show what the budget
+      // is and when it was last revised.
+      budgetRevisions: {
+        select: {
+          revisionNo: true, budgetedHours: true, budgetedQuantity: true,
+          effectiveFrom: true, reason: true,
+          createdBy: { select: { name: true, role: true } },
+        },
+        orderBy: { revisionNo: "desc" },
+        take: 5,
+      },
       department: { select: { id: true, name: true } },
       section: { select: { id: true, name: true } },
       uom: { select: { id: true, code: true } },
@@ -793,5 +807,86 @@ masterDataRouter.put("/job-orders/:id/mapping", writeOnly, async (req, res) => {
     return res.json({ jobOrder: updated });
   } catch (error) {
     return failed(res, "The Job Order mapping", error, "job_order");
+  }
+});
+/**
+ * Revise a Job Order's budget: Budget hours and Budget quantity, nothing else.
+ *
+ * The Project / WBS / Network / UoM / Department / Section of an uploaded Job Order are
+ * read-only on the screen and are refused here, so this route cannot re-point an existing
+ * Job Order. Every save writes a NEW effective-dated revision (one more than the highest)
+ * with the date and time it was made, the reason if given, and the user who made it, so the
+ * consumption of a past month is still measured against the budget that was in force then.
+ * ADMIN and PM only, and audited with the previous and next figures.
+ */
+masterDataRouter.put("/job-orders/:id/budget", writeOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return notFound(res, "Job Order not found.", "JOB_ORDER_NOT_FOUND");
+
+  const jobOrder = await prisma.jobOrder.findUnique({
+    where: { id },
+    select: {
+      id: true, code: true, name: true, status: true,
+      budgetedHours: true, budgetedQuantity: true, uomId: true,
+      uom: { select: { code: true } },
+      budgetRevisions: { select: { revisionNo: true }, orderBy: { revisionNo: "desc" }, take: 1 },
+    },
+  });
+  if (!jobOrder) return notFound(res, "Job Order not found.", "JOB_ORDER_NOT_FOUND");
+
+  const parsed = validateJobOrderBudgetInput(req.body ?? {});
+  if (!parsed.ok) return validationError(res, parsed.errors);
+  const { budgetedHours, budgetedQuantity, reason } = parsed.data;
+
+  if (isUnchangedBudget(jobOrder, { budgetedHours, budgetedQuantity })) {
+    return res.status(400).json({
+      error: `Budget hours and quantity are unchanged (${budgetedHours} ${jobOrder.uom.code}, ${budgetedQuantity} qty), so there is nothing to save.`,
+      code: "BUDGET_UNCHANGED",
+    });
+  }
+
+  const revisionNo = nextBudgetRevisionNo(jobOrder.budgetRevisions);
+  try {
+    const [updated, revision] = await prisma.$transaction([
+      prisma.jobOrder.update({
+        where: { id },
+        data: { budgetedHours, budgetedQuantity },
+      }),
+      prisma.jobOrderBudgetRevision.create({
+        data: {
+          jobOrderId: id,
+          revisionNo,
+          budgetedHours,
+          budgetedQuantity,
+          uomId: jobOrder.uomId,
+          effectiveFrom: new Date(),
+          reason: reason ?? `Budget revised by ${req.user!.role}`,
+          createdById: req.user!.id,
+        },
+      }),
+    ]);
+    await writeAudit(req.user!.id, "ADMIN_UPDATE_JOB_ORDER_BUDGET", "job_order", id, {
+      by: req.user!.role,
+      code: jobOrder.code,
+      revisionNo,
+      previous: { budgetedHours: jobOrder.budgetedHours, budgetedQuantity: jobOrder.budgetedQuantity },
+      next: { budgetedHours, budgetedQuantity },
+      reason: revision.reason,
+    });
+    return res.json({
+      jobOrder: {
+        id: updated.id, code: updated.code, name: updated.name, status: updated.status,
+        budgetedHours: updated.budgetedHours, budgetedQuantity: updated.budgetedQuantity,
+      },
+      revision: {
+        revisionNo: revision.revisionNo,
+        budgetedHours: revision.budgetedHours,
+        budgetedQuantity: revision.budgetedQuantity,
+        effectiveFrom: revision.effectiveFrom,
+        reason: revision.reason,
+      },
+    });
+  } catch (error) {
+    return failed(res, "The Job Order budget", error, "job_order");
   }
 });

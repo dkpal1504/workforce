@@ -61,6 +61,17 @@ type JobOrderRow = {
   code: string;
   name: string;
   status: string;
+  budgetedHours: number | null;
+  budgetedQuantity: number | null;
+  /** The last few effective-dated budget revisions, newest first. */
+  budgetRevisions?: {
+    revisionNo: number;
+    budgetedHours: number | null;
+    budgetedQuantity: number | null;
+    effectiveFrom: string;
+    reason: string | null;
+    createdBy: { name: string; role: string } | null;
+  }[];
   /** The project of a Job Order carries its WBS rows, and each WBS row carries its own
    *  Networks — never a flat project-wide Network list, because a Network belongs to a WBS. */
   project: (Pick<ProjectRow, "id" | "code" | "name" | "colorKey"> & { wbsRows: WbsRow[] }) | null;
@@ -337,7 +348,7 @@ export function MasterDataPage() {
                 <td><span className={`badge badge--${row.status === "active" ? "manual" : "sync"}`}>{row.status === "active" ? "Active" : "In-Active"}</span></td>
                 <td>
                   <div className="sup-table__actions">
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "joborder", item: row })}>Edit WBS / Network</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "joborder", item: row })}>Edit Job Order</button>
                   </div>
                 </td>
               </tr>
@@ -451,7 +462,7 @@ function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClos
 }) {
   if (editor.type === "project") return <ProjectForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
   if (editor.type === "uom") return <UomForm item={editor.item} uom={uom} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
-  if (editor.type === "joborder") return <JobOrderForm item={editor.item} projects={projects} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
+  if (editor.type === "joborder") return <JobOrderForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
 
   const parent = editor.item ? projects.find((project) => project.id === editor.item!.projectId) : projects.find((project) => String(project.id) === projectFilter);
   if (!parent) {
@@ -476,120 +487,135 @@ type SaveFn = (path: string, method: "POST" | "PUT", body: Record<string, unknow
  * Project and its number. A WBS may not change once hours are booked, because each
  * booked row keeps the attribution it was given (the server refuses it too).
  */
-function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: JobOrderRow; projects: ProjectRow[]; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
-  // Take the options from the LIVE project list, not from the row's own copy: a WBS row
-  // or Network added on the other tabs a moment ago must be selectable straight away.
-  // The WBS list comes from the LIVE project list, so a WBS row added on that tab a moment
-  // ago is selectable straight away. The Networks of a WBS are merged from two places: the
-  // Job Order payload nests them inside each WBS row, and the project list carries them flat
-  // with their `wbsId`. Merging means a Network added on the Network tab is offered too.
-  const pageProject = projects.find((project) => project.id === item.project?.id);
-  const wbsOptions = pageProject?.wbsRows ?? item.project?.wbsRows ?? [];
-  const booked = (item._count?.timesheetEntries ?? 0) + (item._count?.employeeAllocations ?? 0);
-  const [projectWbsId, setProjectWbsId] = useState(String(item.projectWbs?.id ?? ""));
-  const [networkId, setNetworkId] = useState(String(item.network?.id ?? ""));
-  const networksByWbsId = useMemo(() => {
-    const byWbs = new Map<number, NetworkOption[]>();
-    const add = (wbsId: number | null | undefined, network: NetworkOption) => {
-      if (wbsId == null) return;
-      const list = byWbs.get(wbsId) ?? [];
-      if (!list.some((candidate) => candidate.id === network.id)) list.push(network);
-      byWbs.set(wbsId, list);
-    };
-    for (const row of item.project?.wbsRows ?? []) for (const network of row.networks ?? []) add(row.id, network);
-    for (const network of pageProject?.networks ?? []) add(network.wbsId, network);
-    for (const list of byWbs.values()) list.sort((left, right) => left.code.localeCompare(right.code));
-    return byWbs;
-  }, [item.project, pageProject]);
-  // A Network belongs to ONE WBS element, so the Network select lists only the Networks of
-  // the SELECTED WBS. Changing the WBS clears the Network choice: a Network of the old WBS
-  // can never stay selected, and it can never be saved by accident.
-  const selectedWbs = wbsOptions.find((row) => String(row.id) === projectWbsId) ?? null;
-  const networkOptions: NetworkOption[] = networksByWbsId.get(Number(projectWbsId)) ?? [];
-  const wbsChanged = projectWbsId !== String(item.projectWbs?.id ?? "");
-  const wbsLocked = wbsChanged && booked > 0;
-  const noNetwork = !networkId;
-  const submitDisabled = wbsLocked || noNetwork;
-  const submitTitle = wbsLocked
-    ? "This Job Order already has booked hours, so its WBS cannot change."
-    : noNetwork
-      ? "Select the Network of the chosen WBS first."
-      : undefined;
+/**
+ * Edit a Job Order.
+ *
+ * Only the BUDGET may be changed here: Budget hours and Budget quantity, and an optional
+ * reason. The Project, WBS, Network, UoM, Department, Section and Status of an uploaded Job
+ * Order are shown read-only, because they identify it and because booked hours keep the
+ * attribution they were given. Saving writes a NEW effective-dated budget revision stamped
+ * with the date and time, which is what the Job Order Summary compares consumption against.
+ */
+function JobOrderForm({ item, busy, error, onClose, onSave }: { item: JobOrderRow; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
+  const [budgetedHours, setBudgetedHours] = useState(String(item.budgetedHours ?? 0));
+  const [budgetedQuantity, setBudgetedQuantity] = useState(String(item.budgetedQuantity ?? 0));
+  const [reason, setReason] = useState("");
 
-  function chooseWbs(nextWbsId: string) {
-    setProjectWbsId(nextWbsId);
-    // The Network is refreshed with the WBS, so a Network of the previous WBS is dropped.
-    setNetworkId("");
-  }
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const hours = Number(budgetedHours);
+  const quantity = Number(budgetedQuantity);
+  const valid = budgetedHours.trim() !== "" && budgetedQuantity.trim() !== "" &&
+    Number.isFinite(hours) && Number.isFinite(quantity) && hours >= 0 && quantity >= 0;
+  const changed = valid && (
+    round(hours) !== round(Number(item.budgetedHours ?? 0)) ||
+    round(quantity) !== round(Number(item.budgetedQuantity ?? 0))
+  );
+  const booked = (item._count?.timesheetEntries ?? 0) + (item._count?.employeeAllocations ?? 0);
+  const revisions = item.budgetRevisions ?? [];
+  const latest = revisions[0] ?? null;
+
+  const submitDisabled = !valid || !changed;
+  const submitTitle = !valid
+    ? "Enter Budget hours and Budget quantity as zero or greater."
+    : !changed
+      ? "Change Budget hours or Budget quantity first: an unchanged budget writes no revision."
+      : undefined;
 
   return (
     <Modal
-      title={`Edit ${item.code} — WBS and Network`}
+      title={`Edit Job Order ${item.code}`}
       busy={busy}
       error={error}
       onClose={onClose}
       submitDisabled={submitDisabled}
       submitTitle={submitTitle}
-      onSubmit={() => onSave(`/master-data/job-orders/${item.id}/mapping`, "PUT", {
-        projectWbsId: Number(projectWbsId),
-        networkId: Number(networkId),
+      onSubmit={() => onSave(`/master-data/job-orders/${item.id}/budget`, "PUT", {
+        budgetedHours: round(hours),
+        budgetedQuantity: round(quantity),
+        reason,
       })}
     >
       <div className="sup-field">
         <p className="md-readonly">{item.code} · {item.name}</p>
         <p className="md-help">
-          {item.project ? `${item.project.colorKey} · ${item.project.code} · ${item.project.name}. ` : ""}
-          The Project is fixed, because an uploaded Job Order is identified by its Project and its number.
+          Only the budget can be revised here. Saving records a new revision with the date and time, so the
+          consumption of an earlier month is still measured against the budget that was in force then.
         </p>
       </div>
+
+      <div className="sup-form__grid">
+        <div className="sup-field">
+          <label>Project</label>
+          <p className="md-readonly">
+            {item.project ? `${item.project.colorKey} · ${item.project.code} · ${item.project.name}` : "—"}
+          </p>
+        </div>
+        <div className="sup-field">
+          <label>WBS number</label>
+          <p className="md-readonly">{item.projectWbs ? item.projectWbs.wbsCode : "—"}</p>
+        </div>
+        <div className="sup-field">
+          <label>Network</label>
+          <p className="md-readonly">{item.network ? item.network.code : "—"}</p>
+        </div>
+        <div className="sup-field">
+          <label>Unit of measure</label>
+          <p className="md-readonly">{item.uom ? item.uom.code : "—"}</p>
+        </div>
+        <div className="sup-field">
+          <label>Department</label>
+          <p className="md-readonly">{item.department ? item.department.name : "—"}</p>
+        </div>
+        <div className="sup-field">
+          <label>Section</label>
+          <p className="md-readonly">{item.section ? item.section.name : "All sections (standing)"}</p>
+        </div>
+        <div className="sup-field">
+          <label>Status</label>
+          <p className="md-readonly">{item.status === "active" ? "Active" : "In-Active"}</p>
+        </div>
+        <div className="sup-field">
+          <label>Booked rows</label>
+          <p className="md-readonly">{booked === 0 ? "None" : String(booked)}</p>
+        </div>
+      </div>
+
       <Field
-        label="WBS number"
-        help={wbsLocked
-          ? `This Job Order already has ${booked} booked row(s), so its WBS cannot change. Deactivate it and raise a new Job Order if the work really moved.`
-          : `Only the WBS rows of ${item.project?.code ?? "this project"} are listed. Example: ${WBS_CODE_EXAMPLE}`}
+        label="Budget hours"
+        help={`Required, zero or greater. This is the hours budget the consumption on the Job Order Summary is measured against. Current: ${item.budgetedHours ?? 0}`}
       >
-        <select value={projectWbsId} onChange={(e) => chooseWbs(e.target.value)} required>
-          {wbsOptions.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.wbsCode}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
-            </option>
-          ))}
-        </select>
+        <input inputMode="decimal" required value={budgetedHours} onChange={(e) => setBudgetedHours(e.target.value)} />
       </Field>
       <Field
-        label="Network"
-        help={selectedWbs
-          ? `Only the Networks of WBS ${selectedWbs.wbsCode} are listed, because a Network belongs to one WBS element. Changing the WBS clears this choice. Example: ${NETWORK_CODE_EXAMPLE}`
-          : `Select a WBS first: a Network belongs to one WBS element, so the list depends on the WBS. Example: ${NETWORK_CODE_EXAMPLE}`}
+        label="Budget quantity"
+        help={`Required, zero or greater, in the Job Order's own unit (${item.uom?.code ?? "—"}). Hours and quantity are independent figures. Current: ${item.budgetedQuantity ?? 0}`}
       >
-        <select value={networkId} onChange={(e) => setNetworkId(e.target.value)} required disabled={networkOptions.length === 0}>
-          {networkOptions.length === 0 && (
-            <option value="">{selectedWbs ? `No Network in WBS ${selectedWbs.wbsCode} yet` : "Select a WBS row first"}</option>
-          )}
-          {networkOptions.length > 0 && !networkId && <option value="">Select a Network…</option>}
-          {networkOptions.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.code}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
-            </option>
-          ))}
-        </select>
+        <input inputMode="decimal" required value={budgetedQuantity} onChange={(e) => setBudgetedQuantity(e.target.value)} />
       </Field>
-      {wbsOptions.length === 0 && (
-        <p className="md-help">This project has no WBS row yet. Add one on the WBS tab first.</p>
-      )}
-      {selectedWbs && networkOptions.length === 0 && (
-        <p className="md-help">
-          WBS {selectedWbs.wbsCode} has no Network yet, and this Job Order must point at a Network of its own WBS.
-          Add one on the Network tab (choose this WBS there), then come back to this form.
-        </p>
-      )}
-      {booked > 0 && !wbsChanged && (
-        <p className="md-help">Booked rows on record: {booked}. The Network can still be corrected; the WBS is locked.</p>
-      )}
+      <Field label="Reason (optional)" help="Recorded against the revision, for example the transfer that caused it.">
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Budget transfer from another Job Order" />
+      </Field>
+
+      <div className="sup-field">
+        <label>{latest ? `Last revision (${revisions.length} shown)` : "Revisions"}</label>
+        {revisions.length === 0 ? (
+          <p className="md-help">No revision recorded yet for this Job Order.</p>
+        ) : (
+          <ul className="md-help" style={{ margin: 0, paddingLeft: 18 }}>
+            {revisions.map((revision) => (
+              <li key={revision.revisionNo}>
+                Revision {revision.revisionNo} · {new Date(revision.effectiveFrom).toLocaleString()} ·{" "}
+                {revision.budgetedHours ?? 0} hrs · {revision.budgetedQuantity ?? 0} qty
+                {revision.createdBy ? ` · ${revision.createdBy.name}` : ""}
+                {revision.reason ? ` · ${revision.reason}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </Modal>
   );
 }
-
 
 function ProjectForm({ item, busy, error, onClose, onSave }: { item?: ProjectRow; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
   const [code, setCode] = useState(item?.code ?? "");
