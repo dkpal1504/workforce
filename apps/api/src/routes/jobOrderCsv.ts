@@ -5,10 +5,12 @@ import { writeAudit } from "../audit";
 import { buildCsvText, readCsvFile } from "../services/csvParser";
 import {
   JOB_ORDER_CSV_HEADERS,
+  PENDING_MASTER_ID,
   checkJobOrderHeader,
   codeKey,
   planJobOrderImport,
   projectCodeOfRow,
+  projectScopedKey,
   type JobOrderImportMasters,
   type JobOrderRowIssue,
 } from "../services/jobOrderCsv";
@@ -19,7 +21,13 @@ import {
  * Role-gated to ADMIN/PM (the Employee uploader stays ADMIN/HR), audited, and
  * validated server-side against the Project / WBS / Network / UoM / Department /
  * Section masters. Every rejected row is reported with its row number and column,
- * so a file is never partially accepted in silence; nothing is ever auto-created.
+ * so a file is never silently partial.
+ *
+ * Auto-creation is narrow: a missing WBS or Network (only) is created on request
+ * (`createMissingMasters`, default true) together with the Job Orders in ONE
+ * transaction, and the response reports each created master with the row that
+ * introduced it. A missing Project, UoM, Department or Section still refuses its
+ * row and names what is missing.
  *
  * Routes:
  *   GET  /template   the template CSV (fixed header row + one real example row)
@@ -130,43 +138,124 @@ export type CreatedJobOrderRow = {
   status: string;
 };
 
+/** A WBS master an upload created, with the file row that introduced it. */
+export type CreatedWbsRow = {
+  row: number;
+  id: number;
+  projectId: number;
+  projectCode: string;
+  wbsCode: string;
+};
+
+/** A Network master an upload created, with the file row that introduced it. */
+export type CreatedNetworkRow = {
+  row: number;
+  id: number;
+  projectId: number;
+  projectCode: string;
+  networkCode: string;
+};
+
 /**
  * Upload Job Orders as CSV text (ADMIN/PM, audited, validated, never silent).
  *
- * Response: the counts of created / skipped / rejected rows plus the per-row
- * report. `ok` means no row was refused (`rejected === 0`); a file whose rows all
- * already exist is a success that created nothing.
+ * Body: `{ csv: "<text>", createMissingMasters?: boolean }`. The flag defaults to
+ * TRUE: a row that names a WBS_NO or a Network_ID which does not exist under its
+ * project CREATES the missing master and imports the row. Set it to false to
+ * refuse such a row with the old message instead. A Project, UoM, Department or
+ * Section is never created, either way.
+ *
+ * Response: the counts of created / skipped / rejected rows, the masters created
+ * (`wbsCreated` / `networksCreated` counts plus `createdWbs` / `createdNetworks`,
+ * each naming the code and the row that introduced it), and the per-row report.
+ * `ok` means no row was refused (`rejected === 0`); a file whose rows all already
+ * exist is a success that created nothing.
  *   201 - at least one Job Order was created
  *   200 - nothing to do (every row already exists)
- *   400 - at least one row was refused (or the file/header is unusable)
+ *   400 - at least one row was refused (or the file/header/flag is unusable)
  */
 jobOrderCsvRouter.post("/", async (req, res) => {
   const file = readCsvFile(req.body?.csv);
   if (!file.ok) return res.status(file.status).json({ error: file.error, code: file.code });
+
+  // Auto-creation is the default the operator asked for. A non-boolean flag is
+  // refused rather than guessed, so a client typo cannot silently flip the rule.
+  const rawFlag = req.body?.createMissingMasters;
+  if (rawFlag !== undefined && typeof rawFlag !== "boolean") {
+    return res.status(400).json({ error: "createMissingMasters must be true or false.", code: "INVALID_FLAG" });
+  }
+  const createMissingMasters = rawFlag ?? true;
 
   const header = checkJobOrderHeader(file.rows[0]);
   if (!header.ok) {
     const total = file.rows.length - 1;
     // A refused file is still an upload attempt, so it is audited with the counts.
     await writeAudit(req.user!.id, "JOB_ORDER_CSV_UPLOAD", "job_order", 0, {
-      total, created: 0, skipped: 0, rejected: total, stage: "HEADER_MISMATCH",
+      total, created: 0, skipped: 0, rejected: total, stage: "HEADER_MISMATCH", createMissingMasters,
     });
     return res.status(400).json({ error: header.error, code: "HEADER_MISMATCH" });
   }
 
   const masters = await loadJobOrderMasters(file.rows);
-  const plan = planJobOrderImport(file.rows, masters);
+  const plan = planJobOrderImport(file.rows, masters, { createMissingMasters });
 
   const createdRows: CreatedJobOrderRow[] = [];
+  const createdWbs: CreatedWbsRow[] = [];
+  const createdNetworks: CreatedNetworkRow[] = [];
   const errors: JobOrderRowIssue[] = [...plan.errors];
-  for (const item of plan.create) {
-    try {
-      const jobOrder = await prisma.$transaction(async (tx) => {
+  let batchFailure: string | null = null;
+
+  // ONE transaction for the whole file: the masters it introduces and the Job
+  // Orders that asked for them are written together, so a failure can leave
+  // neither a master without its Job Orders nor the reverse. A `pending` row
+  // (PENDING_MASTER_ID) is resolved from the id the master insert just returned.
+  try {
+    await prisma.$transaction(async (tx) => {
+      const wbsIds = new Map<string, number>();
+      for (const master of plan.wbsToCreate) {
+        const inserted = await tx.projectWbs.create({
+          data: { projectId: master.projectId, wbsCode: master.wbsCode },
+          select: { id: true },
+        });
+        wbsIds.set(projectScopedKey(master.projectId, master.wbsCode), inserted.id);
+        createdWbs.push({
+          row: master.row,
+          id: inserted.id,
+          projectId: master.projectId,
+          projectCode: master.projectCode,
+          wbsCode: master.wbsCode,
+        });
+      }
+      const networkIds = new Map<string, number>();
+      for (const master of plan.networksToCreate) {
+        const inserted = await tx.network.create({
+          data: { projectId: master.projectId, code: master.networkCode, source: "MANUAL" },
+          select: { id: true },
+        });
+        networkIds.set(projectScopedKey(master.projectId, master.networkCode), inserted.id);
+        createdNetworks.push({
+          row: master.row,
+          id: inserted.id,
+          projectId: master.projectId,
+          projectCode: master.projectCode,
+          networkCode: master.networkCode,
+        });
+      }
+      for (const item of plan.create) {
+        const projectWbsId = item.projectWbsId === PENDING_MASTER_ID
+          ? wbsIds.get(projectScopedKey(item.projectId, item.wbsCode))
+          : item.projectWbsId;
+        const networkId = item.networkId === PENDING_MASTER_ID
+          ? networkIds.get(projectScopedKey(item.projectId, item.networkCode))
+          : item.networkId;
+        if (projectWbsId === undefined || networkId === undefined) {
+          throw new Error(`row ${item.row} refers to a master the upload planned but did not create; the whole file was refused.`);
+        }
         const created = await tx.jobOrder.create({
           data: {
             projectId: item.projectId,
-            projectWbsId: item.projectWbsId,
-            networkId: item.networkId,
+            projectWbsId,
+            networkId,
             code: item.code,
             name: item.name,
             uomId: item.uomId,
@@ -191,24 +280,29 @@ jobOrderCsvRouter.post("/", async (req, res) => {
             createdById: req.user!.id,
           },
         });
-        return created;
-      });
-      createdRows.push({
-        row: item.row,
-        id: jobOrder.id,
-        jobOrder: jobOrder.code,
-        projectId: jobOrder.projectId,
-        projectWbsId: jobOrder.projectWbsId,
-        status: jobOrder.status,
-      });
-    } catch (error) {
-      // A unique-constraint clash here means another upload created the same Job
-      // Order between validation and insert. The row is reported, never retried
-      // blindly against a budget that already exists.
+        createdRows.push({
+          row: item.row,
+          id: created.id,
+          jobOrder: created.code,
+          projectId: created.projectId,
+          projectWbsId: created.projectWbsId,
+          status: created.status,
+        });
+      }
+    }, { timeout: 60_000, maxWait: 10_000 });
+  } catch (error) {
+    // A unique-constraint clash (another upload won the race) or any other write
+    // failure rolls the WHOLE file back, masters included, so no master is left
+    // without its Job Orders. Each planned row is then reported as refused.
+    batchFailure = error instanceof Error ? error.message : String(error);
+    createdRows.length = 0;
+    createdWbs.length = 0;
+    createdNetworks.length = 0;
+    for (const item of plan.create) {
       errors.push({
         row: item.row,
         column: "Job_Order",
-        message: `Job Order '${item.code}' could not be created: ${error instanceof Error ? error.message : String(error)}`,
+        message: `nothing was written: the upload transaction failed for the whole file (${batchFailure}).`,
       });
     }
   }
@@ -219,8 +313,20 @@ jobOrderCsvRouter.post("/", async (req, res) => {
   const total = plan.total;
   errors.sort((a, b) => a.row - b.row);
 
+  const wbsCreated = createdWbs.length;
+  const networksCreated = createdNetworks.length;
+
   await writeAudit(req.user!.id, "JOB_ORDER_CSV_UPLOAD", "job_order", created, {
-    total, created, skipped, rejected, template: JOB_ORDER_CSV_HEADERS.join(","),
+    total,
+    created,
+    skipped,
+    rejected,
+    template: JOB_ORDER_CSV_HEADERS.join(","),
+    createMissingMasters,
+    wbsCreated,
+    networksCreated,
+    createdWbs,
+    createdNetworks,
   });
 
   return res.status(created > 0 ? 201 : rejected > 0 ? 400 : 200).json({
@@ -229,7 +335,12 @@ jobOrderCsvRouter.post("/", async (req, res) => {
     created,
     skipped,
     rejected,
+    createMissingMasters,
+    wbsCreated,
+    networksCreated,
     createdRows,
+    createdWbs,
+    createdNetworks,
     skippedRows: plan.skippedRows,
     errors,
   });

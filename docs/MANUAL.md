@@ -506,10 +506,10 @@ A row is either created, skipped or rejected. A rejected row always names its ro
 
 | Column | Rule | What happens when it fails |
 |---|---|---|
-| `Project_ID` | Must exist in the Project master (matched by code) | Row rejected. An upload **never creates a Project**. |
+| `Project_ID` | Must exist in the Project master (matched by code) | Row rejected. An upload **never creates a Project**: a Project needs a name *and* a unique colour key, which the template does not carry. Create it on **Project Master Data** first. |
 | `Project_Name` | Must agree with `Project_ID` | Row rejected, and the message shows the master name. |
-| `WBS_NO` | Must exist **under that project** | Row rejected. An upload **never creates a WBS**. |
-| `Network_ID` | Must exist **in that project** and be active | Row rejected. An upload never creates a Network. |
+| `WBS_NO` | Must exist **under that project** — unless auto-creation is on, in which case a missing WBS is **created** and the row imports | Row created the WBS, then imported. |
+| `Network_ID` | Must exist **in that project** and be active — unless auto-creation is on, in which case a missing Network is **created** and the row imports. An INACTIVE Network is never revived by an upload | Row created the Network, then imported. |
 | `Job_Order` | Required | Row rejected. |
 | `Job_Description` | Required | Row rejected. |
 | `UoM` | Must exist in the UoM master and be active | Row rejected. |
@@ -520,7 +520,28 @@ A row is either created, skipped or rejected. A rejected row always names its ro
 
 A cell that starts with `=`, `+`, `-` or `@` (a possible CSV injection) rejects its row.
 
-### 15.3 The duplicate rule, and why a row is skipped
+### 15.3 Creating missing WBS and Network masters from the file
+
+The upload can create the two masters that sit above a Job Order, so you do not have to
+create them one by one first:
+
+- A line naming a `WBS_NO` that does **not** exist under its project **creates the WBS row**, then imports the line.
+- A line naming a `Network_ID` that does **not** exist in that project **creates the Network**, then imports the line.
+- One new WBS or Network named by several lines is created **once**, in the spelling of the first line that named it.
+- An **inactive** Network is never revived: the row is rejected instead, because an existing code must not be switched back on by a spreadsheet.
+- The masters and the Job Orders are written in **one transaction**. If anything fails, the whole file rolls back and every planned row is reported, so a master is never left behind without the Job Orders that needed it.
+
+**"Create missing WBS and Networks"** on the upload screen turns this off. It is **on by
+default**. Switch it off for a large first load if you would rather see every unknown value
+as an error than have a typo silently become a master row. The result panel then reports
+`N WBS rows created · M Networks created`, each naming the line that introduced it, and the
+audit entry records the same.
+
+An unknown **Project**, **UoM**, **Department** or **Section** is still an error and is never
+created: a Project needs a colour key the template does not carry, the UoM master carries the
+example string shown as on-screen help, and departments and sections come from the badge sync.
+
+### 15.4 The duplicate rule, and why a row is skipped
 
 - A row is **rejected** when the same `Project_ID` + `WBS_NO` + `Job_Order` **already exists**.
   `Row 3: Job_Order — Job Order '1900000107' already exists in Project_ID 'PRJ-A' under WBS_NO 'A.HULL.0010.100'; the Project_ID + WBS_NO + Job_Order combination is a duplicate.`
@@ -529,9 +550,10 @@ A cell that starts with `=`, `+`, `-` or `@` (a possible CSV injection) rejects 
 - The same Job Order number in a **different project** is a new Job Order, and it is created.
 - A created row receives budget revision 1 in the same transaction, so it has an effective-dated budget from day one.
 
-### 15.4 The result panel
+### 15.5 The result panel
 
-The panel header shows the counts: `N created · M skipped · K rejected`.
+The panel header shows the counts: `N created · M skipped · K rejected`, plus
+`N WBS rows created · M Networks created` when the file introduced any master.
 
 | Outcome | Meaning | What the panel shows |
 |---|---|---|

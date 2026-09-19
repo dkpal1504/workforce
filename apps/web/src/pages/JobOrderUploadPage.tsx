@@ -4,11 +4,25 @@ import "../styles/supervisors.css";
 
 type RowError = { row: number; column?: string; error?: string; message?: string };
 
+/** A WBS or Network master the upload created, with the file row that introduced it. */
+type CreatedMaster = {
+  row: number;
+  projectCode: string;
+  wbsCode?: string;
+  networkCode?: string;
+};
+
 type UploadResult = {
   ok?: boolean;
+  total?: number;
   created?: number;
   skipped?: number;
   rejected?: number;
+  createMissingMasters?: boolean;
+  wbsCreated?: number;
+  networksCreated?: number;
+  createdWbs?: CreatedMaster[];
+  createdNetworks?: CreatedMaster[];
   errors?: RowError[];
 };
 
@@ -22,8 +36,11 @@ type UploadResult = {
  * A row is rejected when Project_ID + WBS_NO + Job_Order already exists: the Job
  * Order number repeats across projects, so it is unique inside one project only.
  * Department and Section must come from the badge-sync master, and the uploader
- * never creates a Project or a WBS. Every rejected row is reported back; the file
- * is never partially accepted in silence.
+ * NEVER creates a Project, UoM, Department or Section. A missing WBS_NO or
+ * Network_ID is different: with the "create missing masters" option on (the API
+ * default) the master is created and the row imported, and the result reports each
+ * created master with the row that introduced it. Every rejected row is reported
+ * back; the file is never partially accepted in silence.
  */
 const TEMPLATE_COLUMNS =
   "Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty, Budgeted_hours, Department, Section, Job_Order_Status";
@@ -49,6 +66,9 @@ export function JobOrderUploadPage() {
   const [csvText, setCsvText] = useState("");
   const [rowsPreview, setRowsPreview] = useState(0);
   const [busy, setBusy] = useState(false);
+  // Default ON: the API defaults to it too, and the operator asked for a Job Work
+  // upload to be able to create a missing WBS / Network master.
+  const [createMissingMasters, setCreateMissingMasters] = useState(true);
   const [result, setResult] = useState<UploadResult | null>(null);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -134,7 +154,7 @@ export function JobOrderUploadPage() {
     try {
       const res = await api<UploadResult>("/job-order-upload", {
         method: "POST",
-        body: JSON.stringify({ csv: csvText }),
+        body: JSON.stringify({ csv: csvText, createMissingMasters }),
       });
       setResult(res);
       // Anything the file created must appear in the status list below.
@@ -167,15 +187,21 @@ export function JobOrderUploadPage() {
 
   const rowMessage = (e: RowError) => e.message || e.error || "Rejected";
   const rejectedCount = result?.rejected ?? result?.errors?.length ?? 0;
+  const wbsCreatedCount = result?.wbsCreated ?? 0;
+  const networksCreatedCount = result?.networksCreated ?? 0;
+  /** "A.HULL.0042.900 (PRJ-A, row 2)" — the code plus the row that introduced it. */
+  const createdMasterLabel = (m: CreatedMaster) =>
+    `${m.wbsCode ?? m.networkCode ?? "?"} (${m.projectCode}, row ${m.row})`;
 
   return (
     <>
       <div className="supervisors-toolbar">
         <span className="supervisors-toolbar__count">
-          Upload Job Orders in bulk. One row is one Job Order. Project, WBS, UoM and Network must already exist in the
-          master data — the upload never creates them. Department and Section come from the organisation master
+          Upload Job Orders in bulk. One row is one Job Order. Department and Section come from the organisation master
           (Department is the full &quot;BuName - Division&quot; name). Section may be blank only for a Non-Project Job Order.
-          Status is Active or In-Active. A row is rejected when the same Project, WBS and Job Order number already exist.
+          A WBS_NO or Network_ID missing under the row&apos;s Project can be created from the file — see the option below.
+          A Project, UoM, Department or Section is never created. Status is Active or In-Active. A row is rejected when
+          the same Project, WBS and Job Order number already exist; the other rows in the file are still imported.
         </span>
         <div className="supervisors-actions">
           <button type="button" className="btn btn-ghost" onClick={downloadTemplate}>
@@ -218,6 +244,33 @@ export function JobOrderUploadPage() {
               </>
             )}
           </div>
+          <label style={{ display: "flex", gap: 10, alignItems: "flex-start", marginTop: 14 }}>
+            <input
+              type="checkbox"
+              checked={createMissingMasters}
+              disabled={busy}
+              onChange={(e) => setCreateMissingMasters(e.target.checked)}
+              style={{ marginTop: 3, width: "auto" }}
+            />
+            <span>
+              <strong>Create a missing WBS or Network automatically</strong>
+              <span className="muted">
+                {" "}— ON (default): a WBS_NO or a Network_ID that does not exist under the row&apos;s Project is created as
+                a new master row and that Job Order is imported. Two rows naming the same new code create it ONCE, and the
+                result below names the row that introduced each master, so a typo that became a master is visible. This
+                cannot create a Project (it needs a unique colour key the template does not carry), and an unknown UoM,
+                Department or Section still rejects its row. OFF: those rows are rejected instead and the reason names the
+                missing master. The duplicate rule (Project + WBS + Job Order already exists) is unaffected — it always
+                rejects that line.
+              </span>
+            </span>
+          </label>
+          {!createMissingMasters && (
+            <div className="muted" style={{ marginTop: 8 }}>
+              Auto-creation is OFF for this run: a row naming an unknown WBS_NO or Network_ID will be rejected, exactly as
+              before.
+            </div>
+          )}
           <div className="footer-actions" style={{ marginTop: 14 }}>
             <button type="button" className="btn btn-primary" disabled={!csvText || busy} onClick={upload}>
               {busy ? "Uploading…" : "Upload & Validate"}
@@ -231,7 +284,8 @@ export function JobOrderUploadPage() {
           <div className="panel__header">
             <span>Upload Result</span>
             <span className="panel__count">
-              {result.created ?? 0} created · {result.skipped ?? 0} skipped · {rejectedCount} rejected
+              {result.created ?? 0} created · {result.skipped ?? 0} skipped · {rejectedCount} rejected ·{" "}
+              {wbsCreatedCount} WBS created · {networksCreatedCount} Network{networksCreatedCount === 1 ? "" : "s"} created
             </span>
           </div>
           <div className="panel__body">
@@ -244,6 +298,19 @@ export function JobOrderUploadPage() {
               <div className="alloc-note" style={{ marginBottom: 10 }}>
                 {result.skipped} row{result.skipped === 1 ? "" : "s"} skipped because the Job Order already exists — an
                 existing budget is never overwritten by an upload.
+              </div>
+            )}
+            {wbsCreatedCount > 0 && (
+              <div className="alloc-note" style={{ marginBottom: 10 }}>
+                ＋ {wbsCreatedCount} WBS master{wbsCreatedCount === 1 ? "" : "s"} created from this file:{" "}
+                {(result.createdWbs ?? []).map(createdMasterLabel).join(", ")}. Each one carries the code the file typed
+                and the row that introduced it — check them against the Project's WBS list.
+              </div>
+            )}
+            {networksCreatedCount > 0 && (
+              <div className="alloc-note" style={{ marginBottom: 10 }}>
+                ＋ {networksCreatedCount} Network master{networksCreatedCount === 1 ? "" : "s"} created from this file:{" "}
+                {(result.createdNetworks ?? []).map(createdMasterLabel).join(", ")}.
               </div>
             )}
             {(result.errors?.length ?? 0) > 0 ? (
@@ -261,6 +328,9 @@ export function JobOrderUploadPage() {
                   ? `${result.created} row${result.created === 1 ? "" : "s"} created.`
                   : "No row was created."}
                 {(result.skipped ?? 0) > 0 ? ` ${result.skipped} already existed and was skipped.` : ""}
+                {wbsCreatedCount + networksCreatedCount > 0
+                  ? ` ${wbsCreatedCount} WBS and ${networksCreatedCount} Network master${wbsCreatedCount + networksCreatedCount === 1 ? "" : "s"} created with them.`
+                  : ""}
               </p>
             )}
           </div>

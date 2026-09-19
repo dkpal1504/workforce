@@ -116,6 +116,10 @@ Budgeted_hours, Department, Section, Job_Order_Status
   The same Job Order number may appear in another project, never twice in one project.
 - Unknown Project or WBS -> reject the row and list the missing values. Never auto-create
   a Project or a WBS from the upload.
+  AMENDED LATER: a missing WBS and a missing Network ARE now created, behind the
+  `createMissingMasters` flag (default true, with an on/off switch on the screen and the
+  created rows reported per line). An unknown Project, UoM, Department or Section is still
+  rejected. See `docs/MANUAL.md` section 15.3.
 - Roles: ADMIN or PM. Every run is audited. Report per-row errors; never partially accept
   a file silently.
 

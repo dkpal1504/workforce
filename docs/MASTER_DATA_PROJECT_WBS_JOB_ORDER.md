@@ -117,8 +117,15 @@ Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Q
 Budgeted_hours, Department, Section, Job_Order_Status
 ```
 
-- `Project_ID` must exist and `Project_Name` must agree with it. `WBS_NO` must exist under
-  that project. The upload **never** creates a Project, a WBS, a Network or a UoM.
+- `Project_ID` must exist and `Project_Name` must agree with it. The upload **never** creates
+  a Project (a Project needs a colour key the template does not carry), nor a UoM, Department
+  or Section.
+- A **missing `WBS_NO`** under that project, and a **missing `Network_ID`** in that project,
+  are **created** and the line then imports. One new master named by several lines is created
+  once, in the first line's spelling, and an inactive Network is never revived. The switch
+  **"Create missing WBS and Networks"** on the upload screen (default on) turns this off.
+  The response reports `wbsCreated` / `networksCreated` with the line that introduced each,
+  and the audit entry carries the same.
 - `UoM` and `Network_ID` must exist in their masters, and the Network must belong to the
   project on the row.
 - `Department` must be the exact organisation-master name `BuName - Workmen Division` that

@@ -61,18 +61,24 @@ for (const viewport of VIEWPORTS) {
         expect(overflow, `${label} must not overflow the viewport horizontally`).toBeLessThanOrEqual(1);
 
         // 2. The data must actually be reachable: a visible row, a visible card, or a
-        //    genuine empty/loading state.
+        //    genuine empty/loading state. An EMPTY state counts: the summary is empty
+        //    whenever the selected date has no approved hours (for example the morning
+        //    after the seed ran), and that is a correct screen, not a broken one.
         const reachable = await page.evaluate(() => {
           const anyVisible = (selector: string) =>
             Array.from(document.querySelectorAll(selector)).some((element) => {
               const rect = element.getBoundingClientRect();
               return rect.width > 0 && rect.height > 0;
             });
+          const visibleEmptyState = Array.from(document.querySelectorAll("[class*='empty']")).some((element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
           return (
             anyVisible("table tbody tr") ||
             anyVisible(".jop-card") ||
             anyVisible(".summary-card") ||
-            anyVisible(".empty-state") ||
+            visibleEmptyState ||
             anyVisible(".loading-state")
           );
         });
