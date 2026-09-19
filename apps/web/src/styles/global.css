@@ -925,8 +925,15 @@ a {
   }
 
   /* ---- Desktop page head ------------------------------------------------ */
+  /* With the rail open the reading column stays at the reference width. With the rail
+     hidden the whole window is available, so the column may grow: that is what makes
+     "auto-hide" worth having on a wide screen. */
   .page {
     max-width: 1280px;
+  }
+
+  .app-shell:not(.rail-open) .page {
+    max-width: 1600px;
   }
 
   .page-head {
@@ -967,7 +974,7 @@ a {
     padding: 0 16px;
     border-radius: 10px;
     background: var(--primary);
-    color: #fff;
+    color: var(--on-primary);
     border: 1px solid var(--primary);
     font-size: 14px;
     font-weight: 650;

@@ -48,3 +48,374 @@
   min-height: 0;
   margin: 0;
 }
+
+
+/* ============================================================================
+   Desktop refresh — Project master (>=1200px only).
+
+   The rule this file holds to:
+
+     * nothing above this line changed, so every breakpoint the phone (<=767px),
+       the tablet (768-1199px) and the old laptop band already use renders the
+       boxes it rendered before;
+     * every rule below is inside the single `min-width: 1200px` block, or is one
+       of the two "new element" resets just under this comment. A wrapper element
+       that only the desktop design needs must not exist in the narrower layout:
+       `display: contents` removes its box, `display: none` removes the element
+       (the magnifier, the pencil, the stat pair, the help card). That is the only
+       reason a declaration sits outside the media block, and the phone/tablet
+       computed layout is identical with and without it;
+     * no shared class (.btn, .badge, .sup-table, .search-input,
+       .supervisors-toolbar, .supervisors-actions, .empty-state, .loading-state,
+       .error-banner) is redefined outside the media block, and inside it only as a
+       descendant of a page-local `.md-*` class, so no other screen is touched.
+   ============================================================================ */
+
+/* New elements only. Layout-neutral below 1200px by construction. */
+.md-page,
+.md-search,
+.md-table-card {
+  display: contents;
+}
+
+.md-stats,
+.md-info,
+.md-icon,
+.md-lock {
+  display: none;
+}
+
+@media (min-width: 1200px) {
+  /* ---- The toolbar is one row: tabs | select · search · stats · action ----- */
+  .md-page .md-toolbar {
+    /* One row while the row fits. The reference toolbar needs ~1100px; at 1280px with
+       the 264px rail open the content column is only ~972px, so the row wraps onto a
+       second line there rather than overflowing the page. It is one row at the
+       reference width (1632px) and at 1280px with the rail collapsed. */
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 14px;
+    row-gap: 10px;
+    margin-bottom: 18px;
+  }
+
+  .md-page .md-toolbar__right {
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
+  }
+
+  /* The tab-specific primary action and the CSV-upload link share the row skin of
+     the page-head action: 44px tall, radius 10. */
+  .md-page .md-toolbar__right .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 10px;
+    transform: none;
+  }
+
+  .md-page .md-toolbar__right select {
+    min-height: 44px;
+    /* Options are long ("A · CSR.013 · Hull production"), so the control is capped:
+       it may not push the row out of the content column. */
+    max-width: 260px;
+    /* The select keeps its own inline `minWidth: 200`, which is what the phone row
+       sizes it with. Only the desktop skin is added here. */
+    border-radius: 10px;
+    border-color: var(--border-light);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* ---- Segmented tabs: one white rounded control, active tab a filled pill -- */
+  .md-page .md-tabs {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 4px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* The same five buttons, the same role="tab", the same onClick; only the skin
+     changes at this width. */
+  .md-page .md-tabs .btn {
+    min-height: 40px;
+    padding: 9px 14px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13.5px;
+    font-weight: 650;
+    transform: none;
+  }
+
+  .md-page .md-tabs .btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--bg-subtle) 55%, var(--bg-elevated));
+    color: var(--text);
+    transform: none;
+  }
+
+  .md-page .md-tabs .btn-primary,
+  .md-page .md-tabs .btn-primary:hover:not(:disabled) {
+    background: var(--primary);
+    color: #fff;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .md-page .md-tabs .btn-primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+  }
+
+  /* ---- Search field with a leading magnifier ------------------------------- */
+  .md-page .md-search {
+    display: flex;
+    align-items: center;
+    position: relative;
+    flex: 1 1 260px;
+    min-width: 180px;
+    max-width: 420px;
+  }
+
+  .md-page .md-search .search-input {
+    width: 100%;
+    min-height: 44px;
+    padding-left: 38px;
+    border-radius: 10px;
+    border-color: var(--border-light);
+    box-shadow: var(--shadow-sm);
+    /* The phone row pins this field with two inline styles (minWidth 180, maxWidth
+       260). On the desktop row the field takes the free space instead, so the one
+       cap that has to be lifted is lifted here, and nowhere else. */
+    max-width: none !important;
+  }
+
+  .md-page .md-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    flex: none;
+  }
+
+  .md-page .md-search__icon {
+    position: absolute;
+    left: 13px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+
+  /* ---- Stat pair: two counts the API already returns for the rows on screen - */
+  .md-page .md-stats {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    white-space: nowrap;
+  }
+
+  .md-page .md-stat {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .md-page .md-stat strong {
+    font-weight: 700;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Collapsible help card (replaces the plain paragraph at this width) --- */
+  .md-page .md-help-paragraph {
+    display: none;
+  }
+
+  .md-page .md-info {
+    display: block;
+    margin: 0 0 18px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+
+  .md-page .md-info__toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    width: 100%;
+    padding: 14px 18px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .md-page .md-info__toggle:hover {
+    background: color-mix(in srgb, var(--bg-subtle) 35%, var(--bg-elevated));
+  }
+
+  .md-page .md-info__toggle:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .md-page .md-info__label {
+    font-size: 13.5px;
+    font-weight: 700;
+  }
+
+  .md-page .md-info__chevron {
+    color: var(--text-muted);
+  }
+
+  .md-page .md-info__chevron.is-open {
+    transform: rotate(180deg);
+  }
+
+  .md-page .md-info__body {
+    margin: 0;
+    padding: 0 18px 16px;
+    max-width: 92ch;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--text-muted);
+  }
+
+  /* ---- The table reads as a card ------------------------------------------- */
+  .md-page .md-table-card {
+    display: block;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+  }
+
+  /* The card draws the frame, so the table drops its own. */
+  .md-page .md-table-card .sup-table {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .md-page .md-table-card .sup-table thead th {
+    padding: 14px 18px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-subtle) 30%, var(--bg-elevated));
+    border-bottom: 1px solid var(--border-light);
+  }
+
+  /* Taller rows. The column set and every cell's content are unchanged. */
+  .md-page .md-table-card .sup-table td {
+    padding: 18px;
+    font-size: 13px;
+  }
+
+  .md-page .md-table-card .sup-table tbody tr:hover {
+    background: color-mix(in srgb, var(--bg-subtle) 45%, var(--bg-elevated));
+  }
+
+  /* Row action: a bordered ghost button with the pencil in front of the text. */
+  .md-page .md-table-card .sup-table__actions .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 36px;
+    padding: 8px 14px;
+    border-radius: 9px;
+    background: var(--bg-elevated);
+    font-size: 12.5px;
+    font-weight: 650;
+    transform: none;
+  }
+
+  .md-page .md-table-card .sup-table__actions .btn-ghost {
+    color: var(--text);
+    border-color: var(--border);
+  }
+
+  .md-page .md-table-card .sup-table__actions .btn-ghost:hover:not(:disabled) {
+    color: var(--primary-ink);
+    border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+    background: var(--primary-soft);
+    transform: none;
+  }
+
+  .md-page .md-table-card .sup-table__actions .btn-secondary {
+    color: var(--primary);
+    border-color: var(--border);
+  }
+
+  .md-page .md-table-card .sup-table__actions .btn-secondary:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+    background: var(--primary-soft);
+    transform: none;
+  }
+
+  .md-page .md-table-card .sup-table__actions .btn-danger {
+    color: var(--danger);
+    border-color: var(--border);
+  }
+
+  .md-page .md-table-card .sup-table__actions .btn-danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    background: var(--danger-soft);
+    transform: none;
+  }
+
+  /* Status of a master row, drawn as a tinted pill with a dot. The text and the
+     meaning ("Active" / "Inactive", the row's own flag) are unchanged. */
+  .md-page .md-table-card .md-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--success-soft);
+    color: var(--success);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .md-page .md-table-card .md-status::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  .md-page .md-table-card .md-status--off {
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+  }
+
+  /* The "frozen once hours are booked" rule, beside the WBS of a Job Order that
+     already carries booked rows. */
+  .md-page .md-lock {
+    display: inline-grid;
+    place-items: center;
+    margin-left: 7px;
+    color: var(--text-muted);
+    vertical-align: -2px;
+  }
+}

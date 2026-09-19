@@ -126,6 +126,34 @@ const NETWORK_NAME_EXAMPLE = "Hull networks";
 
 const TAB_LABELS: Record<Tab, string> = { project: "Project", wbs: "WBS", uom: "UoM", network: "Network", joborder: "Job Order" };
 
+/** The help paragraph of each tab. One source, so the phone/tablet paragraph and the
+ *  desktop help card can never drift apart. */
+const HELP_TEXT: Record<Tab, string> = {
+  project: `A project is the commercial container. Its colour key is the short token shown on Timesheet Entry, unique across all projects (example: ${COLOR_KEY_EXAMPLE}). A WBS row and its Networks live inside it.`,
+  wbs: `A WBS row groups Job Orders inside one project. The WBS number (example: ${WBS_CODE_EXAMPLE}) is unique inside the project, not globally.`,
+  uom: "Unit of measure, with the example string that is shown as help text wherever a quantity is entered.",
+  network: `A Network belongs to ONE WBS element of its project: one Network number never spans two WBS rows. Codes are maintained by hand (example: ${NETWORK_CODE_EXAMPLE}); SAP-fed networks arrive from the ERP feed and are read-only here.`,
+  joborder: "Job Orders come from the CSV upload, which never updates an existing row. Use Edit on a row to correct its WBS or Network. A WBS may not change once hours are booked, because every booked row keeps the attribution it was given. The Project itself is changed by an Admin from the Job Order Mapping screen.",
+};
+
+/** The label of the desktop help card. Presentation only: the text above is unchanged. */
+const HELP_TITLE: Record<Tab, string> = {
+  project: "How projects are managed",
+  wbs: "How WBS rows are managed",
+  uom: "How units of measure are managed",
+  network: "How networks are managed",
+  joborder: "How job orders are managed",
+};
+
+/** The noun of the desktop stat pair, one per tab. */
+const STAT_LABEL: Record<Tab, string> = {
+  project: "projects",
+  wbs: "WBS rows",
+  uom: "units of measure",
+  network: "networks",
+  joborder: "job orders",
+};
+
 function errorText(e: unknown) {
   return e instanceof ApiError && e.payload && typeof e.payload === "object" && "error" in e.payload
     ? String((e.payload as { error: string }).error)
@@ -153,6 +181,9 @@ export function MasterDataPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [editor, setEditor] = useState<EditorState | null>(null);
+  // Desktop-only: the help card is collapsed until the user opens it. It does not
+  // touch the data, the tab or the filter state.
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -225,6 +256,23 @@ export function MasterDataPage() {
     joborder: visibleJobOrders.length,
   };
 
+  // The desktop stat pair reads two counts the API already returns for the rows that
+  // are on screen. "Booked rows" is a COUNT of booked rows (timesheet entries plus
+  // allocations) and never hours: budgetedHours is hours, so the two must not be mixed
+  // into a consumption figure. There is therefore no honest ratio to draw a progress
+  // bar from, and no bar is drawn.
+  const visibleActiveFlags: boolean[] =
+    tab === "project" ? visibleProjects.map((row) => row.active)
+      : tab === "wbs" ? visibleWbs.map((row) => row.active)
+        : tab === "uom" ? visibleUom.map((row) => row.active)
+          : tab === "network" ? visibleNetworks.map((row) => row.active)
+            : visibleJobOrders.map((row) => row.status === "active");
+  const activeCount = visibleActiveFlags.filter(Boolean).length;
+  const bookedRows = visibleJobOrders.reduce(
+    (total, row) => total + (row._count?.timesheetEntries ?? 0) + (row._count?.employeeAllocations ?? 0),
+    0
+  );
+
   function deactivatePath(type: Tab, id: number) {
     if (type === "project") return `/master-data/projects/${id}/deactivate`;
     if (type === "wbs") return `/master-data/wbs/${id}/deactivate`;
@@ -236,9 +284,9 @@ export function MasterDataPage() {
     return deactivatePath(type, id).replace("/deactivate", "/activate");
   }
 
-  return <>
-    <div className="supervisors-toolbar">
-      <div className="supervisors-actions" role="tablist" aria-label="Master data">
+  return <div className="md-page">
+    <div className="supervisors-toolbar md-toolbar">
+      <div className="supervisors-actions md-tabs" role="tablist" aria-label="Master data">
         {(Object.keys(TAB_LABELS) as Tab[]).map((candidate) => (
           <button
             key={candidate}
@@ -252,7 +300,7 @@ export function MasterDataPage() {
           </button>
         ))}
       </div>
-      <div className="supervisors-actions">
+      <div className="supervisors-actions md-toolbar__right">
         {needsProject && (
           <select
             aria-label="Project"
@@ -267,7 +315,21 @@ export function MasterDataPage() {
             ))}
           </select>
         )}
-        <input className="search-input" style={{ marginBottom: 0, minWidth: 180, maxWidth: 260 }} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search ${TAB_LABELS[tab].toLowerCase()}…`} />
+        <div className="md-search">
+          <MdIcon name="search" className="md-search__icon" />
+          <input className="search-input" style={{ marginBottom: 0, minWidth: 180, maxWidth: 260 }} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search ${TAB_LABELS[tab].toLowerCase()}…`} />
+        </div>
+        {/* Desktop-only stat pair: the number of rows shown, and either how many of them
+            are active or how many booked rows the shown Job Orders carry. Both are
+            counts of what is already on screen; neither is hours. */}
+        {!loading && (
+          <div className="md-stats">
+            <span className="md-stat"><strong>{counts[tab]}</strong> {STAT_LABEL[tab]}</span>
+            <span className="md-stat">
+              <strong>{tab === "joborder" ? bookedRows : activeCount}</strong> {tab === "joborder" ? "booked rows" : "active"}
+            </span>
+          </div>
+        )}
         {creatable ? (
           <button
             type="button"
@@ -284,13 +346,23 @@ export function MasterDataPage() {
       </div>
     </div>
 
-    <p className="muted" style={{ marginTop: 0 }}>
-      {tab === "project" && `A project is the commercial container. Its colour key is the short token shown on Timesheet Entry, unique across all projects (example: ${COLOR_KEY_EXAMPLE}). A WBS row and its Networks live inside it.`}
-      {tab === "wbs" && `A WBS row groups Job Orders inside one project. The WBS number (example: ${WBS_CODE_EXAMPLE}) is unique inside the project, not globally.`}
-      {tab === "uom" && "Unit of measure, with the example string that is shown as help text wherever a quantity is entered."}
-      {tab === "network" && `A Network belongs to ONE WBS element of its project: one Network number never spans two WBS rows. Codes are maintained by hand (example: ${NETWORK_CODE_EXAMPLE}); SAP-fed networks arrive from the ERP feed and are read-only here.`}
-      {tab === "joborder" && "Job Orders come from the CSV upload, which never updates an existing row. Use Edit on a row to correct its WBS or Network. A WBS may not change once hours are booked, because every booked row keeps the attribution it was given. The Project itself is changed by an Admin from the Job Order Mapping screen."}
-    </p>
+    {/* The plain paragraph is what the phone and the tablet render, exactly as before.
+        The desktop help card below replaces it at >=1200px, where the paragraph is
+        display:none, so the same sentence is never on screen twice. */}
+    <p className="muted md-help-paragraph" style={{ marginTop: 0 }}>{HELP_TEXT[tab]}</p>
+
+    <div className="md-info">
+      <button
+        type="button"
+        className="md-info__toggle"
+        aria-expanded={helpOpen}
+        onClick={() => setHelpOpen((open) => !open)}
+      >
+        <span className="md-info__label">{HELP_TITLE[tab]}</span>
+        <MdIcon name="chevron" className={`md-info__chevron${helpOpen ? " is-open" : ""}`} />
+      </button>
+      {helpOpen && <p className="md-info__body">{HELP_TEXT[tab]}</p>}
+    </div>
 
     {error && !editor && <div className="error-banner" role="alert">{error}</div>}
     {loading ? <div className="loading-state">Loading master data…</div> : counts[tab] === 0 ? (
@@ -298,6 +370,9 @@ export function MasterDataPage() {
         {needsProject && !selectedProject ? "Select a project to see its rows." : tab === "joborder" ? "No Job Order matches this filter." : `No ${addLabel.toLowerCase()} rows found.`}
       </div>
     ) : (
+      /* The card is layout-neutral below 1200px (`display: contents`), so the phone and
+         tablet keep the bare table box they render today. */
+      <div className="md-table-card">
       <table className="sup-table">
         <thead>
           {tab === "project" && <tr><th>Colour key</th><th>Project</th><th>WBS / Networks</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
@@ -313,7 +388,7 @@ export function MasterDataPage() {
               <td><strong>{row.code}</strong><div className="muted">{row.name}{row.isNonProject ? " · standing / non-project row" : ""}</div></td>
               <td>{row.wbsRows.length} WBS · {row.networks.length} network{row.networks.length === 1 ? "" : "s"}</td>
               <td>{row._count?.jobOrders ?? 0}</td>
-              <td>{row.active ? "Active" : "Inactive"}</td>
+              <td><span className={`md-status${row.active ? "" : " md-status--off"}`}>{row.active ? "Active" : "Inactive"}</span></td>
               <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "project", item: row })} onToggle={() => run(() => api(deactivatePath("project", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("project", row.id), { method: "POST" }))} /></td>
             </tr>
           ))}
@@ -322,7 +397,7 @@ export function MasterDataPage() {
               <td><strong>{row.wbsCode}</strong>{row.name && <div className="muted">{row.name}</div>}</td>
               <td>{row.project.code} · {row.project.name}</td>
               <td>{row._count?.jobOrders ?? 0}</td>
-              <td>{row.active ? "Active" : "Inactive"}</td>
+              <td><span className={`md-status${row.active ? "" : " md-status--off"}`}>{row.active ? "Active" : "Inactive"}</span></td>
               <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "wbs", item: row })} onToggle={() => run(() => api(deactivatePath("wbs", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("wbs", row.id), { method: "POST" }))} /></td>
             </tr>
           ))}
@@ -332,7 +407,7 @@ export function MasterDataPage() {
               <td>{row.name}</td>
               <td>{row.example ?? <span className="muted">No example yet</span>}</td>
               <td>{row._count?.jobOrders ?? 0}</td>
-              <td>{row.active ? "Active" : "Inactive"}</td>
+              <td><span className={`md-status${row.active ? "" : " md-status--off"}`}>{row.active ? "Active" : "Inactive"}</span></td>
               <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "uom", item: row })} onToggle={() => run(() => api(deactivatePath("uom", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("uom", row.id), { method: "POST" }))} /></td>
             </tr>
           ))}
@@ -342,13 +417,24 @@ export function MasterDataPage() {
               <tr key={row.id}>
                 <td><strong>{row.code}</strong><div className="muted">{row.name}</div></td>
                 <td>{row.project ? <><span className="badge badge--manual md-color-key">{row.project.colorKey}</span> {row.project.code}</> : "—"}</td>
-                <td>{row.projectWbs?.wbsCode ?? "—"}</td>
+                <td>
+                  {row.projectWbs?.wbsCode ?? "—"}
+                  {/* The row already tells us it has booked rows; that is the rule that
+                      freezes the WBS. No extra data is read for the glyph. */}
+                  {booked > 0 && row.projectWbs && (
+                    <span className="md-lock" aria-hidden="true" title="Hours are booked against this Job Order, so its WBS is frozen.">
+                      <MdIcon name="lock" />
+                    </span>
+                  )}
+                </td>
                 <td>{row.network?.code ?? "—"}</td>
                 <td>{booked === 0 ? <span className="muted">None</span> : booked}</td>
                 <td><span className={`badge badge--${row.status === "active" ? "manual" : "sync"}`}>{row.status === "active" ? "Active" : "In-Active"}</span></td>
                 <td>
                   <div className="sup-table__actions">
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "joborder", item: row })}>Edit Job Order</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "joborder", item: row })}>
+                      <MdIcon name="pencil" />Edit Job Order
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -364,12 +450,13 @@ export function MasterDataPage() {
               </td>
               <td><span className={`badge badge--${row.source === "SAP" ? "sync" : "manual"}`}>{row.source === "SAP" ? "SAP feed" : "Manual"}</span></td>
               <td>{row._count?.jobOrders ?? 0}</td>
-              <td>{row.active ? "Active" : "Inactive"}</td>
+              <td><span className={`md-status${row.active ? "" : " md-status--off"}`}>{row.active ? "Active" : "Inactive"}</span></td>
               <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "network", item: row })} onToggle={() => run(() => api(deactivatePath("network", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("network", row.id), { method: "POST" }))} /></td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     )}
 
     {editor && (
@@ -384,13 +471,15 @@ export function MasterDataPage() {
         onSave={(path, method, body) => run(() => api(path, { method, body: JSON.stringify(body) }))}
       />
     )}
-  </>;
+  </div>;
 }
 
 function Actions({ active, busy, onEdit, onToggle, onActivate }: { active: boolean; busy: boolean; onEdit: () => void; onToggle: () => void; onActivate: () => void }) {
   return (
     <div className="sup-table__actions">
-      <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit}>Edit</button>
+      <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit}>
+        <MdIcon name="pencil" />Edit
+      </button>
       {active ? (
         <button
           type="button"
@@ -405,6 +494,46 @@ function Actions({ active, busy, onEdit, onToggle, onActivate }: { active: boole
         <button type="button" disabled={busy} className="btn btn-secondary btn-sm" onClick={onActivate}>Activate</button>
       )}
     </div>
+  );
+}
+
+/**
+ * A decorative glyph for the desktop refresh.
+ *
+ * The stylesheet removes every `.md-icon` below 1200px, so the phone and the tablet
+ * draw the same text-only controls they draw today. Every glyph is aria-hidden, so it
+ * never adds to the accessible name of the control it sits in (the row action must stay
+ * exactly "Edit Job Order").
+ */
+function MdIcon({ name, className = "" }: { name: "search" | "pencil" | "lock" | "chevron"; className?: string }) {
+  const shape: React.SVGProps<SVGSVGElement> = { className: `md-icon${className ? ` ${className}` : ""}`, viewBox: "0 0 16 16", width: 14, height: 14, "aria-hidden": true, focusable: "false" };
+  if (name === "search") {
+    return (
+      <svg {...shape}>
+        <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M10.4 10.4 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (name === "pencil") {
+    return (
+      <svg {...shape}>
+        <path d="M11.3 2 14 4.7 5.7 13H3v-2.7z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (name === "lock") {
+    return (
+      <svg {...shape}>
+        <rect x="3.4" y="7" width="9.2" height="6.4" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...shape}>
+      <path d="M3.6 6.2 8 10.6l4.4-4.4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

@@ -270,3 +270,18 @@
   --rail-border: rgba(255, 255, 255, 0.08);
   --rail-accent: #38bdf8;
 }
+
+/* Text/icon colour that sits on top of --primary. Nocturne's primary is a light
+   blue, so white text on it is hard to read; the desktop page-head CTA uses this
+   token. Existing surfaces keep their own colour, so nothing below 1200px moves. */
+:root,
+[data-theme="harbor"],
+[data-theme="atlas"],
+[data-theme="daybreak"],
+[data-theme="forge"] {
+  --on-primary: #ffffff;
+}
+
+[data-theme="nocturne"] {
+  --on-primary: #04121f;
+}
