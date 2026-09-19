@@ -452,3 +452,55 @@ after the screenshot, so its numbers are stable.
    (`users.id = 6`) was given the seed password with the repo's own `apps/api/set-dev-password.cjs`.
    Its previous `password_hash` is recorded in `/tmp/ui_refresh/verify/README.md` and can be restored
    with one `UPDATE users SET password_hash=... WHERE id=6`.
+
+---
+
+## 14. Theme-correctness fixes (done — §5.1 T1–T5)
+
+The owner asked for the theme defects to be fixed, accepting that phone colours change where a
+colour was wrong. That is `939e3d5` on the same branch. **93 colour-only replacements**; no
+selector, geometry value, media query or declaration count changed (verified per line: strip the
+colours and the before/after skeletons match).
+
+### New tokens (`themes.css`, defined for all five themes)
+
+| Token | Why |
+|---|---|
+| `--project-n` | **It was never defined** while the Summary chip, the Approvals dot and the Timesheet/Allocations slot for a non-project row all referenced `var(--project-n)`. An undefined custom property makes the declaration invalid, so those inline `background: var(--project-n)` styles were dropped: the chip was white-on-transparent, the dot invisible, the slot grey. A non-project row now carries its own colour (harbor `#64748b`, Nocturne `#94a3b8`). |
+| `--project-ink` | The text/icon colour on a project colour. Nocturne's palette is light (`--project-e` is `#facc15`), where white text is unreadable; ink is dark there, white in the light themes. |
+| `--on-primary` | Same for text on `--primary` (Nocturne's primary is a light blue). |
+| `--scrim` | Modal backdrop, so a dark theme can darken it properly instead of a light-theme `rgba`. |
+| `--success-ink`, `--danger-ink`, `--warning-ink`, `--accent-ink` | Each semantic hue used as **text on its own pale surface**. The light themes darken the hue toward black (what those rules did with a literal); Nocturne uses the token itself, which is already light on a dark surface. Fills keep the base token, so button/slot backgrounds are unchanged. |
+
+### Measured result (`/tmp/ui_refresh/contrast/{before2,after4}/contrast.json`)
+
+A probe injects each target class into the page that defines it, flattens translucent
+backgrounds over the real surface, and computes the WCAG ratio of the computed colours — 29
+pairs × 5 themes:
+
+| Theme | Below 4.5:1 before | Fixed | Below 4.5:1 after |
+|---|---|---|---|
+| Harbor | 2 | 2 | **0** |
+| Atlas | 3 | 3 | **0** |
+| Daybreak | 2 | 2 | **0** |
+| Forge | 5 | 5 | **0** |
+| Nocturne | 13 | 13 | **0** |
+
+Worst Nocturne offenders before → after: primary button 2.14 → 8.82, project-E slot 1.53 → 12.23,
+non-project slot 2.56 → 7.30, summary project chip 2.14 → 8.74, view/summary toggles 2.14 → 8.82,
+quantity bar labels 2.64–3.41 → 6.19–10.25.
+
+### What changed on the phone
+
+Only colours, and only where they were wrong: the phone/tablet **geometry** metrics still differ
+from `main` by the single hidden-rail entry (`/tmp/ui_refresh/rm/{base_theme,shell_theme}`), while
+7 of 20 phone/tablet screenshots differ in colour (max channel delta 32/255, concentrated on
+chips, status labels and buttons). Examples: `themes/board-{harbor,nocturne}.png` (project A–F and
+the non-project N slot), `themes/desktop-nocturne-master-data.png`,
+`themes/desktop-nocturne-timesheet.png`.
+
+### Not changed (deliberately)
+
+`--project-a … --project-f` are still defined only in Harbor and Nocturne; Atlas, Daybreak and
+Forge inherit Harbor's project palette. Giving each theme its own project palette is a design
+decision, not a defect, so it is left for a follow-up.
