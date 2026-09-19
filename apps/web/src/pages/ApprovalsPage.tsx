@@ -81,6 +81,9 @@ type HistoryItem = {
   totalAlloc: number;
   employee: { id: number; name: string; ecNo: string; department: string };
   supervisor: { id: number; name: string; email: string };
+  /** Who decided it. The tab lists the approvals in the caller's SCOPE, so more than one
+   *  person can appear here (an HOD, or an Admin acting for one). */
+  approver: { id: number; name: string; role: string };
 };
 
 type PendingPayload = {
@@ -1394,6 +1397,9 @@ export function ApprovalsPage() {
                       <span className={`badge ${h.action === "APPROVE" ? "badge-ok" : "badge-pending"}`}>
                         {h.action}
                       </span>
+                      <div className="muted tiny">
+                        {h.approver?.name}{h.approver?.role ? ` (${h.approver.role})` : ""}
+                      </div>
                     </td>
                     <td>{h.employee.name}</td>
                     <td>{h.supervisor.name}</td>
@@ -1420,7 +1426,7 @@ export function ApprovalsPage() {
                       colSpan={9 + historyProjectKeys.reduce((sum, key) => sum + (historyProjectOtKeys.has(key) ? 2 : 1), 0)}
                       className="empty-cell"
                     >
-                      No approvals recorded yet for your account.
+                      Nothing approved in your scope yet. A sheet an HOD approves appears here for the PM.
                     </td>
                   </tr>
                 )}
@@ -1454,7 +1460,7 @@ export function ApprovalsPage() {
               </article>
             ))}
             {!loading && history.length === 0 && (
-              <p className="muted empty-card">No approvals recorded yet for your account.</p>
+              <p className="muted empty-card">Nothing approved in your scope yet.</p>
             )}
           </div>
         </section>

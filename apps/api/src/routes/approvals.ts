@@ -474,13 +474,27 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
   });
 });
 
+/**
+ * Approved / decided timesheets.
+ *
+ * The scope is the CALLER'S, not "my own decisions": a PM is the central authority and must
+ * see what an HOD (or an Admin acting for one) already approved, otherwise a sheet approved
+ * by somebody else is invisible on this screen and looks lost. An HOD sees their own
+ * department/section; anyone else sees only their own decisions.
+ */
 approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res) => {
+  const role = req.user!.role;
   const approvals = await prisma.approval.findMany({
     where: {
-      approverId: req.user!.id,
       action: { in: ["APPROVE", "REJECT", "PLANNING_RETURN", "SEND_BACK"] },
+      ...(role === "PM" || role === "ADMIN"
+        ? {}
+        : isDepartmentViewRole(role)
+          ? { timesheetDay: { employee: hodEmployeeScope(req.user!.departmentId, req.user!.sectionId) } }
+          : { approverId: req.user!.id }),
     },
     include: {
+      approver: { select: { id: true, name: true, role: true } },
       timesheetDay: {
         include: {
           employee: { include: { department: true } },
@@ -518,6 +532,9 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
         department: d.employee.department.name,
       },
       supervisor: d.taggedBy,
+      // Who decided it, so the screen can say "approved by X (HOD)" and a PM can see that
+      // an HOD already cleared the sheet.
+      approver: { id: a.approver.id, name: a.approver.name, role: a.approver.role },
     };
   });
 
