@@ -22,7 +22,9 @@ import {
   validateProjectInput,
   validateUomInput,
   validateWbsInput,
+  jobOrderNetworkWbsError,
   jobOrderWbsMoveError,
+  resolveNetworkWbs,
   wbsCodeConflictMessage,
   type FieldError,
   type MasterEntity,
@@ -74,19 +76,51 @@ async function projectOrNull(projectId: number) {
   return prisma.project.findUnique({ where: { id: projectId }, select: projectRowSelect });
 }
 
+/**
+ * Every WBS row, each carrying the code and name of its own project. A refusal that a
+ * Network names a WBS of another project can then name that project instead of its id.
+ */
+async function allWbsRowsWithProject() {
+  const rows = await prisma.projectWbs.findMany({
+    select: { id: true, projectId: true, wbsCode: true, name: true, active: true, project: { select: { code: true, name: true } } },
+  });
+  return rows.map(({ project, ...row }) => ({ ...row, projectCode: project.code, projectName: project.name }));
+}
+
 /* ============================== reads ==================================== */
 
-/** Every project with its WBS rows and Networks, active and inactive, for maintenance. */
+/**
+ * Every project with its WBS rows and Networks, active and inactive, for maintenance.
+ *
+ * Each Network is reported with its `wbsId` and the `wbsCode` of the WBS element it
+ * belongs to, so the screen can show and filter a WBS column without a second call.
+ */
 masterDataRouter.get("/projects", async (_req, res) => {
   const projects = await prisma.project.findMany({
     orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
     include: {
       wbsRows: { orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }] },
-      networks: { orderBy: [{ code: "asc" }] },
+      networks: {
+        orderBy: [{ code: "asc" }],
+        include: {
+          wbs: { select: { id: true, wbsCode: true, name: true } },
+          // Sent so the Network tab can show how many Job Orders point at each row.
+          _count: { select: { jobOrders: true } },
+        },
+      },
       _count: { select: { jobOrders: true, timesheetEntries: true } },
     },
   });
-  res.json({ projects });
+  res.json({
+    projects: projects.map((project) => ({
+      ...project,
+      networks: project.networks.map(({ wbs, ...network }) => ({
+        ...network,
+        wbsCode: wbs?.wbsCode ?? null,
+        wbsName: wbs?.name ?? null,
+      })),
+    })),
+  });
 });
 
 /** The WBS rows of one project. `wbs_code` is unique inside the project. */
@@ -284,53 +318,75 @@ masterDataRouter.put("/uom/:id", writeOnly, async (req, res) => {
 
 /* ============================== Networks ================================= */
 
+/**
+ * Create a Network under ONE WBS element of the project.
+ *
+ * `wbsId` is required: one Network number cannot span two WBS elements of a project.
+ * The WBS decides the project, so a WBS that belongs to another project is a client
+ * error, and an inactive WBS is refused. The code stays unique inside the project.
+ */
 masterDataRouter.post("/projects/:projectId/networks", writeOnly, async (req, res) => {
   const project = await projectOrNull(Number(req.params.projectId));
   if (!project) return notFound(res, "Project not found. A Network code must belong to a project.", "PROJECT_NOT_FOUND");
 
   const parsed = validateNetworkInput(req.body ?? {});
   if (!parsed.ok) return validationError(res, parsed.errors);
-  const { code, name } = parsed.data;
+  const { wbsId, code, name } = parsed.data;
   // A Network row written here is always MANUAL; SAP-sourced rows come from the feed.
   const source = networkSourceForWrite(req.body?.source);
 
-  const rows = await prisma.network.findMany({ where: { projectId: project.id }, select: { id: true, projectId: true, code: true, name: true } });
+  const scope = resolveNetworkWbs(await allWbsRowsWithProject(), project, wbsId);
+  if (!scope.ok) return validationError(res, [scope.error]);
+
+  const rows = await prisma.network.findMany({ where: { projectId: project.id }, select: { id: true, projectId: true, code: true, name: true, wbsId: true } });
   const clash = findNetworkCodeConflict(rows, project.id, code);
   if (clash) return res.status(409).json({ error: networkCodeConflictMessage(clash, project), code: "NETWORK_CODE_EXISTS" });
 
   try {
-    const network = await prisma.network.create({ data: { projectId: project.id, code, name, source } });
-    await writeAudit(req.user!.id, "ADMIN_CREATE_NETWORK", "network", network.id, { by: req.user!.role, projectId: project.id, projectCode: project.code, code, name, source });
+    const network = await prisma.network.create({ data: { projectId: project.id, wbsId: scope.wbs.id, code, name, source } });
+    await writeAudit(req.user!.id, "ADMIN_CREATE_NETWORK", "network", network.id, {
+      by: req.user!.role, projectId: project.id, projectCode: project.code, wbsId: scope.wbs.id, wbsCode: scope.wbs.wbsCode, code, name, source,
+    });
     return res.status(201).json({ network });
   } catch (error) {
     return failed(res, "The Network row", error, "network");
   }
 });
 
+/**
+ * Edit a Network: its WBS element, its code and its name.
+ *
+ * The WBS may change, but only to another WBS element of the SAME project (the
+ * project of a Network is fixed), and never to an inactive one. `source` is never
+ * rewritten, so a row the ERP feed owns stays owned by it.
+ */
 masterDataRouter.put("/networks/:id", writeOnly, async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await prisma.network.findUnique({ where: { id }, select: { id: true, projectId: true, code: true, name: true, source: true, active: true } });
+  const existing = await prisma.network.findUnique({ where: { id }, select: { id: true, projectId: true, wbsId: true, code: true, name: true, source: true, active: true } });
   if (!existing) return notFound(res, "Network row not found.", "NETWORK_NOT_FOUND");
   const project = await projectOrNull(existing.projectId);
   if (!project) return notFound(res, "The Network row has no parent project.", "PROJECT_NOT_FOUND");
 
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const parsed = validateNetworkInput({ code: body.code ?? existing.code, name: body.name ?? existing.name });
+  const parsed = validateNetworkInput({ wbsId: body.wbsId ?? existing.wbsId, code: body.code ?? existing.code, name: body.name ?? existing.name });
   if (!parsed.ok) return validationError(res, parsed.errors);
-  const { code, name } = parsed.data;
+  const { wbsId, code, name } = parsed.data;
 
-  const rows = await prisma.network.findMany({ where: { projectId: project.id }, select: { id: true, projectId: true, code: true, name: true } });
+  const wbsRows = await allWbsRowsWithProject();
+  const scope = resolveNetworkWbs(wbsRows, project, wbsId);
+  if (!scope.ok) return validationError(res, [scope.error]);
+
+  const rows = await prisma.network.findMany({ where: { projectId: project.id }, select: { id: true, projectId: true, code: true, name: true, wbsId: true } });
   const clash = findNetworkCodeConflict(rows, project.id, code, id);
   if (clash) return res.status(409).json({ error: networkCodeConflictMessage(clash, project), code: "NETWORK_CODE_EXISTS" });
 
   try {
-    // `source` is never rewritten here: a row the ERP feed owns stays owned by it.
-    const network = await prisma.network.update({ where: { id }, data: { code, name } });
+    const network = await prisma.network.update({ where: { id }, data: { wbsId: scope.wbs.id, code, name } });
     await writeAudit(req.user!.id, "ADMIN_UPDATE_NETWORK", "network", id, {
       by: req.user!.role,
       projectCode: project.code,
-      previous: { code: existing.code, name: existing.name },
-      next: { code, name },
+      previous: { wbsId: existing.wbsId, wbsCode: wbsRows.find((row) => row.id === existing.wbsId)?.wbsCode ?? null, code: existing.code, name: existing.name },
+      next: { wbsId: scope.wbs.id, wbsCode: scope.wbs.wbsCode, code, name },
     });
     return res.json({ network });
   } catch (error) {
@@ -545,10 +601,16 @@ masterDataRouter.get("/job-orders", async (req, res) => {
       project: {
         select: {
           id: true, code: true, name: true, colorKey: true,
-          // Sent with each row so the mapping form can offer only the WBS rows and
-          // Networks that belong to THIS Job Order's project.
-          wbsRows: { select: { id: true, wbsCode: true, name: true, active: true }, orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }] },
-          networks: { select: { id: true, code: true, name: true, active: true }, orderBy: { code: "asc" } },
+          // Sent with each row so the mapping form can offer only the WBS rows of THIS
+          // Job Order's project, and, inside each WBS row, only that WBS's Networks: a
+          // Network belongs to one WBS element, never to the whole project.
+          wbsRows: {
+            select: {
+              id: true, wbsCode: true, name: true, active: true,
+              networks: { select: { id: true, code: true, name: true, active: true }, orderBy: { code: "asc" } },
+            },
+            orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }],
+          },
         },
       },
       projectWbs: { select: { id: true, wbsCode: true, name: true } },
@@ -615,7 +677,9 @@ masterDataRouter.post("/job-orders/:id/status", writeOnly, async (req, res) => {
  *    Network from another Project is refused with a clear message.
  *  - A WBS move is refused once hours are booked, because every booked row carries a
  *    frozen attribution snapshot. Use the Admin mapping screen if the Project itself
- *    has to change. The Network is informational and may always be corrected.
+ *    has to change. The Network is informational and may always be corrected - but it
+ *    must belong to the WBS the Job Order ends up on, because a Network belongs to one
+ *    WBS element and never to the whole project.
  *  - ADMIN and PM only, and audited with the previous and next values.
  */
 masterDataRouter.put("/job-orders/:id/mapping", writeOnly, async (req, res) => {
@@ -687,6 +751,29 @@ masterDataRouter.put("/job-orders/:id/mapping", writeOnly, async (req, res) => {
     if (moveError) return res.status(409).json({ error: moveError, code: "JOB_ORDER_WBS_LOCKED" });
   }
 
+  // A Network belongs to ONE WBS element, so it must belong to the WBS the Job Order
+  // ends up on - not merely to its project. When the request moves the WBS, the Network
+  // must be valid for the NEW WBS. The refusal names both WBS rows, so the operator
+  // knows which Network to pick instead. A Network-only change on an unchanged WBS is
+  // still checked against that WBS, and a row that keeps both values is left alone.
+  if (nextWbsId !== jobOrder.projectWbsId || nextNetworkId !== jobOrder.networkId) {
+    const [targetWbs, targetNetwork] = await Promise.all([
+      prisma.projectWbs.findUnique({ where: { id: nextWbsId }, select: { id: true, wbsCode: true } }),
+      prisma.network.findUnique({ where: { id: nextNetworkId }, select: { id: true, code: true, wbsId: true, wbs: { select: { wbsCode: true } } } }),
+    ]);
+    if (targetWbs && targetNetwork) {
+      const mismatch = jobOrderNetworkWbsError({
+        jobOrderCode: jobOrder.code,
+        networkCode: targetNetwork.code,
+        networkWbsId: targetNetwork.wbsId,
+        networkWbsCode: targetNetwork.wbs.wbsCode,
+        targetWbsId: targetWbs.id,
+        targetWbsCode: targetWbs.wbsCode,
+      });
+      if (mismatch) return res.status(400).json({ error: mismatch, code: "NETWORK_WBS_MISMATCH" });
+    }
+  }
+
   try {
     const updated = await prisma.jobOrder.update({
       where: { id },
@@ -694,14 +781,14 @@ masterDataRouter.put("/job-orders/:id/mapping", writeOnly, async (req, res) => {
       select: {
         id: true, code: true, name: true, status: true,
         projectWbs: { select: { id: true, wbsCode: true } },
-        network: { select: { id: true, code: true } },
+        network: { select: { id: true, code: true, wbs: { select: { wbsCode: true } } } },
       },
     });
     await writeAudit(req.user!.id, "ADMIN_UPDATE_JOB_ORDER_MAPPING", "job_order", id, {
       by: req.user!.role,
       projectCode: jobOrder.project.code,
       previous: { wbsCode: jobOrder.projectWbs.wbsCode, networkCode: jobOrder.network.code },
-      next: { wbsCode: updated.projectWbs.wbsCode, networkCode: updated.network.code },
+      next: { wbsCode: updated.projectWbs.wbsCode, networkCode: updated.network.code, networkWbsCode: updated.network.wbs.wbsCode },
     });
     return res.json({ jobOrder: updated });
   } catch (error) {

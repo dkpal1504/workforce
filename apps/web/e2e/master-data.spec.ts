@@ -56,6 +56,9 @@ test("a Project Head can create a WBS and a Network, and correct a Job Order", a
   // 2. Create a Network in the same project.
   await page.getByRole("tab", { name: "Network", exact: true }).click();
   await page.getByRole("button", { name: /Add Network/i }).click();
+  // A Network belongs to a WBS element, so the form asks for it and Save stays disabled
+  // until one is chosen.
+  await pickByText(page, "WBS number", wbsCode);
   await page.getByLabel("Network code").fill(networkCode);
   await page.getByLabel("Network name").fill("Created by the e2e test");
   await page.getByRole("button", { name: "Save" }).click();

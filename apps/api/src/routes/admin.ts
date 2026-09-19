@@ -707,7 +707,10 @@ adminRouter.put("/job-orders/:id/remap", requireRoles("ADMIN"), async (req, res)
   const id = Number(req.params.id);
   const existing = await prisma.jobOrder.findUnique({
     where: { id },
-    select: { id: true, code: true, projectId: true, projectWbsId: true, departmentId: true, sectionId: true },
+    select: {
+      id: true, code: true, projectId: true, projectWbsId: true, departmentId: true, sectionId: true,
+      networkId: true,
+    },
   });
   if (!existing) return res.status(404).json({ error: "Job order not found" });
 
@@ -741,6 +744,21 @@ adminRouter.put("/job-orders/:id/remap", requireRoles("ADMIN"), async (req, res)
     bookedAllocationSlots: bookedAllocations,
   });
   if (moveError) return res.status(409).json({ error: moveError, code: "JOB_ORDER_WBS_LOCKED" });
+
+  // A Network belongs to a WBS element, so moving the Job Order without its Network would
+  // leave a pair that the upload and the master-data screen both refuse. This route only
+  // maps the department/Project, so it cannot re-point the Network: refuse and send the
+  // operator to the screen that handles both together.
+  const network = await prisma.network.findUnique({
+    where: { id: existing.networkId },
+    select: { code: true, wbsId: true, wbs: { select: { wbsCode: true } } },
+  });
+  if (network && network.wbsId !== targetWbs.id) {
+    return res.status(409).json({
+      error: `Network "${network.code}" belongs to WBS "${network.wbs.wbsCode}", not "${targetWbs.wbsCode}". Change the WBS and the Network together on Project Master Data -> Job Order -> Edit WBS / Network.`,
+      code: "NETWORK_WBS_MISMATCH",
+    });
+  }
 
   let resolvedDepartmentId = departmentId === null ? null : departmentId !== undefined ? Number(departmentId) : existing.departmentId;
   let resolvedSectionId = sectionId === undefined ? existing.sectionId : sectionId === null ? null : Number(sectionId);

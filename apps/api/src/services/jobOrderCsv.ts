@@ -7,14 +7,20 @@
  * rule is unit-testable without a database. The route loads the snapshot from
  * Prisma and persists the plan.
  *
- * Two invariants:
- *  - Auto-creation is narrow and explicit. A WBS_NO or Network_ID that is missing
- *    under the row's project is CREATED when `createMissingMasters` is on (the
- *    default) and the row is imported; with the flag off such a row is rejected
- *    with the old message. A missing PROJECT, UoM, Department or Section always
- *    rejects the row and names what is missing: a Project requires a unique colour
- *    key the template does not carry, the UoM master carries an example string used
- *    as on-screen help, and departments / sections come from the badge sync.
+ * Three invariants:
+ *  - Auto-creation is narrow and explicit. A WBS_NO that is missing under the row's
+ *    project is CREATED when `createMissingMasters` is on (the default), and a
+ *    missing Network_ID is created UNDER THE WBS THAT SAME ROW NAMES; the row is then
+ *    imported. With the flag off such a row is rejected with the old message. A
+ *    missing PROJECT, UoM, Department or Section always rejects the row and names
+ *    what is missing: a Project requires a unique colour key the template does not
+ *    carry, the UoM master carries an example string used as on-screen help, and
+ *    departments / sections come from the badge sync.
+ *  - A Network belongs to ONE WBS of its project. When the Network master found for
+ *    the row's project sits under a DIFFERENT WBS than the row's WBS_NO, the row is
+ *    REJECTED and the message names the Network and both WBS codes. The upload never
+ *    re-points a master at another WBS, so one Network can never span two WBS. This
+ *    is why the master snapshot carries each Network's `wbsId`.
  *  - An upload never overwrites a budget. A Job Order that already exists in the
  *    project is reported (rejected when it is the same Project + WBS + Job Order,
  *    skipped otherwise) instead of being written over.
@@ -65,7 +71,11 @@ export type DepartmentRef = { id: number; name: string; active: boolean };
 export type SectionRef = { id: number; departmentId: number; name: string; active: boolean };
 export type ProjectRef = { id: number; code: string; name: string; isNonProject: boolean; active: boolean };
 export type WbsRef = { id: number; projectId: number; wbsCode: string; active: boolean };
-export type NetworkRef = { id: number; projectId: number; code: string; active: boolean };
+/**
+ * Network master row. A Network sits INSIDE one WBS element of its project, so
+ * `wbsId` is part of what the row must be validated against - not just the project.
+ */
+export type NetworkRef = { id: number; projectId: number; wbsId: number; code: string; active: boolean };
 export type UomRef = { id: number; code: string; active: boolean };
 export type ExistingJobOrderRef = { id: number; projectId: number; code: string; wbsCode: string };
 
@@ -74,7 +84,8 @@ export type ExistingJobOrderRef = { id: number; projectId: number; code: string;
  *
  * The route loads all of it in one pass, so validation costs no per-row query.
  * `existingJobOrders` must list every Job Order of the projects named in the file;
- * otherwise the duplicate rule cannot be enforced.
+ * otherwise the duplicate rule cannot be enforced. Every `networks` row must carry
+ * its `wbsId`, because that is what the Network rule is validated against.
  */
 export type JobOrderImportMasters = {
   departments: DepartmentRef[];
@@ -147,6 +158,14 @@ export type PlannedNetworkCreation = {
   row: number;
   projectId: number;
   projectCode: string;
+  /**
+   * The WBS the new Network belongs to: the WBS the row resolved (or created) from
+   * its own WBS_NO. `PENDING_MASTER_ID` when this very file also creates that WBS,
+   * in which case `wbsCode` is how the route finds the id the WBS insert returned.
+   */
+  wbsId: number;
+  /** The WBS_NO as the row typed it (trimmed): how the owning WBS is named to the operator. */
+  wbsCode: string;
   /** The Network_ID as the row typed it (trimmed): the value the new master stores. */
   networkCode: string;
 };
@@ -181,7 +200,13 @@ export type JobOrderImportPlan = {
    * row that introduced it. Empty when `createMissingMasters` is false.
    */
   wbsToCreate: PlannedWbsCreation[];
-  /** Missing Network rows to insert before the Job Orders, deduped the same way. */
+  /**
+   * Missing Network rows to insert BEFORE the Job Orders, one entry per distinct
+   * (WBS_NO, Network_ID) named by an accepted row, in file order. The row's own WBS
+   * is part of the master, because one Network number never spans two WBS of a
+   * project, so each entry carries the WBS it belongs to (and the row that
+   * introduced it). Empty when `createMissingMasters` is false.
+   */
   networksToCreate: PlannedNetworkCreation[];
 };
 
@@ -269,6 +294,8 @@ export function checkJobOrderHeader(header: string[]): HeaderCheck {
 type MasterIndex = {
   projectByCode: Map<string, ProjectRef>;
   wbsByProject: Map<string, WbsRef>;
+  /** WBS masters by id, so a WBS-scoped rejection can name the WBS a Network belongs to. */
+  wbsById: Map<number, WbsRef>;
   networkByProject: Map<string, NetworkRef>;
   uomByCode: Map<string, UomRef>;
   existingByProject: Map<string, ExistingJobOrderRef>;
@@ -279,13 +306,19 @@ function buildIndex(masters: JobOrderImportMasters): MasterIndex {
   const index: MasterIndex = {
     projectByCode: new Map(),
     wbsByProject: new Map(),
+    wbsById: new Map(),
     networkByProject: new Map(),
     uomByCode: new Map(),
     existingByProject: new Map(),
     sectionsByDepartment: new Map(),
   };
   for (const project of masters.projects) index.projectByCode.set(codeKey(project.code), project);
-  for (const wbs of masters.wbsRows) index.wbsByProject.set(projectScopedKey(wbs.projectId, wbs.wbsCode), wbs);
+  for (const wbs of masters.wbsRows) {
+    index.wbsByProject.set(projectScopedKey(wbs.projectId, wbs.wbsCode), wbs);
+    index.wbsById.set(wbs.id, wbs);
+  }
+  // The master's identity is still (project, code): `wbsId` is carried on the row so
+  // the Network can be checked against the WBS the file row names.
   for (const network of masters.networks) index.networkByProject.set(projectScopedKey(network.projectId, network.code), network);
   for (const uom of masters.uoms) index.uomByCode.set(codeKey(uom.code), uom);
   for (const jobOrder of masters.existingJobOrders) {
@@ -366,27 +399,53 @@ export function resolveWbsForRow(context: WbsResolutionContext): MasterResolutio
 }
 
 /**
+ * A Network this plan already decided to create, recorded against the project code
+ * it will occupy. The WBS is part of the record: that is what keeps the plan's
+ * deduplication WBS-scoped, and what lets a later row naming the same code under a
+ * DIFFERENT WBS be rejected instead of opening a second master for one code.
+ */
+export type PendingNetworkScope = {
+  /** The WBS the new Network belongs to; PENDING_MASTER_ID while that WBS is itself being created. */
+  wbsId: number;
+  /** The WBS_NO the new Network belongs to, as the row that introduced it typed it. */
+  wbsCode: string;
+  /** The file row that first named this Network_ID. */
+  row: number;
+};
+
+/**
  * SEAM 2 of 2 - may this Network_ID be used by this row, and if not what must be
  * created?
  *
- * A Network is scoped to the PROJECT today, exactly as before: the master is
- * unique on (projectId, code), so the same code in another project is a different
- * Network. The user has asked whether a Network should instead sit INSIDE a WBS
- * of the project. That is not decided, so the scope stays the project and this
- * function is the single place to change it: it already receives the `wbs` the
- * row resolved to, and `networkByProject` is the only look-up it performs, so a
- * WBS-scoped rule is a small, contained edit here.
+ * A Network belongs to ONE WBS of its project (the master keeps `wbsId`, unique on
+ * (projectId, code) as before). So the only question here is whether the master
+ * found for the row's project sits under the WBS THIS ROW resolved from its own
+ * WBS_NO:
+ *
+ *  - same WBS                -> the row may use the Network.
+ *  - another WBS             -> the row is REJECTED, and the message names the
+ *                               Network, the WBS it belongs to and the WBS on the
+ *                               row. The upload never moves a master to another
+ *                               WBS, because one Network never spans two WBS of a
+ *                               project.
+ *  - no master for that code -> created UNDER THE ROW'S WBS when
+ *                               `createMissingMasters` is on.
+ *
+ * This is the single place that rule lives: the row's WBS arrives as `wbs`, and the
+ * two maps it consults are the only look-ups it performs.
  */
 export type NetworkResolutionContext = {
   project: ProjectRef;
-  /** The WBS the row resolved to when it is an existing master (null for a pending one). */
-  wbs: WbsRef | null;
+  /** The WBS the row resolved to: an existing master, or one this plan creates. */
+  wbs: WbsRef;
   /** The Network_ID cell, as the row typed it. */
   networkCode: string;
-  /** Existing Network masters, keyed by `projectScopedKey`. */
+  /** Existing Network masters, keyed by `projectScopedKey` (project + code). */
   networkByProject: ReadonlyMap<string, NetworkRef>;
-  /** Masters this plan already decided to create. */
-  pendingKeys: ReadonlySet<string>;
+  /** WBS masters by id, so a rejection can name the WBS a Network belongs to. */
+  wbsById: ReadonlyMap<number, WbsRef>;
+  /** Networks this plan already decided to create, keyed by `projectScopedKey`. */
+  pendingNetworks: ReadonlyMap<string, PendingNetworkScope>;
   createMissingMasters: boolean;
 };
 
@@ -394,28 +453,48 @@ export function resolveNetworkForRow(context: NetworkResolutionContext): MasterR
   const code = context.networkCode.trim();
   if (!code) return { outcome: "reject", message: "Network_ID is required." };
   const key = projectScopedKey(context.project.id, code);
+  /**
+   * The message the whole rule exists for, for example:
+   *   Network "SAP-NW-93001" belongs to WBS "C.SFR.0045.201", not "C.REP.0045.202".
+   */
+  const mismatch = (ownerWbsCode: string): MasterResolution<NetworkRef> => ({
+    outcome: "reject",
+    message: `Network "${code}" belongs to WBS "${ownerWbsCode}", not "${context.wbs.wbsCode}".`,
+  });
+
   const existing = context.networkByProject.get(key);
   if (existing) {
+    // The row's WBS must be a committed master for a Network to sit under it, so a
+    // pending WBS can never be the WBS an existing Network belongs to.
+    if (context.wbs.id === PENDING_MASTER_ID || existing.wbsId !== context.wbs.id) {
+      return mismatch(context.wbsById.get(existing.wbsId)?.wbsCode ?? `#${existing.wbsId}`);
+    }
     if (!existing.active) {
       return {
         outcome: "reject",
-        message: `Network_ID '${existing.code}' is inactive in Project_ID '${context.project.code}'.`,
+        message: `Network_ID '${existing.code}' is inactive under WBS_NO '${context.wbs.wbsCode}' in Project_ID '${context.project.code}'.`,
       };
     }
     return { outcome: "resolved", master: existing, pending: false };
   }
-  if (context.pendingKeys.has(key)) {
+
+  const pending = context.pendingNetworks.get(key);
+  if (pending) {
+    // Deduped per (WBS, Network_ID): the same code under the SAME WBS is the master
+    // this plan already creates, while under another WBS it is that WBS's Network.
+    if (codeKey(pending.wbsCode) !== codeKey(context.wbs.wbsCode)) return mismatch(pending.wbsCode);
     return {
       outcome: "resolved",
       pending: true,
-      master: { id: PENDING_MASTER_ID, projectId: context.project.id, code, active: true },
+      master: { id: PENDING_MASTER_ID, projectId: context.project.id, wbsId: context.wbs.id, code, active: true },
     };
   }
+
   if (!context.createMissingMasters) {
     return {
       outcome: "reject",
-      message: `unknown Network_ID '${code}' in Project_ID '${context.project.code}'; a Network belongs to one project only. `
-        + "An upload never creates a Network.",
+      message: `unknown Network_ID '${code}' for WBS_NO '${context.wbs.wbsCode}' in Project_ID '${context.project.code}'; `
+        + "a Network belongs to one WBS of a project. An upload never creates a Network.",
     };
   }
   return { outcome: "create", code };
@@ -436,8 +515,16 @@ export function resolveNetworkForRow(context: NetworkResolutionContext): MasterR
  * `createMissingMasters` (default true) the master to insert is listed in
  * `wbsToCreate` / `networksToCreate` and the row carries PENDING_MASTER_ID in the
  * matching id column, so the route can create the master in the same transaction
- * as the Job Orders. Masters are deduped inside the plan, so two rows that name
- * the same new code produce one entry, carrying the first row's number.
+ * as the Job Orders. A Network entry carries the WBS it belongs to - the WBS the row
+ * named - so the created master is scoped to that WBS, never to the project alone.
+ * Masters are deduped inside the plan - a Network per (WBS, Network_ID) - so two
+ * rows that name the same new code under one WBS produce one entry, carrying the
+ * first row's number.
+ *
+ * A Network_ID whose master belongs to ANOTHER WBS of the same project is a
+ * rejection, whatever `createMissingMasters` says: the code already exists in the
+ * project, so it cannot be created a second time under this row's WBS either - one
+ * Network never spans two WBS.
  */
 export function planJobOrderImport(
   rows: string[][],
@@ -466,7 +553,14 @@ export function planJobOrderImport(
    * row's number.
    */
   const pendingWbsKeys = new Set<string>();
-  const pendingNetworkKeys = new Set<string>();
+  /**
+   * Networks this plan creates, keyed by `projectScopedKey` (project + code). The
+   * value carries the WBS the master is created for, so two rows naming one new
+   * Network under the SAME WBS create it once, while a row naming it under ANOTHER
+   * WBS is rejected: `networks` is unique on (projectId, code), so one code can
+   * never serve two WBS.
+   */
+  const pendingNetworks = new Map<string, PendingNetworkScope>();
 
   for (let i = 1; i < rows.length; i++) {
     const rowNumber = i + 1;
@@ -543,25 +637,33 @@ export function planJobOrderImport(
       reject("WBS_NO", "WBS_NO is required.");
     }
 
-    // --- Network_ID: scoped to that project; a missing one is created when allowed ---
+    // --- Network_ID: scoped to THE WBS ON THIS ROW; a missing one is created under it ---
     let network: NetworkRef | null = null;
     let networkToIntroduce: PlannedNetworkCreation | null = null;
-    if (project) {
+    if (project && wbs) {
+      // The WBS above resolved (or is being created) FIRST, because it is the scope
+      // the Network is validated against. Without it there is nothing to check the
+      // Network against - and such a row is already rejected for its WBS_NO.
       const networkResolution = resolveNetworkForRow({
         project,
-        wbs: wbs && wbs.id !== PENDING_MASTER_ID ? wbs : null,
+        wbs,
         networkCode,
         networkByProject: index.networkByProject,
-        pendingKeys: pendingNetworkKeys,
+        wbsById: index.wbsById,
+        pendingNetworks,
         createMissingMasters,
       });
       if (networkResolution.outcome === "reject") reject("Network_ID", networkResolution.message);
       else if (networkResolution.outcome === "create") {
-        network = { id: PENDING_MASTER_ID, projectId: project.id, code: networkResolution.code, active: true };
+        // The new master belongs to the WBS on this row (which may itself be a master
+        // this plan creates; the route inserts the WBS first and passes its id on).
+        network = { id: PENDING_MASTER_ID, projectId: project.id, wbsId: wbs.id, code: networkResolution.code, active: true };
         networkToIntroduce = {
           row: rowNumber,
           projectId: project.id,
           projectCode: project.code,
+          wbsId: wbs.id,
+          wbsCode: wbs.wbsCode,
           networkCode: networkResolution.code,
         };
       } else {
@@ -665,13 +767,18 @@ export function planJobOrderImport(
     // The row is accepted, so the masters IT introduced are created with it. A
     // rejected or skipped row introduces nothing: no master is created for a row
     // that creates no Job Order. The first accepted row that names a new master
-    // registers it; later rows resolve against `pendingKeys` and add no entry.
+    // registers it (`pendingWbsKeys`, `pendingNetworks`); later rows resolve
+    // against it and add no entry.
     if (wbsToIntroduce) {
       pendingWbsKeys.add(projectScopedKey(wbsToIntroduce.projectId, wbsToIntroduce.wbsCode));
       plan.wbsToCreate.push(wbsToIntroduce);
     }
     if (networkToIntroduce) {
-      pendingNetworkKeys.add(projectScopedKey(networkToIntroduce.projectId, networkToIntroduce.networkCode));
+      pendingNetworks.set(projectScopedKey(networkToIntroduce.projectId, networkToIntroduce.networkCode), {
+        wbsId: networkToIntroduce.wbsId,
+        wbsCode: networkToIntroduce.wbsCode,
+        row: networkToIntroduce.row,
+      });
       plan.networksToCreate.push(networkToIntroduce);
     }
 

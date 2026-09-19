@@ -357,6 +357,7 @@ model ProjectWbs {
 
   jobOrders           JobOrder[]
   jobOrdersByProject  JobOrder[]        @relation("JobOrderWbsProject")
+  networks            Network[]
   timesheetEntries    TimesheetEntry[]
   employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationProjectWbs")
 
@@ -675,20 +676,26 @@ model Uom {
 /// Network master, scoped per project. Manual until the SAP sync lands in phase 2
 /// (then `source` becomes 'SAP'). Validated on Job Order upload.
 model Network {
-  id        Int      @id @default(autoincrement())
-  projectId Int      @map("project_id")
-  project   Project  @relation(fields: [projectId], references: [id])
+  id        Int        @id @default(autoincrement())
+  projectId Int        @map("project_id")
+  project   Project    @relation(fields: [projectId], references: [id])
+  /// A Network belongs to a WBS element, not to the whole project. One Network
+  /// number never spans two WBS rows of the same project (confirmed by the user),
+  /// so the Job Order upload validates the Network against the WBS on its own line.
+  wbsId     Int        @map("wbs_id")
+  wbs       ProjectWbs @relation(fields: [wbsId], references: [id])
   code      String
   name      String?
-  source    String   @default("MANUAL")
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  source    String     @default("MANUAL")
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
 
   jobOrders JobOrder[]
 
   @@unique([projectId, code])
   @@index([projectId, active])
+  @@index([wbsId, active])
   @@map("networks")
 }
 

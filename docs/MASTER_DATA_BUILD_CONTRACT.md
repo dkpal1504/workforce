@@ -48,8 +48,11 @@ projects (1) -> project_wbs (many) -> job_orders (many)
 
 ```
 uom(id, code unique, name, example, active, created_at, updated_at)
-networks(id, project_id, code, name, source['MANUAL'|'SAP'], active, created_at, updated_at,
+networks(id, project_id, wbs_id, code, name, source['MANUAL'|'SAP'], active, created_at, updated_at,
          UNIQUE(project_id, code))
+         -- AMENDED LATER: a Network belongs to ONE WBS element (one Network number never
+         -- spans two WBS rows of a project), so wbs_id is required and the upload checks
+         -- Network_ID against the WBS_NO on the same line. See docs/MANUAL.md section 15.
 job_order_budget_revisions(id, job_order_id, revision_no, budgeted_hours, budgeted_quantity,
          uom_id, effective_from, reason, created_by, created_at, UNIQUE(job_order_id, revision_no))
 job_order_progress(id, job_order_id, progress_date, cumulative_quantity, revision_no,

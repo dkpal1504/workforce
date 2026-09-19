@@ -31,7 +31,7 @@ login needs schema-owner DDL rights when migrations run.
 > **Only valid for a fresh database, and only applies the 2026-09-13 baseline.**
 > `database/01-schema.sql` predates the later migrations — it has **no `users.section_id`**
 > (HOD scope), **no `hod_delegations`** and **none of the Project / WBS / Job Order master
-> data** (no `project_wbs.project_id`, no `uom`, no `networks`, no
+> data** (no `project_wbs.project_id`, no `uom`, no `networks`, no `networks.wbs_id`, no
 > `job_order_budget_revisions`, no `job_order_progress`, no attribution snapshot columns).
 > After running it you must still apply the later migrations (option C below), otherwise
 > HOD scoping, approval cover and the Job Order screens will not work. Prefer option A.
@@ -66,6 +66,7 @@ The repository's migrations are the authoritative, reviewed DDL. Current history
 | `20260916000000_hod_approval_delegation` | `hod_delegations` (HOD approval cover) |
 | `20260918000001_job_order_progress_remarks` | `job_order_progress_remarks` — every quantity remark kept as its own row (stage, author, role, time), with the remarks that already existed backfilled. |
 | `20260918000002_job_order_wbs_project_fk` | Composite foreign key on `job_orders (project_wbs_id, project_id)` → `project_wbs (id, project_id)` with the supporting unique index, so a Job Order's Project must be the Project that owns its WBS. Declared in the Prisma schema (`projectWbsOfProject`), so `migrate dev` will not drop it. |
+| `20260918000003_network_wbs_scope` | `networks.wbs_id` — a Network belongs to one WBS element of its project, not to the whole project. Each existing Network is backfilled onto the **first** WBS row of its project (lowest sort order, then lowest WBS code, and the pick is not limited to active WBS rows) and the column is made NOT NULL. Apply it through `prisma migrate deploy`, which wraps the migration in one transaction: with a bare `psql -f` the added column survives the failed guard and a re-run stops on `column "wbs_id" already exists`. The migration **stops and names the Network codes** when a Network's project has no WBS row at all: add a WBS row to that project (or delete the Network) and re-run. `(project_id, code)` uniqueness is unchanged. See `docs/MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`. |
 | `20260918000000_project_wbs_job_order_master` | Project → WBS → Job Order master data: renames `projects_wbs` to `project_wbs` and links it to its Project, adds `uom` and `networks`, adds `uom_id` / `network_id` / `budgeted_quantity` / `section_id` to `job_orders` and limits its status to active / inactive, adds `job_order_budget_revisions` and `job_order_progress`, and adds the attribution snapshot columns to `timesheet_entries` and `employee_allocations`. It backfills everything it makes required, so it runs against a populated database. See `docs/MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`. |
 
 Apply them with the `migrate` container (option A) or directly:
@@ -202,8 +203,12 @@ curl -fsS http://127.0.0.1:8080/api/health/ready
   API. Never `prisma db push` in production and never edit applied migrations.
 - Back up with `pg_dump --format=custom workforce > workforce.dump` from a secure
   host. Test restores regularly.
-- Run `prisma/seed.ts` only for a demo environment. It is blocked when
-  `NODE_ENV=production` and creates known demo users and passwords.
+- **Never run a seed against production.** `prisma/seed.ts` (`npm run db:seed`) is the
+  minimal bootstrap: four office accounts — ADMIN, PM, HR and FINANCE — with the known
+  `DEV_SEED_PASSWORD` and **no business data**. `prisma/seed-demo.ts`
+  (`npm run db:seed:demo`) is the full demonstration set. Both are blocked when
+  `NODE_ENV=production`, and both create accounts with a known password, so a deployment
+  creates its first Admin by hand (step 1b) and adds its masters through the screens.
 - Rotate `JWT_SECRET` deliberately; rotation signs all users out.
 - Monitor both `/healthz` and `/api/health/ready`.
 - Approval-cover and HOD-scope changes bump a user's `tokenVersion`, so affected users

@@ -10,7 +10,9 @@
  *   project_wbs   wbs_code unique PER PROJECT; project_id must exist.
  *   uom           code uppercase unique; name required; `example` is the on-screen
  *                 help string shown next to the field.
- *   networks      code unique PER PROJECT; source stays 'MANUAL'.
+ *   networks      code unique PER PROJECT; a Network belongs to ONE WBS element of
+ *                 that project (one Network number never spans two WBS rows);
+ *                 the parent WBS must be active; source stays 'MANUAL'.
  */
 
 export type FieldError = { field: string; message: string };
@@ -18,9 +20,22 @@ export type Validation<T> = { ok: true; data: T } | { ok: false; errors: FieldEr
 
 /** A row shape that is enough to detect a conflicting master row. */
 export type ProjectRow = { id: number; code: string; name: string; colorKey: string };
-export type WbsRow = { id: number; projectId: number; wbsCode: string; name?: string | null };
+/**
+ * `active` is only read to refuse an inactive WBS as a Network's parent; an omitted flag
+ * means active, so an older caller that does not select it still works. `projectCode` and
+ * `projectName` are optional and only make a refusal name the WBS's own project.
+ */
+export type WbsRow = {
+  id: number;
+  projectId: number;
+  wbsCode: string;
+  name?: string | null;
+  active?: boolean;
+  projectCode?: string | null;
+  projectName?: string | null;
+};
 export type UomRow = { id: number; code: string; name: string; example?: string | null };
-export type NetworkRow = { id: number; projectId: number; code: string; name?: string | null };
+export type NetworkRow = { id: number; projectId: number; code: string; name?: string | null; wbsId?: number | null };
 
 /** The one source a manually maintained Network row ever carries. */
 export const NETWORK_SOURCE = "MANUAL";
@@ -194,13 +209,23 @@ export function validateUomInput(payload: Record<string, unknown>): Validation<U
   return { ok: true, data: { code, name, example: example || null } };
 }
 
-export type NetworkInput = { code: string; name: string | null; source: typeof NETWORK_SOURCE };
+export type NetworkInput = { wbsId: number; code: string; name: string | null; source: typeof NETWORK_SOURCE };
 
+/**
+ * A Network payload. `wbsId` is REQUIRED: one Network number never spans two WBS
+ * elements of a project, so every Network row points at exactly one WBS row. The
+ * WBS is only checked for shape here; `resolveNetworkWbs` decides whether that WBS
+ * exists, belongs to the right project and is still active.
+ */
 export function validateNetworkInput(payload: Record<string, unknown>): Validation<NetworkInput> {
+  const wbsId = payload.wbsId === undefined || payload.wbsId === null || payload.wbsId === "" ? NaN : Number(payload.wbsId);
   const code = normalizeCode(payload.code);
   const name = normalizeText(payload.name);
   const errors: FieldError[] = [];
 
+  if (!Number.isInteger(wbsId) || wbsId <= 0) {
+    errors.push({ field: "wbsId", message: networkWbsRequiredMessage() });
+  }
   const codeIssue = codeError("code", code, "Network code", MAX_CODE_LENGTH, NETWORK_CODE_EXAMPLE, CODE_PATTERN);
   if (codeIssue) errors.push(codeIssue);
   if (name.length > MAX_NAME_LENGTH) {
@@ -210,12 +235,65 @@ export function validateNetworkInput(payload: Record<string, unknown>): Validati
   if (errors.length) return { ok: false, errors };
   // A manually maintained row is always MANUAL: SAP-sourced rows are written by
   // the ERP feed, never by this screen, so a client value is ignored.
-  return { ok: true, data: { code, name: name || null, source: NETWORK_SOURCE } };
+  return { ok: true, data: { wbsId, code, name: name || null, source: NETWORK_SOURCE } };
 }
 
 /** The source a Network row is written with, whatever the client asked for. */
 export function networkSourceForWrite(_requested?: unknown): typeof NETWORK_SOURCE {
   return NETWORK_SOURCE;
+}
+
+/* ---------------------------------------------------------------------------
+   A Network belongs to ONE WBS element.
+
+   Confirmed by the user: one Network number cannot span two WBS elements of the
+   same project. The WBS decides which project the Network lives in, so a WBS from
+   another project is a client error (the URL project and the WBS disagree), not a
+   missing row.
+   --------------------------------------------------------------------------- */
+
+/** The parent project of a WBS, reduced to what the messages need. */
+export type ProjectRef = { id: number; code: string; name: string };
+
+export function networkWbsRequiredMessage(): string {
+  return "A WBS row is required. One Network number cannot span two WBS elements of a project, so every Network belongs to exactly one WBS.";
+}
+
+export function networkWbsNotFoundMessage(wbsId: number): string {
+  return `WBS row #${wbsId} was not found. Pick one of the WBS rows of this project.`;
+}
+
+export function networkWbsOtherProjectMessage(wbs: WbsRow, project: ProjectRef): string {
+  // Name the other project by code when the caller supplied it; fall back to its id.
+  const owner = wbs.projectCode
+    ? `project "${wbs.projectName ?? wbs.projectCode}" (${wbs.projectCode})`
+    : `project #${wbs.projectId}`;
+  return `WBS "${wbs.wbsCode}" belongs to ${owner}, not to project "${project.name}" (${project.code}). The WBS decides the project, so pick a WBS of ${project.code}.`;
+}
+
+export function networkWbsInactiveMessage(wbs: WbsRow): string {
+  return `WBS "${wbs.wbsCode}" is inactive, so it cannot own a Network. Pick an active WBS row, or activate this one on the WBS tab.`;
+}
+
+export type NetworkWbsResolution = { ok: true; wbs: WbsRow } | { ok: false; error: FieldError };
+
+/**
+ * Decide whether `rawWbsId` may be the parent of a Network of `project`.
+ * `rows` holds every WBS row (not only the project's), so a WBS of another
+ * project is reported as exactly that instead of being called missing.
+ */
+export function resolveNetworkWbs(rows: WbsRow[], project: ProjectRef, rawWbsId: unknown): NetworkWbsResolution {
+  const wbsId = rawWbsId === undefined || rawWbsId === null || rawWbsId === "" ? NaN : Number(rawWbsId);
+  if (!Number.isInteger(wbsId) || wbsId <= 0) {
+    return { ok: false, error: { field: "wbsId", message: networkWbsRequiredMessage() } };
+  }
+  const wbs = rows.find((row) => row.id === wbsId);
+  if (!wbs) return { ok: false, error: { field: "wbsId", message: networkWbsNotFoundMessage(wbsId) } };
+  if (wbs.projectId !== project.id) {
+    return { ok: false, error: { field: "wbsId", message: networkWbsOtherProjectMessage(wbs, project) } };
+  }
+  if (wbs.active === false) return { ok: false, error: { field: "wbsId", message: networkWbsInactiveMessage(wbs) } };
+  return { ok: true, wbs };
 }
 
 /* ---------------------------------------------------------------------------
@@ -358,6 +436,28 @@ export function jobOrderWbsMoveError(check: WbsMoveCheck): string | null {
   const booked = check.bookedTimesheetEntries + check.bookedAllocationSlots;
   if (booked === 0) return null;
   return `Job Order "${check.jobOrderCode}" already has booked hours (${check.bookedTimesheetEntries} timesheet rows, ${check.bookedAllocationSlots} allocation hours), so it cannot move to another WBS. Deactivate it and create a new Job Order instead.`;
+}
+
+/**
+ * A Job Order's Network must belong to the Job Order's own WBS, not merely to its
+ * project. When the request changes the WBS, the Network has to be valid for the
+ * NEW WBS; otherwise the message names BOTH WBS rows, so the operator knows which
+ * Network to pick instead.
+ */
+export type NetworkWbsMatch = {
+  jobOrderCode: string;
+  networkCode: string;
+  networkWbsId: number;
+  networkWbsCode: string;
+  targetWbsId: number;
+  targetWbsCode: string;
+};
+
+export function jobOrderNetworkWbsError(check: NetworkWbsMatch): string | null {
+  if (check.networkWbsId === check.targetWbsId) return null;
+  // "is on (or would move to)": the WBS may be the Job Order's current one (a Network-only
+  // change) or the one the request would move it to. Both WBS rows are named either way.
+  return `Network "${check.networkCode}" belongs to WBS "${check.networkWbsCode}", but Job Order "${check.jobOrderCode}" is on (or would move to) WBS "${check.targetWbsCode}". Pick another Network: only the Networks of WBS "${check.targetWbsCode}" are valid for this Job Order.`;
 }
 
 /** section_id is NULL only for a standing / Non-Project Job Order. */

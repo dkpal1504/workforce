@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import sql from "mssql";
-import { defaultWorkforceCredentialState, hashDefaultWorkforcePassword } from "./defaultLoginCredentials";
+import { initialCredentialState } from "./defaultLoginCredentials";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { effectiveOrganisation } from "./roleAccess";
@@ -476,14 +476,19 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
             user = await tx.user.create({
               data: {
                 email: await uniqueSyncEmail(tx, ecNo),
-                passwordHash: await hashDefaultWorkforcePassword(),
                 name: employee.name,
                 role: "SUPERVISOR",
                 source: "SYNC",
                 employeeId: employee.id,
                 departmentId: employee.departmentId,
                 active: true,
-                ...defaultWorkforceCredentialState,
+                // Same credential path as a registration from the web UI: while the
+                // pre-production bootstrap password is in force the new supervisor can
+                // sign in immediately with the EcNo and that password, and
+                // `initialCredentialState` refuses to hand it out against PostgreSQL and
+                // falls back to the random, e-mailed one-time credential once the literal
+                // is removed. The credential delivery is still queued below.
+                ...(await initialCredentialState()),
               },
             });
             credentialsQueued = await queueCredential(tx, user.id, wasInactive ? "REACTIVATION" : "NEW_SUPERVISOR");
@@ -499,8 +504,7 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
                 active: true,
                 ...(needsReactivationCredential
                   ? {
-                      passwordHash: await hashDefaultWorkforcePassword(),
-                      ...defaultWorkforceCredentialState,
+                      ...(await initialCredentialState()),
                       tokenVersion: { increment: 1 },
                     }
                   : {}),

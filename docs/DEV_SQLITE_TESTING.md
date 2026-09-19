@@ -10,17 +10,32 @@ PostgreSQL and the API refuses a SQLite URL when `NODE_ENV=production`.
 ```bash
 cd /mnt/c/data/comp/workforce
 npm install
-npm run db:setup      # build shared | prisma generate | schema push | demo seed
+npm run db:setup      # build shared | prisma generate | schema push | MINIMAL seed
+npm run db:seed:demo  # optional: the demonstration data (see "Demo master data" below)
 npm run dev:api       # terminal 1 -> http://localhost:4000
 npm run dev:web       # terminal 2 -> http://localhost:5173
 ```
 
-`bash scripts/dev-sqlite-setup.sh` runs the same steps with a URL check first.
+`bash scripts/dev-sqlite-setup.sh` runs the `db:setup` step (the **minimal** seed) with a URL check first — run `npm run db:seed:demo` yourself when you want the demonstration data.
 
-Demo logins (seeded, password `WorkforceDev@2026`):
-`EC1001` supervisor · `EC1011` employee · `hod@company.com` · `pm@company.com` · `admin@company.com`
+`npm run db:setup` ends with the **minimal seed** (`npm run db:seed`). It creates four
+office accounts and **no business data**:
 
-`npm run db:seed` wipes and reloads the demo data at any time.
+`admin@company.com` · `pm@company.com` · `hr@company.com` · `finance@company.com`
+(password `WorkforceDev@2026`)
+
+That is the production-like starting point: the app has no Project, WBS, UoM, Network,
+Job Order, department or employee until you sync from LabourWorks and build the masters
+(sections 12 to 15 of `docs/MANUAL.md`). It also seeds **no cost rate**, so the Cost view
+of the Summary reads zero until an Admin posts one to `/api/admin/cost-rates`.
+
+`npm run db:seed:demo` adds the demonstration set. Its extra logins, with the same
+password: `EC1001` supervisor · `EC1011` employee · `hod@company.com`.
+
+Both commands wipe and reload at any time: `npm run db:seed` gives the four office
+accounts again, `npm run db:seed:demo` gives the demonstration data below. **The Playwright
+tests need the demo data** — `apps/web/e2e/smoke.spec.ts` logs in as `EC1001` and books
+against a seeded Job Order, so it only passes after `npm run db:seed:demo`.
 
 ## Rebuilding the dev database
 
@@ -35,34 +50,39 @@ Demo logins (seeded, password `WorkforceDev@2026`):
 > cd apps/api && npx prisma db push --accept-data-loss && npm run db:seed
 > ```
 >
+> Add `&& npm run db:seed:demo` if you want the demonstration data rather than the four
+> office accounts.
+>
 > The migrations under `prisma/migrations` never run on SQLite, so the dev database is
 > built from `schema.prisma` alone. That is why the migration backfills (for example the
 > quantity remark history) do not appear there: the dev seed creates equivalent rows
 > instead.
 
-Two commands rebuild the dev SQLite database:
+Two steps rebuild the dev SQLite database:
 
 ```bash
 npm run db:migrate     # schema step: a `file:` URL runs `prisma db push`
-npm run db:seed        # data step: the deleteMany chain, then the demo data below
+npm run db:seed        # data step: the deleteMany chain, then the four office accounts
+npm run db:seed:demo   # data step: the deleteMany chain, then the demonstration data below
 ```
 
 - `npm run db:migrate` is provider-aware. On SQLite it runs `prisma db push
   --skip-generate`, so run `npm run db:generate -w @workforce/api` yourself after a
   `schema.prisma` change. It does **not** apply the PostgreSQL migrations.
 - `npm run db:setup` runs the whole path: `shared` build, `prisma generate`, the
-  provider-aware schema step, then the seed.
+  provider-aware schema step, then the **minimal** seed. Add `npm run db:seed:demo` when
+  you want the demonstration data.
 
 ### Demo master data (Project | WBS | Job Order)
 
-The seed loads the hierarchy and both measures that reporting uses:
+`npm run db:seed:demo` loads the hierarchy and both measures that reporting uses. **`npm run db:seed` loads none of it** — it writes the four office accounts only. The master data of the demonstration set is:
 
 | Table | Rows | What it holds |
 |---|---|---|
 | `projects` | 5 | Project A, B, C, D and the **Non-Project** row; colour keys A, B, C, D, N |
 | `project_wbs` | 7 | **two WBS rows belong to Project A**; one each for B and D, two for C, and `GENERAL` for standing work |
 | `uom` | 4 | NOS, MT, SQM, MTR (MTR is unused by any seeded Job Order) |
-| `networks` | 7 | one or two per project, plus the `DUMMY` network for standing work |
+| `networks` | 7 | one or two per project, plus the `DUMMY` network for standing work. Every row carries `wbs_id`: a Network belongs to one WBS element of its project (migration `20260918000003_network_wbs_scope`) |
 | `job_orders` | 16 | 14 `active`, 2 `inactive`; the 4 standing rows carry no Section |
 | `job_order_budget_revisions` | 16 | revision 1 (`Opening budget`, effective 2026-01-01) for every Job Order |
 | `job_order_progress` | 7 | 4 `APPROVED`, 2 `SUBMITTED`, 1 `REJECTED` |
@@ -73,8 +93,21 @@ only duplicated number in the seed.
 
 ### Dev accounts
 
-The seed prints the accounts it creates, with the password in use — log in with those
-lines:
+Each seed prints the accounts it creates, with the password in use — log in with those
+lines.
+
+`npm run db:seed` prints the four office accounts, then the next steps in order (sync from
+LabourWorks, create the Project / WBS / UoM / Networks, upload the Job Orders, add cost
+rates):
+
+```
+ADMIN    admin@company.com / <password>
+PM       pm@company.com / <password>
+HR       hr@company.com / <password>
+FINANCE  finance@company.com / <password>
+```
+
+`npm run db:seed:demo` prints the demonstration logins:
 
 ```
 Employee: EC1011 / <password>
@@ -84,9 +117,10 @@ Project Head: pm@company.com / <password>
 Admin: admin@company.com / <password>
 ```
 
-The password is `WorkforceDev@2026` unless `DEV_SEED_PASSWORD` overrides it. The seed
-imports no `dotenv`, so `DEV_SEED_PASSWORD` is only seen when it is exported in the
-shell or set in `apps/api/.env`; a value only in the root `.env` is not read.
+The password is `WorkforceDev@2026` unless `DEV_SEED_PASSWORD` overrides it, and both
+seeds read it the same way. Neither seed imports `dotenv`, so `DEV_SEED_PASSWORD` is only
+seen when it is exported in the shell or set in `apps/api/.env`; a value only in the root
+`.env` is not read.
 
 ## What makes this work
 

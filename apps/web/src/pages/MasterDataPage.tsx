@@ -11,11 +11,24 @@ import "./MasterDataPage.css";
    never guess wrong. A duplicate is reported with the server's own message, which
    names the row it collided with.
 
+   A Network belongs to ONE WBS element of its project (one Network number never
+   spans two WBS rows), so the Network form asks for the WBS and the Job Order
+   mapping form offers only the Networks of the selected WBS.
+
    A master row that other tables reference is DEACTIVATED, never deleted: the
    foreign keys and the frozen attribution snapshots on booked hours must survive.
    ============================================================================ */
 
 type Tab = "project" | "wbs" | "uom" | "network" | "joborder";
+
+/** The Network fields a picker needs. The Job Order list sends them nested inside each
+ *  WBS row; the project list sends them flat, each row carrying its `wbsId` and `wbsCode`. */
+type NetworkOption = {
+  id: number;
+  code: string;
+  name: string | null;
+  active: boolean;
+};
 
 type WbsRow = {
   id: number;
@@ -24,16 +37,21 @@ type WbsRow = {
   name: string | null;
   sortOrder: number;
   active: boolean;
+  /** The Networks of THIS WBS element. The Job Order list sends them inside each WBS
+   *  row, so the mapping form can offer only the Networks of the selected WBS. */
+  networks?: NetworkOption[];
   _count?: { jobOrders: number };
 };
 
-type NetworkRow = {
-  id: number;
+type NetworkRow = NetworkOption & {
   projectId: number;
-  code: string;
-  name: string | null;
+  /** The WBS element this Network belongs to. One Network number never spans two WBS
+   *  rows of the same project, so a Network always points at exactly one WBS. */
+  wbsId: number;
+  /** The WBS code the server reports beside `wbsId`, so the table can show it. */
+  wbsCode?: string | null;
+  wbsName?: string | null;
   source: string;
-  active: boolean;
   _count?: { jobOrders: number };
 };
 
@@ -43,7 +61,9 @@ type JobOrderRow = {
   code: string;
   name: string;
   status: string;
-  project: (ProjectRow & { wbsRows: WbsRow[]; networks: NetworkRow[] }) | null;
+  /** The project of a Job Order carries its WBS rows, and each WBS row carries its own
+   *  Networks — never a flat project-wide Network list, because a Network belongs to a WBS. */
+  project: (Pick<ProjectRow, "id" | "code" | "name" | "colorKey"> & { wbsRows: WbsRow[] }) | null;
   projectWbs: { id: number; wbsCode: string; name?: string | null } | null;
   network: { id: number; code: string } | null;
   uom: { id: number; code: string } | null;
@@ -171,7 +191,7 @@ export function MasterDataPage() {
   );
   const visibleUom = useMemo(() => uom.filter((row) => matches(row.code, row.name, row.example)), [uom, q]);
   const visibleNetworks = useMemo(
-    () => allNetworks.filter((row) => String(row.projectId) === projectFilter && matches(row.code, row.name, row.source, row.project.name, row.project.code)),
+    () => allNetworks.filter((row) => String(row.projectId) === projectFilter && matches(row.code, row.name, row.source, row.wbsCode, row.wbsName, row.project.name, row.project.code)),
     [allNetworks, projectFilter, q]
   );
 
@@ -257,7 +277,7 @@ export function MasterDataPage() {
       {tab === "project" && `A project is the commercial container. Its colour key is the short token shown on Timesheet Entry, unique across all projects (example: ${COLOR_KEY_EXAMPLE}). A WBS row and its Networks live inside it.`}
       {tab === "wbs" && `A WBS row groups Job Orders inside one project. The WBS number (example: ${WBS_CODE_EXAMPLE}) is unique inside the project, not globally.`}
       {tab === "uom" && "Unit of measure, with the example string that is shown as help text wherever a quantity is entered."}
-      {tab === "network" && `A Network is scoped to one project. Codes are maintained by hand (example: ${NETWORK_CODE_EXAMPLE}); SAP-fed networks arrive from the ERP feed and are read-only here.`}
+      {tab === "network" && `A Network belongs to ONE WBS element of its project: one Network number never spans two WBS rows. Codes are maintained by hand (example: ${NETWORK_CODE_EXAMPLE}); SAP-fed networks arrive from the ERP feed and are read-only here.`}
       {tab === "joborder" && "Job Orders come from the CSV upload, which never updates an existing row. Use Edit on a row to correct its WBS or Network. A WBS may not change once hours are booked, because every booked row keeps the attribution it was given. The Project itself is changed by an Admin from the Job Order Mapping screen."}
     </p>
 
@@ -272,7 +292,7 @@ export function MasterDataPage() {
           {tab === "project" && <tr><th>Colour key</th><th>Project</th><th>WBS / Networks</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "uom" && <tr><th>Code</th><th>Name</th><th>Example (on-screen help)</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
-          {tab === "network" && <tr><th>Network code</th><th>Project</th><th>Source</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
+          {tab === "network" && <tr><th>Network code</th><th>Project</th><th>WBS</th><th>Source</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "joborder" && <tr><th>Job Order</th><th>Project</th><th>WBS</th><th>Network</th><th>Booked hours</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
         </thead>
         <tbody>
@@ -327,6 +347,10 @@ export function MasterDataPage() {
             <tr key={row.id}>
               <td><strong>{row.code}</strong>{row.name && <div className="muted">{row.name}</div>}</td>
               <td>{row.project.code} · {row.project.name}</td>
+              <td>
+                {row.wbsCode ?? <span className="muted">—</span>}
+                {row.wbsName && <div className="muted">{row.wbsName}</div>}
+              </td>
               <td><span className={`badge badge--${row.source === "SAP" ? "sync" : "manual"}`}>{row.source === "SAP" ? "SAP feed" : "Manual"}</span></td>
               <td>{row._count?.jobOrders ?? 0}</td>
               <td>{row.active ? "Active" : "Inactive"}</td>
@@ -455,14 +479,48 @@ type SaveFn = (path: string, method: "POST" | "PUT", body: Record<string, unknow
 function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: JobOrderRow; projects: ProjectRow[]; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
   // Take the options from the LIVE project list, not from the row's own copy: a WBS row
   // or Network added on the other tabs a moment ago must be selectable straight away.
-  const liveProject = projects.find((project) => project.id === item.project?.id) ?? item.project;
-  const wbsOptions = liveProject?.wbsRows ?? [];
-  const networkOptions = liveProject?.networks ?? [];
+  // The WBS list comes from the LIVE project list, so a WBS row added on that tab a moment
+  // ago is selectable straight away. The Networks of a WBS are merged from two places: the
+  // Job Order payload nests them inside each WBS row, and the project list carries them flat
+  // with their `wbsId`. Merging means a Network added on the Network tab is offered too.
+  const pageProject = projects.find((project) => project.id === item.project?.id);
+  const wbsOptions = pageProject?.wbsRows ?? item.project?.wbsRows ?? [];
   const booked = (item._count?.timesheetEntries ?? 0) + (item._count?.employeeAllocations ?? 0);
   const [projectWbsId, setProjectWbsId] = useState(String(item.projectWbs?.id ?? ""));
   const [networkId, setNetworkId] = useState(String(item.network?.id ?? ""));
+  const networksByWbsId = useMemo(() => {
+    const byWbs = new Map<number, NetworkOption[]>();
+    const add = (wbsId: number | null | undefined, network: NetworkOption) => {
+      if (wbsId == null) return;
+      const list = byWbs.get(wbsId) ?? [];
+      if (!list.some((candidate) => candidate.id === network.id)) list.push(network);
+      byWbs.set(wbsId, list);
+    };
+    for (const row of item.project?.wbsRows ?? []) for (const network of row.networks ?? []) add(row.id, network);
+    for (const network of pageProject?.networks ?? []) add(network.wbsId, network);
+    for (const list of byWbs.values()) list.sort((left, right) => left.code.localeCompare(right.code));
+    return byWbs;
+  }, [item.project, pageProject]);
+  // A Network belongs to ONE WBS element, so the Network select lists only the Networks of
+  // the SELECTED WBS. Changing the WBS clears the Network choice: a Network of the old WBS
+  // can never stay selected, and it can never be saved by accident.
+  const selectedWbs = wbsOptions.find((row) => String(row.id) === projectWbsId) ?? null;
+  const networkOptions: NetworkOption[] = networksByWbsId.get(Number(projectWbsId)) ?? [];
   const wbsChanged = projectWbsId !== String(item.projectWbs?.id ?? "");
   const wbsLocked = wbsChanged && booked > 0;
+  const noNetwork = !networkId;
+  const submitDisabled = wbsLocked || noNetwork;
+  const submitTitle = wbsLocked
+    ? "This Job Order already has booked hours, so its WBS cannot change."
+    : noNetwork
+      ? "Select the Network of the chosen WBS first."
+      : undefined;
+
+  function chooseWbs(nextWbsId: string) {
+    setProjectWbsId(nextWbsId);
+    // The Network is refreshed with the WBS, so a Network of the previous WBS is dropped.
+    setNetworkId("");
+  }
 
   return (
     <Modal
@@ -470,8 +528,8 @@ function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: 
       busy={busy}
       error={error}
       onClose={onClose}
-      submitDisabled={wbsLocked}
-      submitTitle="This Job Order already has booked hours, so its WBS cannot change."
+      submitDisabled={submitDisabled}
+      submitTitle={submitTitle}
       onSubmit={() => onSave(`/master-data/job-orders/${item.id}/mapping`, "PUT", {
         projectWbsId: Number(projectWbsId),
         networkId: Number(networkId),
@@ -490,7 +548,7 @@ function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: 
           ? `This Job Order already has ${booked} booked row(s), so its WBS cannot change. Deactivate it and raise a new Job Order if the work really moved.`
           : `Only the WBS rows of ${item.project?.code ?? "this project"} are listed. Example: ${WBS_CODE_EXAMPLE}`}
       >
-        <select value={projectWbsId} onChange={(e) => setProjectWbsId(e.target.value)} required>
+        <select value={projectWbsId} onChange={(e) => chooseWbs(e.target.value)} required>
           {wbsOptions.map((row) => (
             <option key={row.id} value={row.id}>
               {row.wbsCode}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
@@ -498,8 +556,17 @@ function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: 
           ))}
         </select>
       </Field>
-      <Field label="Network" help={`Only the Networks of ${item.project?.code ?? "this project"} are listed. A Network is informational, so it can be corrected at any time.`}>
-        <select value={networkId} onChange={(e) => setNetworkId(e.target.value)} required>
+      <Field
+        label="Network"
+        help={selectedWbs
+          ? `Only the Networks of WBS ${selectedWbs.wbsCode} are listed, because a Network belongs to one WBS element. Changing the WBS clears this choice. Example: ${NETWORK_CODE_EXAMPLE}`
+          : `Select a WBS first: a Network belongs to one WBS element, so the list depends on the WBS. Example: ${NETWORK_CODE_EXAMPLE}`}
+      >
+        <select value={networkId} onChange={(e) => setNetworkId(e.target.value)} required disabled={networkOptions.length === 0}>
+          {networkOptions.length === 0 && (
+            <option value="">{selectedWbs ? `No Network in WBS ${selectedWbs.wbsCode} yet` : "Select a WBS row first"}</option>
+          )}
+          {networkOptions.length > 0 && !networkId && <option value="">Select a Network…</option>}
           {networkOptions.map((row) => (
             <option key={row.id} value={row.id}>
               {row.code}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
@@ -510,8 +577,11 @@ function JobOrderForm({ item, projects, busy, error, onClose, onSave }: { item: 
       {wbsOptions.length === 0 && (
         <p className="md-help">This project has no WBS row yet. Add one on the WBS tab first.</p>
       )}
-      {networkOptions.length === 0 && (
-        <p className="md-help">This project has no Network yet. Add one on the Network tab first.</p>
+      {selectedWbs && networkOptions.length === 0 && (
+        <p className="md-help">
+          WBS {selectedWbs.wbsCode} has no Network yet, and this Job Order must point at a Network of its own WBS.
+          Add one on the Network tab (choose this WBS there), then come back to this form.
+        </p>
       )}
       {booked > 0 && !wbsChanged && (
         <p className="md-help">Booked rows on record: {booked}. The Network can still be corrected; the WBS is locked.</p>
@@ -596,16 +666,56 @@ function UomForm({ item, uom, busy, error, onClose, onSave }: { item?: UomRow; u
   );
 }
 
+/**
+ * Add or edit a Network. The WBS is a REQUIRED field, because a Network belongs to one
+ * WBS element and one Network number never spans two WBS rows of a project. The select
+ * is limited to the WBS rows of the Network's own project.
+ */
 function NetworkForm({ item, project, busy, error, onClose, onSave }: { item?: NetworkRow; project: ProjectRow; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
+  const [wbsId, setWbsId] = useState(item?.wbsId != null ? String(item.wbsId) : "");
   const [code, setCode] = useState(item?.code ?? "");
   const [name, setName] = useState(item?.name ?? "");
+  // Only the project's own WBS rows are offered, and an inactive row is offered only
+  // while it is the row this Network already has (so the stored value stays visible).
+  // The server refuses an inactive parent, so it is never presented as a free choice.
+  const wbsOptions = useMemo(() => {
+    const rows = project.wbsRows.filter((row) => row.active || row.id === item?.wbsId);
+    return rows;
+  }, [project.wbsRows, item?.wbsId]);
+  const noWbs = wbsOptions.length === 0;
   return (
-    <Modal title={item ? "Edit Network" : "Add Network"} busy={busy} error={error} onClose={onClose} onSubmit={() => onSave(item ? `/master-data/networks/${item.id}` : `/master-data/projects/${project.id}/networks`, item ? "PUT" : "POST", { code, name })}>
+    <Modal
+      title={item ? "Edit Network" : "Add Network"}
+      busy={busy}
+      error={error}
+      onClose={onClose}
+      submitDisabled={noWbs || !wbsId}
+      submitTitle={noWbs ? "This project has no WBS row yet. Add one on the WBS tab first." : !wbsId ? "Select the WBS row this Network belongs to." : undefined}
+      onSubmit={() => onSave(
+        item ? `/master-data/networks/${item.id}` : `/master-data/projects/${project.id}/networks`,
+        item ? "PUT" : "POST",
+        { wbsId: Number(wbsId), code, name }
+      )}
+    >
       <div className="sup-field">
         <label>Project</label>
         <p className="md-readonly">{project.colorKey} · {project.code} · {project.name}</p>
-        <p className="md-help">A Network is scoped to one project. The same code may exist in another project.</p>
+        <p className="md-help">A Network belongs to one project, and the same code may exist in another project. The project cannot be changed here.</p>
       </div>
+      <Field label="WBS number" help={`Required. One Network number never spans two WBS rows, so this Network belongs to exactly one WBS of ${project.code}. Example: ${WBS_CODE_EXAMPLE}`}>
+        <select value={wbsId} onChange={(e) => setWbsId(e.target.value)} required disabled={noWbs}>
+          {noWbs && <option value="">No WBS row in this project yet</option>}
+          {!noWbs && !wbsId && <option value="">Select a WBS row…</option>}
+          {wbsOptions.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.wbsCode}{row.name ? ` · ${row.name}` : ""}{row.active ? "" : " (inactive)"}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {noWbs && (
+        <p className="md-help">This project has no WBS row yet, and a Network must sit under one. Add a WBS row on the WBS tab first, then add this Network.</p>
+      )}
       <Field label="Network code" help={`Unique inside ${project.code}. Example: ${NETWORK_CODE_EXAMPLE}`}>
         <input required autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder={NETWORK_CODE_EXAMPLE} />
       </Field>

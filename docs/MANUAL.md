@@ -47,23 +47,34 @@
 
 The Workforce app runs at **`http://localhost:<web-port>`** (usually `5174` on Windows hosts where `5173` is OS-occupied, or `5173` elsewhere). The API runs on **`http://localhost:<api-port>`** (usually `4100` on Windows where `4000` is occupied, or `4000` elsewhere).
 
-Seeded test accounts. **The password differs by account type** — this is the most common login problem:
+There are **two seed commands**, and they create different accounts:
+
+| Command | Accounts it creates |
+|---|---|
+| `npm run db:seed` | The **four office accounts only** — ADMIN `admin@company.com`, PM `pm@company.com`, HR `hr@company.com`, FINANCE `finance@company.com` — and **no business data at all**. This is the production-like starting point: sync from LabourWorks, then create the Project / WBS / UoM / Networks on Project Master Data, then upload the Job Orders (sections 12 to 15). |
+| `npm run db:seed:demo` | The full demonstration set for a local demo and for the Playwright end-to-end tests: the four office accounts plus a HOD, an Employee login, five supervisors, projects, WBS rows, UoM, networks, Job Orders, bookings and cost rates. |
+
+**The password differs by account type** — this is the most common login problem:
 
 | Password | Applies to |
 |---|---|
-| `WorkforceDev@2026` | The seeded demo accounts below (ADMIN, HOD, PM, HR, FINANCE, EMPLOYEE, and the seeded supervisors). Override with `DEV_SEED_PASSWORD` before `npm run db:seed`. |
+| `WorkforceDev@2026` | Every account that either seed creates. Override it with `DEV_SEED_PASSWORD` before you run the seed. |
 | `password@SDHI` | Accounts provisioned by the LabourWorks sync (log in with the EcNo, e.g. `BAPL0251`) **and, while the app is still pre-production, every account registered from the web UI** — Employee, Supervisor and HOD registration all start on `password@SDHI` with no forced change. On a dev box, set one with `node apps/api/set-dev-password.cjs <ecNo>`. Removed before production: the API build fails while the dev bootstrap password is still in the source. |
 
 | Role | Login | Notes |
 |---|---|---|
-| Employee | `EC1011` (or `employee@company.com`) | Payroll "My Hours" self-allocation |
-| Supervisor (linked to payroll Employee) | `EC1001` (or `r.sharma@company.com`) | Submits team timesheets; can self-allocate via "My Hours" |
-| Supervisor | `EC1006`, `EC1007`, `EC1014`, `EC1017`, `EC1018` | `sup.a` … `sup.e@company.com` |
-| HOD | `hod@company.com` | Seeded example — mapped to Production - EOU / Hull Production |
-| PM (Project Head) | `pm@company.com` | Central authority — sees all departments, final approval after HOD |
-| Admin | `admin@company.com` | Global visibility, can act at either stage |
-| HR | `hr@company.com` | Legacy screens only (CSV upload, supervisor registration); not a workforce approver |
-| Finance | `finance@company.com` | Cost-rates viewer |
+| Admin | `admin@company.com` | Both seeds. Global visibility, can act at either stage |
+| PM (Project Head) | `pm@company.com` | Both seeds. Central authority — sees all departments, final approval after HOD |
+| HR | `hr@company.com` | Both seeds. Legacy screens only (CSV upload, supervisor registration); not a workforce approver |
+| Finance | `finance@company.com` | Both seeds. Cost-rates viewer |
+| HOD | `hod@company.com` | **`db:seed:demo` only** — mapped to Production - EOU / Hull Production |
+| Employee | `EC1011` (or `employee@company.com`) | **`db:seed:demo` only** — payroll "My Hours" self-allocation |
+| Supervisor (linked to payroll Employee) | `EC1001` (or `r.sharma@company.com`) | **`db:seed:demo` only** — submits team timesheets; can self-allocate via "My Hours" |
+| Supervisor | `EC1006`, `EC1007`, `EC1014`, `EC1017`, `EC1018` | **`db:seed:demo` only** — `sup.a` … `sup.e@company.com` |
+
+> **After `npm run db:seed` there is no supervisor, HOD or employee login at all.** The minimal seed creates the four office accounts. To get a team, a supervisor login or an employee login you must either run the LabourWorks sync (section 12) or register them (sections 5, 6 and 8).
+
+> **Cost rates are not seeded by `npm run db:seed`.** The **Cost** view of the Summary reads zero until an Admin adds the rates with `POST /api/admin/cost-rates` (`category`, `ratePerHour`, `effectiveFrom`). Only `db:seed:demo` writes example rates.
 
 > **Security:** these are **dev-only** credentials. Rotate or disable before any environment that is reachable beyond localhost. In `.env`, set `API_HOST=127.0.0.1` so the API does not bind to the LAN.
 
@@ -403,7 +414,8 @@ Project  ──►  WBS  ──►  Job Order
 - A **WBS** belongs to exactly one Project and only groups Job Orders. It carries no budget. The WBS number is unique **inside a project**, so the same WBS number may exist in another project.
 - A **Job Order** belongs to one WBS. **A Job Order number is unique per project only — it REPEATS across projects.** `1900000107` in Project A is a different Job Order from `1900000107` in Project C. Always read the Job Order together with its project.
 - **UoM** is a global master (NOS, MT, SQM, MTR…). Its `example` text is the help string shown on the maintenance screen.
-- **Network** is a per-project reference (an SAP network). Several Job Orders may share one Network.
+- **Network** is a per-project SAP network reference that **belongs to ONE WBS element** of that project. The link is required (`networks.wbs_id`, migration `20260918000003_network_wbs_scope`). Several Job Orders may share one Network, and a Job Order's Network must be a Network of the WBS the Job Order points at.
+- A Network **code is still unique inside the project**, not inside the WBS. The consequence is the rule the Job Order upload enforces: **one Network number never spans two WBS rows of the same project** (section 15).
 - One flagged **Non-Project** project holds standing / idle-hours work. Its Job Orders carry no Section, so any Section of their Department may book them.
 
 ### 13.2 Job Order status
@@ -440,7 +452,7 @@ A booked timesheet entry or allocation row stores `project_id`, `project_wbs_id`
 
 **Path:** `/master-data` (top nav: **Project Master**).
 
-Four tabs: **Project**, **WBS**, **UoM**, **Network**. Reads are open to any signed-in user; every create, update, activate/deactivate and delete is limited to **ADMIN and PM**, and every write is audited.
+Five tabs: **Project**, **WBS**, **UoM**, **Network** and **Job Order**. Reads are open to any signed-in user; every create, update, activate/deactivate and delete is limited to **ADMIN and PM**, and every write is audited. The **Job Order** tab is read-only apart from one action, **Edit WBS / Network** (section 14.4).
 
 ### 14.1 Fields and example help text
 
@@ -449,7 +461,7 @@ Four tabs: **Project**, **WBS**, **UoM**, **Network**. Reads are open to any sig
 | **Project** | Project code (ERP project number), Project name, Colour key (display token), Sort order, Standing / non-project row | code `PRJ-A`, name `Project A`, colour key `A` ("shows as A on Timesheet Entry") |
 | **WBS** | Project, WBS number, WBS name, Sort order | code `A.HULL.0010.100`, name `Hull structure` |
 | **UoM** | UoM code, UoM name, Example (shown as help text) | code `NOS`, name `Numbers`, example `Count of pieces, e.g. 12 spools` |
-| **Network** | Project, Network code, Network name, Source | code `SAP-NW-91001`, name `Hull networks` |
+| **Network** | Project, **WBS number** (required), Network code, Network name, Source | WBS `A.HULL.0010.100`, code `SAP-NW-91001`, name `Hull networks` |
 
 Every field carries its own help line, for example `Unique across all projects. Example: PRJ-A` on the Project code, or `1-4 uppercase characters or digits, unique across all projects` on the Colour key. Each tab lists its rows with a Status column and an Actions column: **Edit** and **Deactivate** / **Activate**.
 
@@ -458,7 +470,9 @@ Every field carries its own help line, for example `Unique across all projects. 
 - The **UoM example** is the on-screen help string; the screen shows it as `Example: NOS — Count of pieces, e.g. 12 spools`.
 - **Non-project** marks the single project that holds standing / idle-hours work. Its Job Orders may omit a Section.
 - A **Network** row written from this screen is always stored with source `MANUAL`; SAP-sourced rows will come from the ERP feed.
-- Each tab is scoped per row: a **WBS** or **Network** code is unique **inside one project**, so the same code may be reused in another project.
+- The **Network tab requires a WBS.** The select lists only the WBS rows of the selected project, because a Network belongs to one WBS element, and the list carries a **WBS column** so you can read which WBS each Network belongs to. An **inactive** WBS cannot own a new Network: the screen refuses it and asks you to activate the WBS row first, or to store the Network under an active row.
+- A project with **no WBS row yet cannot take a Network** — a Network must sit under one. Add the WBS row on the WBS tab first, then add the Network.
+- Each tab is scoped per row: a **WBS** or **Network** code is unique **inside one project**, so the same code may be reused in another project. A Network code is unique inside the **project**, not inside the WBS, so the WBS does not loosen the duplicate rule: the same Network code may not be used twice in one project.
 
 ### 14.2 A duplicate is refused, and the reason names the row
 
@@ -474,12 +488,26 @@ A duplicate answers `409` with a message that names the row it collided with. Th
 
 The same WBS or Network code in a **different** project is accepted, not a duplicate.
 
+The **WBS is not part of the Network duplicate rule**: a Network code is unique inside the project, so a code already used by one WBS row of a project cannot be given to another WBS row of the same project either.
+
 ### 14.3 Deactivate instead of delete
 
 - **Deactivate** sets the row inactive and keeps it. The row disappears from the pickers, so it can no longer be booked. **Activate** puts it back.
 - **Delete** is refused while any other row points at the master row. The answer is `409` with the reference counts, for example
   `project "Project A" (PRJ-A) is referenced by 7 WBS rows, 2 Networks, 4 Job Orders and 12 timesheet rows. Deactivate it instead of deleting it.`
   Only a row that nothing references can be deleted, and the screen offers Deactivate / Activate rather than Delete.
+- Deactivating a **WBS row** that owns Networks leaves those Networks in place, but the WBS can no longer own a new one; a Network row is deactivated on its own tab.
+
+### 14.4 The Job Order tab — correcting a WBS / Network mapping
+
+The CSV upload creates a Job Order and then skips it, so this tab is the only screen that corrects a wrong WBS or Network on an existing Job Order. It lists every Job Order with its Project, WBS, Network, booked hours and status, and offers **Edit WBS / Network**.
+
+- **The Network list follows the WBS.** The form offers only the Networks of the WBS you select, because a Network belongs to one WBS element: changing the WBS **reloads** that list and clears the Network choice, so you cannot keep a Network of the old WBS by accident.
+- The API refuses a Network of another WBS with `NETWORK_WBS_MISMATCH` and names both WBS codes, for example
+  `Network "SAP-NW-93001" belongs to WBS "C.SFR.0045.201", but Job Order "1900000111" is mapped to WBS "C.REP.0045.202". Pick another Network: only the Networks of WBS "C.REP.0045.202" are valid for this Job Order.`
+- Only the WBS rows of the Job Order's **own Project** are listed. The Project itself is not changed on this tab: an Admin changes that on the Job Order Mapping screen.
+- **A Job Order that already has booked hours cannot move to another WBS** (section 13.5). Save stays disabled and explains why.
+- The change is audited as `ADMIN_UPDATE_JOB_ORDER_MAPPING` with the previous and the new WBS / Network, and it does not move hours that are already booked (section 11.2).
 
 ---
 
@@ -508,8 +536,8 @@ A row is either created, skipped or rejected. A rejected row always names its ro
 |---|---|---|
 | `Project_ID` | Must exist in the Project master (matched by code) | Row rejected. An upload **never creates a Project**: a Project needs a name *and* a unique colour key, which the template does not carry. Create it on **Project Master Data** first. |
 | `Project_Name` | Must agree with `Project_ID` | Row rejected, and the message shows the master name. |
-| `WBS_NO` | Must exist **under that project** — unless auto-creation is on, in which case a missing WBS is **created** and the row imports | Row created the WBS, then imported. |
-| `Network_ID` | Must exist **in that project** and be active — unless auto-creation is on, in which case a missing Network is **created** and the row imports. An INACTIVE Network is never revived by an upload | Row created the Network, then imported. |
+| `WBS_NO` | Must exist **under that project** — unless auto-creation is on, in which case a missing WBS is **created** and the row imports. This cell also decides which Network the row may use | Row created the WBS, then imported. |
+| `Network_ID` | Must exist **under the `WBS_NO` written on the same row** and be active. A Network of **another WBS of the same project** is refused, and the message names the row's Network and both WBS codes, for example `Network "NW-T1-002" belongs to WBS "T1.OUTF.0020.100", not "T1.HULL.0010.100".` **An upload never moves a Network to another WBS.** A Network that does not exist yet is **created under the row's WBS** when auto-creation is on. An INACTIVE Network is never revived by an upload | Row rejected (mismatch). Row created the Network under its WBS, then imported. |
 | `Job_Order` | Required | Row rejected. |
 | `Job_Description` | Required | Row rejected. |
 | `UoM` | Must exist in the UoM master and be active | Row rejected. |
@@ -526,16 +554,16 @@ The upload can create the two masters that sit above a Job Order, so you do not 
 create them one by one first:
 
 - A line naming a `WBS_NO` that does **not** exist under its project **creates the WBS row**, then imports the line.
-- A line naming a `Network_ID` that does **not** exist in that project **creates the Network**, then imports the line.
-- One new WBS or Network named by several lines is created **once**, in the spelling of the first line that named it.
-- An **inactive** Network is never revived: the row is rejected instead, because an existing code must not be switched back on by a spreadsheet.
+- A line naming a `Network_ID` that does **not** exist **under the WBS that same line names** **creates the Network under that WBS**, then imports the line. The created master belongs to the row's WBS, never to the whole project.
+- One new WBS or Network named by several lines is created **once**, in the spelling of the first line that named it. Two lines create one Network only when they name the **same WBS**; the same new Network code under a second WBS of the project is rejected (see below).
+- An **existing** Network of another WBS is never re-pointed, and an **inactive** Network is never revived: both rows are rejected instead. A spreadsheet must not move or switch on a master.
 - The masters and the Job Orders are written in **one transaction**. If anything fails, the whole file rolls back and every planned row is reported, so a master is never left behind without the Job Orders that needed it.
 
-**"Create missing WBS and Networks"** on the upload screen turns this off. It is **on by
-default**. Switch it off for a large first load if you would rather see every unknown value
-as an error than have a typo silently become a master row. The result panel then reports
-`N WBS rows created · M Networks created`, each naming the line that introduced it, and the
-audit entry records the same.
+**"Create a missing WBS or Network automatically"** on the upload screen turns this off. It
+is **on by default**. Switch it off for a large first load if you would rather see every
+unknown value as an error than have a typo silently become a master row. The result panel
+then reports `N WBS created · M Networks created`, each naming the line that introduced it
+(and, for a Network, the WBS it was created under).
 
 An unknown **Project**, **UoM**, **Department** or **Section** is still an error and is never
 created: a Project needs a colour key the template does not carry, the UoM master carries the
@@ -552,14 +580,16 @@ example string shown as on-screen help, and departments and sections come from t
 
 ### 15.5 The result panel
 
-The panel header shows the counts: `N created · M skipped · K rejected`, plus
-`N WBS rows created · M Networks created` when the file introduced any master.
+The panel header shows the counts: `N created · M skipped · K rejected · N WBS created · M Networks created`.
+
+- When the file introduced a master, the panel adds one line per created WBS and per created Network. A created Network names the WBS it was created **under**, for example `NW-T1-002 (WBS T1.OUTF.0020.100, PRJ-A, row 7)`.
+- When a row was refused over its Network the panel adds: *"K rows rejected over the Network. A Network belongs to ONE WBS of its project, so Network_ID is checked against the WBS_NO on the same row: either correct the WBS_NO / Network_ID on those rows, or add the Network to that WBS first. A Network of another WBS is never moved by an upload."*
 
 | Outcome | Meaning | What the panel shows |
 |---|---|---|
 | **created** | The Job Order was inserted | `✓ N Job Orders created.` |
 | **skipped** | The Job Order already exists in that project under another WBS | `M rows skipped because the Job Order already exists — an existing budget is never overwritten by an upload.` |
-| **rejected** | The row was refused | One line per rejected row: `Row 7: Section — Section is required for a Job Order on a project; only the non-project Project may omit it.` |
+| **rejected** | The row was refused | One line per rejected row, for example `Row 7: Section — Section is required for a Job Order on a project; only the non-project Project may omit it.` or `Row 7: Network_ID — Network "NW-T1-002" belongs to WBS "T1.OUTF.0020.100", not "T1.HULL.0010.100".` |
 
 - Row numbers are 1-based and count the header, so they match the file the operator is looking at.
 - Good rows are imported and bad rows are reported — a file is never partially accepted in silence, and no row is ever silently dropped.
@@ -632,7 +662,7 @@ Only a `SUBMITTED` entry can be decided. The status shows in the list as `Submit
 workforce/
 ├── apps/
 │   ├── api/        # Express + Prisma + cron
-│   │   ├── prisma/         # schema.prisma, migrations, seed.ts
+│   │   ├── prisma/         # schema.prisma, migrations, seed.ts (minimal), seed-demo.ts (demo data)
 │   │   ├── src/
 │   │   │   ├── routes/     # auth, timesheet, approvals, employeeAllocation, etc.
 │   │   │   ├── services/   # badgeViewSync, hours, editLock, audit
@@ -649,7 +679,7 @@ workforce/
 ├── docs/
 │   └── MANUAL.md   # this file
 ├── .env            # API_PORT, API_HOST, DATABASE_URL, BADGEVIEW_DB_*, ...
-└── package.json    # workspaces, db:setup, db:seed, dev:api, dev:web
+└── package.json    # workspaces, db:setup, db:seed, db:seed:demo, dev:api, dev:web
 ```
 
 ## 19. Local setup (WSL Ubuntu)
@@ -665,7 +695,10 @@ nvm use --lts
 
 # Install dependencies + set up DB
 npm install
-npm run db:setup        # build shared, generate Prisma client, db push, seed
+npm run db:setup        # build shared, prisma generate, db push, then the MINIMAL seed:
+                        # four office accounts and no business data
+npm run db:seed:demo    # optional: add the demo data (projects, WBS, Job Orders, employees,
+                        # supervisors, bookings, cost rates) — needed by the Playwright tests
 
 # Terminal 1 — API (use a free port on Windows: 4000 is svchost-owned → use 4100)
 $env:API_PORT="4100"
@@ -676,7 +709,7 @@ npm run dev:api
 npm run dev:web          # Vite picks a free port (5173 → 5174 if 5173 is taken)
 ```
 
-Open `http://localhost:5174/` (or whichever port Vite reports) and log in as one of the seeded accounts.
+Open `http://localhost:5174/` (or whichever port Vite reports) and log in as a seeded account: after `npm run db:seed` the four office accounts exist (`admin@company.com`, `pm@company.com`, `hr@company.com`, `finance@company.com`). The HOD, supervisor and employee logins of section 1 need `npm run db:seed:demo`.
 
 ## 20. Local setup (PowerShell / Windows)
 
@@ -684,7 +717,8 @@ Open `http://localhost:5174/` (or whichever port Vite reports) and log in as one
 cd C:\data\comp\workforce
 
 npm install
-npm run db:setup
+npm run db:setup        # minimal seed: four office accounts, no business data
+npm run db:seed:demo    # optional: the demo data set (and what the Playwright tests need)
 
 # Terminal 1 — API. Port 4000 may be OS-occupied by svchost; use 4100 if so.
 $env:API_PORT="4100"
@@ -706,9 +740,11 @@ npm run dev:web
 - **`npm run db:migrate` is provider-aware** (`apps/api/scripts/migrate.mjs`): a `file:` URL runs `prisma db push` (the PostgreSQL migrations cannot be applied to SQLite), a `prisma://`/`postgresql://` URL runs `prisma migrate deploy` exactly as production does. No production behaviour is special-cased.
 - **Migrations** live under `apps/api/prisma/migrations/` and are **PostgreSQL**; `migration_lock.toml` is `postgresql`. Never regenerate or delete them to make SQLite work.
 - **Production schema**: `apps/api/prisma/schema.postgresql.prisma` holds the PostgreSQL datasource variant. Restore with `cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma` then `npm run db:generate`.
-- **Seed** with `npm run db:seed -w @workforce/api`. It is **destructive** (a `deleteMany` chain in FK order) and refuses to run when `NODE_ENV=production`.
-- **Reset DB**: `npm run db:seed`, or `npm run db:setup` for the full path (shared build → `prisma generate` → provider-aware schema step → seed). The seed is destructive: it wipes every table and reloads the demo data.
-- **Dev SQLite rebuild**: `npm run db:migrate` (a `file:` URL runs `prisma db push --skip-generate`) plus `npm run db:seed`. The seed creates the full master-data hierarchy — 5 projects, 7 WBS rows (two of them in Project A), 4 UoMs, 7 Networks, 16 Job Orders with `1900000107` deliberately repeated in Projects A and C, 16 budget revisions and 7 quantity-progress rows — and prints the dev logins it created. Recipe: [`docs/DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md).
+- **Seed (minimal, production-like)** — `npm run db:seed` (`npm run db:seed -w @workforce/api`). It creates the **four office accounts only** — ADMIN `admin@company.com`, PM `pm@company.com`, HR `hr@company.com`, FINANCE `finance@company.com` — and **no business data at all**. It prints those accounts and then the next steps: sync from LabourWorks, create the Project / WBS / UoM / Networks on **Project Master Data**, upload the Job Orders from the CSV template, and add cost rates with `POST /api/admin/cost-rates` if you want the **Cost** view. **No cost rate is seeded, so the Cost view reads zero until one is added.**
+- **Seed (demo)** — `npm run db:seed:demo` (`npm run db:seed:demo -w @workforce/api`) loads the full demonstration set on top of the four accounts: projects, WBS rows, UoM, networks, Job Orders, employees, supervisors, bookings and example cost rates. The **Playwright end-to-end tests need this data**: `apps/web/e2e/smoke.spec.ts` logs in as `EC1001` and books against seeded Job Orders, so it only passes on demo data.
+- Both seeds are **destructive** (a `deleteMany` chain in FK order), both refuse to run when `NODE_ENV=production`, and both give every account they create the `DEV_SEED_PASSWORD` (default `WorkforceDev@2026`).
+- **Reset DB**: `npm run db:seed` (four accounts, no business data) or `npm run db:seed:demo` (the demonstration set). `npm run db:setup` runs the whole path — shared build → `prisma generate` → provider-aware schema step → the **minimal** seed — so add `npm run db:seed:demo` after it when you want the demo data.
+- **Dev SQLite rebuild**: `npm run db:migrate` (a `file:` URL runs `prisma db push --skip-generate`) plus the seed you want. `npm run db:seed:demo` creates the full master-data hierarchy — 5 projects, 7 WBS rows (two of them in Project A), 4 UoMs, 7 Networks (each one linked to a WBS row), 16 Job Orders with `1900000107` deliberately repeated in Projects A and C, 16 budget revisions and 7 quantity-progress rows — and prints the dev logins it created. Recipe: [`docs/DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md).
 - **Adding a model on the dev box?** `prisma db push` writes **no** migration, so production would never get the table. Generate the DDL with `prisma migrate diff --from-schema-datamodel <old>.pg --to-schema-datamodel <new>.pg --script` and commit it under `migrations/<timestamp>_<name>/`.
 
 Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md).
@@ -721,7 +757,7 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 - **`EmployeeAllocationDay`** (parent per employee/day) with `status`, and **`EmployeeAllocation`** (child rows) keyed by `(allocationDayId, shiftSlot)`: mandatory `projectId`, optional `jobOrderId`, no OT. **`EmployeeAllocationApproval`** stores the immutable decision history.
 - **`HodDelegation`** — dated, reasoned HOD approval cover (delegator, delegate, Department+Section, from/to, revoke). Migration `20260916000000_hod_approval_delegation`.
 - **`CredentialDelivery`** — durable queue for one-time credentials (no password is ever stored in it).
-- Latest migrations: `20260913000000_postgresql_baseline`, `20260914000000_role_based_access`, `20260915000000_hod_section_and_org_transfer`, `20260916000000_hod_approval_delegation`, `20260918000000_project_wbs_job_order_master` (renames `projects_wbs` to `project_wbs`, adds `uom`, `networks`, `job_order_budget_revisions`, `job_order_progress` and the attribution snapshot columns, maps `closed`/`on_hold` to `inactive`, and writes revision 1 of every existing Job Order).
+- Latest migrations: `20260913000000_postgresql_baseline`, `20260914000000_role_based_access`, `20260915000000_hod_section_and_org_transfer`, `20260916000000_hod_approval_delegation`, `20260918000000_project_wbs_job_order_master` (renames `projects_wbs` to `project_wbs`, adds `uom`, `networks`, `job_order_budget_revisions`, `job_order_progress` and the attribution snapshot columns, maps `closed`/`on_hold` to `inactive`, and writes revision 1 of every existing Job Order), `20260918000001_job_order_progress_remarks` (one row per quantity remark), `20260918000002_job_order_wbs_project_fk` (composite key so a Job Order's Project must own its WBS), `20260918000003_network_wbs_scope` (adds the required `networks.wbs_id`: each existing Network is backfilled onto its project's first WBS row — lowest sort order, then lowest WBS code, **not** limited to active rows — and the migration stops with the offending Network codes when a Network's project has no WBS row at all).
 
 ## 22. Environment variables
 
@@ -737,7 +773,7 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 | `TRUST_PROXY` | Set `true` behind a reverse proxy | `false` |
 | `AUTH_RATE_LIMIT_ENABLED` | `false` removes the login brute-force limit (dev only; rejected in production) | `true` |
 | `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX` | Login throttle window / attempts | `900000` / `10` |
-| `DEV_SEED_PASSWORD` | Password the demo seed gives every seeded account | `WorkforceDev@2026` |
+| `DEV_SEED_PASSWORD` | Password that both seeds (`db:seed`, `db:seed:demo`) give every account they create | `WorkforceDev@2026` |
 | `DEV_SYNC_PASSWORD` | Password `run-sync-once.cjs` gives synced accounts | `password@SDHI` |
 | `MAX_DAILY_HOURS` | Daily cap for over-allocation guard | `8` |
 | `MAX_OT_HOURS` | OT validation upper bound | `12` |
@@ -764,7 +800,7 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 
 Key models in `apps/api/prisma/schema.prisma`:
 
-- `Department`, `Project`, `ProjectWbs`, `JobOrder`, `Uom`, `Network` (Project → WBS → Job Order master data; a Job Order number is unique **per project** only)
+- `Department`, `Project`, `ProjectWbs`, `JobOrder`, `Uom`, `Network` (Project → WBS → Job Order master data; a Job Order number is unique **per project** only). `Network` carries a required **`wbsId`**: a Network belongs to one WBS element of its project, and its `code` is still unique on `(projectId, code)`.
 - `JobOrderBudgetRevision` (effective-dated budget per Job Order), `JobOrderProgress` (cumulative quantity to date, `SUBMITTED` / `APPROVED` / `REJECTED` / `SENT_BACK`)
 - `Employee` (unified, CR#2) + `EmployeeSectionAssignment`, `EmployeeOrganisationOverride`, `SupervisorOverride`
 - `User` (login accounts; role-gated; `source` for sync vs manual; `departmentId` + `sectionId` = HOD scope)
@@ -803,9 +839,11 @@ Selected routes (all under `/api/`):
 | `/summary/job-order?status=all\|active\|inactive&departmentId=&asOf=` | GET | auth (not EMPLOYEE) | Job Order Summary: Project → WBS → Job Order, hours and quantity; HOD / DEPT_HEAD pinned to their own department |
 | `/projects` | GET | auth | Project master list |
 | `/job-order` | GET | auth | Job-order list (filter by project / status / department) |
-| `/master-data/projects`, `/projects/:id/wbs`, `/projects/:id/networks`, `/uom` | GET | auth | Master-data lists (Project, WBS, Network per project, UoM) |
-| `/master-data/projects`, `/projects/:projectId/wbs`, `/projects/:projectId/networks`, `/uom` | POST | ADMIN/PM | Create a master row; a duplicate answers `409` and names the conflicting row |
-| `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | PUT | ADMIN/PM | Update a master row |
+| `/master-data/projects`, `/projects/:id/wbs`, `/projects/:id/networks`, `/uom` | GET | auth | Master-data lists (Project, WBS, Network per project, UoM). Each Network carries its `wbsId` and the `wbsCode` of the WBS it belongs to |
+| `/master-data/projects`, `/projects/:projectId/wbs`, `/projects/:projectId/networks`, `/uom` | POST | ADMIN/PM | Create a master row; a duplicate answers `409` and names the conflicting row. A Network create **requires `wbsId`** — an active WBS row of that project |
+| `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | PUT | ADMIN/PM | Update a master row. A Network update takes `wbsId`, so a Network can be moved to another WBS row of its own project |
+| `/master-data/job-orders?projectId=&status=&q=` | GET | auth | Job Order maintenance list (Project, WBS, Network, booked hours). Each row carries its project's WBS rows and, inside each WBS row, that WBS's Networks |
+| `/master-data/job-orders/:id/mapping` | PUT | ADMIN/PM | Correct a Job Order's WBS and Network; refused with `NETWORK_WBS_MISMATCH` when the Network is not of the chosen WBS, and with `JOB_ORDER_WBS_LOCKED` once hours are booked |
 | `/master-data/.../:id/deactivate`, `/activate` | POST | ADMIN/PM | Retire or restore a master row (`active = false` / `true`) |
 | `/master-data/projects/:id`, `/wbs/:id`, `/networks/:id`, `/uom/:id` | DELETE | ADMIN/PM | Hard delete; refused with the reference counts while another row points at it |
 | `/job-order-upload/template` | GET | ADMIN/PM | Job Order CSV template (fixed header + one real example row) |
@@ -858,7 +896,7 @@ Before exposing this app to any network beyond localhost, complete every item be
 
 - [ ] **`API_HOST=127.0.0.1`** — bind the API to localhost only, OR place it behind a reverse proxy that terminates **TLS/HTTPS** (Caddy / nginx / Cloudflare Tunnel / etc.). Never serve plaintext HTTP on a reachable interface.
 - [ ] **Set a real `JWT_SECRET`** (≥32 chars, not a placeholder) and `CORS_ORIGINS` — the API refuses to start in production without them.
-- [ ] **Rotate or disable the seeded demo accounts** (`WorkforceDev@2026`) in any environment reachable beyond localhost. Treat them as dev-only fixtures.
+- [ ] **Rotate or disable the accounts the seeds create** (`WorkforceDev@2026`) in any environment reachable beyond localhost. Treat them as dev-only fixtures: `npm run db:seed` alone leaves four **office accounts with a known password** and nothing else.
 - [ ] **Keep `AUTH_RATE_LIMIT_ENABLED` at its default (`true`)** — production refuses to start with it disabled.
 - [ ] **`DATABASE_URL` must be a PostgreSQL URL** — a `file:` URL is rejected in production.
 - [ ] **`.env` is git-ignored** — verified before every commit. Production credentials (`BADGEVIEW_DB_PASSWORD`, `JWT_SECRET`, `SMTP_PASSWORD`, any DB URL with an embedded password) must **never** be committed or pasted into chat transcripts / logs.
@@ -933,6 +971,12 @@ Before exposing this app to any network beyond localhost, complete every item be
 ### `BADGEVIEW_DB_*` sync fails to connect
 - Verify `.env` has `BADGEVIEW_DB_HOST=10.5.1.106`, port `1433`, and the correct user/password. `BADGEVIEW_DB_ENCRYPT=false` is fine for internal segments only.
 
+### Upload refused over the Network — *"belongs to WBS …"*
+- A Network belongs to **one WBS element** of its project, so `Network_ID` is checked against the `WBS_NO` written **on the same row**. The row is rejected when the Network is already a master of another WBS of that project, for example `Row 7: Network_ID — Network "NW-T1-002" belongs to WBS "T1.OUTF.0020.100", not "T1.HULL.0010.100".` **An upload never moves a Network.** Correct the row's `WBS_NO` or `Network_ID`, or add the Network to that WBS on **Project Master Data → Network** first. A Network that does not exist yet is created **under the row's WBS** while *"Create a missing WBS or Network automatically"* is on.
+
+### `npm run db:seed` left no supervisor, HOD or employee login
+- That is the minimal bootstrap on purpose: four office accounts and no business data, so the app starts the way production does. Run `npm run db:seed:demo` for the demonstration set (it is also what the Playwright tests need), or build the real data in order: LabourWorks sync (section 12) → Project / WBS / UoM / Networks (section 14) → Job Orders by CSV (section 15).
+
 ### A Job Order is missing from the booking picker
 - The picker offers only an `Active` Job Order on an `Active` Project in an `Active` Department, filtered by the supervisor's fixed Department, the chosen Section and the chosen Project. A project Job Order appears only for its own Section; a standing / Non-Project Job Order appears for any Section of its Department. Check the Job Order's status and Section in the Job Order Summary or in the master data.
 
@@ -955,7 +999,9 @@ Before exposing this app to any network beyond localhost, complete every item be
 - **HOD** — Head of Department/Section. Owns stage-1 approval for one Department + Section. Logs in with the linked payroll Employee's **ecNo**.
 - **PM** — Project Manager / Project Head. Stage-2 approver with a global (cross-department) view, and the approver of Job Order quantity progress.
 - **DEPT_HEAD** — Department Head. Owns every Section of one Department; punches Job Order quantity progress with an explicitly selected Section. He never approves the figure he punched.
-- **Project / WBS / Job Order** — the master-data hierarchy. A Job Order number is unique **per project only**, so it repeats across projects.
+- **Project / WBS / Job Order** — the master-data hierarchy. A Job Order number is unique **per project only**, so it repeats across projects, and each Job Order points at one WBS row.
+- **Network** — a per-project SAP network reference that **belongs to one WBS element** of that project. Several Job Orders may share one Network. A Network code is unique inside the project, and one code never spans two WBS rows of the same project, so the Job Order upload checks `Network_ID` against the `WBS_NO` on the same row.
+- **Seed (minimal) / seed (demo)** — `npm run db:seed` creates four office accounts and no business data; `npm run db:seed:demo` adds the full demonstration set (and is what the Playwright tests need).
 - **Non-Project (standing) Job Order** — a Job Order of the Non-Project project with no Section; any Section of its Department may book it.
 - **Budget revision** — an effective-dated budget for a Job Order. Consumption is measured against the revision in force on the work date, not the current one.
 - **Cumulative quantity** — the total quantity achieved to date as punched by the HOD, never a daily increment.
@@ -975,12 +1021,19 @@ Before exposing this app to any network beyond localhost, complete every item be
 
 ## Appendix B — Test accounts cheat sheet
 
+`npm run db:seed` — the minimal, production-like bootstrap. **No business data**, and no supervisor, HOD or employee login:
+
 ```
 ADMIN       admin@company.com
-HOD         hod@company.com            (seeded example: Production - EOU / Hull Production)
 PM          pm@company.com             (central authority, all departments)
 HR          hr@company.com             (legacy admin screens only — not an approver)
 Finance     finance@company.com        (cost-rates viewer)
+```
+
+`npm run db:seed:demo` — the demonstration set. It creates the four rows above **plus** these logins and the data the screens need:
+
+```
+HOD         hod@company.com            (example: Production - EOU / Hull Production)
 Employee    EC1011   (employee@company.com)
 Supervisor  EC1001   (r.sharma@company.com, linked payroll Employee)
 Supervisor  EC1006   (sup.a@company.com)
@@ -990,12 +1043,14 @@ Supervisor  EC1017   (sup.d@company.com)
 Supervisor  EC1018   (sup.e@company.com)
 ```
 
+The demo seed also writes the Job Orders the Playwright tests book against, for example `1900000107-Pipe Spool Installation` in Project A / Hull Production.
+
 Passwords — **they differ by account type**:
 
-- Seeded demo accounts above: **`WorkforceDev@2026`** (`DEV_SEED_PASSWORD`)
+- Accounts created by **either** seed (both tables above): **`WorkforceDev@2026`** (`DEV_SEED_PASSWORD`)
 - Accounts created by the LabourWorks sync (EcNo login, e.g. `BAPL0251`): **`password@SDHI`**, set on a dev box with `node apps/api/set-dev-password.cjs <ecNo>`
 - Accounts you register in the UI (Employee/HOD): no usable password until the credential is delivered — use `set-dev-password.cjs`
 
 ---
 
-_Document version: Project → WBS → Job Order master data and quantity progress (working tree on `feature/cr2-unified-employee`, HEAD `56f0910`), including CR#2 unified Employee + HOD scope + HOD approval cover. Maintained alongside the codebase; update when schema, routes, roles or lifecycle change. Companion documents: [`MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`](MASTER_DATA_PROJECT_WBS_JOB_ORDER.md) (hierarchy design and operating reference), [`MASTER_DATA_BUILD_CONTRACT.md`](MASTER_DATA_BUILD_CONTRACT.md) (build contract), [`ROLE_BASED_ACCESS.md`](ROLE_BASED_ACCESS.md) (enforced role matrix), [`DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md) (local SQLite dev), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md)._
+_Document version: Project → WBS → Job Order master data and quantity progress (working tree on `feature/cr2-unified-employee`, HEAD `56f0910`), including CR#2 unified Employee + HOD scope + HOD approval cover, the two seed commands (`db:seed` minimal / `db:seed:demo`) and the Network → WBS scope (`20260918000003_network_wbs_scope`). Maintained alongside the codebase; update when schema, routes, roles or lifecycle change. Companion documents: [`MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`](MASTER_DATA_PROJECT_WBS_JOB_ORDER.md) (hierarchy design and operating reference), [`MASTER_DATA_BUILD_CONTRACT.md`](MASTER_DATA_BUILD_CONTRACT.md) (build contract), [`ROLE_BASED_ACCESS.md`](ROLE_BASED_ACCESS.md) (enforced role matrix), [`DEV_SQLITE_TESTING.md`](DEV_SQLITE_TESTING.md) (local SQLite dev), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md)._

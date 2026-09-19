@@ -16,6 +16,7 @@
     "db:migrate": "npm run db:migrate -w @workforce/api",
     "db:seed": "npm run db:seed -w @workforce/api",
     "db:setup": "npm run build -w @workforce/shared && npm run db:generate -w @workforce/api && npm run db:migrate -w @workforce/api && npm run db:seed -w @workforce/api",
-    "db:migrate:deploy": "npm run db:migrate -w @workforce/api"
+    "db:migrate:deploy": "npm run db:migrate -w @workforce/api",
+    "db:seed:demo": "npm run db:seed:demo -w @workforce/api"
   }
 }

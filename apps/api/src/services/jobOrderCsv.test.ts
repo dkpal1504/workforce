@@ -19,11 +19,14 @@ import {
   type JobOrderImportMasters,
   type JobOrderImportOptions,
   type JobOrderRowIssue,
+  type PendingNetworkScope,
+  type WbsRef,
 } from "./jobOrderCsv";
 
 /**
- * A fully valid row. Master data:
- *   PRJ-A  Project A      WBS A.HULL.0010.100 / A.HULL.0011.100, network NET-A1
+ * A fully valid row. Master data. A Network belongs to ONE WBS of its project, so
+ * the snapshot carries each Network's `wbsId`:
+ *   PRJ-A  Project A      WBS A.HULL.0010.100 (NET-A1, NET-A2) / A.HULL.0011.100 (NET-A3)
  *   PRJ-B  Project B      WBS B.HULL.0020.150,                   network NET-B1
  *   PRJ-N  Non Project    WBS N.GEN.0000.000,                    network STANDING
  *   BuName - Workmen Division : Hull Production, Pipe Shop
@@ -68,10 +71,12 @@ const MASTERS: JobOrderImportMasters = {
     { id: 900, projectId: 9, wbsCode: "N.GEN.0000.000", active: true },
   ],
   networks: [
-    { id: 200, projectId: 1, code: "NET-A1", active: true },
-    { id: 201, projectId: 2, code: "NET-B1", active: true },
-    { id: 202, projectId: 1, code: "NET-A2", active: false },
-    { id: 900, projectId: 9, code: "STANDING", active: true },
+    // A Network is scoped to a WBS of its project, never to the project alone.
+    { id: 200, projectId: 1, wbsId: 100, code: "NET-A1", active: true },
+    { id: 202, projectId: 1, wbsId: 100, code: "NET-A2", active: false },
+    { id: 203, projectId: 1, wbsId: 101, code: "NET-A3", active: true },
+    { id: 201, projectId: 2, wbsId: 102, code: "NET-B1", active: true },
+    { id: 900, projectId: 9, wbsId: 900, code: "STANDING", active: true },
   ],
   uoms: [
     { id: 300, code: "NOS", active: true },
@@ -225,14 +230,17 @@ test("a Network scoped to another project is rejected when auto-creation is off,
   assert.equal(plan.rejected, 1);
   const [issue] = rowOf(plan.errors, 2);
   assert.equal(issue.column, "Network_ID");
-  assert.match(issue.message, /unknown Network_ID 'NET-B1' in Project_ID 'PRJ-A'; a Network belongs to one project only/);
+  // The message names the WBS the Network would have to belong to, because that is
+  // now what an unknown Network is unknown FOR.
+  assert.match(issue.message, /unknown Network_ID 'NET-B1' for WBS_NO 'A.HULL.0010.100' in Project_ID 'PRJ-A'; a Network belongs to one WBS of a project/);
+  assert.match(issue.message, /An upload never creates a Network/);
 
   // An inactive Network is refused even with auto-creation ON: the code exists, so
   // it is not a missing master, and the row must not revive it.
   const inactive = planJobOrderImport(file(rowCells({ Network_ID: "NET-A2" })), MASTERS);
   assert.equal(inactive.rejected, 1);
   assert.deepEqual(inactive.networksToCreate, []);
-  assert.match(rowOf(inactive.errors, 2)[0].message, /Network_ID 'NET-A2' is inactive/);
+  assert.match(rowOf(inactive.errors, 2)[0].message, /Network_ID 'NET-A2' is inactive under WBS_NO 'A.HULL.0010.100' in Project_ID 'PRJ-A'/);
 });
 
 test("an unknown or inactive UoM is rejected", () => {
@@ -345,7 +353,7 @@ test("an existing Job Order under another WBS is skipped and reported, never ove
 test("a Job Order number repeated inside one file is rejected on the later row", () => {
   const plan = planJobOrderImport(file(
     rowCells({ Job_Order: "1900000901" }),
-    rowCells({ Job_Order: "1900000901", WBS_NO: "A.HULL.0011.100" })
+    rowCells({ Job_Order: "1900000901", WBS_NO: "A.HULL.0011.100", Network_ID: "NET-A3" })
   ), MASTERS);
   assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 1, rejected: 1 });
   const [issue] = rowOf(plan.errors, 3);
@@ -427,24 +435,33 @@ test("every rejected row is reported with its row number, column and message", (
 // ------------------------------------------- master auto-creation (WBS / Network)
 
 test("a missing WBS is created and its row is imported", () => {
-  const plan = planJobOrderImport(file(rowCells({ WBS_NO: "A.HULL.0042.900", Job_Order: "1900000500" })), MASTERS);
+  // The row's Network must belong to the WBS the row names, so a WBS this file
+  // creates gets its Network created under it in the same run.
+  const plan = planJobOrderImport(file(rowCells({ WBS_NO: "A.HULL.0042.900", Network_ID: "NET-A9", Job_Order: "1900000500" })), MASTERS);
 
   assert.deepEqual({ total: plan.total, created: plan.created, skipped: plan.skipped, rejected: plan.rejected }, { total: 1, created: 1, skipped: 0, rejected: 0 });
   assert.deepEqual(plan.errors, []);
   assert.deepEqual(plan.wbsToCreate, [{ row: 2, projectId: 1, projectCode: "PRJ-A", wbsCode: "A.HULL.0042.900" }]);
-  assert.deepEqual(plan.networksToCreate, [], "the Network exists, so nothing is created for it");
-  // The master has no id until the route inserts it, so the row carries the placeholder.
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "A.HULL.0042.900", networkCode: "NET-A9",
+  }], "the new Network is created UNDER the WBS this same row creates");
+  // Neither master has an id until the route inserts it, so the row carries the
+  // placeholder in both id columns (the route resolves the Network's WBS first).
   assert.equal(plan.create[0].projectWbsId, PENDING_MASTER_ID);
   assert.equal(plan.create[0].wbsCode, "A.HULL.0042.900");
-  assert.equal(plan.create[0].networkId, 200, "an existing master keeps its real id");
+  assert.equal(plan.create[0].networkId, PENDING_MASTER_ID);
+  assert.equal(plan.create[0].networkCode, "NET-A9");
 });
 
 test("a missing Network is created and its row is imported", () => {
   const plan = planJobOrderImport(file(rowCells({ Network_ID: "NET-A7", Job_Order: "1900000501" })), MASTERS);
 
   assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 1, rejected: 0 });
-  assert.deepEqual(plan.wbsToCreate, []);
-  assert.deepEqual(plan.networksToCreate, [{ row: 2, projectId: 1, projectCode: "PRJ-A", networkCode: "NET-A7" }]);
+  assert.deepEqual(plan.wbsToCreate, [], "the WBS exists, so nothing is created for it");
+  // The new Network carries the WBS resolved from WBS_NO on that same row.
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: 100, wbsCode: "A.HULL.0010.100", networkCode: "NET-A7",
+  }]);
   assert.equal(plan.create[0].networkId, PENDING_MASTER_ID);
   assert.equal(plan.create[0].networkCode, "NET-A7");
   assert.equal(plan.create[0].projectWbsId, 100, "the WBS exists, so its real id is kept");
@@ -452,15 +469,19 @@ test("a missing Network is created and its row is imported", () => {
 
 test("one new WBS named by three rows is created once, in the first row's spelling", () => {
   const plan = planJobOrderImport(file(
-    rowCells({ WBS_NO: "a.hull.0077.100", Job_Order: "1900000601" }),
-    rowCells({ WBS_NO: "A.HULL.0077.100", Job_Order: "1900000602" }),
-    rowCells({ WBS_NO: " A.HULL.0077.100 ", Job_Order: "1900000603" })
+    rowCells({ WBS_NO: "a.hull.0077.100", Network_ID: "NET-A9", Job_Order: "1900000601" }),
+    rowCells({ WBS_NO: "A.HULL.0077.100", Network_ID: "NET-A9", Job_Order: "1900000602" }),
+    rowCells({ WBS_NO: " A.HULL.0077.100 ", Network_ID: "NET-A9", Job_Order: "1900000603" })
   ), MASTERS);
 
   assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 3, rejected: 0 });
   // Deduped on the same case- and whitespace-insensitive key the module uses
   // everywhere else, so the three spellings are one master, introduced by row 2.
   assert.deepEqual(plan.wbsToCreate, [{ row: 2, projectId: 1, projectCode: "PRJ-A", wbsCode: "a.hull.0077.100" }]);
+  // The Network they share is deduped the same way and stays scoped to that WBS.
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "a.hull.0077.100", networkCode: "NET-A9",
+  }]);
   assert.deepEqual(plan.create.map((item) => item.projectWbsId), [PENDING_MASTER_ID, PENDING_MASTER_ID, PENDING_MASTER_ID]);
 });
 
@@ -468,7 +489,7 @@ test("the created-master report names the row that introduced each master", () =
   const plan = planJobOrderImport(file(
     rowCells({ WBS_NO: "A.HULL.0110.100", Network_ID: "NET-A9", Job_Order: "1900001001" }),
     rowCells({ WBS_NO: "A.HULL.0110.100", Network_ID: "NET-A9", Job_Order: "1900001002" }),
-    rowCells({ WBS_NO: "A.HULL.0111.100", Network_ID: "NET-A9", Job_Order: "1900001003" })
+    rowCells({ WBS_NO: "A.HULL.0111.100", Network_ID: "NET-A10", Job_Order: "1900001003" })
   ), MASTERS);
 
   assert.equal(plan.created, 3);
@@ -476,7 +497,11 @@ test("the created-master report names the row that introduced each master", () =
     { row: 2, projectId: 1, projectCode: "PRJ-A", wbsCode: "A.HULL.0110.100" },
     { row: 4, projectId: 1, projectCode: "PRJ-A", wbsCode: "A.HULL.0111.100" },
   ]);
-  assert.deepEqual(plan.networksToCreate, [{ row: 2, projectId: 1, projectCode: "PRJ-A", networkCode: "NET-A9" }]);
+  // Each new Network is reported with the WBS it was created under.
+  assert.deepEqual(plan.networksToCreate, [
+    { row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "A.HULL.0110.100", networkCode: "NET-A9" },
+    { row: 4, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "A.HULL.0111.100", networkCode: "NET-A10" },
+  ]);
 });
 
 test("auto-creation off (createMissingMasters: false) rejects the rows with the old messages", () => {
@@ -493,7 +518,7 @@ test("auto-creation off (createMissingMasters: false) rejects the rows with the 
     ["WBS_NO", "unknown WBS_NO 'A.HULL.0042.900' under Project_ID 'PRJ-A'. An upload never creates a WBS."],
   ]);
   assert.deepEqual(rowOf(plan.errors, 3).map((issue) => [issue.column, issue.message]), [
-    ["Network_ID", "unknown Network_ID 'NET-A7' in Project_ID 'PRJ-A'; a Network belongs to one project only. An upload never creates a Network."],
+    ["Network_ID", "unknown Network_ID 'NET-A7' for WBS_NO 'A.HULL.0010.100' in Project_ID 'PRJ-A'; a Network belongs to one WBS of a project. An upload never creates a Network."],
   ]);
 });
 
@@ -537,15 +562,19 @@ test("a master is created by the accepted row only, never by a rejected one", ()
 
   assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 1, rejected: 1 });
   assert.deepEqual(plan.wbsToCreate, [{ row: 3, projectId: 1, projectCode: "PRJ-A", wbsCode: "A.HULL.0088.100" }]);
-  assert.deepEqual(plan.networksToCreate, [{ row: 3, projectId: 1, projectCode: "PRJ-A", networkCode: "NET-A8" }]);
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 3, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "A.HULL.0088.100", networkCode: "NET-A8",
+  }]);
 });
 
 test("the duplicate rule is unchanged when a master is created", () => {
   // The Job Order already exists in the project under another WBS: the row is
-  // still a skip, and a skip creates no master.
-  const skipped = planJobOrderImport(file(rowCells({ Job_Order: "1900000110", WBS_NO: "A.HULL.0099.100" })), MASTERS);
+  // still a skip, and a skip creates no master (for the WBS or for its Network).
+  const skipped = planJobOrderImport(file(rowCells({ Job_Order: "1900000110", WBS_NO: "A.HULL.0099.100", Network_ID: "NET-A9" })), MASTERS);
   assert.deepEqual({ created: skipped.created, skipped: skipped.skipped, rejected: skipped.rejected }, { created: 0, skipped: 1, rejected: 0 });
+  assert.deepEqual(skipped.errors, [], "a skip is not an error, even though its WBS is new");
   assert.deepEqual(skipped.wbsToCreate, []);
+  assert.deepEqual(skipped.networksToCreate, []);
 
   // The same Project + WBS_NO + Job_Order triple is still a rejection.
   const duplicate = planJobOrderImport(file(rowCells({ WBS_NO: "A.HULL.0010.100" })), MASTERS);
@@ -553,24 +582,29 @@ test("the duplicate rule is unchanged when a master is created", () => {
   assert.equal(duplicate.wbsToCreate.length, 0);
 
   // Inside one file: the second row repeating the number is rejected, and the WBS
-  // they share is still created exactly once.
+  // and the Network they share are still created exactly once.
   const inFile = planJobOrderImport(file(
-    rowCells({ WBS_NO: "A.HULL.0090.100", Job_Order: "1900000901" }),
-    rowCells({ WBS_NO: "A.HULL.0090.100", Job_Order: "1900000901" })
+    rowCells({ WBS_NO: "A.HULL.0090.100", Network_ID: "NET-A9", Job_Order: "1900000901" }),
+    rowCells({ WBS_NO: "A.HULL.0090.100", Network_ID: "NET-A9", Job_Order: "1900000901" })
   ), MASTERS);
   assert.deepEqual({ created: inFile.created, rejected: inFile.rejected }, { created: 1, rejected: 1 });
   assert.equal(inFile.wbsToCreate.length, 1);
+  assert.equal(inFile.networksToCreate.length, 1);
   assert.match(rowOf(inFile.errors, 3)[0].message, /already appears in this file/);
 });
 
 test("a WBS is scoped to its project, so the same code in another project is a second master", () => {
   const plan = planJobOrderImport(file(
-    rowCells({ WBS_NO: "B.HULL.0020.150", Job_Order: "1900000802" }),
+    rowCells({ WBS_NO: "B.HULL.0020.150", Network_ID: "NET-A9", Job_Order: "1900000802" }),
     rowCells({ Project_ID: "PRJ-B", Project_Name: "Project B", WBS_NO: "B.HULL.0020.150", Network_ID: "NET-B1", UoM: "MTR", Job_Order: "1900000803" })
   ), MASTERS);
 
   assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 2, rejected: 0 });
   assert.deepEqual(plan.wbsToCreate, [{ row: 2, projectId: 1, projectCode: "PRJ-A", wbsCode: "B.HULL.0020.150" }]);
+  // The new Network belongs to PRJ-A's copy of that WBS row, not to PRJ-B's.
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "B.HULL.0020.150", networkCode: "NET-A9",
+  }]);
 });
 
 test("the resolution seams answer resolved / create / reject for one row", () => {
@@ -592,14 +626,158 @@ test("the resolution seams answer resolved / create / reject for one row", () =>
   const alreadyPlanned = resolveWbsForRow({ project, wbsCode: "A.HULL.0042.900", wbsByProject, pendingKeys: new Set([pendingKey]), createMissingMasters: true });
   assert.deepEqual(alreadyPlanned, { outcome: "resolved", pending: true, master: { id: PENDING_MASTER_ID, projectId: 1, wbsCode: "A.HULL.0042.900", active: true } });
 
-  // The Network seam is project-scoped today (the "a Network inside a WBS" question
-  // is not decided): NET-B1 belongs to PRJ-B, so under PRJ-A it is a master to
-  // create. An INACTIVE master is refused and never offered for creation, because
-  // the code already exists and the row must not revive it.
-  const otherProject = resolveNetworkForRow({ project, wbs: null, networkCode: "NET-B1", networkByProject, pendingKeys: noPending, createMissingMasters: true });
+  // The Network seam is WBS-scoped: it answers one question only - does the master
+  // found for the project sit under the WBS THIS ROW resolved?
+  const wbsById = new Map(MASTERS.wbsRows.filter((wbs) => wbs.projectId === 1).map((wbs) => [wbs.id, wbs]));
+  const noPendingNetworks: ReadonlyMap<string, PendingNetworkScope> = new Map<string, PendingNetworkScope>();
+  const wbs100: WbsRef = { id: 100, projectId: 1, wbsCode: "A.HULL.0010.100", active: true };
+  const wbs101: WbsRef = { id: 101, projectId: 1, wbsCode: "A.HULL.0011.100", active: true };
+
+  const ownWbs = resolveNetworkForRow({ project, wbs: wbs100, networkCode: "net-a1", networkByProject, wbsById, pendingNetworks: noPendingNetworks, createMissingMasters: true });
+  assert.deepEqual(ownWbs, { outcome: "resolved", pending: false, master: { id: 200, projectId: 1, wbsId: 100, code: "NET-A1", active: true } });
+
+  const otherWbs = resolveNetworkForRow({ project, wbs: wbs100, networkCode: "NET-A3", networkByProject, wbsById, pendingNetworks: noPendingNetworks, createMissingMasters: true });
+  assert.deepEqual(otherWbs, { outcome: "reject", message: 'Network "NET-A3" belongs to WBS "A.HULL.0011.100", not "A.HULL.0010.100".' });
+
+  // A code the project does not have at all is still a master to create - under the
+  // row's WBS. NET-B1 belongs to ANOTHER PROJECT, so under PRJ-A it is unknown.
+  const otherProject = resolveNetworkForRow({ project, wbs: wbs101, networkCode: "NET-B1", networkByProject, wbsById, pendingNetworks: noPendingNetworks, createMissingMasters: true });
   assert.deepEqual(otherProject, { outcome: "create", code: "NET-B1" });
-  const inactive = resolveNetworkForRow({ project, wbs: null, networkCode: "NET-A2", networkByProject, pendingKeys: noPending, createMissingMasters: true });
-  assert.equal(inactive.outcome, "reject");
-  const blank = resolveNetworkForRow({ project, wbs: null, networkCode: "   ", networkByProject, pendingKeys: noPending, createMissingMasters: true });
+
+  const strictNetwork = resolveNetworkForRow({ project, wbs: wbs100, networkCode: "NET-A7", networkByProject, wbsById, pendingNetworks: noPendingNetworks, createMissingMasters: false });
+  assert.deepEqual(strictNetwork, {
+    outcome: "reject",
+    message: "unknown Network_ID 'NET-A7' for WBS_NO 'A.HULL.0010.100' in Project_ID 'PRJ-A'; a Network belongs to one WBS of a project. An upload never creates a Network.",
+  });
+
+  // A Network this plan already creates resolves for ITS OWN WBS, and is a mismatch
+  // for another WBS of the same project: one code, one WBS.
+  const pendingNetworks = new Map<string, PendingNetworkScope>([
+    [projectScopedKey(1, "NET-A9"), { wbsId: PENDING_MASTER_ID, wbsCode: "A.HULL.0011.100", row: 2 }],
+  ]);
+  const planned = resolveNetworkForRow({ project, wbs: wbs101, networkCode: "NET-A9", networkByProject, wbsById, pendingNetworks, createMissingMasters: true });
+  assert.deepEqual(planned, { outcome: "resolved", pending: true, master: { id: PENDING_MASTER_ID, projectId: 1, wbsId: 101, code: "NET-A9", active: true } });
+  const plannedOtherWbs = resolveNetworkForRow({ project, wbs: wbs100, networkCode: "NET-A9", networkByProject, wbsById, pendingNetworks, createMissingMasters: true });
+  assert.deepEqual(plannedOtherWbs, { outcome: "reject", message: 'Network "NET-A9" belongs to WBS "A.HULL.0011.100", not "A.HULL.0010.100".' });
+
+  // An INACTIVE master of the row's own WBS is refused and never offered for
+  // creation, because the code already exists and the row must not revive it.
+  const inactive = resolveNetworkForRow({ project, wbs: wbs100, networkCode: "NET-A2", networkByProject, wbsById, pendingNetworks: noPendingNetworks, createMissingMasters: true });
+  assert.deepEqual(inactive, { outcome: "reject", message: "Network_ID 'NET-A2' is inactive under WBS_NO 'A.HULL.0010.100' in Project_ID 'PRJ-A'." });
+
+  // A WBS this file creates cannot take over an EXISTING Network: that would move
+  // the master to another WBS, which never happens.
+  const pendingWbs = resolveNetworkForRow({
+    project,
+    wbs: { id: PENDING_MASTER_ID, projectId: 1, wbsCode: "A.HULL.0042.900", active: true },
+    networkCode: "NET-A1",
+    networkByProject,
+    wbsById,
+    pendingNetworks: noPendingNetworks,
+    createMissingMasters: true,
+  });
+  assert.deepEqual(pendingWbs, { outcome: "reject", message: 'Network "NET-A1" belongs to WBS "A.HULL.0010.100", not "A.HULL.0042.900".' });
+
+  const blank = resolveNetworkForRow({ project, wbs: wbs100, networkCode: "   ", networkByProject, wbsById, pendingNetworks: noPendingNetworks, createMissingMasters: true });
   assert.deepEqual(blank, { outcome: "reject", message: "Network_ID is required." });
+});
+
+// -------------------------------- a Network belongs to ONE WBS of its project
+
+test("a Network of another WBS of the same project is rejected, naming both WBS codes", () => {
+  // NET-A3 is a real master of PRJ-A, but of A.HULL.0011.100. The row names
+  // A.HULL.0010.100, so the line is refused with the naming message: one Network
+  // never spans two WBS of a project. Both modes refuse it - the code already
+  // exists in the project, so it cannot be created for this WBS either, and the
+  // upload never moves a master to another WBS.
+  for (const options of [undefined, STRICT]) {
+    const plan = planJobOrderImport(
+      file(rowCells({ WBS_NO: "A.HULL.0010.100", Network_ID: "NET-A3", Job_Order: "1900001100" })),
+      MASTERS,
+      options
+    );
+    assert.deepEqual({ created: plan.created, skipped: plan.skipped, rejected: plan.rejected }, { created: 0, skipped: 0, rejected: 1 });
+    assert.deepEqual(plan.create, []);
+    assert.deepEqual(plan.networksToCreate, []);
+    assert.deepEqual(plan.errors, [{
+      row: 2,
+      column: "Network_ID",
+      message: 'Network "NET-A3" belongs to WBS "A.HULL.0011.100", not "A.HULL.0010.100".',
+    }]);
+  }
+
+  // The reverse direction is the same rule.
+  const reverse = planJobOrderImport(file(rowCells({ WBS_NO: "A.HULL.0011.100", Network_ID: "NET-A1", Job_Order: "1900001101" })), MASTERS);
+  assert.deepEqual(reverse.errors, [{
+    row: 2,
+    column: "Network_ID",
+    message: 'Network "NET-A1" belongs to WBS "A.HULL.0010.100", not "A.HULL.0011.100".',
+  }]);
+});
+
+test("a Network of the SAME WBS as the row is accepted", () => {
+  const sameWbs = planJobOrderImport(file(rowCells({ WBS_NO: "A.HULL.0011.100", Network_ID: "NET-A3", Job_Order: "1900001102" })), MASTERS);
+
+  assert.deepEqual({ created: sameWbs.created, skipped: sameWbs.skipped, rejected: sameWbs.rejected }, { created: 1, skipped: 0, rejected: 0 });
+  assert.deepEqual(sameWbs.errors, []);
+  assert.deepEqual(sameWbs.networksToCreate, [], "the Network exists for this WBS, so nothing is created");
+  assert.equal(sameWbs.create[0].projectWbsId, 101);
+  assert.equal(sameWbs.create[0].networkId, 203, "an existing master keeps its real id");
+  assert.equal(sameWbs.create[0].networkCode, "NET-A3");
+});
+
+test("a missing Network is created for the row's WBS, carrying its wbsId", () => {
+  // Two rows of DIFFERENT WBS of one project, each naming a Network code the project
+  // does not have: each code is created under the WBS of its own row.
+  const plan = planJobOrderImport(file(
+    rowCells({ WBS_NO: "A.HULL.0010.100", Network_ID: "NET-A5", Job_Order: "1900001103" }),
+    rowCells({ WBS_NO: "A.HULL.0011.100", Network_ID: "NET-A6", Job_Order: "1900001104" })
+  ), MASTERS);
+
+  assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 2, rejected: 0 });
+  assert.deepEqual(plan.wbsToCreate, [], "both WBS masters exist");
+  assert.deepEqual(plan.networksToCreate, [
+    { row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: 100, wbsCode: "A.HULL.0010.100", networkCode: "NET-A5" },
+    { row: 3, projectId: 1, projectCode: "PRJ-A", wbsId: 101, wbsCode: "A.HULL.0011.100", networkCode: "NET-A6" },
+  ], "each new Network carries the WBS of the row that asked for it");
+  assert.deepEqual(plan.create.map((item) => [item.projectWbsId, item.networkId]), [
+    [100, PENDING_MASTER_ID],
+    [101, PENDING_MASTER_ID],
+  ]);
+});
+
+test("two rows naming the same new Network under ONE WBS create it once, under that WBS", () => {
+  const plan = planJobOrderImport(file(
+    rowCells({ WBS_NO: "A.HULL.0011.100", Network_ID: "NET-A5", Job_Order: "1900001105" }),
+    rowCells({ WBS_NO: "A.HULL.0011.100", Network_ID: "net-a5", Job_Order: "1900001106" })
+  ), MASTERS);
+
+  assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 2, rejected: 0 });
+  // Deduped per (WBS, Network_ID), on the same case-insensitive key the module uses
+  // everywhere else: one master, in the first row's spelling, for the rows' WBS.
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: 101, wbsCode: "A.HULL.0011.100", networkCode: "NET-A5",
+  }]);
+  assert.deepEqual(plan.create.map((item) => item.networkId), [PENDING_MASTER_ID, PENDING_MASTER_ID]);
+});
+
+test("one new Network code named by two WBS of one file is created once, and the second WBS is rejected", () => {
+  // `networks` stays unique on (projectId, code), so the second WBS cannot open a
+  // second master for the same code. The row is refused with the same naming
+  // message, and the file never reaches the database with a duplicate.
+  const plan = planJobOrderImport(file(
+    rowCells({ WBS_NO: "A.HULL.0110.100", Network_ID: "NET-A9", Job_Order: "1900001107" }),
+    rowCells({ WBS_NO: "A.HULL.0111.100", Network_ID: "NET-A9", Job_Order: "1900001108" })
+  ), MASTERS);
+
+  assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 1, rejected: 1 });
+  assert.deepEqual(plan.networksToCreate, [{
+    row: 2, projectId: 1, projectCode: "PRJ-A", wbsId: PENDING_MASTER_ID, wbsCode: "A.HULL.0110.100", networkCode: "NET-A9",
+  }]);
+  assert.deepEqual(plan.wbsToCreate, [{ row: 2, projectId: 1, projectCode: "PRJ-A", wbsCode: "A.HULL.0110.100" }], "the rejected row introduces no WBS either");
+  assert.deepEqual(rowOf(plan.errors, 3), [{
+    row: 3,
+    column: "Network_ID",
+    message: 'Network "NET-A9" belongs to WBS "A.HULL.0110.100", not "A.HULL.0111.100".',
+  }]);
 });

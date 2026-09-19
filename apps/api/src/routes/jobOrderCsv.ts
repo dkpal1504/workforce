@@ -23,11 +23,13 @@ import {
  * Section masters. Every rejected row is reported with its row number and column,
  * so a file is never silently partial.
  *
- * Auto-creation is narrow: a missing WBS or Network (only) is created on request
- * (`createMissingMasters`, default true) together with the Job Orders in ONE
- * transaction, and the response reports each created master with the row that
- * introduced it. A missing Project, UoM, Department or Section still refuses its
- * row and names what is missing.
+ * Auto-creation is narrow: a missing WBS, and a missing Network UNDER THE ROW'S OWN
+ * WBS (only), are created on request (`createMissingMasters`, default true) together
+ * with the Job Orders in ONE transaction, and the response reports each created
+ * master with the row that introduced it. A Network_ID that exists in the project
+ * under a DIFFERENT WBS is refused: one Network number never spans two WBS of a
+ * project, and the upload never re-points a master. A missing Project, UoM,
+ * Department or Section still refuses its row and names what is missing.
  *
  * Routes:
  *   GET  /template   the template CSV (fixed header row + one real example row)
@@ -106,7 +108,9 @@ async function loadJobOrderMasters(rows: string[][]): Promise<JobOrderImportMast
     prisma.department.findMany({ select: { id: true, name: true, active: true } }),
     prisma.section.findMany({ select: { id: true, departmentId: true, name: true, active: true } }),
     prisma.projectWbs.findMany({ select: { id: true, projectId: true, wbsCode: true, active: true } }),
-    prisma.network.findMany({ select: { id: true, projectId: true, code: true, active: true } }),
+    // `wbsId` comes with every Network: the planner validates the row's Network_ID
+    // against the WBS that the same row named, not against the project alone.
+    prisma.network.findMany({ select: { id: true, projectId: true, wbsId: true, code: true, active: true } }),
     prisma.uom.findMany({ select: { id: true, code: true, active: true } }),
     prisma.jobOrder.findMany({
       where: { projectId: { in: wantedProjectIds.length ? wantedProjectIds : [-1] } },
@@ -147,12 +151,17 @@ export type CreatedWbsRow = {
   wbsCode: string;
 };
 
-/** A Network master an upload created, with the file row that introduced it. */
+/**
+ * A Network master an upload created, with the file row that introduced it and the
+ * WBS it was created under (the WBS on that row).
+ */
 export type CreatedNetworkRow = {
   row: number;
   id: number;
   projectId: number;
   projectCode: string;
+  wbsId: number;
+  wbsCode: string;
   networkCode: string;
 };
 
@@ -160,14 +169,17 @@ export type CreatedNetworkRow = {
  * Upload Job Orders as CSV text (ADMIN/PM, audited, validated, never silent).
  *
  * Body: `{ csv: "<text>", createMissingMasters?: boolean }`. The flag defaults to
- * TRUE: a row that names a WBS_NO or a Network_ID which does not exist under its
- * project CREATES the missing master and imports the row. Set it to false to
+ * TRUE: a row that names a WBS_NO which does not exist under its project, or a
+ * Network_ID that does not exist under the WBS that row names, CREATES the missing
+ * master (the Network with that WBS's id) and imports the row. Set it to false to
  * refuse such a row with the old message instead. A Project, UoM, Department or
- * Section is never created, either way.
+ * Section is never created, either way, and a Network_ID belonging to another WBS
+ * of the project is refused in both modes.
  *
  * Response: the counts of created / skipped / rejected rows, the masters created
  * (`wbsCreated` / `networksCreated` counts plus `createdWbs` / `createdNetworks`,
- * each naming the code and the row that introduced it), and the per-row report.
+ * each naming the code, the WBS a created Network belongs to, and the row that
+ * introduced it), and the per-row report.
  * `ok` means no row was refused (`rejected === 0`); a file whose rows all already
  * exist is a success that created nothing.
  *   201 - at least one Job Order was created
@@ -226,10 +238,20 @@ jobOrderCsvRouter.post("/", async (req, res) => {
           wbsCode: master.wbsCode,
         });
       }
+      // A Network is created UNDER ITS WBS, so a WBS this same file creates is
+      // inserted first and its new id is used here (`master.wbsId` is
+      // PENDING_MASTER_ID in that case). Order matters: all WBS rows above, then
+      // these, then the Job Orders.
       const networkIds = new Map<string, number>();
       for (const master of plan.networksToCreate) {
+        const wbsId = master.wbsId === PENDING_MASTER_ID
+          ? wbsIds.get(projectScopedKey(master.projectId, master.wbsCode))
+          : master.wbsId;
+        if (wbsId === undefined) {
+          throw new Error(`row ${master.row} names Network_ID '${master.networkCode}' under WBS_NO '${master.wbsCode}', which the upload planned but did not create; the whole file was refused.`);
+        }
         const inserted = await tx.network.create({
-          data: { projectId: master.projectId, code: master.networkCode, source: "MANUAL" },
+          data: { projectId: master.projectId, wbsId, code: master.networkCode, source: "MANUAL" },
           select: { id: true },
         });
         networkIds.set(projectScopedKey(master.projectId, master.networkCode), inserted.id);
@@ -238,6 +260,8 @@ jobOrderCsvRouter.post("/", async (req, res) => {
           id: inserted.id,
           projectId: master.projectId,
           projectCode: master.projectCode,
+          wbsId,
+          wbsCode: master.wbsCode,
           networkCode: master.networkCode,
         });
       }

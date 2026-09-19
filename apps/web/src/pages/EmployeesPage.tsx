@@ -128,8 +128,9 @@ export function EmployeesPage() {
         body: JSON.stringify({ employeeId: Number(newHodId), departmentId: Number(newHodDepartmentId), sectionId: Number(newHodSectionId) }),
       });
       setNotice(result.created
-        ? `${result.user.name} registered as HOD. A one-time credential was queued for delivery.`
-        : `${result.user.name} already had an HOD account — scope updated and a fresh credential queued.`);
+        ? `${result.user.name} registered as HOD. Sign in with the EcNo. A one-time credential was queued for delivery.`
+        : // An existing EMPLOYEE account is promoted in place, so this is not "already an HOD".\
+          `${result.user.name} now has this Department / Section HOD scope (the existing account was updated). Sign in with the EcNo.`);
       setNewHodId(""); setNewHodDepartmentId(""); setNewHodSectionId("");
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : "HOD registration failed."); }

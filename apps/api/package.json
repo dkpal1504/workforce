@@ -11,7 +11,8 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:push": "prisma db push",
-    "test": "node --import tsx --test src/services/*.test.ts"
+    "test": "node --import tsx --test src/services/*.test.ts",
+    "db:seed:demo": "tsx prisma/seed-demo.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

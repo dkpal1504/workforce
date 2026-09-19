@@ -4,7 +4,10 @@ import "../styles/supervisors.css";
 
 type RowError = { row: number; column?: string; error?: string; message?: string };
 
-/** A WBS or Network master the upload created, with the file row that introduced it. */
+/**
+ * A WBS or Network master the upload created, with the file row that introduced it.
+ * A created Network also reports the WBS it was created under (the WBS on that row).
+ */
 type CreatedMaster = {
   row: number;
   projectCode: string;
@@ -38,9 +41,14 @@ type UploadResult = {
  * Department and Section must come from the badge-sync master, and the uploader
  * NEVER creates a Project, UoM, Department or Section. A missing WBS_NO or
  * Network_ID is different: with the "create missing masters" option on (the API
- * default) the master is created and the row imported, and the result reports each
- * created master with the row that introduced it. Every rejected row is reported
- * back; the file is never partially accepted in silence.
+ * default) the master is created - and a Network is created UNDER THE WBS ON ITS OWN
+ * ROW - and the row imported. The result reports each created master with the row
+ * that introduced it.
+ *
+ * A Network belongs to ONE WBS of its project: Network_ID is validated against the
+ * WBS_NO on the SAME row, and a Network of another WBS of that project is rejected
+ * (naming the Network and both WBS), never re-pointed. Every rejected row is
+ * reported back; the file is never partially accepted in silence.
  */
 const TEMPLATE_COLUMNS =
   "Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty, Budgeted_hours, Department, Section, Job_Order_Status";
@@ -189,9 +197,14 @@ export function JobOrderUploadPage() {
   const rejectedCount = result?.rejected ?? result?.errors?.length ?? 0;
   const wbsCreatedCount = result?.wbsCreated ?? 0;
   const networksCreatedCount = result?.networksCreated ?? 0;
+  /** Every rejected line whose problem is the Network, so the panel can explain the WBS rule. */
+  const networkIssueCount = (result?.errors ?? []).filter((e) => e.column === "Network_ID").length;
   /** "A.HULL.0042.900 (PRJ-A, row 2)" — the code plus the row that introduced it. */
   const createdMasterLabel = (m: CreatedMaster) =>
     `${m.wbsCode ?? m.networkCode ?? "?"} (${m.projectCode}, row ${m.row})`;
+  /** A created Network is reported with the WBS it was created under, not just the project. */
+  const createdNetworkLabel = (m: CreatedMaster) =>
+    `${m.networkCode ?? "?"} (WBS ${m.wbsCode ?? "?"}, ${m.projectCode}, row ${m.row})`;
 
   return (
     <>
@@ -199,9 +212,12 @@ export function JobOrderUploadPage() {
         <span className="supervisors-toolbar__count">
           Upload Job Orders in bulk. One row is one Job Order. Department and Section come from the organisation master
           (Department is the full &quot;BuName - Division&quot; name). Section may be blank only for a Non-Project Job Order.
-          A WBS_NO or Network_ID missing under the row&apos;s Project can be created from the file — see the option below.
-          A Project, UoM, Department or Section is never created. Status is Active or In-Active. A row is rejected when
-          the same Project, WBS and Job Order number already exist; the other rows in the file are still imported.
+          A WBS_NO missing under the row&apos;s Project, and a Network_ID missing under the WBS that row names, can be
+          created from the file — see the option below. A Network belongs to ONE WBS of its project, so Network_ID is
+          checked against the WBS_NO on the same row: a Network of another WBS of that project is rejected, naming the
+          Network and both WBS. A Project, UoM, Department or Section is never created. Status is Active or In-Active.
+          A row is rejected when the same Project, WBS and Job Order number already exist; the other rows in the file are
+          still imported.
         </span>
         <div className="supervisors-actions">
           <button type="button" className="btn btn-ghost" onClick={downloadTemplate}>
@@ -218,6 +234,11 @@ export function JobOrderUploadPage() {
           <span className="panel__count">Columns: {TEMPLATE_COLUMNS}</span>
         </div>
         <div className="panel__body">
+          <div className="muted" style={{ marginBottom: 10 }}>
+            Network_ID must belong to the WBS_NO on the same row: a Network of another WBS of the same project is
+            rejected (the message names the Network and both WBS), and a new Network is created under the WBS the row
+            names. WBS_NO is unique per Project.
+          </div>
           <input
             ref={fileRef}
             type="file"
@@ -255,13 +276,16 @@ export function JobOrderUploadPage() {
             <span>
               <strong>Create a missing WBS or Network automatically</strong>
               <span className="muted">
-                {" "}— ON (default): a WBS_NO or a Network_ID that does not exist under the row&apos;s Project is created as
-                a new master row and that Job Order is imported. Two rows naming the same new code create it ONCE, and the
-                result below names the row that introduced each master, so a typo that became a master is visible. This
-                cannot create a Project (it needs a unique colour key the template does not carry), and an unknown UoM,
-                Department or Section still rejects its row. OFF: those rows are rejected instead and the reason names the
-                missing master. The duplicate rule (Project + WBS + Job Order already exists) is unaffected — it always
-                rejects that line.
+                {" "}— ON (default): a WBS_NO that does not exist under the row&apos;s Project, and a Network_ID that does
+                not exist under the WBS THAT ROW NAMES, are created as new master rows and that Job Order is imported. A
+                created Network belongs to the WBS on its row, never to the whole project. Two rows naming the same new
+                code (for one WBS) create it ONCE, and the result below names the row that introduced each master, so a
+                typo that became a master is visible. This cannot create a Project (it needs a unique colour key the
+                template does not carry), and an unknown UoM, Department or Section still rejects its row. A Network_ID
+                that belongs to ANOTHER WBS of the same project is rejected in both modes — one Network never spans two
+                WBS, and a master is never moved. OFF: the missing masters are rejected instead and the reason names the
+                missing master and the WBS. The duplicate rule (Project + WBS + Job Order already exists) is unaffected —
+                it always rejects that line.
               </span>
             </span>
           </label>
@@ -310,7 +334,16 @@ export function JobOrderUploadPage() {
             {networksCreatedCount > 0 && (
               <div className="alloc-note" style={{ marginBottom: 10 }}>
                 ＋ {networksCreatedCount} Network master{networksCreatedCount === 1 ? "" : "s"} created from this file:{" "}
-                {(result.createdNetworks ?? []).map(createdMasterLabel).join(", ")}.
+                {(result.createdNetworks ?? []).map(createdNetworkLabel).join(", ")}. Each one belongs to the WBS on its
+                row, not to the whole project — check it against that WBS.
+              </div>
+            )}
+            {networkIssueCount > 0 && (
+              <div className="alloc-note" style={{ marginBottom: 10 }}>
+                {networkIssueCount} row{networkIssueCount === 1 ? "" : "s"} rejected over the Network. A Network belongs to
+                ONE WBS of its project, so Network_ID is checked against the WBS_NO on the same row: either correct the
+                WBS_NO / Network_ID on those rows, or add the Network to that WBS first. A Network of another WBS is never
+                moved by an upload.
               </div>
             )}
             {(result.errors?.length ?? 0) > 0 ? (

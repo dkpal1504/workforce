@@ -12,6 +12,7 @@ import {
   findWbsCodeConflict,
   isUniqueConstraintError,
   isValidColorKey,
+  jobOrderNetworkWbsError,
   jobOrderSectionError,
   jobOrderWbsMoveError,
   networkCodeConflictMessage,
@@ -20,6 +21,7 @@ import {
   prismaConflictMessage,
   projectCodeConflictMessage,
   referencedDeleteMessage,
+  resolveNetworkWbs,
   uomCodeConflictMessage,
   uomHelpText,
   uniqueConstraintFields,
@@ -40,9 +42,11 @@ const projects = [
 ];
 
 const wbsRows = [
-  { id: 10, projectId: 1, wbsCode: "A.HULL.0010.100", name: "Hull structure" },
-  { id: 11, projectId: 1, wbsCode: "A.OUTF.0020.100", name: "Outfit" },
-  { id: 12, projectId: 2, wbsCode: "A.HULL.0010.100", name: "Block 223" },
+  { id: 10, projectId: 1, wbsCode: "A.HULL.0010.100", name: "Hull structure", active: true },
+  { id: 11, projectId: 1, wbsCode: "A.OUTF.0020.100", name: "Outfit", active: true },
+  { id: 12, projectId: 2, wbsCode: "A.HULL.0010.100", name: "Block 223", active: true },
+  { id: 13, projectId: 1, wbsCode: "A.OUTF.0030.100", name: "Retired outfit", active: false },
+  { id: 14, projectId: 2, wbsCode: "B.OUTF.0020.150", name: "Block 224", active: true },
 ];
 
 const uomRows = [
@@ -51,8 +55,9 @@ const uomRows = [
 ];
 
 const networks = [
-  { id: 20, projectId: 1, code: "SAP-NW-91001", name: "Hull networks" },
-  { id: 21, projectId: 2, code: "SAP-NW-91001", name: "Block 223 networks" },
+  { id: 20, projectId: 1, code: "SAP-NW-91001", name: "Hull networks", wbsId: 10 },
+  { id: 21, projectId: 2, code: "SAP-NW-91001", name: "Block 223 networks", wbsId: 12 },
+  { id: 22, projectId: 1, code: "SAP-NW-91002", name: "Outfit networks", wbsId: 11 },
 ];
 
 /* --- colour key ---------------------------------------------------------- */
@@ -222,12 +227,79 @@ test("the UoM help text is taken from the example of the master row", () => {
 });
 
 test("a manually created network is always MANUAL", () => {
-  const result = validateNetworkInput({ code: " sap-nw-91001 ", name: "Hull networks", source: "SAP" });
+  const result = validateNetworkInput({ wbsId: 10, code: " sap-nw-91001 ", name: "Hull networks", source: "SAP" });
   assert.equal(result.ok, true);
   assert.equal(result.ok && result.data.source, NETWORK_SOURCE);
   assert.equal(result.ok && result.data.code, "SAP-NW-91001");
+  assert.equal(result.ok && result.data.wbsId, 10);
   assert.equal(networkSourceForWrite("SAP"), NETWORK_SOURCE);
   assert.equal(networkSourceForWrite(undefined), "MANUAL");
+});
+
+/* --- a Network belongs to ONE WBS element --------------------------------- */
+
+test("a Network payload requires a WBS row", () => {
+  for (const missing of [undefined, null, "", "abc", 0, -3]) {
+    const result = validateNetworkInput({ wbsId: missing, code: "NET-A1", name: "Hull networks" });
+    assert.equal(result.ok, false, `${String(missing)} should be refused`);
+    assert.deepEqual(result.ok ? [] : result.errors.map((error) => error.field), ["wbsId"]);
+    assert.match(result.ok ? "" : result.errors[0].message, /WBS row is required/);
+  }
+  const result = validateNetworkInput({ wbsId: "11", code: "NET-A2" });
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.data.wbsId, 11, "a numeric string is accepted");
+});
+
+test("a Network WBS must belong to the same project", () => {
+  const other = resolveNetworkWbs(wbsRows, projects[0], 14);
+  assert.equal(other.ok, false);
+  assert.equal(other.ok ? "" : other.error.field, "wbsId");
+  assert.match(other.ok ? "" : other.error.message, /B\.OUTF\.0020\.150/);
+  assert.match(other.ok ? "" : other.error.message, /belongs to project #2, not to project "Project A" \(PRJ-A\)/);
+
+  // With the owning project's code on the row, the refusal names that project too.
+  const named = resolveNetworkWbs([{ ...wbsRows[4], projectCode: "PRJ-B", projectName: "Project B" }], projects[0], 14);
+  assert.equal(named.ok, false);
+  assert.match(named.ok ? "" : named.error.message, /belongs to project "Project B" \(PRJ-B\)/);
+  assert.match(named.ok ? "" : named.error.message, /pick a WBS of PRJ-A/);
+});
+
+test("a WBS of the project and active is accepted as the parent of a Network", () => {
+  const ok = resolveNetworkWbs(wbsRows, projects[0], 11);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.ok && ok.wbs.wbsCode, "A.OUTF.0020.100");
+});
+
+test("a missing WBS row is refused and named", () => {
+  const missing = resolveNetworkWbs(wbsRows, projects[0], 999);
+  assert.equal(missing.ok, false);
+  assert.match(missing.ok ? "" : missing.error.message, /WBS row #999 was not found/);
+});
+
+test("an inactive WBS row cannot own a Network", () => {
+  const inactive = resolveNetworkWbs(wbsRows, projects[0], 13);
+  assert.equal(inactive.ok, false);
+  assert.match(inactive.ok ? "" : inactive.error.message, /A\.OUTF\.0030\.100.*is inactive/);
+  assert.match(inactive.ok ? "" : inactive.error.message, /Pick an active WBS row/);
+});
+
+test("a Job Order Network must belong to the WBS the Job Order is mapped to", () => {
+  const sameWbs = jobOrderNetworkWbsError({
+    jobOrderCode: "1900000107", networkCode: "SAP-NW-91001",
+    networkWbsId: 10, networkWbsCode: "A.HULL.0010.100",
+    targetWbsId: 10, targetWbsCode: "A.HULL.0010.100",
+  });
+  assert.equal(sameWbs, null, "a Network on the Job Order's own WBS is fine");
+
+  const mismatch = jobOrderNetworkWbsError({
+    jobOrderCode: "1900000107", networkCode: "SAP-NW-91002",
+    networkWbsId: 11, networkWbsCode: "A.OUTF.0020.100",
+    targetWbsId: 10, targetWbsCode: "A.HULL.0010.100",
+  });
+  assert.match(String(mismatch), /SAP-NW-91002/);
+  assert.match(String(mismatch), /belongs to WBS "A\.OUTF\.0020\.100"/, "names the WBS the Network belongs to");
+  assert.match(String(mismatch), /1900000107" is on \(or would move to\) WBS "A\.HULL\.0010\.100"/, "names the WBS the Job Order is on, or would move to");
+  assert.match(String(mismatch), /Pick another Network/);
 });
 
 /* --- the database races -------------------------------------------------- */

@@ -14,9 +14,16 @@ Local development testing can run against SQLite — no database server, no Dock
 ```powershell
 # 1. Point the app at the local SQLite file (both files: the API loads the root .env first)
 #    .env                         -> DATABASE_URL="file:./dev.db"
-# 2. Build, generate the Prisma client, create/update the SQLite schema, seed demo data
+# 2. Build, generate the Prisma client, create/update the SQLite schema, seed the
+#    minimal bootstrap: four office accounts and NO business data
 npm install
 npm run db:setup
+```
+
+```powershell
+# Optional: add the demonstration data (projects, WBS, UoM, networks, Job Orders,
+# employees, supervisors, bookings, cost rates). Needed by the Playwright tests.
+npm run db:seed:demo
 ```
 
 Then start the two application processes in separate terminals:
@@ -29,7 +36,7 @@ npm run dev:api
 npm run dev:web
 ```
 
-`npm run db:setup` is provider-aware: with a `file:` URL it runs `prisma db push` against SQLite, with a PostgreSQL URL it runs `prisma migrate deploy` exactly as production does. The database file is `apps/api/prisma/dev.db`.
+`npm run db:setup` is provider-aware: with a `file:` URL it runs `prisma db push` against SQLite, with a PostgreSQL URL it runs `prisma migrate deploy` exactly as production does. The database file is `apps/api/prisma/dev.db`. It ends with `npm run db:seed`, the **minimal seed**: four office accounts (`admin@company.com`, `pm@company.com`, `hr@company.com`, `finance@company.com`) and **no business data**, so the app starts the way production does. Add `npm run db:seed:demo` for the demonstration data below.
 
 ### Setting a password for a new account
 
@@ -68,17 +75,28 @@ Keep `BADGEVIEW_SYNC_ENABLED=false` and `CREDENTIAL_DELIVERY_ENABLED=false` unti
 - Web: http://localhost:5173
 - API: http://localhost:4000
 
-### Demo data
+### Seeded accounts
 
-The seed command is for local demos only and is blocked when `NODE_ENV=production`. The default development password is `WorkforceDev@2026` and can be changed with `DEV_SEED_PASSWORD` before running the seed.
+Both seeds are for local use only and are blocked when `NODE_ENV=production`. The default development password is `WorkforceDev@2026` and can be changed with `DEV_SEED_PASSWORD` before you run the seed.
+
+`npm run db:seed` — the **minimal, production-like bootstrap**: no business data, and no supervisor, HOD or employee login.
+
+| Role | Login |
+|---|---|
+| Admin | `admin@company.com` |
+| Project Head | `pm@company.com` |
+| HR | `hr@company.com` |
+| Finance | `finance@company.com` |
+
+`npm run db:seed:demo` — the **demonstration set**, which adds the rows above plus these logins and the data the screens and the Playwright tests need:
 
 | Role | Login |
 |---|---|
 | Employee | `EC1011` |
 | Supervisor | `EC1001` |
 | HOD | `hod@company.com` |
-| Project Head | `pm@company.com` |
-| Admin | `admin@company.com` |
+
+**Cost rates are not seeded by `db:seed`.** The Cost view of the Summary reads zero until an Admin adds rates with `POST /api/admin/cost-rates`.
 
 Daily hour limit is controlled by `MAX_DAILY_HOURS` in `.env` (default `8`). Overtime requires Remarks, shown to HOD on Approvals.
 
@@ -86,16 +104,16 @@ Default bulk-fill shift windows are set with `SHIFTS` in `.env` (e.g. `GENERAL:0
 
 **Approval flow:** Supervisor submit → **HOD** (approve/reject full or partial employees) → **Project Head** (same screen, title changes). Project Head reject returns sheets to HOD “Sent Back by Planning”; HOD can send them back to the supervisor.
 
-Default date filters use **today’s local date**. Seed data uses yesterday’s team for carry-over demo.
+Default date filters use **today’s local date**. The demo seed places yesterday’s team for the carry-over demo.
 
 ## Master data and reporting
 
-**Project → WBS → Job Order** is the master-data hierarchy. A WBS belongs to one project, and **a Job Order number is unique per project only** — it repeats across projects, so `1900000107` in Project A and in Project C are two different Job Orders. Job Order status is **`Active`** or **`In-Active`** only.
+**Project → WBS → Job Order** is the master-data hierarchy. A WBS belongs to one project, and **a Job Order number is unique per project only** — it repeats across projects, so `1900000107` in Project A and in Project C are two different Job Orders. Job Order status is **`Active`** or **`In-Active`** only. A **Network belongs to ONE WBS** of its project: one Network number never spans two WBS rows of the same project, so the Job Order upload checks `Network_ID` against the `WBS_NO` on the same row.
 
 | Capability | Screen | Roles |
 |---|---|---|
-| **Project Master Data** — tabs Project, WBS, UoM, Network; every field carries example help text; a duplicate is refused with a message that names the conflicting row; rows are deactivated instead of deleted | `/master-data` | ADMIN, PM |
-| **Job Order Upload** — fixed 12-column CSV template (`Project_ID … Job_Order_Status`); per-row `created` / `skipped` / `rejected` report with the reason; an existing Job Order is **skipped, never overwritten**; it can also **create a missing WBS or Network** from the file (switch on by default, each creation reported against the line that introduced it) | `/job-order-upload` | ADMIN, PM |
+| **Project Master Data** — tabs Project, WBS, UoM, Network and Job Order; every field carries example help text; a duplicate is refused with a message that names the conflicting row; rows are deactivated instead of deleted. A **Network row needs a WBS** (the tab lists a WBS column), and the **Job Order** tab corrects a Job Order's WBS / Network, offering only the Networks of the chosen WBS | `/master-data` | ADMIN, PM |
+| **Job Order Upload** — fixed 12-column CSV template (`Project_ID … Job_Order_Status`); per-row `created` / `skipped` / `rejected` report with the reason; an existing Job Order is **skipped, never overwritten**; it can also **create a missing WBS or Network** from the file (switch on by default, a created Network goes under the WBS on its own row, each creation reported against the line that introduced it). `Network_ID` is checked against the `WBS_NO` **on the same row**: a Network of another WBS of the same project is rejected, and the message names the Network and both WBS codes | `/job-order-upload` | ADMIN, PM |
 | **Quantity Progress** — the HOD punches the **cumulative** quantity achieved to date (never a daily increment, and the figure may never go down); the Project Head approves, rejects or sends back; the HOD amends only after a rejection or a send-back, and the refused revision stays as history | `/job-order-progress` | punch: HOD, DEPT_HEAD, ADMIN — decide: PM, ADMIN |
 | **Booking** — on Daily Timesheet Entry the Department is fixed to the supervisor's own department, the Section is chosen from that department, the Project is chosen, and each Job Order option reads `Job_Order-Job_Description`. A standing / Non-Project Job Order can be booked by any section of its department | `/timesheet`, `/allocations` | Timesheet: SUPERVISOR, ADMIN — My Hours: EMPLOYEE and SUPERVISOR for themselves, HOD / DEPT_HEAD / PM / HR / ADMIN for others |
 | **Job Order Summary** — grouped Project → WBS → Job Order with **both measures side by side**: Budgeted hours / Consumption / Consumption % / Balance and Budget Qty / Achieved Qty / Balance Qty / Qty %. Status filter `All` / `Active` / `In-Active`. A Job Order with no approved progress shows a dash, not `0 %` | Summary → Job Order | every signed-in role except EMPLOYEE |
@@ -121,7 +139,8 @@ packages/shared   Shared Zod schemas & constants
 | `npm run dev:web` | Vite dev server (proxies API) |
 | `npm run db:migrate` | Provider-aware schema step: `prisma db push` on a `file:` URL, `prisma migrate deploy` on PostgreSQL |
 | `npm run db:migrate:deploy` | Apply reviewed PostgreSQL migrations |
-| `npm run db:seed` | Load demo data (never use in production) |
+| `npm run db:seed` | Minimal bootstrap: four office accounts (ADMIN, PM, HR, FINANCE) and no business data; never use in production |
+| `npm run db:seed:demo` | Full demo data set (projects, WBS, UoM, networks, Job Orders, employees, supervisors, bookings, cost rates) for local demos and the Playwright tests |
 | `npm run test:e2e -w @workforce/web` | Playwright smoke tests |
 
 ## Access on your LAN (e.g. Windows IP `10.5.18.209`)
@@ -140,7 +159,8 @@ cd c:\data\comp\workforce
 # Start Docker Desktop first.
 Copy-Item .env.development.example .env
 npm run dev:db:up
-npm run db:setup   # first time only; applies migrations and loads demo data
+npm run db:setup      # first time only; applies migrations, then the minimal seed (4 accounts)
+npm run db:seed:demo  # optional: the demonstration data
 npm run dev:api    # terminal 1 — listens on 0.0.0.0:4000
 npm run dev:web    # terminal 2 — listens on 0.0.0.0:5173
 ```
