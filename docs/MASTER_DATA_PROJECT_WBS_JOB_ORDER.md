@@ -91,12 +91,12 @@ accepted, and the drift check stays clean.
    exist. Only an active Job Order on an active Project in an active Department can be
    booked or have progress punched.
 2. **Booking.** On the Timesheet Entry and My Hours screens the Department is fixed to
-   the supervisor's own department, the Section is chosen from that department's
-   sections, and the Project is chosen freely. The Job Order list is then filtered by all
-   three and each option reads `Job_Order-Job_Description`. A standing / Non-Project Job
-   Order (`section_id` null) is offered for any section of its department; a project Job
-   Order only for its own section. The WBS number is returned by the API but hidden in the
-   UI.
+   the supervisor's own department, the Project is chosen, and the Job Order list is every
+   Job Order of that Project inside the department, and each option reads
+   `Job_Order-Job_Description`. A standing / Non-Project Job Order (`section_id` null) is
+   included. The WBS number is returned by the API but hidden in the UI. There is no Section
+   control on this screen: the section of the work is read from the chosen Job Order and
+   stored on the booking, and the My Hours picker keeps its own Section control.
 3. **Quantity progress.** The HOD punches the **cumulative** quantity achieved to date,
    never a daily increment. The figure may never fall below the last approved figure. One
    entry per Job Order per day. The PM approves, rejects or sends back. The HOD may amend

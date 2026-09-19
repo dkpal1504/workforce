@@ -90,7 +90,10 @@ grouping keys for every report. A later master-data change must NOT move approve
 
 - The supervisor's **department is fixed** to his own. **Section is freely chosen** among
   that department's active sections. Project is freely chosen.
-- The Job Order list is filtered by department + selected section + project, and displays
+- The Job Order list is filtered by department + project (an optional section filter is kept for
+  the My Hours picker). AMENDED: the supervisor Timesheet Entry screen has no Section control —
+  a supervisor belongs to one department, so the Project alone decides, and the section of the
+  work is read from the chosen Job Order. The list displays
   as `Job_Order-Job_Description` (for example `1900000107-Pipe Spool Installation`).
 - A standing / Non-Project Job Order (`section_id IS NULL`) is included for any section of
   the department. A project Job Order is included only when its `section_id` matches.

@@ -111,11 +111,11 @@ type LocalRow = Row & {
   // Locally-marked "selected" slots (amber), pending assignment via Assign to Selected.
   // Independent of which slots are already filled (which render as project-colored).
   selectedSlots: Set<ShiftSlot>;
-  // Per-row Allocation: the Section dropdown value. The Job Order list is scoped to
-  // this section + the selected project. Defaults to the row's first filled slot's section.
-  sectionId: number | "";
   // Per-row Allocation: the Project dropdown value. Defaults to the row's first filled
-  // slot's project.
+  // slot's project. There is no Section control: a supervisor belongs to ONE department,
+  // so the Project alone selects what may be booked, and the Job Order list is every Job
+  // Order of that Project inside the supervisor's department. Which SECTION the work
+  // belongs to is a property of the chosen Job Order, not something to re-state per row.
   projectId: number | "";
   // Per-row selected Job Order for the Assign button.
   jobOrderId: number | "";
@@ -164,9 +164,9 @@ function fullName(first: string) {
   return first;
 }
 
-/** Cache key for the Job Orders of one (project, section) pair. */
-function jobOrderPairKey(projectId: number | "", sectionId: number | "") {
-  return projectId !== "" && sectionId !== "" ? `${projectId}:${sectionId}` : "";
+/** Cache key for the Job Orders of one project, inside the supervisor's department. */
+function jobOrderPairKey(projectId: number | "", _sectionId: number | "" = "") {
+  return projectId !== "" ? String(projectId) : "";
 }
 
 /** Option text for a Job Order: always `Job_Order-Job_Description`. */
@@ -216,7 +216,6 @@ export function TimesheetPage() {
   const jobOrderFetchSeq = useRef<Map<string, number>>(new Map());
 
   // Bulk Assignment block state
-  const [bulkSectionId, setBulkSectionId] = useState<number | "">("");
   const [bulkProjectId, setBulkProjectId] = useState<number | "">("");
   const [bulkJobOrderId, setBulkJobOrderId] = useState<number | "">("");
   // Expand/collapse state for the per-row grid (default: collapsed)
@@ -263,14 +262,14 @@ export function TimesheetPage() {
       setOpenReturns(data.openReturns ?? []);
       setRows(
         data.rows.map((r) => {
-          // Default the per-row Section / Project to the first filled slot's pair
-          // (Project also falls back to the row's OT booking), as before.
+          // Default the per-row Project to the first filled slot's project (falling back to
+          // the row's OT booking), as before.
           const firstFilled = r.slots.find((s) => s.projectId != null);
           return {
             ...r,
             editMode: r.editMode ?? "full",
             selectedSlots: new Set<ShiftSlot>(),
-            sectionId: firstFilled?.sectionId ?? "",
+
             projectId: firstFilled?.projectId ?? r.otProjectId ?? "",
             jobOrderId: firstFilled?.jobOrderId ?? r.otJobOrderId ?? "",
             otSelected: false,
@@ -311,19 +310,21 @@ export function TimesheetPage() {
   // fetches on every render.
   useEffect(() => {
     if (!ctx.supervisorId) return;
-    const pairs = new Map<string, { projectId: number; sectionId: number }>();
-    const addPair = (projectId: number | "", sectionId: number | "") => {
-      const key = jobOrderPairKey(projectId, sectionId);
-      if (key) pairs.set(key, { projectId: Number(projectId), sectionId: Number(sectionId) });
+    const pairs = new Map<string, { projectId: number }>();
+    const addPair = (projectId: number | "") => {
+      const key = jobOrderPairKey(projectId);
+      if (key) pairs.set(key, { projectId: Number(projectId) });
     };
-    for (const r of rows) addPair(r.projectId, r.sectionId);
-    addPair(bulkProjectId, bulkSectionId);
+    for (const r of rows) addPair(r.projectId);
+    addPair(bulkProjectId);
     for (const [key, pair] of pairs) {
       if (jobOrderCache[key] || jobOrderFetchSeq.current.has(key)) continue;
       const seq = (jobOrderFetchSeq.current.get(key) ?? 0) + 1;
       jobOrderFetchSeq.current.set(key, seq);
       api<{ jobOrders: JobOrderOption[] }>(
-        `/timesheet/job-orders?supervisor_id=${ctx.supervisorId}&project_id=${pair.projectId}&section_id=${pair.sectionId}`
+        // Project + the supervisor's own department is the whole filter. The section of the
+        // work comes from whichever Job Order is chosen.
+        `/timesheet/job-orders?supervisor_id=${ctx.supervisorId}&project_id=${pair.projectId}`
       )
         .then((data) => {
           // Drop a response that a newer request for the same pair superseded.
@@ -336,7 +337,7 @@ export function TimesheetPage() {
           setJobOrderCache((prev) => ({ ...prev, [key]: [] }));
         });
     }
-  }, [rows, bulkProjectId, bulkSectionId, jobOrderCache, ctx.supervisorId]);
+  }, [rows, bulkProjectId, jobOrderCache, ctx.supervisorId]);
 
   async function reloadIfAnotherSupervisorWon(error: unknown) {
     if (!(error instanceof ApiError)) return false;
@@ -373,9 +374,9 @@ export function TimesheetPage() {
    * selected (Section, Project) pair. Empty until both are chosen.
    */
   const bulkJobOrders = useMemo(() => {
-    const key = jobOrderPairKey(bulkProjectId, bulkSectionId);
+    const key = jobOrderPairKey(bulkProjectId);
     return key ? jobOrderCache[key] ?? [] : [];
-  }, [jobOrderCache, bulkProjectId, bulkSectionId]);
+  }, [jobOrderCache, bulkProjectId]);
 
   const bulkJobOrderName = useMemo(() => {
     if (!bulkJobOrderId) return "";
@@ -421,17 +422,6 @@ export function TimesheetPage() {
     );
   }
 
-  function setRowSection(employeeId: number, sectionId: number | "") {
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.employeeId !== employeeId) return r;
-        if (rowEditMode(r) === "locked") return r;
-        // A Job Order only fits one (section, project) pair: any change clears it.
-        return { ...r, sectionId, jobOrderId: "" };
-      })
-    );
-  }
-
   function setRowProject(employeeId: number, projectId: number | "") {
     setRows((prev) =>
       prev.map((r) => {
@@ -465,9 +455,8 @@ export function TimesheetPage() {
         return {
           ...r,
           otSelected: selecting,
-          // OT is booked through the same Section / Project / Job Order controls as a
-          // regular slot, preselected from the row's own OT booking.
-          sectionId: selecting && r.otSectionId ? r.otSectionId : r.sectionId,
+          // OT is booked through the same Project / Job Order controls as a regular slot,
+          // preselected from the row's own OT booking.
           projectId: selecting && r.otProjectId ? r.otProjectId : r.projectId,
           jobOrderId: selecting && r.otJobOrderId ? r.otJobOrderId : r.jobOrderId,
         };
@@ -704,7 +693,7 @@ export function TimesheetPage() {
   }
 
   async function applyBulkAssign() {
-    if (!ctx.supervisorId || !bulkSectionId || !bulkProjectId || !bulkJobOrderId) return;
+    if (!ctx.supervisorId || !bulkProjectId || !bulkJobOrderId) return;
     const slots: { employeeId: number; shiftSlot: ShiftSlot }[] = [];
     for (const r of rows) {
       if (rowEditMode(r) === "locked") continue;
@@ -975,23 +964,6 @@ export function TimesheetPage() {
               <input type="text" readOnly value={department?.name ?? ""} placeholder="—" />
             </div>
             <div className="bulk-assign__field">
-              <label>Section</label>
-              <select
-                value={bulkSectionId}
-                onChange={(e) => {
-                  setBulkSectionId(e.target.value ? Number(e.target.value) : "");
-                  setBulkJobOrderId("");
-                }}
-              >
-                <option value="">Select…</option>
-                {sections.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.code} · {s.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="bulk-assign__field">
               <label>Project</label>
               <select
                 value={bulkProjectId}
@@ -1013,10 +985,10 @@ export function TimesheetPage() {
               <select
                 value={bulkJobOrderId}
                 onChange={(e) => setBulkJobOrderId(e.target.value ? Number(e.target.value) : "")}
-                disabled={!bulkSectionId || !bulkProjectId}
+                disabled={!bulkProjectId}
               >
                 <option value="">
-                  {bulkSectionId && bulkProjectId ? "Select…" : "Pick a section and a project"}
+                  {bulkProjectId ? "Select…" : "Pick a project first"}
                 </option>
                 {bulkJobOrders.map((j) => (
                   <option key={j.id} value={j.id} title={j.wbsNo ? `WBS ${j.wbsNo}` : undefined}>
@@ -1095,7 +1067,6 @@ export function TimesheetPage() {
               <th className="slot-head">4p–6p</th>
               <th className="ot-col sub">Slot</th>
               <th className="ot-hours-col sub">Hrs</th>
-              <th className="alloc-sub">Section</th>
               <th className="alloc-sub">Project</th>
               <th className="alloc-sub">Job Order</th>
               <th className="alloc-sub">Assign</th>
@@ -1116,8 +1087,9 @@ export function TimesheetPage() {
               ]
                 .filter(Boolean)
                 .join(" ");
-              // Job Orders are the fetched list for this row's (section, project) pair.
-              const rowJobOrders = jobOrderCache[jobOrderPairKey(r.projectId, r.sectionId)] ?? [];
+              // Job Orders are the fetched list for this row's project, inside the
+              // supervisor's own department.
+              const rowJobOrders = jobOrderCache[jobOrderPairKey(r.projectId)] ?? [];
               const keptJobOrderLabel = rowJobOrders.some((j) => j.id === r.jobOrderId)
                 ? null
                 : storedSlotJobOrderLabel(r, r.jobOrderId);
@@ -1279,23 +1251,6 @@ export function TimesheetPage() {
                   <td>
                     <select
                       className="project-select"
-                      value={r.sectionId}
-                      disabled={!isOwner || isLocked}
-                      onChange={(e) =>
-                        setRowSection(r.employeeId, e.target.value ? Number(e.target.value) : "")
-                      }
-                    >
-                      <option value="">Select…</option>
-                      {sections.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.code} · {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td>
-                    <select
-                      className="project-select"
                       value={r.projectId}
                       disabled={!isOwner || isLocked}
                       onChange={(e) =>
@@ -1314,13 +1269,13 @@ export function TimesheetPage() {
                     <select
                       className="jo-select"
                       value={r.jobOrderId}
-                      disabled={!isOwner || isLocked || !r.sectionId || !r.projectId}
+                      disabled={!isOwner || isLocked || !r.projectId}
                       onChange={(e) =>
                         setRowJobOrder(r.employeeId, e.target.value ? Number(e.target.value) : "")
                       }
                     >
                       <option value="">
-                        {r.sectionId && r.projectId ? "Select…" : "Pick a section and a project"}
+                        {r.projectId ? "Select…" : "Pick a project first"}
                       </option>
                       {rowJobOrders.map((j) => (
                         <option key={j.id} value={j.id} title={j.wbsNo ? `WBS ${j.wbsNo}` : undefined}>
@@ -1416,8 +1371,9 @@ export function TimesheetPage() {
         {rows.map((r) => {
           const isLocked = rowEditMode(r) === "locked";
           const filledCount = r.slots.filter((s) => s.jobOrderId != null).length;
-          // Job Orders are the fetched list for this row's (section, project) pair.
-          const rowJobOrders = jobOrderCache[jobOrderPairKey(r.projectId, r.sectionId)] ?? [];
+          // Job Orders are the fetched list for this row's project, inside the
+          // supervisor's own department.
+          const rowJobOrders = jobOrderCache[jobOrderPairKey(r.projectId)] ?? [];
           const keptJobOrderLabel = rowJobOrders.some((j) => j.id === r.jobOrderId)
             ? null
             : storedSlotJobOrderLabel(r, r.jobOrderId);
@@ -1551,24 +1507,6 @@ export function TimesheetPage() {
               </div>
               <div className="ts-alloc">
                 <label className="ts-field">
-                  <span>Section</span>
-                  <select
-                    className="project-select"
-                    value={r.sectionId}
-                    disabled={!isOwner || isLocked}
-                    onChange={(e) =>
-                      setRowSection(r.employeeId, e.target.value ? Number(e.target.value) : "")
-                    }
-                  >
-                    <option value="">Select…</option>
-                    {sections.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.code} · {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="ts-field">
                   <span>Project</span>
                   <select
                     className="project-select"
@@ -1591,13 +1529,13 @@ export function TimesheetPage() {
                   <select
                     className="jo-select"
                     value={r.jobOrderId}
-                    disabled={!isOwner || isLocked || !r.sectionId || !r.projectId}
+                    disabled={!isOwner || isLocked || !r.projectId}
                     onChange={(e) =>
                       setRowJobOrder(r.employeeId, e.target.value ? Number(e.target.value) : "")
                     }
                   >
                     <option value="">
-                      {r.sectionId && r.projectId ? "Select…" : "Pick a section and a project"}
+                      {r.projectId ? "Select…" : "Pick a project first"}
                     </option>
                     {rowJobOrders.map((j) => (
                       <option key={j.id} value={j.id} title={j.wbsNo ? `WBS ${j.wbsNo}` : undefined}>

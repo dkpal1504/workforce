@@ -63,6 +63,7 @@ projects (1) ──► project_wbs (1) ──► job_orders  ──► job_order
 | `timesheet_entries` / `employee_allocations` carry a FROZEN attribution snapshot (`project_id`, `project_wbs_id`, `department_id`, `section_id`) | reports group by the snapshot, so editing a Job Order's mapping later cannot move already-booked hours. Buckets frozen, labels (name, colour) live |
 | A Job Order with booked hours may not move to another WBS | `409 JOB_ORDER_WBS_LOCKED`; the snapshot would be re-pointed |
 | Assignability | a Job Order is bookable only when the Job Order, its Project and its Department are all active |
+| Booking picker | Department is fixed to the supervisor's own; only the **Project** is chosen, and the Job Order list is that Project's Job Orders inside the department. There is **no Section control** on Timesheet Entry - the Section of the work is read from the chosen Job Order and stored on the booking. My Hours keeps its own Section control on the single-slot picker |
 | Approval authority | Supervisor submits -> **HOD** approves -> **PM** approves. **Admin decides nothing.** It sees every queue and all history, and its decision buttons are removed; the API refuses approve/reject/batch/send-back with 403. Quantity progress matches: the HOD punches, the PM decides, the Admin only reads |
 
 ## 3. How to run it

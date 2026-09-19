@@ -105,15 +105,14 @@ A supervisor manages their team's manhour allocation for a single day. The flow 
 3. Click **Assign** (or use **Bulk Assignment**: select slots → pick project/WO → **Assign to Selected**).
 4. The slot fills with the project color.
 
-### 2.3 Booking a Job Order (Department, Section, Project)
+### 2.3 Booking a Job Order (Department and Project)
 
 The picker is constrained so that the wrong Job Order cannot be booked:
 
 - **Department is fixed to the supervisor's own department.** The department shown at the top of the screen is the supervisor's own, not a selector, and the API derives it from the signed-in supervisor — so another department cannot be booked.
-- **Section** is chosen from the active sections of that department.
 - **Project** is chosen freely among the active projects.
-- **Job Order** is filtered by all three, and each option reads `Job_Order-Job_Description` — for example `1900000107-Pipe Spool Installation`.
-- A **standing / Non-Project** Job Order (one with no Section) is offered for **any** Section of its Department. A project Job Order is offered only for its own Section.
+- **Job Order** is filtered by **that Project inside the supervisor's own department**, and each option reads `Job_Order-Job_Description` — for example `1900000107-Pipe Spool Installation`.
+- There is **no Section control** on this screen. A supervisor is mapped to one department, so the Project alone decides what may be booked, and the department's own Job Orders for that project are the list. A **standing / Non-Project** Job Order is included for every project it belongs to. Which **Section** the work belongs to is read from the chosen **Job Order** and stored on the booking — it is never re-stated per row.
 - Only an `Active` Job Order on an `Active` Project in an `Active` Department can be booked; anything else does not appear in the list.
 - Consumption and quantity do not mix here: this screen books **hours** only. The quantity figure is punched separately on Quantity Progress ([16](#16-quantity-progress-hod--dept_head--pm)).
 
@@ -216,7 +215,7 @@ The Department, Section, Project and Job Order picker behaves exactly as on Dail
 ### 4.2 Rules
 
 - **Project is mandatory**, the Job Order is optional.
-- Department is fixed to the employee's own department, the Section is chosen from that department, and the Job Order list is filtered by department, Section and Project ([2.3](#23-booking-a-job-order-department-section-project)).
+- Department is fixed to the employee's own department, the Section is chosen from that department, and the Job Order list is filtered by that Section and the Project. (My Hours keeps the Section control because it is a single-slot picker; the supervisor Timesheet Entry screen does not have one — see [2.3](#23-booking-a-job-order-department-and-project).)
 - **OT is NOT applicable** for payroll — the daily cap is **strict 8 hours** (4 slots × 2 h); an attempt to exceed is rejected by the API.
 - Slots become **locked** once Submitted; only HOD/PM can re-open them via reject.
 - Submit triggers the same `SUBMITTED → HOD_APPROVED → PM_APPROVED` lifecycle as the supervisor timesheet.

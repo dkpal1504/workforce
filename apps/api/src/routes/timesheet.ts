@@ -586,9 +586,16 @@ timesheetRouter.get("/job-orders", async (req, res) => {
   const sections = await loadDepartmentSections(departmentId);
   const projectId = Number(req.query.project_id);
   const sectionId = Number(req.query.section_id);
+  // The Project is required; the Section is optional. A supervisor is mapped to ONE
+  // department, so "this project, in my department" is the whole filter, and the section a
+  // booked hour belongs to comes from the Job Order that is chosen.
   const jobOrders =
-    Number.isInteger(projectId) && projectId > 0 && Number.isInteger(sectionId) && sectionId > 0
-      ? await loadSlotJobOrders({ departmentId, projectId, sectionId })
+    Number.isInteger(projectId) && projectId > 0
+      ? await loadSlotJobOrders({
+          departmentId,
+          projectId,
+          ...(Number.isInteger(sectionId) && sectionId > 0 ? { sectionId } : {}),
+        })
       : [];
 
   res.json({ department, sections, jobOrders });

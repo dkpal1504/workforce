@@ -95,11 +95,12 @@ test.describe("Workforce happy paths", () => {
     // The slot is booked once it reads "selected" (the click toggles a row-local set).
     await expect(slot).toHaveClass(/selected/);
 
-    await pickOptionContaining(row.locator("select.project-select").first(), "Hull Production");
-    await pickOptionContaining(row.locator("select.project-select").nth(1), "Project A");
+    // One control now: the Project. There is no Section column any more - a supervisor
+    // belongs to one department, so the Project alone decides which Job Orders are offered.
+    await pickOptionContaining(row.locator("select.project-select").first(), "Project A");
 
-    // Job Orders are fetched per (section, project) pair, so the select fills in
-    // asynchronously and stays disabled until both are chosen.
+    // Job Orders are fetched per project, so the select fills in asynchronously and stays
+    // disabled until a project is chosen.
     const jobOrderSelect = row.locator("select.jo-select");
     await expect(jobOrderSelect).toBeEnabled();
     await expect(jobOrderSelect.locator("option", { hasText: JOB_ORDER_LABEL })).toHaveCount(1);

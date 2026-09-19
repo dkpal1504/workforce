@@ -34,7 +34,10 @@ export type SlotJobOrderSource = JobOrderEligibilitySource & {
 export type SlotJobOrderSelection = {
   departmentId: number;
   projectId: number;
-  sectionId: number;
+  /** Optional: narrows the list to one section (the My Hours picker sends it). The
+   *  Timesheet Entry screen omits it, so the whole department's Job Orders for that
+   *  project are offered. */
+  sectionId?: number;
 };
 
 /** Picker row for one Job Order. `label` is the exact display text. */
@@ -64,6 +67,7 @@ export function isAssignableJobOrder(row: JobOrderEligibilitySource): boolean {
  * A standing Job Order (`section_id IS NULL`) is offered for any section of its
  * Department; a project Job Order only for its own section.
  */
+/** A section-scoped list also accepts a standing Job Order (no section of its own). */
 export function jobOrderMatchesSection(
   jobOrderSectionId: number | null,
   selectedSectionId: number
@@ -103,7 +107,10 @@ export function eligibleSlotJobOrders(
   return rows
     .filter((row) => row.departmentId === selection.departmentId)
     .filter((row) => row.projectId === selection.projectId)
-    .filter((row) => jobOrderMatchesSection(row.sectionId, selection.sectionId))
+    // No section given means "the whole department's Job Orders for this project".
+    .filter((row) =>
+      selection.sectionId === undefined ? true : jobOrderMatchesSection(row.sectionId, selection.sectionId)
+    )
     .filter((row) => isAssignableJobOrder(row))
     .sort((left, right) => left.code.localeCompare(right.code) || left.id - right.id)
     .map(toSlotJobOrderOption);
@@ -129,7 +136,14 @@ export async function loadSlotJobOrders(
       status: "active",
       project: { active: true },
       department: { active: true },
-      OR: [{ sectionId: null }, { sectionId: selection.sectionId }],
+      // A section is an OPTIONAL extra filter. The Timesheet Entry screen sends only the
+      // project, because a supervisor belongs to one department and the Project alone
+      // decides what they may book: every active Job Order of that project inside their
+      // department (a standing Job Order with no section included). The My Hours picker
+      // still sends a section, so its list stays narrowed.
+      ...(Number.isInteger(selection.sectionId) && (selection.sectionId ?? 0) > 0
+        ? { OR: [{ sectionId: null }, { sectionId: selection.sectionId }] }
+        : {}),
     },
     select: {
       id: true,
