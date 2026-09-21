@@ -112,6 +112,9 @@ The picker is constrained so that the wrong Job Order cannot be booked:
 - **Department is fixed to the supervisor's own department.** The department shown at the top of the screen is the supervisor's own, not a selector, and the API derives it from the signed-in supervisor — so another department cannot be booked.
 - **Project** is chosen freely among the active projects.
 - **Job Order** is filtered by **that Project inside the supervisor's own department**, and each option reads `Job_Order-Job_Description` — for example `1900000107-Pipe Spool Installation`.
+  On this screen the option text is capped at **34 characters** (Job Order number included), so a long
+  description cannot stretch the dropdown past the row; the full description is still shown in the bulk
+  bar's read-only **Job Order Name** field and in Project Master Data.
 - There is **no Section control** on this screen. A supervisor is mapped to one department, so the Project alone decides what may be booked, and the department's own Job Orders for that project are the list. A **standing / Non-Project** Job Order is included for every project it belongs to. Which **Section** the work belongs to is read from the chosen **Job Order** and stored on the booking — it is never re-stated per row.
 - Only an `Active` Job Order on an `Active` Project in an `Active` Department can be booked; anything else does not appear in the list.
 - Consumption and quantity do not mix here: this screen books **hours** only. The quantity figure is punched separately on Quantity Progress ([16](#16-quantity-progress-hod--dept_head--pm)).

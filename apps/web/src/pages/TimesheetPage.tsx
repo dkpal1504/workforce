@@ -169,9 +169,25 @@ function jobOrderPairKey(projectId: number | "", _sectionId: number | "" = "") {
   return projectId !== "" ? String(projectId) : "";
 }
 
-/** Option text for a Job Order: always `Job_Order-Job_Description`. */
+/**
+ * Longest Job Order text the picker may show, Job Order number included. A native
+ * <select> widens its popup to the longest option, and the real descriptions here
+ * reach 77 characters (`M4116-Welding of anchor loose stud welding in conjunction
+ * with anchor ranging`), which pushed the open list past the row and over the
+ * neighbouring columns. The full Job_Description stays in the Job Order master and
+ * in the bulk bar's read-only Job Order Name field.
+ */
+const JOB_ORDER_OPTION_MAX_CHARS = 34;
+
+/** Cut display text to `JOB_ORDER_OPTION_MAX_CHARS`; a trailing space is dropped. */
+function limitJobOrderOptionText(text: string) {
+  if (text.length <= JOB_ORDER_OPTION_MAX_CHARS) return text;
+  return text.slice(0, JOB_ORDER_OPTION_MAX_CHARS).replace(/\s+$/, "");
+}
+
+/** Option text for a Job Order: `Job_Order-Job_Description`, at most 34 characters. */
 function jobOrderOptionLabel(j: JobOrderOption) {
-  return j.label || `${j.code}-${j.name}`;
+  return limitJobOrderOptionText(j.label || `${j.code}-${j.name}`);
 }
 
 /**
@@ -183,7 +199,7 @@ function storedSlotJobOrderLabel(row: LocalRow, jobOrderId: number | "") {
   if (jobOrderId === "") return null;
   const slot = row.slots.find((s) => s.jobOrderId === jobOrderId);
   if (!slot?.jobOrderCode) return null;
-  return slot.jobOrderName ? `${slot.jobOrderCode}-${slot.jobOrderName}` : slot.jobOrderCode;
+  return limitJobOrderOptionText(slot.jobOrderName ? `${slot.jobOrderCode}-${slot.jobOrderName}` : slot.jobOrderCode);
 }
 
 export function TimesheetPage() {

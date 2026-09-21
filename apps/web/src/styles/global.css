@@ -407,6 +407,26 @@ a {
   margin-bottom: 12px;
 }
 
+/* The shared filter row (Date / Department / Section / Search) is ONE line of
+   fields. Two inherited rules broke that line:
+   - .search-input carries a 12px stacking margin from its toolbar use, which
+     lifted the Search field 12px above the row's bottom edge;
+   - a native date input renders 2px taller than a select, which lifted the
+     Date label off Department / Section.
+   Both are neutralised inside .filter-row only, so the other .search-input
+   users (page toolbars) keep their stacking margin. */
+.filter-row .search-input {
+  margin-bottom: 0;
+}
+
+/* Scoped to >=768px: below that the 16px touch font makes every control
+   taller, and the date input must keep that height too. */
+@media (min-width: 768px) {
+  .filter-row .filter-field input[type="date"] {
+    height: 40px;
+  }
+}
+
 .login-page {
   min-height: 100vh;
   display: grid;
