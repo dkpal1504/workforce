@@ -385,9 +385,19 @@ export function AppLayout() {
           <NavLink to="/account/password" className={({ isActive }) => (isActive ? "active" : "")}>
             Password
           </NavLink>
-          <span className="app-header__user">
-            {user?.name} · {roleDisplay}
-          </span>
+          {/* The same identity the desktop page head shows: the top bar replaces the
+              rail below 1200px, so the identity belongs here. A tablet shows it in the
+              menu row; a phone shows it inside the menu, because a 390px row cannot
+              hold both the page title and this block without truncating the title. */}
+          {user && (
+            <span className="user-chip app-header__user">
+              <span className="user-chip__avatar" aria-hidden>{userInitials(user)}</span>
+              <span className="user-chip__who">
+                <strong>{userIdentityLine(user, roleDisplay ?? "")}</strong>
+                <span>{roleDisplay}</span>
+              </span>
+            </span>
+          )}
           <div className="app-header__actions">
             <button type="button" className="btn-header" onClick={openPanel}>
               Themes
@@ -418,9 +428,9 @@ export function AppLayout() {
                 rail is an overlay that auto-hides, so the header is the only place
                 that is on screen at every desktop width. */}
             {user && (
-              <div className="page-head__user">
-                <span className="page-head__avatar" aria-hidden>{userInitials(user)}</span>
-                <span className="page-head__who">
+              <div className="user-chip page-head__user">
+                <span className="user-chip__avatar" aria-hidden>{userInitials(user)}</span>
+                <span className="user-chip__who">
                   <strong>{userIdentityLine(user, roleDisplay ?? "")}</strong>
                   <span>{roleDisplay}</span>
                 </span>

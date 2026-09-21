@@ -395,8 +395,8 @@ kept or discarded by switching branches.
 * The rail **starts open**, so the first paint is the same as before and no layout animation runs
   on load. The width transition is armed only after the first paint (`.rail-ready`).
 * When the pointer **leaves the rail to the right**, it slides away and the content takes the whole
-  window: measured at 1600×900 → `padding-left: 0px`, `main.page` x = 0, width = 1600, rail x = −264,
-  page overflow 0.
+  window: measured at 1600×900 with the rail at its original 264 px → `padding-left: 0px`, `main.page` x = 0,
+  width = 1600, rail x = −264, page overflow 0. (The rail is **208 px** since §15.3.)
 * A slim handle stays at the left edge; hovering it (or the left edge) brings the rail back.
 * **Keyboard focus** inside the rail keeps it open; the **pin** button keeps it open permanently and
   remembers the choice in `localStorage` (`workforce_rail_pinned`).
@@ -541,3 +541,40 @@ Measured at 1817 / 1440 / 1280 px: chip on the same row as the Project Master Da
 renders no text, one visible `<h1>`, page overflow 0, no page errors. At 390 / 768 px: `.page-head` is
 `display:none`, so the chip is not visible and the phone/tablet top bar is unchanged; one `<h1>`, no
 overflow. My Hours: longest option 34 characters (271px), picker 308px, no overflow.
+
+### 15.3 The identity on phone/tablet, the narrower rail, and the Nocturne header (2026-09-21)
+
+Three owner asks plus one defect found while doing them.
+
+**1. Phone and tablet get the same identity.** The top-bar item used to read `Name Â· Role`.
+It now renders the same chip as the page head (initials bubble + `Name - Section` + the muted role
+line) through the shared `.user-chip*` classes, so one rule (`userIdentityLine()`) drives both
+layouts. Tablet (768-1199px): the chip is in the visible nav row. Phone (â¤767px): inside the menu,
+where the name has always been.
+
+**2. The rail is narrower.** `--rail-w` 264 â **208 px**. The measured requirement is 199 px:
+the longest label (`Job order upload`) needs 20 px item padding + 18 px icon + 10 px gap + ~127 px
+text = 175 px, plus the rail's own 2 Ã 12 px padding. Verified at 1200 / 1280 / 1440 / 1817 px for
+an ADMIN (13 nav items) and a supervisor (4): no item or group label overflows, every label stays on
+one line. The content column gains 56 px at 1280 (1016 â 1072); at 1817 the reading column is still
+capped at 1280.
+
+**3. Nocturne's dark-on-dark header (pre-existing, fixed).** `--text-inverse` is DARK in Nocturne
+(`#0c1118`) because the Nocturne PAGE is dark - while the header is a dark gradient in all five
+themes. The product name, the page title, the inactive nav links and the login visual panel therefore
+measured **1.01:1** in Nocturne: invisible. Adding the chip to that bar made the defect obvious. Fix:
+a new **`--header-text`** token per theme (light in all five), used by `.app-header`, `.app-header__nav a`,
+`.app-header__user` and `.login-page__visual`. `--text-inverse` then had no user left and was removed.
+Measured on the rendered pixels (the header background is a gradient, so the probe samples the real
+pixels and takes the mode of a band at the header top):
+
+| Theme | Chip name | Chip role | Avatar | Nav link | Product / title |
+|---|---|---|---|---|---|
+| Harbor | 10.41 | 6.26 | 5.54 | 7.04 | 10.41 |
+| Atlas | 14.17 | 8.04 | 7.06 | 9.17 | 14.17 |
+| Daybreak | 11.77 | 6.94 | 6.04 | 7.84 | 11.77 |
+| Forge | 9.76 | 5.97 | 5.21 | 6.69 | 9.76 |
+| Nocturne | 16.45 | 8.74 | 8.97 | 10.13 | **16.45** (was 1.01) |
+
+Gates after all three: `tsc -b` clean, `vite build` clean, `apps/api` `npm test` 160/160, Playwright
+**28 passed / 2 failed** - the same two pre-existing `EC1001` smoke seed-data failures.

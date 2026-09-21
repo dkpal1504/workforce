@@ -25,7 +25,6 @@
   --surface-glass: rgba(255, 255, 255, 0.72);
   --text: #14212b;
   --text-muted: #5a6b78;
-  --text-inverse: #f8fafc;
   --border: #c5d0d8;
   --border-light: #dde5ea;
   --primary: #0f6e6a;
@@ -36,6 +35,10 @@
   --accent-soft: #fde8dc;
   --navy: #12303a;
   --navy-deep: #0b1f26;
+  /* The header and the login visual panel are a dark gradient in EVERY theme, so
+     the text on them is its own token: --text-inverse is dark in Nocturne (the
+     page there is dark), which made the top bar dark-on-dark. */
+  --header-text: #f8fafc;
   --header-bg: linear-gradient(120deg, #12303a 0%, #1a4550 55%, #0f6e6a 130%);
   --header-border: rgba(255, 255, 255, 0.08);
   --danger: #c0362c;
@@ -67,7 +70,6 @@
   --surface-glass: rgba(255, 255, 255, 0.75);
   --text: #111827;
   --text-muted: #64748b;
-  --text-inverse: #f8fafc;
   --border: #cbd5e1;
   --border-light: #e2e8f0;
   --primary: #1d4ed8;
@@ -78,6 +80,10 @@
   --accent-soft: #cffafe;
   --navy: #0f172a;
   --navy-deep: #020617;
+  /* The header and the login visual panel are a dark gradient in EVERY theme, so
+     the text on them is its own token: --text-inverse is dark in Nocturne (the
+     page there is dark), which made the top bar dark-on-dark. */
+  --header-text: #f8fafc;
   --header-bg: linear-gradient(115deg, #0f172a 0%, #1e293b 50%, #1d4ed8 140%);
   --header-border: rgba(255, 255, 255, 0.08);
   --danger: #dc2626;
@@ -103,7 +109,6 @@
   --surface-glass: rgba(255, 255, 255, 0.78);
   --text: #1c2418;
   --text-muted: #66705f;
-  --text-inverse: #f7faf5;
   --border: #cfd6c8;
   --border-light: #e4e9df;
   --primary: #3f6212;
@@ -114,6 +119,10 @@
   --accent-soft: #e0f2fe;
   --navy: #1c2a1a;
   --navy-deep: #121c11;
+  /* The header and the login visual panel are a dark gradient in EVERY theme, so
+     the text on them is its own token: --text-inverse is dark in Nocturne (the
+     page there is dark), which made the top bar dark-on-dark. */
+  --header-text: #f7faf5;
   --header-bg: linear-gradient(120deg, #1c2a1a 0%, #2a3d24 45%, #3f6212 130%);
   --header-border: rgba(255, 255, 255, 0.08);
   --danger: #b91c1c;
@@ -139,7 +148,6 @@
   --surface-glass: rgba(255, 252, 248, 0.78);
   --text: #1f1814;
   --text-muted: #6f6258;
-  --text-inverse: #faf7f2;
   --border: #d2c4b5;
   --border-light: #e8ddd1;
   --primary: #9a3412;
@@ -150,6 +158,10 @@
   --accent-soft: #e2e8f0;
   --navy: #292524;
   --navy-deep: #1c1917;
+  /* The header and the login visual panel are a dark gradient in EVERY theme, so
+     the text on them is its own token: --text-inverse is dark in Nocturne (the
+     page there is dark), which made the top bar dark-on-dark. */
+  --header-text: #faf7f2;
   --header-bg: linear-gradient(120deg, #1c1917 0%, #44403c 50%, #9a3412 140%);
   --header-border: rgba(255, 255, 255, 0.08);
   --danger: #b91c1c;
@@ -175,7 +187,6 @@
   --surface-glass: rgba(21, 28, 39, 0.86);
   --text: #e8eef6;
   --text-muted: #94a3b8;
-  --text-inverse: #0c1118;
   --border: #2a3648;
   --border-light: #223044;
   --primary: #38bdf8;
@@ -186,6 +197,10 @@
   --accent-soft: #422006;
   --navy: #020617;
   --navy-deep: #000000;
+  /* The header and the login visual panel are a dark gradient in EVERY theme, so
+     the text on them is its own token: --text-inverse is dark in Nocturne (the
+     page there is dark), which made the top bar dark-on-dark. */
+  --header-text: #e8eef6;
   --header-bg: linear-gradient(120deg, #020617 0%, #0f172a 45%, #0c4a6e 140%);
   --header-border: rgba(255, 255, 255, 0.06);
   --danger: #f87171;
@@ -220,7 +235,10 @@
 
 :root,
 [data-theme="harbor"] {
-  --rail-w: 264px;
+  /* Wide enough for the longest nav label ("Job order upload": 20px item padding +
+     18px icon + 10px gap + ~127px of text = 175px) plus the rail's own 2 x 12px
+     padding. Measured 2026-09-21; anything wider is dead space taken from the page. */
+  --rail-w: 208px;
   --rail-bg: #0c3a42;
   --rail-bg-soft: #12454e;
   --rail-text: #eaf2f4;

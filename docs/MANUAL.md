@@ -94,6 +94,8 @@ A supervisor manages their team's manhour allocation for a single day. The flow 
 - **Your name and Section** — or Department, or the role when the account has neither — are shown at the
   top right of the header, in front of the page's own action button. The navigation rail keeps only the
   pin, theme and logout buttons.
+  The same block is the top bar below a 1200 px window: on a tablet it sits in the menu row, on a phone
+  inside the menu.
 - **Per-employee rows** with 4 shift-slot cells (`am1`, `am2`, `pm1`, `pm2`, each 2 h).
 - **Project / Work Order dropdowns** below the slot grid (per row).
 - **Bulk Assignment block** for selecting multiple slots across employees and applying a single Project + WO.

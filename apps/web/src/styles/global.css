@@ -54,7 +54,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  color: var(--text-inverse);
+  color: var(--header-text);
   background: var(--header-bg);
   border-bottom: 1px solid var(--header-border);
   backdrop-filter: blur(10px);
@@ -172,7 +172,7 @@ a {
 }
 
 .app-header__nav a {
-  color: color-mix(in srgb, var(--text-inverse) 78%, transparent);
+  color: color-mix(in srgb, var(--header-text) 78%, transparent);
   text-decoration: none;
   font-size: 13px;
   font-weight: 550;
@@ -187,10 +187,74 @@ a {
   background: rgba(255, 255, 255, 0.12);
 }
 
+/* ============================================================================
+   The signed-in identity: the initials bubble plus `Name - Section` (the rule is
+   userIdentityLine() in AppLayout.tsx). It is used in two places - the desktop
+   page head (>=1200px) and the top bar below 1200px. The base colours suit the
+   light page surface; the top bar overrides them with its own inverse palette.
+   ============================================================================ */
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.user-chip__avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.user-chip__who {
+  min-width: 0;
+}
+
+.user-chip__who strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.user-chip__who span {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--text-muted);
+}
+
 .app-header__user {
-  color: color-mix(in srgb, var(--text-inverse) 70%, transparent);
+  gap: 8px;
+  color: var(--header-text);
   font-size: 12px;
   padding: 0 4px;
+}
+
+/* The top bar is dark in every theme, so the chip wears the header palette. */
+.app-header__user .user-chip__avatar {
+  width: 28px;
+  height: 28px;
+  background: color-mix(in srgb, var(--header-text) 22%, transparent);
+  color: var(--header-text);
+  font-size: 11px;
+}
+
+.app-header__user .user-chip__who strong {
+  color: var(--header-text);
+}
+
+.app-header__user .user-chip__who span {
+  color: color-mix(in srgb, var(--header-text) 72%, transparent);
 }
 
 .app-header__actions {
@@ -437,7 +501,7 @@ a {
 .login-page__visual {
   position: relative;
   padding: 48px;
-  color: var(--text-inverse);
+  color: var(--header-text);
   background: var(--header-bg);
   overflow: hidden;
   display: flex;
@@ -991,10 +1055,9 @@ a {
     min-width: 0;
   }
 
+  /* The pill itself. The layout and the type come from the shared .user-chip
+     classes, which the top bar below 1200px reuses with its own palette. */
   .page-head__user {
-    display: flex;
-    align-items: center;
-    gap: 10px;
     max-width: 320px;
     padding: 6px 14px 6px 7px;
     border: 1px solid var(--border-light);
@@ -1002,36 +1065,10 @@ a {
     background: var(--surface-glass);
   }
 
-  .page-head__avatar {
+  .page-head__user .user-chip__avatar {
     width: 34px;
     height: 34px;
-    flex-shrink: 0;
-    border-radius: 999px;
-    display: grid;
-    place-items: center;
-    background: var(--primary-soft);
-    color: var(--primary-ink);
     font-size: 12px;
-    font-weight: 700;
-  }
-
-  .page-head__who {
-    min-width: 0;
-  }
-
-  .page-head__who strong {
-    display: block;
-    font-size: 13px;
-    font-weight: 700;
-    line-height: 1.25;
-    color: var(--text);
-  }
-
-  .page-head__who span {
-    display: block;
-    font-size: 11.5px;
-    line-height: 1.3;
-    color: var(--text-muted);
   }
 }
 
