@@ -95,10 +95,11 @@ grouping keys for every report. A later master-data change must NOT move approve
   a supervisor belongs to one department, so the Project alone decides, and the section of the
   work is read from the chosen Job Order. The list displays
   as `Job_Order-Job_Description` (for example `1900000107-Pipe Spool Installation`),
-  and the Timesheet Entry picker caps the option text at 34 characters (Job Order number
-  included) because a native `<select>` widens its list to the longest option; a real
-  77-character description pushed the list past the row. The Job Order master keeps the
-  full `Job_Description`, and the bulk bar shows it in the read-only Job Order Name field.
+  and every Job Order dropdown (Timesheet Entry and My Hours) caps the option text at 34
+  characters (Job Order number included) because a native `<select>` widens both its box and its
+  list to the longest option; a real 77-character description pushed the Job Order column, and the
+  Assign column after it, out of the Timesheet Entry row. The Job Order master keeps the full
+  `Job_Description`, and the Timesheet bulk bar shows it in the read-only Job Order Name field.
 - A standing / Non-Project Job Order (`section_id IS NULL`) is included for any section of
   the department. A project Job Order is included only when its `section_id` matches.
 - Assignability also requires `status = 'active'` on the Job Order, on the Project, and on

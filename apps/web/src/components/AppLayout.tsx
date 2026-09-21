@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import type { AuthCapabilities } from "../api/client";
+import type { AuthCapabilities, AuthUser } from "../api/client";
 import { useTheme } from "../theme/ThemeContext";
 import { ThemePanel } from "./ThemePanel";
 
@@ -128,6 +128,23 @@ const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string;
   { prefix: "/account/password", lede: "Change the password you sign in with." },
 ];
 
+/**
+ * The identity the desktop page head shows: `Name - Section` (an employee's or a
+ * supervisor's own Section wins because it is the narrowest unit), else
+ * `Name - Department`, else `Name - Role` for an office account that has neither.
+ * The role stays visible as the muted second line of the same block.
+ */
+function userIdentityLine(user: AuthUser | null, roleDisplay: string) {
+  if (!user) return "";
+  const unit = user.section?.name || user.scopeSection?.name || user.department?.name || roleDisplay;
+  return `${user.name} - ${unit}`;
+}
+
+/** Initials for the identity bubble: the first two characters of the name. */
+function userInitials(user: AuthUser | null) {
+  return (user?.name || "?").trim().slice(0, 2).toUpperCase();
+}
+
 function pageMetaFor(pathname: string) {
   return PAGE_META.find((entry) => pathname.startsWith(entry.prefix));
 }
@@ -248,13 +265,6 @@ export function AppLayout() {
           })}
         </nav>
         <div className="app-rail__foot">
-          <div className="app-rail__avatar" aria-hidden>
-            {(user?.name || "?").trim().slice(0, 2).toUpperCase()}
-          </div>
-          <div className="app-rail__who">
-            <strong>{user?.name}</strong>
-            <span>{roleDisplay}</span>
-          </div>
           <button
             type="button"
             className="app-rail__iconbtn"
@@ -403,12 +413,26 @@ export function AppLayout() {
             <h1 className="page-head__title">{titleForPath(location.pathname, user?.role)}</h1>
             {meta && <p className="page-head__lede">{meta.lede}</p>}
           </div>
-          {meta?.action && (
-            <Link className="page-head__action" to={meta.action.to}>
-              <span className="page-head__action-icon"><RailIcon name={meta.action.icon} /></span>
-              <span>{meta.action.label}</span>
-            </Link>
-          )}
+          <div className="page-head__aside">
+            {/* The signed-in identity. It lives here, not in the rail footer: the
+                rail is an overlay that auto-hides, so the header is the only place
+                that is on screen at every desktop width. */}
+            {user && (
+              <div className="page-head__user">
+                <span className="page-head__avatar" aria-hidden>{userInitials(user)}</span>
+                <span className="page-head__who">
+                  <strong>{userIdentityLine(user, roleDisplay ?? "")}</strong>
+                  <span>{roleDisplay}</span>
+                </span>
+              </div>
+            )}
+            {meta?.action && (
+              <Link className="page-head__action" to={meta.action.to}>
+                <span className="page-head__action-icon"><RailIcon name={meta.action.icon} /></span>
+                <span>{meta.action.label}</span>
+              </Link>
+            )}
+          </div>
         </div>
         <Outlet />
       </main>

@@ -881,41 +881,8 @@ a {
     border-top: 1px solid var(--rail-border);
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
-  }
-
-  .app-rail__avatar {
-    width: 34px;
-    height: 34px;
-    flex-shrink: 0;
-    border-radius: 999px;
-    display: grid;
-    place-items: center;
-    background: var(--rail-active);
-    color: var(--rail-text);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .app-rail__who {
-    min-width: 0;
-    flex: 1;
-  }
-
-  .app-rail__who strong {
-    display: block;
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--rail-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .app-rail__who span {
-    display: block;
-    font-size: 11.5px;
-    color: var(--rail-muted);
   }
 
   .app-rail__iconbtn {
@@ -1010,6 +977,61 @@ a {
   .page-head__action-icon {
     display: grid;
     place-items: center;
+  }
+
+  /* The page-head right cluster: the signed-in identity and, on some pages, the
+     page action. The identity moved here from the rail footer, because the rail
+     auto-hides and the header is the only always-on-screen place for it. */
+  .page-head__aside {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .page-head__user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 320px;
+    padding: 6px 14px 6px 7px;
+    border: 1px solid var(--border-light);
+    border-radius: 999px;
+    background: var(--surface-glass);
+  }
+
+  .page-head__avatar {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background: var(--primary-soft);
+    color: var(--primary-ink);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .page-head__who {
+    min-width: 0;
+  }
+
+  .page-head__who strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--text);
+  }
+
+  .page-head__who span {
+    display: block;
+    font-size: 11.5px;
+    line-height: 1.3;
+    color: var(--text-muted);
   }
 }
 

@@ -4,6 +4,7 @@ import { SHIFT_LABELS, SHIFT_SLOTS, type ShiftSlot } from "@workforce/shared";
 import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { FilterBar, useWorkContext } from "../hooks/useWorkContext";
+import { limitJobOrderOptionText } from "../utils/jobOrderLabel";
 import "../styles/timesheet.css";
 import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
 
@@ -169,23 +170,8 @@ function jobOrderPairKey(projectId: number | "", _sectionId: number | "" = "") {
   return projectId !== "" ? String(projectId) : "";
 }
 
-/**
- * Longest Job Order text the picker may show, Job Order number included. A native
- * <select> widens its popup to the longest option, and the real descriptions here
- * reach 77 characters (`M4116-Welding of anchor loose stud welding in conjunction
- * with anchor ranging`), which pushed the open list past the row and over the
- * neighbouring columns. The full Job_Description stays in the Job Order master and
- * in the bulk bar's read-only Job Order Name field.
- */
-const JOB_ORDER_OPTION_MAX_CHARS = 34;
-
-/** Cut display text to `JOB_ORDER_OPTION_MAX_CHARS`; a trailing space is dropped. */
-function limitJobOrderOptionText(text: string) {
-  if (text.length <= JOB_ORDER_OPTION_MAX_CHARS) return text;
-  return text.slice(0, JOB_ORDER_OPTION_MAX_CHARS).replace(/\s+$/, "");
-}
-
-/** Option text for a Job Order: `Job_Order-Job_Description`, at most 34 characters. */
+/** Option text for a Job Order: `Job_Order-Job_Description`, at most 34 characters
+ *  (`limitJobOrderOptionText`, see utils/jobOrderLabel.ts). */
 function jobOrderOptionLabel(j: JobOrderOption) {
   return limitJobOrderOptionText(j.label || `${j.code}-${j.name}`);
 }

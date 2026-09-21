@@ -504,3 +504,40 @@ the non-project N slot), `themes/desktop-nocturne-master-data.png`,
 `--project-a … --project-f` are still defined only in Harbor and Nocturne; Atlas, Daybreak and
 Forge inherit Harbor's project palette. Giving each theme its own project palette is a design
 decision, not a defect, so it is left for a follow-up.
+
+---
+
+## 15. Owner-requested screen fixes (done, 2026-09-21)
+
+Two rounds of small, owner-reported defects. Both are display-only: no API route, request body,
+capability, stored value or database row changed.
+
+### 15.1 The Select Team filter row, and the Job Order option cap (`da191a1`)
+
+| Defect (as reported) | Cause | Fix |
+|---|---|---|
+| On Select Team the Search label and box sat above the Date / Department / Section line | `.filter-row` aligns its fields with `align-items: flex-end`, and `.search-input` brings a `margin-bottom: 12px` from its toolbar use, which lifted the whole Search field 12px | `.filter-row .search-input { margin-bottom: 0 }` — scoped, so page toolbars keep their margin. A native date input is also 2px taller than a select, which lifted the Date label; pinned to 40px inside `@media (min-width: 768px)` so the phone's 16px touch font is untouched |
+| The Timesheet Entry Job Order list ran past the row | A native `<select>` sizes both its box and its popup to the LONGEST option; `M4116-Welding of anchor loose stud welding in conjunction with anchor ranging` is 77 characters, which made the column 563px wide and pushed ASSIGN out of the row | The option text is capped at 34 characters, Job Order number included (`utils/jobOrderLabel.ts`), for the per-row picker, the bulk picker and a frozen booking snapshot. The option VALUE is still the Job Order id |
+
+Measured at 1817 / 1900 / 1440 / 1280 / 1024 px: the four filter fields share label top, control top
+and control bottom; the Job Order column is 286px and nothing overflows. Playwright 28 passed / 2
+failed, the 2 being the pre-existing `EC1001` smoke seed-data failures (the same 2 fail on the
+unmodified tree, with the same errors).
+
+### 15.2 The identity moved to the page head, and the My Hours picker cap (2026-09-21)
+
+The owner asked for the signed-in name out of the left panel and into the header, joined to the
+Department or Section by a hyphen — and for the My Hours Job Order picker to get the same 34-character
+cap as the Timesheet screen.
+
+* `AppLayout.tsx`: the rail footer keeps only the pin / themes / logout buttons. The page head carries a
+  chip with the initials bubble and `Name - Section` (an employee's or supervisor's own Section wins),
+  else `Name - Department`, else `Name - Role` for an office account that has neither; the role stays as
+  the muted second line. `userIdentityLine()` and `userInitials()` hold the rule in one place.
+* `utils/jobOrderLabel.ts` is now shared, so `TimesheetPage` and `AllocationsPage` (My Hours, and the
+  Manhour Allocation view for HOD/PM) both show at most 34 characters in the Job Order dropdown.
+
+Measured at 1817 / 1440 / 1280 px: chip on the same row as the Project Master Data CTA, rail footer
+renders no text, one visible `<h1>`, page overflow 0, no page errors. At 390 / 768 px: `.page-head` is
+`display:none`, so the chip is not visible and the phone/tablet top bar is unchanged; one `<h1>`, no
+overflow. My Hours: longest option 34 characters (271px), picker 308px, no overflow.

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
+import { limitJobOrderOptionText } from "../utils/jobOrderLabel";
 import "../styles/allocations.css";
 import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
 
@@ -405,7 +406,7 @@ export function AllocationsPage() {
             >
               <option value="">{jobOrdersReady ? "None / not applicable" : "Select a section and project first"}</option>
               {jobOrders.map((order) => (
-                <option key={order.id} value={order.id}>{order.label}</option>
+                <option key={order.id} value={order.id}>{limitJobOrderOptionText(order.label)}</option>
               ))}
             </select>
           </label>
