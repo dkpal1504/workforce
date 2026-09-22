@@ -12,7 +12,7 @@ numbers in one place - `infra/docker/.env.production` - if they clash too.
 
 | Host | What runs there | Port |
 |---|---|---|
-| `10.5.1.178` (Linux) | PostgreSQL 15+ | **5439** (not 5432) |
+| `10.5.1.178` (Linux) | PostgreSQL 15+ (**already running** on 5432, TLS 1.3, password auth) | **5432** - reuse it; 5439 only for a second cluster (0.1b) |
 | `10.5.1.193` (Windows, Docker Desktop) | `web` (Nginx + SPA) | **8099** published -> UI at `http://10.5.1.193:8099` |
 | `10.5.1.193` (Docker network only) | `api` (Node) | 4000, NOT published; Nginx proxies `/api/` to it |
 | `10.5.1.193` (Docker network only) | `migrate` (Prisma, one-shot) | - |
@@ -24,14 +24,19 @@ the only reachable endpoint is the web port on `10.5.1.193`.
 ### 0.1 Database host - 10.5.1.178 (Linux)
 
 ```bash
-# --- 1. PostgreSQL listens on 5439 and accepts the Docker host ----------------
+# --- 1. PostgreSQL listens for the Docker host -------------------------------
+# A PostgreSQL 15+ server ALREADY answers on 10.5.1.178:5432 (verified 2026-09-22:
+# TCP open, TLS 1.3 with a self-signed CN=it-Precision-3660 certificate, password
+# authentication required). Reuse it and skip the two edits below - they are only for
+# the "second cluster on this host" case described in 0.1b, where the new cluster has
+# to listen somewhere other than 5432.
 # Find the two files that matter (Debian/Ubuntu: /etc/postgresql/15/main/...;
 # RHEL/SLES: /var/lib/pgsql/15/data/...).
 sudo -u postgres psql -tAc "SHOW config_file; SHOW hba_file;"
 
 # Edit postgresql.conf: uncomment/append these two lines.
 listen_addresses = '*'
-port = 5439
+port = 5439          # ONLY for the second-cluster case; a reused 5432 needs no edit
 
 # Append ONE line to pg_hba.conf, scoped to the Docker host only. Never use a
 # wider range and never 'trust': the app password must be checked.
@@ -44,9 +49,9 @@ sudo systemctl enable postgresql
 ```bash
 # --- 2. Open the firewall only for the Docker host ---------------------------
 # ufw:
-sudo ufw allow from 10.5.1.193 to any port 5439 proto tcp
+sudo ufw allow from 10.5.1.193 to any port 5432 proto tcp     # 5439 for a second cluster
 # firewalld instead:
-sudo firewall-cmd --permanent   --add-rich-rule='rule family=ipv4 source address=10.5.1.193/32 port port=5439 protocol=tcp accept'
+sudo firewall-cmd --permanent   --add-rich-rule='rule family=ipv4 source address=10.5.1.193/32 port port=5432 protocol=tcp accept'
 sudo firewall-cmd --reload
 ```
 
@@ -91,6 +96,21 @@ Whichever row applies, three things stay separate:
 So: reuse 5432 when the existing instance can host the database, and use 5439 only when a second
 cluster has to live on a host that already serves 5432.
 
+**Resolved for this deployment (probed 2026-09-22 from the yard network):**
+
+| Probe | Result | Meaning |
+|---|---|---|
+| `10.5.1.178:5432` | open, PostgreSQL, TLS 1.3 (self-signed `CN = it-Precision-3660`), password auth | **the reuse row applies**: use 5432 with our own role + database |
+| `10.5.1.178:5439` | connection refused | free, but not needed |
+| `10.5.1.193:8080` | open | the other application's web port - which is why this one takes 8099 |
+| `10.5.1.193:8099` | refused (free) | our web port is available |
+| `10.5.1.193:5432` | open, PostgreSQL, **no `pg_hba` entry for other hosts** | a second, local PostgreSQL on the Docker host itself; it accepts only its own local clients, so it is irrelevant to our containers (and our stack publishes no database port) |
+
+Consequence: `DATABASE_URL=...@10.5.1.178:5432/workforce?...&sslmode=require`, one `pg_hba` line for
+`workforce_app` from `10.5.1.193/32`, and no `postgresql.conf` or firewall change on the database host
+if it already accepts 5432 from the Docker host. Confirm that last point with the
+`Test-NetConnection` command in 0.4b before the first deploy.
+
 ### 0.2 TLS between the two hosts (decide once)
 
 The connection string carries `sslmode`. Pick one and put it in
@@ -99,7 +119,7 @@ The connection string carries `sslmode`. Pick one and put it in
 | Situation | `sslmode` | Comment |
 |---|---|---|
 | PostgreSQL has no TLS configured (common on a fresh install) | `prefer` | Encrypts when the server offers it, falls back to plaintext. Acceptable inside this LAN; the password still travels inside the tunnel or the LAN. |
-| TLS enabled with a self-signed certificate | `require` | Encrypts. Does not verify the host name/certificate (so it cannot detect a substituted server). |
+| TLS enabled with a self-signed certificate - **this server** (10.5.1.178 offers TLS 1.3, `CN = it-Precision-3660`, verified 2026-09-22) | **`require`** | Encrypts. Does not verify the host name/certificate (so it cannot detect a substituted server). This is the recommended setting here. |
 | TLS enabled with your own CA | `verify-full` | Encrypts and verifies. The CA file must be mounted into the containers, e.g. add `- ./certs/ca.crt:/etc/ssl/certs/pg-ca.crt:ro` and `&sslrootcert=/etc/ssl/certs/pg-ca.crt` to the URL. |
 
 The API refuses to start against PostgreSQL when `DATABASE_URL` is a `file:` (SQLite)
@@ -121,17 +141,29 @@ git checkout main          # or the release tag/branch you deploy from
 ```powershell
 # 2. PRODUCTION SCHEMA. The repository's schema.prisma is the SQLite variant used for
 #    local development, and the image build FAILS on purpose if it is not swapped.
-Copy-Item appspi\prisma\schema.postgresql.prisma appspi\prisma\schema.prisma -Force
+Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+
+# 2b. RELEASE STEP: remove the local dev bootstrap password. Without it the production
+#     build REFUSES to run ("[build-gate] Refusing to build: the local dev bootstrap
+#     password is still enabled"), and even a hand-built image would refuse to boot
+#     against PostgreSQL. It is a source literal by design, so it is removed on the
+#     deployment checkout rather than shipped in the repository.
+node -e "const fs=require('fs');const f='apps/api/src/services/defaultLoginCredentials.ts';let s=fs.readFileSync(f,'utf8');s=s.replace(/DEV_BOOTSTRAP_PASSWORD: string \| null = \"[^\"]*\";/, 'DEV_BOOTSTRAP_PASSWORD: string | null = null;');fs.writeFileSync(f,s);console.log('dev bootstrap password removed:', /null = null/.test(s));"
 
 # 3. Create the environment file and edit it (see section 2 for every value).
 Copy-Item infra\docker\.env.production.example infra\docker\.env.production
 notepad infra\docker\.env.production
 ```
 
+After step 2b, newly created accounts get a **random** one-time credential instead of the shared dev
+password: configure `SMTP_*` and `CREDENTIAL_DELIVERY_ENABLED=true` (section 2), or the new accounts
+stay unusable until someone sets a password by hand. Local development keeps the literal; only the
+deployment checkout is patched.
+
 Minimum edits in `infra\docker\.env.production`:
 
 ```
-DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5439/workforce?schema=public&sslmode=prefer
+DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5432/workforce?schema=public&sslmode=require
 JWT_SECRET=<48 random bytes, one line, no quotes>
 CORS_ORIGINS=http://10.5.1.193:8099
 WEB_PORT=8099
@@ -163,22 +195,42 @@ the end-to-end proof of the connection. If it fails, read
 `docker compose ... logs migrate api` - section 0.4 lists the failures that actually
 happen here.
 
+### 0.3b The API refuses to start in production unless...
+
+Every row below is a deliberate gate. All were verified on 2026-09-22 by running the built API
+against a real PostgreSQL with the wrong value in place; each fails loudly at boot, which is what
+you want, but a first deploy hits all of them:
+
+| Gate | What it demands | Exact message |
+|---|---|---|
+| bootstrap password | `DEV_BOOTSTRAP_PASSWORD` must be `null` when `DATABASE_URL` is not `file:` | `The local dev bootstrap password is enabled but DATABASE_URL is not a file: SQLite database. Set DEV_BOOTSTRAP_PASSWORD to null in services/defaultLoginCredentials.ts before deploying.` |
+| database | a PostgreSQL URL, never SQLite | `SQLite is not permitted in production. A PostgreSQL DATABASE_URL is required.` |
+| secret | a non-placeholder `JWT_SECRET` of at least 32 characters | `JWT_SECRET must be a non-placeholder secret of at least 32 characters in production.` |
+| CORS | exact origins, no `*` | `CORS_ORIGINS must contain exact, valid origins in production.` |
+| throttle | the login rate limit on | `AUTH_RATE_LIMIT_ENABLED must be true in production.` |
+
+The image build has its own gate for the first row (`[build-gate] Refusing to build: the local dev
+bootstrap password is still enabled.`), so a build that succeeds will not be undone at boot.
+
 ### 0.4 The five failures that happen in this topology
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ERROR: apps/api/prisma/schema.prisma declares the 'sqlite' datasource provider` during `build` | step 0.3.2 was skipped | run the `Copy-Item`, then build again |
 | `no pg_hba.conf entry for host "10.5.1.193"` | the `host workforce workforce_app 10.5.1.193/32 scram-sha-256` line is missing (or the Docker host's outbound IP differs) | add the line for the real source address, `sudo systemctl reload postgresql` |
-| `connect ECONNREFUSED 10.5.1.178:5439` | `listen_addresses` still `localhost`, PostgreSQL not restarted, or the firewall blocks 5439 | the two settings in 0.1.1 and the rule in 0.1.2 |
+| `connect ECONNREFUSED 10.5.1.178:5432` | `listen_addresses` still `localhost`, PostgreSQL not restarted, or the firewall blocks 5432 | the two settings in 0.1.1 and the rule in 0.1.2 (for a reused 5432: the host is already listening, so check the firewall and `pg_hba` instead) |
 | `server does not support SSL connections` | `sslmode=require` against a server without TLS | use `sslmode=prefer` (table in 0.2) or enable TLS on the server |
 | `password authentication failed` | the password in the URL is not URL encoded, or it is not the one set in 0.1.3 | re-encode it; re-run `00-create-database.sql` with the right password |
 | Migration stops on `column ... already exists` | someone applied `01-schema.sql` by hand first | drop and recreate the empty database, then let `migrate` run (never edit an applied migration) |
+| `Login failed for user 'it'` (or a password that looks cut short) | an unquoted value in the env file contains `#`, which dotenv treats as the start of a comment | quote it: `BADGEVIEW_DB_PASSWORD="Swan!@#..."`. The same password inside `DATABASE_URL` must instead be percent-encoded |
+| `null value in column "updated_at"` while seeding rows by hand | Prisma's `@updatedAt` is applied by the ORM only, so those columns have no database default | supply `now()` for both `created_at` and `updated_at` (the first-Admin `INSERT` in 1b does) |
+| `/attendance-hours/config` answers 500 and every refresh 502 with `ATTENDANCE_HOURS_FIXTURE is not allowed when NODE_ENV=production.` | the dev test fixture is set in a production env file | remove `ATTENDANCE_HOURS_FIXTURE` from `.env.production`; it is refused on purpose so a stray variable cannot fake attendance data |
 
 Check the network path from the Docker host before blaming the app (PowerShell):
 
 ```powershell
-Test-NetConnection 10.5.1.178 -Port 5439
-docker run --rm -e PGPASSWORD=THE_REAL_PASSWORD postgres:15-alpine psql "postgresql://workforce_app@10.5.1.178:5439/workforce?sslmode=prefer" -tAc "select version(), current_database();"
+Test-NetConnection 10.5.1.178 -Port 5432
+docker run --rm -e PGPASSWORD=THE_REAL_PASSWORD postgres:15-alpine psql "postgresql://workforce_app@10.5.1.178:5432/workforce?sslmode=require" -tAc "select version(), current_database();"
 ```
 
 The second command runs from a container on the same bridge network as the app, so it
@@ -215,6 +267,30 @@ The test seed used for this was appended to a temporary copy of the chain and is
 migration. To repeat the check, apply `apps/api/prisma/migrations/*/migration.sql` in filename order
 to a scratch database with `psql -v ON_ERROR_STOP=1`.
 
+**3. The production path was exercised against a real PostgreSQL 16 and the real
+LabourWorks view (2026-09-22).** A throwaway cluster plus a clean checkout of `main`, following the
+steps in 0.1-0.3:
+
+- `prisma migrate deploy` applied **all 10 migrations** to the empty database and recorded them in
+  `_prisma_migrations` (32 tables incl. that table), with `in_out_hours` / `in_out_source` /
+  `in_out_checked_at` / `in_out_attempts` in the intended shape.
+- The built API (`node dist/index.js`, `NODE_ENV=production`) booted against PostgreSQL, answered
+  `/api/health/ready` with `{"ok":true}`, and an ADMIN logged in and reached
+  `/api/attendance-hours/*`.
+- The clocked-hours refresh read the **live view** (no fixture) and wrote `8.55` with
+  `in_out_source = 'LABOURWORKS'` for the submitted day - the same figure a direct
+  `SUM(CAST([ManHours] AS float))` returns for that `IDNo` and date. `in_out_checked_at` and
+  `in_out_attempts` were stamped, and the day left the pending list.
+- The regularization path was replayed: forcing the stored value to `0` put the day back in
+  `/pending` as *checked and still empty*; the weekly sweep planned one write after fetching
+  **one date**, then corrected it back to `8.55`.
+- A manual value (`7.25`, `MANUAL`) survived a later refresh untouched, and clearing it returned the
+  day to the pending list - all on PostgreSQL.
+- Every boot gate in 0.3b was then triggered on purpose, each with the message quoted there.
+- Traps found and now documented: the dev bootstrap password blocks the build AND the boot; an
+  unquoted `#` in an env value truncates the password (dotenv comment rule); hand-seeded rows need
+  `updated_at`; the attendance fixture is refused in production.
+
 **2. Every production setting the code reads is present in
 `infra/docker/.env.production.example`.** All 36 `process.env` names the API reads (and the two the
 compose file interpolates, `WEB_PORT` and `IMAGE_TAG`) are listed there with a default or a
@@ -248,8 +324,8 @@ ATTENDANCE_HOURS_CRON=0 9,21 * * *
 
 ## 1. Prepare PostgreSQL on the database server
 
-Install PostgreSQL 15 or newer and restrict its port (5439 in this deployment - see
-section 0) in the firewall to the Docker host. As the PostgreSQL administrator, create
+Install PostgreSQL 15 or newer (this deployment reuses the instance already running on
+`10.5.1.178:5432` - see sections 0 and 0.1b) and restrict its port to the Docker host. As the PostgreSQL administrator, create
 the login and database:
 
 ```bash
@@ -270,11 +346,11 @@ container in production**: `infra/docker/compose.production.yml` starts `migrate
 `api` and `web` only. (`infra/docker/docker-compose.yml`, which does run a local
 PostgreSQL container, is the **development** stack and is not used in production.)
 
-For a database server at `10.5.1.178` listening on 5439, `infra/docker/.env.production`
-carries (section 0.2 explains the `sslmode` choice):
+For the database server at `10.5.1.178` (port 5432), `infra/docker/.env.production` carries
+(section 0.2 explains the `sslmode` choice):
 
 ```
-DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5439/workforce?schema=public&sslmode=prefer
+DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5432/workforce?schema=public&sslmode=require
 ```
 
 - URL encode the password (`@` becomes `%40`). Use `sslmode=verify-full` with your
