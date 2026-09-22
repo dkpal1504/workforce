@@ -258,6 +258,9 @@ CREATE TABLE "timesheet_days" (
     "status" TEXT NOT NULL DEFAULT 'DRAFT',
     "remarks" TEXT,
     "in_out_hours" DOUBLE PRECISION,
+    "in_out_source" TEXT,
+    "in_out_checked_at" TIMESTAMP(3),
+    "in_out_attempts" INTEGER NOT NULL DEFAULT 0,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 

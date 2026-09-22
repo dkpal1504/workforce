@@ -274,6 +274,9 @@ export type SheetForRefresh = {
   /** Hours this sheet booked (shift slot = 2h, legacy hour slot = 1h, plus OT). */
   bookedHours: number;
   previousInOutHours: number | null;
+  /** null | LABOURWORKS | MANUAL. A MANUAL value is an Admin decision: never overwritten. */
+  previousSource: string | null;
+  previousAttempts: number;
 };
 
 export type PlannedSheet = SheetForRefresh & {
@@ -282,40 +285,141 @@ export type PlannedSheet = SheetForRefresh & {
   difference: number | null;
   /** Source records summed into `clockedHours`; 0 when the source had none. */
   sourceRecords: number;
-  outcome: "matched" | "not-in-source" | "no-hours-in-source";
+  /** Calendar days between the work date and the run, for the pending list. */
+  ageDays: number;
+  outcome: "matched" | "not-in-source" | "no-hours-in-source" | "manual";
+  /** True when this run would (or did) write the figure. */
+  wouldChange: boolean;
+  /** Why a difference was NOT written: a manual value, or the overwrite policy. */
+  blockedReason: "manual" | "policy" | null;
+  /** Still nothing usable after this run: absent, no hours, or a clocked 0. */
+  pending: boolean;
 };
+
+/**
+ * How a difference between the stored figure and the source is settled.
+ *
+ *  - `any`     the source is the truth: a later correction wins, up or down. This is
+ *              the default, and it is what makes a regularized 0.00 become 8.00.
+ *  - `improve` only fill a gap (NULL / 0) or raise a figure; never lower a non-zero
+ *              value without a human decision.
+ *
+ * Absence from the source is NEVER a write in either mode: an empty answer must not
+ * wipe a figure an earlier run fetched.
+ */
+export type OverwritePolicy = "any" | "improve";
+
+/** Whether this reading should be written, and why not when it should not be. */
+export function decideWrite(
+  row: Pick<PlannedSheet, "outcome" | "clockedHours" | "previousInOutHours" | "previousSource">,
+  policy: OverwritePolicy
+): { write: boolean; reason: "manual" | "policy" | null } {
+  if (row.outcome !== "matched" || row.clockedHours == null) return { write: false, reason: null };
+  if (row.previousSource === "MANUAL") return { write: false, reason: "manual" };
+  if (row.clockedHours === row.previousInOutHours) return { write: false, reason: null };
+  if (
+    policy === "improve" &&
+    row.previousInOutHours != null &&
+    row.previousInOutHours !== 0 &&
+    row.clockedHours < row.previousInOutHours
+  ) {
+    return { write: false, reason: "policy" };
+  }
+  return { write: true, reason: null };
+}
+
+/** Calendar days from an ISO work date to the run date (>= 0). */
+function ageInDays(workDate: string, today: string): number {
+  const from = new Date(`${workDate}T00:00:00.000Z`).getTime();
+  const to = new Date(`${today}T00:00:00.000Z`).getTime();
+  return Math.max(0, Math.round((to - from) / 86400000));
+}
 
 /**
  * Match the sheets to the clocked readings.
  *
  * Pure on purpose: every rule the Admin relies on ("this is what will change",
- * "this employee has no attendance row") is decided here and unit-tested without a
- * database or a SQL Server.
+ * "this is still pending", "this employee has no attendance row") is decided here and
+ * unit-tested without a database or a SQL Server.
  *
  * A sheet whose employee is absent from the source is left UNTOUCHED, not cleared: an
  * absent row means "the view has nothing to say", which must not wipe a value an
- * earlier run already fetched.
+ * earlier run already fetched. Such a sheet stays PENDING, which is the signal that
+ * regularization is still outstanding.
  */
 export function planInOutHoursUpdate(
   sheets: SheetForRefresh[],
-  clockedByDate: Map<string, ClockedHoursForDate>
+  clockedByDate: Map<string, ClockedHoursForDate>,
+  options: { overwritePolicy?: OverwritePolicy; today?: string } = {}
 ): PlannedSheet[] {
+  const policy = options.overwritePolicy ?? "any";
+  const today = options.today ?? new Date().toISOString().slice(0, 10);
+
   return sheets.map((sheet) => {
+    const base = { ...sheet, ageDays: ageInDays(sheet.workDate, today) };
+
+    // An Admin's manual figure is not re-derived: the source is still reported so the
+    // screen can show a disagreement, but nothing is written over the decision.
+    if (sheet.previousSource === "MANUAL") {
+      const reading = clockedByDate.get(sheet.workDate)?.get(sheet.ecNo.trim().toUpperCase());
+      const clocked = reading?.manHours ?? null;
+      const rounded = clocked == null ? null : Math.round((clocked - sheet.bookedHours) * 100) / 100;
+      return {
+        ...base,
+        clockedHours: clocked,
+        difference: rounded === 0 ? 0 : rounded,
+        sourceRecords: reading?.records ?? 0,
+        outcome: "manual" as const,
+        wouldChange: false,
+        blockedReason: "manual" as const,
+        pending: false,
+      };
+    }
+
     const reading = clockedByDate.get(sheet.workDate)?.get(sheet.ecNo.trim().toUpperCase());
     if (!reading) {
-      return { ...sheet, clockedHours: null, difference: null, sourceRecords: 0, outcome: "not-in-source" as const };
+      return {
+        ...base,
+        clockedHours: null,
+        difference: null,
+        sourceRecords: 0,
+        outcome: "not-in-source" as const,
+        wouldChange: false,
+        blockedReason: null,
+        pending: true,
+      };
     }
     if (reading.manHours == null) {
-      return { ...sheet, clockedHours: null, difference: null, sourceRecords: reading.records, outcome: "no-hours-in-source" as const };
+      return {
+        ...base,
+        clockedHours: null,
+        difference: null,
+        sourceRecords: reading.records,
+        outcome: "no-hours-in-source" as const,
+        wouldChange: false,
+        blockedReason: null,
+        pending: true,
+      };
     }
     // Round to 2dp, and normalise -0 to 0 so the UI never prints "-0".
     const rounded = Math.round((reading.manHours - sheet.bookedHours) * 100) / 100;
-    return {
-      ...sheet,
+    const row: PlannedSheet = {
+      ...base,
       clockedHours: reading.manHours,
       difference: rounded === 0 ? 0 : rounded,
       sourceRecords: reading.records,
       outcome: "matched" as const,
+      wouldChange: false,
+      blockedReason: null,
+      pending: false,
+    };
+    const decision = decideWrite(row, policy);
+    return {
+      ...row,
+      wouldChange: decision.write,
+      blockedReason: decision.reason,
+      // A source figure of 0 is still outstanding regularization, not a result.
+      pending: reading.manHours === 0,
     };
   });
 }
@@ -344,6 +448,14 @@ export type RefreshOptions = {
   includeDraft?: boolean;
   /** Report what would change without writing anything. */
   dryRun?: boolean;
+  /** Only look at sheets that still have nothing usable (the sweep). */
+  onlyPending?: boolean;
+  /** Write any difference (`any`, default) or only fill a gap / raise a figure. */
+  overwritePolicy?: OverwritePolicy;
+  /** Days older than this are out of scope, so a closed period stops moving. */
+  maxAgeDays?: number;
+  /** Deliberately re-check days older than the cut-off. */
+  ignoreAgeCutoff?: boolean;
   /** Test seam: replace the LabourWorks read. */
   fetchForDate?: (date: string) => Promise<ClockedHoursForDate>;
 };
@@ -353,19 +465,28 @@ export type RefreshResult = {
   dateTo: string;
   dryRun: boolean;
   includeDraft: boolean;
-  /** Sheets considered (every non-draft sheet in range, one per supervisor-day). */
+  onlyPending: boolean;
+  overwritePolicy: OverwritePolicy;
+  maxAgeDays: number;
+  /** Sheets considered (every in-scope, non-draft sheet, one per supervisor-day). */
   sheets: number;
   matched: number;
   unmatched: number;
   updated: number;
   unchanged: number;
+  /** In-scope sheets this run writes nothing for: absent, no hours, or a clocked 0. */
+  pending: number;
+  /** Differences deliberately not written, with the reason. */
+  skipped: { manual: number; policy: number };
+  /** Source reads performed (one per date that had an in-scope sheet). */
+  datesFetched: number;
   /** Per-date source failures. The other dates still run. */
   errors: { date: string; message: string }[];
   rows: PlannedSheet[];
 };
 
 /** Every ISO date from `dateFrom` to `dateTo`, inclusive. */
-export function dateRange(dateFrom: string, dateTo: string, maxDays = 62): string[] {
+export function dateRange(dateFrom: string, dateTo: string, maxDays = 400): string[] {
   const start = new Date(`${dateFrom}T00:00:00.000Z`);
   const end = new Date(`${dateTo}T00:00:00.000Z`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error("dateFrom and dateTo must be ISO dates (YYYY-MM-DD).");
@@ -384,16 +505,45 @@ function dayAfter(iso: string): string {
   return new Date(new Date(`${iso}T00:00:00.000Z`).getTime() + 86400000).toISOString();
 }
 
+/** The configured policy knobs, in one place for the route, the jobs and the tests. */
+export function attendancePolicy() {
+  const overwriteRaw = envValue("ATTENDANCE_HOURS_OVERWRITE").toLowerCase();
+  const maxAge = Number(envValue("ATTENDANCE_HOURS_MAX_AGE_DAYS") || 45);
+  return {
+    overwrite: (overwriteRaw === "improve" ? "improve" : "any") as OverwritePolicy,
+    maxAgeDays: Number.isFinite(maxAge) && maxAge > 0 ? Math.min(Math.floor(maxAge), 400) : 45,
+  };
+}
+
+function cutoffIso(maxAgeDays: number, today: string): string {
+  return new Date(new Date(`${today}T00:00:00.000Z`).getTime() - maxAgeDays * 86400000).toISOString().slice(0, 10);
+}
+
 /**
- * Read LabourWorks once per date in the range and stamp `timesheet_days.in_out_hours`
- * on the matching submitted sheets.
+ * Read LabourWorks for the dates that have in-scope sheets and stamp
+ * `timesheet_days.in_out_hours` on the matching ones.
  *
- * Idempotent: a second run with the same source data changes nothing, so the 09:00
- * and 21:00 job and the Admin button can run back to back.
+ * Idempotent: a second run with the same source data writes nothing, so the 09:00 and
+ * 21:00 job, the weekly sweep and the Admin button can run back to back.
+ *
+ * BACKFILL MODEL (regularization can take days):
+ *  - A stored figure is never final. Every run RE-READS its whole window, including
+ *    days that already have a value, so a 0.00 that becomes 8.00 three days later is
+ *    corrected on the next run. Do not "optimise" this into "only fetch days that are
+ *    still empty" - that would freeze the pending days forever.
+ *  - Every consulted day records `in_out_checked_at` and bumps `in_out_attempts`, so a
+ *    day that is still 0 after N checks is visible as outstanding work.
+ *  - `maxAgeDays` closes the period: older days stop being re-checked (an Admin can
+ *    override deliberately with `ignoreAgeCutoff`).
  */
 export async function refreshInOutHours(options: RefreshOptions): Promise<RefreshResult> {
   const includeDraft = options.includeDraft === true;
   const dryRun = options.dryRun === true;
+  const onlyPending = options.onlyPending === true;
+  const policyConfig = attendancePolicy();
+  const overwritePolicy = options.overwritePolicy ?? policyConfig.overwrite;
+  const maxAgeDays = options.maxAgeDays ?? policyConfig.maxAgeDays;
+  const today = new Date().toISOString().slice(0, 10);
   const dates = dateRange(options.dateFrom, options.dateTo);
   const fetchForDate = options.fetchForDate ?? fetchClockedHoursForDate;
 
@@ -401,7 +551,24 @@ export async function refreshInOutHours(options: RefreshOptions): Promise<Refres
   const days = await prisma.timesheetDay.findMany({
     where: {
       status: { in: statuses },
-      workDate: { gte: new Date(`${dates[0]}T00:00:00.000Z`), lte: new Date(`${dates[dates.length - 1]}T23:59:59.999Z`) },
+      workDate: {
+        // The cut-off keeps a closed period from moving under the finance team's feet;
+        // the range itself comes from dateFrom/dateTo.
+        gte: new Date(`${options.ignoreAgeCutoff ? dates[0] : cutoffIso(maxAgeDays, today)}T00:00:00.000Z`),
+        lte: new Date(`${dates[dates.length - 1]}T23:59:59.999Z`),
+      },
+      // A manual figure is an Admin decision; a sweep must not even look at it.
+      // NOTE: `inOutSource: { not: "MANUAL" }` alone would also drop every row whose
+      // source is NULL (SQL three-valued logic), i.e. exactly the never-fetched days
+      // this filter exists to find. NULL must therefore be listed explicitly.
+      ...(onlyPending
+        ? {
+            AND: [
+              { OR: [{ inOutHours: null }, { inOutHours: 0 }] },
+              { OR: [{ inOutSource: null }, { inOutSource: { not: "MANUAL" } }] },
+            ],
+          }
+        : {}),
     },
     include: {
       employee: { select: { id: true, name: true, ecNo: true } },
@@ -419,33 +586,52 @@ export async function refreshInOutHours(options: RefreshOptions): Promise<Refres
     status: day.status,
     bookedHours: bookedHoursForEntries(day.entries),
     previousInOutHours: day.inOutHours,
+    previousSource: day.inOutSource,
+    previousAttempts: day.inOutAttempts,
   }));
 
+  // Only dates that actually hold an in-scope sheet are read: a 60-day sweep usually
+  // touches a handful of dates instead of 60.
+  const neededDates = [...new Set(sheets.map((sheet) => sheet.workDate))].sort();
   const clockedByDate = new Map<string, ClockedHoursForDate>();
   const errors: { date: string; message: string }[] = [];
-  for (const date of dates) {
+  const checkedDates = new Set<string>();
+  for (const date of neededDates) {
     try {
       clockedByDate.set(date, await fetchForDate(date));
+      checkedDates.add(date);
     } catch (error) {
       errors.push({ date, message: error instanceof Error ? error.message : String(error) });
     }
   }
-  const failedEveryDate = errors.length === dates.length;
 
-  const plan = planInOutHoursUpdate(sheets, clockedByDate);
-  const matched = plan.filter((row) => row.outcome === "matched" && row.clockedHours != null);
-  const changed = matched.filter((row) => row.clockedHours !== row.previousInOutHours);
+  const plan = planInOutHoursUpdate(sheets, clockedByDate, { overwritePolicy, today });
+  const consulted = plan.filter((row) => row.outcome !== "manual" && checkedDates.has(row.workDate));
+  const toWrite = consulted.filter((row) => row.wouldChange && row.clockedHours != null);
+  const consultedUnchanged = consulted.filter((row) => !toWrite.includes(row));
+  const now = new Date();
 
-  if (!dryRun && !failedEveryDate) {
-    // Group by value: one UPDATE per distinct clocked figure instead of one per sheet.
+  if (!dryRun) {
+    // One UPDATE per distinct clocked figure instead of one per sheet.
     const byValue = new Map<number, number[]>();
-    for (const row of changed) {
+    for (const row of toWrite) {
       const bucket = byValue.get(row.clockedHours as number) ?? [];
       bucket.push(row.dayId);
       byValue.set(row.clockedHours as number, bucket);
     }
     for (const [value, dayIds] of byValue) {
-      await prisma.timesheetDay.updateMany({ where: { id: { in: dayIds } }, data: { inOutHours: value } });
+      await prisma.timesheetDay.updateMany({
+        where: { id: { in: dayIds } },
+        data: { inOutHours: value, inOutSource: "LABOURWORKS", inOutCheckedAt: now, inOutAttempts: { increment: 1 } },
+      });
+    }
+    // Days that were consulted but produced no write still record the check, which is
+    // what turns "0 since 19 Sep" into visible, countable outstanding work.
+    if (consultedUnchanged.length) {
+      await prisma.timesheetDay.updateMany({
+        where: { id: { in: consultedUnchanged.map((row) => row.dayId) } },
+        data: { inOutCheckedAt: now, inOutAttempts: { increment: 1 } },
+      });
     }
   }
 
@@ -454,20 +640,139 @@ export async function refreshInOutHours(options: RefreshOptions): Promise<Refres
     dateTo: dates[dates.length - 1],
     dryRun,
     includeDraft,
+    onlyPending,
+    overwritePolicy,
+    maxAgeDays,
     sheets: sheets.length,
-    matched: matched.length,
-    unmatched: plan.filter((row) => row.outcome !== "matched").length,
-    updated: dryRun ? 0 : changed.length,
-    unchanged: matched.length - changed.length,
+    matched: plan.filter((row) => row.clockedHours != null).length,
+    unmatched: plan.filter((row) => row.outcome === "not-in-source" || row.outcome === "no-hours-in-source").length,
+    updated: dryRun ? 0 : toWrite.length,
+    unchanged: consulted.filter((row) => row.outcome === "matched" && !row.wouldChange && row.blockedReason == null).length,
+    pending: plan.filter((row) => row.pending).length,
+    skipped: {
+      manual: plan.filter((row) => row.blockedReason === "manual").length,
+      policy: plan.filter((row) => row.blockedReason === "policy").length,
+    },
+    datesFetched: checkedDates.size,
     errors,
     rows: plan,
   };
 }
 
-/** The window the scheduled job refreshes: today and the lookback days before it. */
+/** One row of the "still pending" report, straight from the database. */
+export type PendingInOutRow = {
+  dayId: number;
+  employeeId: number;
+  employeeName: string;
+  ecNo: string;
+  workDate: string;
+  status: string;
+  bookedHours: number;
+  inOutHours: number | null;
+  inOutSource: string | null;
+  inOutAttempts: number;
+  inOutCheckedAt: string | null;
+  ageDays: number;
+};
+
+/**
+ * Days that still have no usable clocked figure: absent from the source, no ManHours,
+ * or a clocked 0. Reads nothing from LabourWorks, so it is cheap enough to call on
+ * every screen load - which is the point: this is the daily "chase the yard" list.
+ *
+ * A MANUAL value is never listed.
+ */
+export async function readPendingInOutHours(options: { maxAgeDays?: number } = {}): Promise<PendingInOutRow[]> {
+  const maxAgeDays = options.maxAgeDays ?? attendancePolicy().maxAgeDays;
+  const today = new Date().toISOString().slice(0, 10);
+  const days = await prisma.timesheetDay.findMany({
+    where: {
+      status: { in: NON_DRAFT_STATUSES },
+      workDate: { gte: new Date(`${cutoffIso(maxAgeDays, today)}T00:00:00.000Z`) },
+      // NULL has to be listed explicitly: `{ not: "MANUAL" }` alone excludes it, and a
+      // never-fetched day is the most pending day there is.
+      AND: [
+        { OR: [{ inOutHours: null }, { inOutHours: 0 }] },
+        { OR: [{ inOutSource: null }, { inOutSource: { not: "MANUAL" } }] },
+      ],
+    },
+    include: {
+      employee: { select: { id: true, name: true, ecNo: true } },
+      entries: { select: { hourSlot: true, shiftSlot: true, otHours: true } },
+    },
+    orderBy: [{ workDate: "asc" }, { id: "asc" }],
+  });
+
+  return days.map((day) => ({
+    dayId: day.id,
+    employeeId: day.employeeId,
+    employeeName: day.employee.name,
+    ecNo: day.employee.ecNo,
+    workDate: day.workDate.toISOString().slice(0, 10),
+    status: day.status,
+    bookedHours: bookedHoursForEntries(day.entries),
+    inOutHours: day.inOutHours,
+    inOutSource: day.inOutSource,
+    inOutAttempts: day.inOutAttempts,
+    inOutCheckedAt: day.inOutCheckedAt ? day.inOutCheckedAt.toISOString() : null,
+    ageDays: ageInDays(day.workDate.toISOString().slice(0, 10), today),
+  }));
+}
+
+/**
+ * The weekly sweep: everything still pending inside the allowed age, oldest first.
+ * It re-checks only days with nothing usable, so it is cheap even though its window is
+ * the whole regularization horizon.
+ */
+export async function sweepPendingInOutHours(
+  options: { dryRun?: boolean; maxAgeDays?: number; fetchForDate?: (date: string) => Promise<ClockedHoursForDate> } = {}
+): Promise<RefreshResult & { pendingBefore: number }> {
+  const maxAgeDays = options.maxAgeDays ?? attendancePolicy().maxAgeDays;
+  const today = new Date().toISOString().slice(0, 10);
+  const pendingBefore = (await readPendingInOutHours({ maxAgeDays })).length;
+  const result = await refreshInOutHours({
+    dateFrom: cutoffIso(maxAgeDays, today),
+    dateTo: today,
+    onlyPending: true,
+    maxAgeDays,
+    dryRun: options.dryRun,
+    fetchForDate: options.fetchForDate,
+  });
+  return { ...result, pendingBefore };
+}
+
+/**
+ * An Admin sets (or clears) the clocked figure for one day by hand, for a day HR
+ * confirms in writing that LabourWorks will never regularize. Flagged MANUAL so no
+ * refresh overwrites it, and audited by the route.
+ */
+export async function setManualInOutHours(dayId: number, hours: number | null): Promise<{ dayId: number; inOutHours: number | null; inOutSource: string | null }> {
+  const day = await prisma.timesheetDay.findUnique({ where: { id: dayId }, select: { id: true } });
+  if (!day) throw new Error(`Timesheet day #${dayId} does not exist.`);
+  if (hours == null) {
+    // Clearing hands the day back to the source: the next refresh fills it again.
+    const cleared = await prisma.timesheetDay.update({
+      where: { id: dayId },
+      data: { inOutHours: null, inOutSource: null, inOutCheckedAt: null, inOutAttempts: 0 },
+      select: { id: true, inOutHours: true, inOutSource: true },
+    });
+    return { dayId: cleared.id, inOutHours: cleared.inOutHours, inOutSource: cleared.inOutSource };
+  }
+  if (!Number.isFinite(hours) || hours < 0 || hours > 24) {
+    throw new Error("Clocked hours must be a number between 0 and 24.");
+  }
+  const updated = await prisma.timesheetDay.update({
+    where: { id: dayId },
+    data: { inOutHours: Math.round(hours * 100) / 100, inOutSource: "MANUAL" },
+    select: { id: true, inOutHours: true, inOutSource: true },
+  });
+  return { dayId: updated.id, inOutHours: updated.inOutHours, inOutSource: updated.inOutSource };
+}
+
+/** The window the daily job refreshes: today and the lookback days before it. */
 export function scheduledRefreshWindow(now = new Date()): { dateFrom: string; dateTo: string } {
-  const lookback = Number(process.env.ATTENDANCE_HOURS_LOOKBACK_DAYS || 3);
-  const days = Number.isFinite(lookback) && lookback >= 0 ? Math.min(Math.floor(lookback), 30) : 3;
+  const lookback = Number(process.env.ATTENDANCE_HOURS_LOOKBACK_DAYS || 7);
+  const days = Number.isFinite(lookback) && lookback >= 0 ? Math.min(Math.floor(lookback), 60) : 7;
   const dateTo = now.toISOString().slice(0, 10);
   const dateFrom = new Date(now.getTime() - days * 86400000).toISOString().slice(0, 10);
   return { dateFrom, dateTo };

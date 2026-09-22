@@ -138,3 +138,21 @@
     gap: 2px;
   }
 }
+
+/* Manual figure entry in the pending list: compact enough for a table cell. */
+.att-manual {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.att-manual input {
+  width: 84px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+}

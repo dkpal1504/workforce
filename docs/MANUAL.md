@@ -442,10 +442,34 @@ out. This screen puts the two figures side by side so contract attendance can be
   the clocked hours, the difference, and why a row has no clocked figure (`No attendance row` /
   `No ManHours in the row`).
 - **Off-peak job.** `ATTENDANCE_HOURS_ENABLED=true` starts the in-process job that runs at **09:00 and
-  21:00** daily (`ATTENDANCE_HOURS_CRON=0 9,21 * * *`). Each tick refreshes today plus
-  `ATTENDANCE_HOURS_LOOKBACK_DAYS` (default 3) for non-draft sheets, because attendance lands in
-  LabourWorks only after the shift ends. It is idempotent: a second run with the same source data
-  writes nothing, so the job and the button can run back to back.
+  21:00** daily (`ATTENDANCE_HOURS_CRON=0 9,21 * * *`). Each tick **re-reads** today plus
+  `ATTENDANCE_HOURS_LOOKBACK_DAYS` (default 7, sized to the regularization SLA) for non-draft sheets,
+  because attendance lands in LabourWorks only after the shift ends. It is idempotent: a second run with
+  the same source data writes nothing, so the job, the sweep and the button can run back to back.
+- **Regularization takes days, so nothing is final.** A day can answer "no row" or `0.00` on the first
+  fetch and be corrected to `8.00` a few days later. Every run re-reads its whole window *including days
+  that already have a value*, so the correction lands on the next tick. Do not narrow the job to "only
+  fetch days that are still empty": that is exactly what would freeze a pending day forever.
+- **A weekly sweep is the safety net.** `ATTENDANCE_HOURS_SWEEP_CRON` (default Sunday 04:00) sweeps the
+  whole regularization horizon (`ATTENDANCE_HOURS_MAX_AGE_DAYS`, default 45) but **only** for days that
+  still have nothing usable. It reads the database first and asks LabourWorks only about the dates that
+  are actually pending (a 45-day sweep usually touches a handful of dates), so it is cheap.
+- **"Still pending" is a visible state, not a guess.** Every consulted day records
+  `in_out_checked_at` and increments `in_out_attempts`, and the **Still pending** panel lists the days
+  that still have no usable figure, with their age and how many times the source has been asked. A day
+  that is still 0 after several checks is outstanding regularization work in LabourWorks - chase the
+  yard, not the app.
+- **How a difference is settled.** `ATTENDANCE_HOURS_OVERWRITE=any` (default) treats the source as the
+  truth: a later correction wins, up or down. `improve` only fills a gap (NULL / 0) or raises a figure,
+  and never lowers a non-zero value automatically (such a difference is reported as skipped instead).
+  Absence from the source never clears a stored figure in either mode.
+- **A closed period stops moving.** Days older than `ATTENDANCE_HOURS_MAX_AGE_DAYS` are out of scope for
+  every automatic run; an Admin can deliberately override that on the screen. Every write is audited
+  (`ATTENDANCE_HOURS_REFRESH`, `ATTENDANCE_HOURS_SWEEP`, `ATTENDANCE_HOURS_MANUAL`) with the day, the old
+  value, the new value and the reason.
+- **Manual entry for a day the yard will never regularize.** An Admin can set the figure by hand from the
+  *Still pending* list. It is flagged `MANUAL` and **no refresh overwrites it** (the screen still shows
+  what the source says, for comparison). Clearing it hands the day back to the source.
 - **The source is configuration, not code.** `ATTENDANCE_DB_ID_COLUMN`, `ATTENDANCE_DB_HOURS_COLUMN`
   and `ATTENDANCE_DB_DATE_COLUMN` name the columns, and `ATTENDANCE_DB_QUERY` replaces the generated
   SQL entirely (it must bind `@workDate`) when the view already filters the date itself or the DBA

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   attendanceSql,
+  decideWrite,
   explainSourceError,
   bookedHoursForEntries,
   dateRange,
@@ -146,6 +147,8 @@ function sheet(overrides: Partial<SheetForRefresh> = {}): SheetForRefresh {
     status: "SUBMITTED",
     bookedHours: 6,
     previousInOutHours: null,
+    previousSource: null,
+    previousAttempts: 0,
     ...overrides,
   };
 }
@@ -202,7 +205,11 @@ test("the date range is inclusive and refuses a reversed or oversized range", ()
   assert.deepEqual(dateRange("2026-09-19", "2026-09-21"), ["2026-09-19", "2026-09-20", "2026-09-21"]);
   assert.deepEqual(dateRange("2026-09-21", "2026-09-21"), ["2026-09-21"]);
   assert.throws(() => dateRange("2026-09-22", "2026-09-21"), /not be after/);
-  assert.throws(() => dateRange("2026-09-21", "2027-01-01"), /longer than 62 days/);
+  // A sweep may span the whole regularization horizon (~45-60 days), so the cap is
+  // generous but still a cap.
+  assert.equal(dateRange("2026-09-21", "2026-11-20").length, 61);
+  assert.throws(() => dateRange("2026-09-21", "2027-01-01", 62), /longer than 62 days/);
+  assert.throws(() => dateRange("2026-09-21", "2028-01-01"), /longer than 400 days/);
 });
 
 test("the scheduled window looks back ATTENDANCE_HOURS_LOOKBACK_DAYS from today", () => {
@@ -211,7 +218,8 @@ test("the scheduled window looks back ATTENDANCE_HOURS_LOOKBACK_DAYS from today"
     process.env.ATTENDANCE_HOURS_LOOKBACK_DAYS = "2";
     assert.deepEqual(scheduledRefreshWindow(new Date("2026-09-21T21:00:00.000Z")), { dateFrom: "2026-09-19", dateTo: "2026-09-21" });
     delete process.env.ATTENDANCE_HOURS_LOOKBACK_DAYS;
-    assert.deepEqual(scheduledRefreshWindow(new Date("2026-09-21T09:00:00.000Z")), { dateFrom: "2026-09-18", dateTo: "2026-09-21" });
+    // The default covers a whole regularization SLA, not just the night before.
+    assert.deepEqual(scheduledRefreshWindow(new Date("2026-09-21T09:00:00.000Z")), { dateFrom: "2026-09-14", dateTo: "2026-09-21" });
   } finally {
     if (previous === undefined) delete process.env.ATTENDANCE_HOURS_LOOKBACK_DAYS;
     else process.env.ATTENDANCE_HOURS_LOOKBACK_DAYS = previous;
@@ -233,4 +241,81 @@ test("a wrong column name points at the configured columns", () => {
 
 test("any other driver error is passed through unchanged", () => {
   assert.equal(explainSourceError(new Error("Connection lost"), config()), "Connection lost");
+});
+
+
+/* ---------------------------------------------------------------------------
+   Backfill / regularization rules (points 1-4)
+   --------------------------------------------------------------------------- */
+
+test("decideWrite: any policy takes a correction in either direction", () => {
+  const row = { outcome: "matched" as const, clockedHours: 8, previousInOutHours: 12, previousSource: "LABOURWORKS" };
+  assert.deepEqual(decideWrite(row, "any"), { write: true, reason: null });
+  assert.deepEqual(decideWrite({ ...row, clockedHours: 12, previousInOutHours: 8 }, "any"), { write: true, reason: null });
+});
+
+test("decideWrite: improve policy fills a gap but never lowers a real figure", () => {
+  // 0 -> 8 is the regularization case this whole feature exists for.
+  assert.deepEqual(decideWrite({ outcome: "matched", clockedHours: 8, previousInOutHours: 0, previousSource: "LABOURWORKS" }, "improve"), { write: true, reason: null });
+  assert.deepEqual(decideWrite({ outcome: "matched", clockedHours: 8, previousInOutHours: null, previousSource: null }, "improve"), { write: true, reason: null });
+  assert.deepEqual(decideWrite({ outcome: "matched", clockedHours: 12, previousInOutHours: 8, previousSource: "LABOURWORKS" }, "improve"), { write: true, reason: null });
+  assert.deepEqual(decideWrite({ outcome: "matched", clockedHours: 8, previousInOutHours: 12, previousSource: "LABOURWORKS" }, "improve"), { write: false, reason: "policy" });
+});
+
+test("decideWrite: a MANUAL figure is never overwritten, in either policy", () => {
+  const row = { outcome: "matched" as const, clockedHours: 8, previousInOutHours: 0, previousSource: "MANUAL" };
+  assert.deepEqual(decideWrite(row, "any"), { write: false, reason: "manual" });
+  assert.deepEqual(decideWrite(row, "improve"), { write: false, reason: "manual" });
+});
+
+test("a regularized day is written and stops being pending", () => {
+  // The day answered 0.00 yesterday; today the source says 8.00.
+  const plan = planInOutHoursUpdate(
+    [sheet({ previousInOutHours: 0, previousSource: "LABOURWORKS", previousAttempts: 3 })],
+    new Map([["2026-09-21", readings({ FRNEGJ018: 8 })]]),
+    { overwritePolicy: "any", today: "2026-09-21" }
+  );
+  assert.equal(plan[0].wouldChange, true);
+  assert.equal(plan[0].pending, false);
+  assert.equal(plan[0].clockedHours, 8);
+});
+
+test("a clocked 0 is a result AND still outstanding regularization", () => {
+  const plan = planInOutHoursUpdate([sheet({ previousInOutHours: null })], new Map([["2026-09-21", readings({ FRNEGJ018: 0 })]]));
+  assert.equal(plan[0].outcome, "matched");
+  assert.equal(plan[0].clockedHours, 0);
+  assert.equal(plan[0].pending, true);
+});
+
+test("a missing attendance row stays pending and is never cleared", () => {
+  const plan = planInOutHoursUpdate(
+    [sheet({ previousInOutHours: 7.5, previousSource: "LABOURWORKS" })],
+    new Map([["2026-09-21", readings({ SOMEBODY_ELSE: 8 })]]),
+    { today: "2026-09-21" }
+  );
+  assert.equal(plan[0].outcome, "not-in-source");
+  assert.equal(plan[0].pending, true);
+  assert.equal(plan[0].wouldChange, false);
+  assert.equal(plan[0].previousInOutHours, 7.5);
+});
+
+test("a manual day reports the source for comparison but writes nothing", () => {
+  const plan = planInOutHoursUpdate(
+    [sheet({ previousInOutHours: 8, previousSource: "MANUAL" })],
+    new Map([["2026-09-21", readings({ FRNEGJ018: 9 })]])
+  );
+  assert.equal(plan[0].outcome, "manual");
+  assert.equal(plan[0].wouldChange, false);
+  assert.equal(plan[0].blockedReason, "manual");
+  assert.equal(plan[0].clockedHours, 9, "the source figure is still reported for review");
+});
+
+test("age is measured from the work date so the report can sort by staleness", () => {
+  const plan = planInOutHoursUpdate(
+    [sheet({ workDate: "2026-09-01" }), sheet({ dayId: 2, workDate: "2026-09-20" })],
+    new Map(),
+    { today: "2026-09-21" }
+  );
+  assert.equal(plan[0].ageDays, 20);
+  assert.equal(plan[1].ageDays, 1);
 });

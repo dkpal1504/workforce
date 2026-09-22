@@ -19,7 +19,13 @@ type SourceConfig = {
     fixture: boolean;
     fixturePath: string | null;
   };
-  schedule: { enabled: boolean; cron: string; lookbackDays: number };
+  schedule: {
+    enabled: boolean;
+    cron: string;
+    lookbackDays: number;
+    sweep: { enabled: boolean; cron: string };
+  };
+  policy: { overwrite: "any" | "improve"; maxAgeDays: number };
 };
 
 type PlannedRow = {
@@ -35,7 +41,15 @@ type PlannedRow = {
   difference: number | null;
   /** Source records summed into `clockedHours` (2+ means a split day or a night shift). */
   sourceRecords: number;
-  outcome: "matched" | "not-in-source" | "no-hours-in-source";
+  /** Days between the work date and the run: the staleness of a pending day. */
+  ageDays: number;
+  outcome: "matched" | "not-in-source" | "no-hours-in-source" | "manual";
+  /** True when this run would (or did) write the figure. */
+  wouldChange: boolean;
+  /** Why a difference was left alone: an Admin's figure, or the overwrite policy. */
+  blockedReason: "manual" | "policy" | null;
+  /** Still nothing usable after this run (absent, no hours, or a clocked 0). */
+  pending: boolean;
 };
 
 type RefreshResult = {
@@ -44,20 +58,61 @@ type RefreshResult = {
   dateTo: string;
   dryRun: boolean;
   includeDraft: boolean;
+  onlyPending?: boolean;
+  overwritePolicy?: "any" | "improve";
   sheets: number;
   matched: number;
   unmatched: number;
   updated: number;
   unchanged: number;
+  /** Still nothing usable: the regularization backlog this run could not close. */
+  pending: number;
+  skipped?: { manual: number; policy: number };
+  datesFetched?: number;
   errors: { date: string; message: string }[];
   rows: PlannedRow[];
+  /** Only on the sweep response. */
+  pendingBefore?: number;
+};
+
+/** One day of GET /api/attendance-hours/pending. */
+type PendingRow = {
+  dayId: number;
+  employeeId: number;
+  employeeName: string;
+  ecNo: string;
+  workDate: string;
+  status: string;
+  bookedHours: number;
+  inOutHours: number | null;
+  inOutSource: string | null;
+  inOutAttempts: number;
+  inOutCheckedAt: string | null;
+  ageDays: number;
+};
+
+type PendingResponse = {
+  ok: boolean;
+  maxAgeDays: number;
+  pending: number;
+  neverChecked: number;
+  checkedAndStillEmpty: number;
+  rows: PendingRow[];
 };
 
 const OUTCOME_LABEL: Record<PlannedRow["outcome"], string> = {
   matched: "Clocked hours found",
   "not-in-source": "No attendance row",
   "no-hours-in-source": "No ManHours in the row",
+  manual: "Set by hand",
 };
+
+/** "3 checks since 19 Sep" - the evidence that a pending day is still outstanding. */
+function checkLabel(row: PendingRow): string {
+  if (row.inOutAttempts === 0) return "never checked";
+  const when = row.inOutCheckedAt ? new Date(row.inOutCheckedAt).toISOString().slice(0, 10) : "—";
+  return `${row.inOutAttempts} check${row.inOutAttempts === 1 ? "" : "s"} · last ${when}`;
+}
 
 function errorText(e: unknown): string {
   if (e instanceof ApiError) {
@@ -94,12 +149,32 @@ export function AttendanceHoursPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [pending, setPending] = useState<PendingResponse | null>(null);
+  const [pendingBusy, setPendingBusy] = useState(false);
+  const [manualDraft, setManualDraft] = useState<Record<number, string>>({});
+  const [manualBusy, setManualBusy] = useState<number | null>(null);
 
   useEffect(() => {
     api<SourceConfig>("/attendance-hours/config")
       .then(setConfig)
       .catch(() => setConfig(null));
   }, []);
+
+  /** The backlog list reads the database only, so it is safe to refresh often. */
+  const loadPending = useCallback(async () => {
+    setPendingBusy(true);
+    try {
+      setPending(await api<PendingResponse>("/attendance-hours/pending"));
+    } catch {
+      setPending(null);
+    } finally {
+      setPendingBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPending();
+  }, [loadPending]);
 
   const run = useCallback(
     async (dryRun: boolean) => {
@@ -118,8 +193,11 @@ export function AttendanceHoursPage() {
             `${res.matched} of ${res.sheets} sheet(s) have clocked hours; ${res.updated === 0 ? res.matched - res.unchanged : res.matched} value(s) would change. Nothing was saved.`
           );
         } else {
-          setMessage(`Saved the clocked hours on ${res.updated} sheet(s); ${res.unchanged} already matched.`);
+          setMessage(
+            `Saved the clocked hours on ${res.updated} sheet(s); ${res.unchanged} already matched; ${res.pending} still pending.`
+          );
         }
+        if (!dryRun) void loadPending();
       } catch (e) {
         setError(errorText(e));
         setResult(null);
@@ -128,6 +206,63 @@ export function AttendanceHoursPage() {
       }
     },
     [dateFrom, dateTo, includeDraft]
+  );
+
+  /** The weekly job's manual trigger: the whole horizon, pending days only. */
+  const sweep = useCallback(
+    async (dryRun: boolean) => {
+      setBusy(true);
+      setError("");
+      setMessage("");
+      setPreview(dryRun);
+      try {
+        const res = await api<RefreshResult>("/attendance-hours/sweep", {
+          method: "POST",
+          body: JSON.stringify({ dryRun }),
+        });
+        setResult(res);
+        setMessage(
+          dryRun
+            ? `Deep sweep over the last ${pending?.maxAgeDays ?? config?.policy.maxAgeDays ?? 45} day(s): ${res.sheets} pending sheet(s) checked, ${res.rows.filter((r) => r.wouldChange).length} would be filled. Nothing was saved.`
+            : `Deep sweep saved ${res.updated} figure(s); ${res.pending} still pending.`
+        );
+        if (!dryRun) void loadPending();
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [config?.policy.maxAgeDays, pending?.maxAgeDays, loadPending]
+  );
+
+  /** An Admin decision for a day the yard will never regularize (or a clear). */
+  const saveManual = useCallback(
+    async (dayId: number, value: string) => {
+      setManualBusy(dayId);
+      setError("");
+      setMessage("");
+      try {
+        const hours = value.trim() === "" ? null : Number(value);
+        if (hours != null && (!Number.isFinite(hours) || hours < 0 || hours > 24)) {
+          setError("Clocked hours must be a number between 0 and 24.");
+          return;
+        }
+        await api("/attendance-hours/manual", { method: "POST", body: JSON.stringify({ dayId, hours }) });
+        setMessage(
+          hours == null
+            ? "Cleared. The next refresh will fill this day from LabourWorks again."
+            : `Saved ${hours}h by hand. No refresh will overwrite it.`
+        );
+        setManualDraft((drafts) => ({ ...drafts, [dayId]: "" }));
+        void loadPending();
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setManualBusy(null);
+      }
+    },
+    [loadPending]
   );
 
   const rows = useMemo(() => result?.rows ?? [], [result]);
@@ -177,6 +312,9 @@ export function AttendanceHoursPage() {
           </label>
         </div>
         <div className="att-filters__actions">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void sweep(true)} title="Check every day still pending, across the whole regularization horizon">
+            Deep sweep preview
+          </button>
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void run(true)}>
             {busy && preview ? "Reading LabourWorks…" : "Preview (no save)"}
           </button>
@@ -227,7 +365,7 @@ export function AttendanceHoursPage() {
                   </thead>
                   <tbody>
                     {rows.map((row) => (
-                      <tr key={row.dayId}>
+                      <tr key={row.dayId} data-day-id={row.dayId}>
                         <td>{row.employeeName}</td>
                         <td>{row.ecNo}</td>
                         <td>{row.workDate}</td>
@@ -286,6 +424,132 @@ export function AttendanceHoursPage() {
         </div>
       </div>
 
+      <div className="panel">
+        <div className="panel__header">
+          <span>Still pending (regularization outstanding)</span>
+          <span className="panel__count">
+            {pendingBusy && !pending
+              ? "Loading…"
+              : pending
+                ? `${pending.pending} day(s) · ${pending.checkedAndStillEmpty} already checked · ${pending.neverChecked} not reached yet`
+                : "—"}
+          </span>
+        </div>
+        <div className="panel__body">
+          {pending && pending.rows.length > 0 && (
+            <p className="att-summary">
+              These days have no usable clocked figure inside the last {pending.maxAgeDays} day(s): LabourWorks returned
+              no attendance row, no ManHours, or 0.00. Regularization in LabourWorks can take days, so every refresh
+              re-reads its window and corrects the value as soon as it changes — the count below shows how often the
+              source has been asked. A day HR confirms will never be regularized can be settled by hand; that value is
+              flagged MANUAL and no refresh overwrites it.
+            </p>
+          )}
+          {!pending || pending.rows.length === 0 ? (
+            <p className="muted">
+              {pending
+                ? "Nothing pending: every submitted sheet inside the horizon has a clocked figure."
+                : "Could not read the pending list."}
+            </p>
+          ) : (
+            <>
+              <div className="att-table-wrap">
+                <table className="sup-table att-table">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>EC No</th>
+                      <th>Work date</th>
+                      <th>Age</th>
+                      <th>Status</th>
+                      <th>Booked h</th>
+                      <th>Clocked h</th>
+                      <th>Source checks</th>
+                      <th>Set by hand</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pending.rows.map((row) => (
+                      <tr key={row.dayId} data-day-id={row.dayId}>
+                        <td>{row.employeeName}</td>
+                        <td>{row.ecNo}</td>
+                        <td>{row.workDate}</td>
+                        <td className={row.ageDays > 7 ? "att-diff att-diff--over" : ""}>{row.ageDays}d</td>
+                        <td>{row.status}</td>
+                        <td>{hours(row.bookedHours)}</td>
+                        <td>{row.inOutHours == null ? "no row" : hours(row.inOutHours)}</td>
+                        <td>{checkLabel(row)}</td>
+                        <td>
+                          <span className="att-manual">
+                            <input
+                              type="number"
+                              min={0}
+                              max={24}
+                              step={0.01}
+                              placeholder="hours"
+                              aria-label={`Clocked hours for ${row.employeeName} on ${row.workDate}`}
+                              value={manualDraft[row.dayId] ?? ""}
+                              disabled={manualBusy === row.dayId}
+                              onChange={(e) =>
+                                setManualDraft((drafts) => ({ ...drafts, [row.dayId]: e.target.value }))
+                              }
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={manualBusy === row.dayId || (manualDraft[row.dayId] ?? "").trim() === ""}
+                              onClick={() => void saveManual(row.dayId, manualDraft[row.dayId] ?? "")}
+                            >
+                              {manualBusy === row.dayId ? "Saving…" : "Save"}
+                            </button>
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <ul className="att-cards">
+                {pending.rows.map((row) => (
+                  <li key={row.dayId} className="att-card">
+                    <div className="att-card__top">
+                      <strong>{row.employeeName}</strong>
+                      <span>{row.ecNo}</span>
+                    </div>
+                    <div className="att-card__meta">
+                      {row.workDate} · age {row.ageDays}d · {row.status} · booked {hours(row.bookedHours)}h · clocked{" "}
+                      {row.inOutHours == null ? "no row" : `${hours(row.inOutHours)}h`}
+                    </div>
+                    <div className="att-card__meta">{checkLabel(row)}</div>
+                    <span className="att-manual">
+                      <input
+                        type="number"
+                        min={0}
+                        max={24}
+                        step={0.01}
+                        placeholder="hours"
+                        aria-label={`Clocked hours for ${row.employeeName} on ${row.workDate}`}
+                        value={manualDraft[row.dayId] ?? ""}
+                        disabled={manualBusy === row.dayId}
+                        onChange={(e) => setManualDraft((drafts) => ({ ...drafts, [row.dayId]: e.target.value }))}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={manualBusy === row.dayId || (manualDraft[row.dayId] ?? "").trim() === ""}
+                        onClick={() => void saveManual(row.dayId, manualDraft[row.dayId] ?? "")}
+                      >
+                        {manualBusy === row.dayId ? "Saving…" : "Save by hand"}
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      </div>
+
       {config && (
         <div className="panel">
           <div className="panel__header">
@@ -318,8 +582,24 @@ export function AttendanceHoursPage() {
               <li>
                 <span>Off-peak job</span>
                 <strong>
-                  {config.schedule.enabled ? "enabled" : "disabled"} · {config.schedule.cron} · last{" "}
+                  {config.schedule.enabled ? "enabled" : "disabled"} · {config.schedule.cron} · re-reads the last{" "}
                   {config.schedule.lookbackDays} day(s)
+                </strong>
+              </li>
+              <li>
+                <span>Weekly sweep</span>
+                <strong>
+                  {config.schedule.sweep.enabled ? "enabled" : "disabled"} · {config.schedule.sweep.cron} · everything
+                  still pending inside {config.policy.maxAgeDays} day(s)
+                </strong>
+              </li>
+              <li>
+                <span>Backfill rule</span>
+                <strong>
+                  {config.policy.overwrite === "any"
+                    ? "a later LabourWorks correction wins (up or down)"
+                    : "fill a gap or raise a figure; never lower one automatically"}{" "}
+                  · days older than {config.policy.maxAgeDays} stop being re-checked
                 </strong>
               </li>
               {config.source.fixture && (

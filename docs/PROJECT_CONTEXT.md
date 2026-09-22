@@ -178,3 +178,15 @@ match the employee's own Section.
   `AttDate` default was a placeholder and is gone). The view holds one row per check-in/out pair, so a
   worker can appear twice on one date and the day's figure is the SUM (see `docs/MANUAL.md` §12.1). If
   the grant is ever revoked the feature fails closed: the refresh answers 502 and names the login.
+- **Clocked-hours backfill / regularization (2026-09-21).** Regularization in LabourWorks can take
+  days, so the feature is built so nothing is ever final: each run re-reads its whole window INCLUDING
+  days that already have a value (`ATTENDANCE_HOURS_LOOKBACK_DAYS`, default 7), a weekly sweep covers the
+  whole horizon for days that still have nothing usable (`ATTENDANCE_HOURS_SWEEP_CRON`, default Sunday
+  04:00 + `ATTENDANCE_HOURS_MAX_AGE_DAYS`, default 45), and every consulted day records
+  `in_out_checked_at` + `in_out_attempts` so "still 0 after N checks" is visible in the Still pending
+  panel. `ATTENDANCE_HOURS_OVERWRITE=any|improve` decides whether a lower source figure may replace a
+  stored one, and a MANUAL value (an Admin decision for a day the yard will never regularize) is never
+  overwritten by any run. NEVER "optimise" a run into "only fetch days that are empty" - that breaks the
+  correction path. Trap found while verifying this: a Prisma `{ not: "MANUAL" }` filter silently drops
+  NULL rows, so the pending queries must list `{ inOutSource: null }` explicitly, otherwise the
+  never-fetched days (the most pending ones) disappear.

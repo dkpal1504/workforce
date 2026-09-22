@@ -475,6 +475,14 @@ model TimesheetDay {
   /// 09:00 / 21:00 job fills it in. Never written by a supervisor, never part of
   /// the booked-hours arithmetic.
   inOutHours Float?   @map("in_out_hours")
+  /// Where `inOutHours` came from: null (never fetched), LABOURWORKS or MANUAL.
+  /// A MANUAL value is an Admin decision and no refresh ever overwrites it.
+  inOutSource String?  @map("in_out_source")
+  /// When a refresh last consulted the source for this day, and how many times it has
+  /// been consulted. Together they are the "still pending" evidence: a day that is
+  /// still 0 after six checks is a regularization nobody has done yet, not a bug.
+  inOutCheckedAt DateTime? @map("in_out_checked_at")
+  inOutAttempts  Int      @default(0) @map("in_out_attempts")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
