@@ -529,6 +529,28 @@ curl.exe -fsS http://127.0.0.1:8099/api/health/ready
 
 ## Operations
 
+### Pulling an update onto the deployment host
+
+Two local edits live in the deployment checkout, and both of them are files the repository
+also changes. `git pull` refuses to overwrite them, so restore them first:
+
+```powershell
+cd C:\workforce
+git checkout -- apps/api/prisma/schema.prisma        # undo the PostgreSQL schema swap
+# (if the old runbook step told you to null a hardcoded bootstrap password, undo that too)
+git checkout -- apps/api/src/services/defaultLoginCredentials.ts
+git pull origin main
+Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+```
+
+Then rebuild and apply migrations (below). `BOOTSTRAP_PASSWORD` and every other setting live in
+`infra/docker/.env.production`, which is untracked, so a pull never touches them.
+
+**What a pull never touches:** `infra/docker/docker-compose.yml` is the DEVELOPMENT stack
+(`npm run dev:db:up`) and is not used by any production command - production only ever passes
+`-f infra/docker/compose.production.yml`, which has no PostgreSQL service and publishes just the
+web port. The image build copies nothing from `infra/docker/` except `nginx.conf`.
+
 - **After this change (2026-09-13 CR#2 + HOD scope + approval cover), a running
   deployment needs a redeploy, not just a restart.** New code plus
   migration `20260916000000_hod_approval_delegation`:
