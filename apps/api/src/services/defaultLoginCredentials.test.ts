@@ -2,28 +2,30 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import {
-  DEV_BOOTSTRAP_PASSWORD,
-  assertDevBootstrapAllowed,
+  assertBootstrapPasswordUsable,
+  bootstrapPassword,
+  bootstrapPasswordNotice,
   defaultWorkforceCredentialState,
   hashDefaultWorkforcePassword,
   initialCredentialState,
-  usesDevBootstrapPassword,
+  usesBootstrapPassword,
   usesEcNoLogin,
 } from "./defaultLoginCredentials";
 
-/** Run `body` with DATABASE_URL pinned, restoring whatever was there before. */
-async function withDatabaseUrl<T>(url: string, body: () => Promise<T>): Promise<T> {
-  const previous = process.env.DATABASE_URL;
-  process.env.DATABASE_URL = url;
+/** Run `body` with BOOTSTRAP_PASSWORD pinned, restoring whatever was there before. */
+async function withBootstrapPassword<T>(value: string | null, body: () => Promise<T>): Promise<T> {
+  const previous = process.env.BOOTSTRAP_PASSWORD;
+  if (value === null) delete process.env.BOOTSTRAP_PASSWORD;
+  else process.env.BOOTSTRAP_PASSWORD = value;
   try {
     return await body();
   } finally {
-    if (previous === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = previous;
+    if (previous === undefined) delete process.env.BOOTSTRAP_PASSWORD;
+    else process.env.BOOTSTRAP_PASSWORD = previous;
   }
 }
 
-test("queued accounts do not use the published legacy rollout password", async () => {
+test("queued accounts never get an unknown password they are not told about", async () => {
   const hash = await hashDefaultWorkforcePassword(4);
   assert.equal(await bcrypt.compare("password@SDHI", hash), false);
   assert.equal(defaultWorkforceCredentialState.mustChangePassword, true);
@@ -39,35 +41,53 @@ test("linked operational roles use ecNo login", () => {
   assert.equal(usesEcNoLogin("ADMIN", 10), false);
 });
 
-// Both credential policies below must satisfy the same invariant: a new account is
-// either handed the local dev bootstrap password with no forced change, or an
-// unknown password that must be changed when the one-time credential arrives.
-// The assertions hold whether or not DEV_BOOTSTRAP_PASSWORD is still set, so this
-// suite stays green before AND after the removal step.
-test("a registration credential is either the dev bootstrap password or an undelivered one", async () => {
-  await withDatabaseUrl("file:./dev.db", async () => {
+test("no BOOTSTRAP_PASSWORD means a random credential that must be changed", async () => {
+  await withBootstrapPassword(null, async () => {
+    assert.equal(bootstrapPassword(), null);
+    assert.equal(usesBootstrapPassword(), false);
+    assert.equal(bootstrapPasswordNotice(), null);
     const credential = await initialCredentialState();
-    if (usesDevBootstrapPassword()) {
-      assert.equal(await bcrypt.compare(String(DEV_BOOTSTRAP_PASSWORD), credential.passwordHash), true);
-      assert.equal(credential.mustChangePassword, false);
-    } else {
-      assert.equal(defaultWorkforceCredentialState.mustChangePassword, true);
-      assert.equal(credential.mustChangePassword, true);
-      assert.equal(await bcrypt.compare("password@SDHI", credential.passwordHash), false);
-    }
+    assert.equal(credential.mustChangePassword, true, "the e-mailed credential is temporary");
+    assert.equal(await bcrypt.compare("password@SDHI", credential.passwordHash), false);
   });
 });
 
-test("the bootstrap password is refused against PostgreSQL, whatever NODE_ENV claims", async () => {
-  await withDatabaseUrl("postgresql://user:pass@localhost:5432/workforce", async () => {
-    if (usesDevBootstrapPassword()) {
-      assert.throws(() => assertDevBootstrapAllowed(), /bootstrap password is enabled/);
-      await assert.rejects(initialCredentialState(), /bootstrap password is enabled/);
-    } else {
-      // Removed: PostgreSQL is the expected production target, so nothing throws.
-      assert.doesNotThrow(() => assertDevBootstrapAllowed());
-      const credential = await initialCredentialState();
-      assert.equal(credential.mustChangePassword, true);
-    }
+test("BOOTSTRAP_PASSWORD gives every new contract account the shared first password", async () => {
+  await withBootstrapPassword("password@SDHI", async () => {
+    assert.equal(usesBootstrapPassword(), true);
+    const credential = await initialCredentialState();
+    assert.equal(
+      await bcrypt.compare("password@SDHI", credential.passwordHash),
+      true,
+      "supervisors and employees log in with the shared first password"
+    );
+    assert.equal(
+      credential.mustChangePassword,
+      true,
+      "and the API forces a change at first login"
+    );
+    assert.match(String(bootstrapPasswordNotice()), /MUST change it at their first login/);
+  });
+});
+
+test("the value is read from the environment on every call, not captured at import", async () => {
+  await withBootstrapPassword(null, async () => {
+    assert.equal(usesBootstrapPassword(), false);
+    await withBootstrapPassword("AnotherFirstPassword1", async () => {
+      assert.equal(usesBootstrapPassword(), true);
+      assert.equal(bootstrapPassword(), "AnotherFirstPassword1");
+    });
+    assert.equal(usesBootstrapPassword(), false);
+  });
+});
+
+test("a shared first password shorter than 8 characters is refused at boot", async () => {
+  await withBootstrapPassword("short", async () => {
+    assert.throws(() => assertBootstrapPasswordUsable(), /at least 8 characters/);
+  });
+  await withBootstrapPassword("          ", async () => {
+    // Whitespace means "not configured", never an empty password for everyone.
+    assert.equal(bootstrapPassword(), null);
+    assert.doesNotThrow(() => assertBootstrapPasswordUsable());
   });
 });

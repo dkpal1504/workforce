@@ -59,7 +59,7 @@ There are **two seed commands**, and they create different accounts:
 | Password | Applies to |
 |---|---|
 | `WorkforceDev@2026` | Every account that either seed creates. Override it with `DEV_SEED_PASSWORD` before you run the seed. |
-| `password@SDHI` | Accounts provisioned by the LabourWorks sync (log in with the EcNo, e.g. `BAPL0251`) **and, while the app is still pre-production, every account registered from the web UI** — Employee, Supervisor and HOD registration all start on `password@SDHI` with no forced change. On a dev box, set one with `node apps/api/set-dev-password.cjs <ecNo>`. Removed before production: the API build fails while the dev bootstrap password is still in the source. |
+| `BOOTSTRAP_PASSWORD` value (e.g. `password@SDHI`) | **Every account provisioned by a registration path** - Employee Registration, Supervisor Registration, HOD registration/promotion, admin user creation, reactivation and the LabourWorks sync - starts with this one shared first password, because most contract workers and supervisors have **no e-mail address**. It must be changed at the **first login**: until then the API answers `403 PASSWORD_CHANGE_REQUIRED` for everything except `/api/auth/me`, `/api/auth/logout` and `/api/auth/change-password`. Set it in `.env` / `.env.production` (never as a literal in the source - the production build refuses one). Leave it empty to hand out random, e-mailed one-time credentials instead. On a dev box, `node apps/api/set-dev-password.cjs <ecNo>` sets a single account's password. |
 
 | Role | Login | Notes |
 |---|---|---|

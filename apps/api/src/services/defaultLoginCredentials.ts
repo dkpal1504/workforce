@@ -2,28 +2,74 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
 /**
- * LOCAL DEV BOOTSTRAP PASSWORD — DO NOT SHIP.
+ * FIRST-LOGIN PASSWORD FOR NEWLY REGISTERED CONTRACT ACCOUNTS
  *
- * While the application is still being built and tested on the development box,
- * every account created from the web UI (Employee Registration, Supervisor
- * Registration, HOD registration/promotion, admin user creation and
- * re-activation) is provisioned with this one known password so the account can
- * be logged into immediately, without waiting for a credential e-mail.
+ * Most contract workers and supervisors have **no e-mail address**, so the
+ * e-mailed one-time credential cannot reach them. Instead of e-mailing a secret
+ * nobody can read, a deployment can configure ONE shared first password here:
  *
- * SET THIS TO null TO REMOVE IT: nothing else needs editing. All call sites route
- * through `initialCredentialState()`, which falls back to a random, undelivered
- * credential (the production behaviour) as soon as this is null.
- * `apps/api/scripts/check-no-dev-bootstrap-password.mjs` fails the production
- * build while a literal password is still assigned here, and
- * `assertDevBootstrapAllowed()` refuses to boot against PostgreSQL, so a
- * forgotten removal breaks the deploy loudly instead of silently shipping a
- * shared password to every new employee.
+ *   BOOTSTRAP_PASSWORD=password@SDHI        # in .env / .env.production
+ *
+ * Every account created by a registration path (Employee Registration, Supervisor
+ * Registration, HOD registration/promotion, admin user creation, reactivation and
+ * the LabourWorks sync) then starts with that password, and **must change it at the
+ * first login**: the API blocks every endpoint except the change-password
+ * lifecycle until the person has set a password of their own
+ * (`middleware/auth.ts`, `PASSWORD_CHANGE_REQUIRED`).
+ *
+ * It is deliberately CONFIGURATION, not a literal in the source:
+ *  - a hardcoded shared password ships inside the image and in git history, which
+ *    is how a published secret leaks; the value now lives in the environment only;
+ *  - `apps/api/scripts/check-no-dev-bootstrap-password.mjs` still fails the
+ *    production build if a literal password is ever assigned in this file again;
+ *  - leaving the variable UNSET is the safe default: new accounts get a random,
+ *    e-mailed one-time credential instead (`CREDENTIAL_DELIVERY_*`).
+ *
+ * Operational notes:
+ *  - It is a shared secret. Rotate it by changing the value (existing accounts keep
+ *    their own password; only accounts provisioned afterwards get the new one).
+ *  - Contract workers log in with their EC number, not an e-mail address
+ *    (`usesEcNoLogin`).
+ *  - When it is in force no credential e-mail is sent for those accounts: the
+ *    queue marks the row as cancelled with a clear reason instead of mailing a
+ *    password that is already known to the deployment.
  */
-export const DEV_BOOTSTRAP_PASSWORD: string | null = "password@SDHI";
 
-/** True while the local dev bootstrap password above is in force. */
-export function usesDevBootstrapPassword(): boolean {
-  return DEV_BOOTSTRAP_PASSWORD !== null;
+/** The configured shared first password, or null when the deployment does not use one. */
+export function bootstrapPassword(): string | null {
+  const value = (process.env.BOOTSTRAP_PASSWORD ?? "").trim();
+  return value === "" ? null : value;
+}
+
+/** True while a shared first password is configured for newly provisioned accounts. */
+export function usesBootstrapPassword(): boolean {
+  return bootstrapPassword() !== null;
+}
+
+/**
+ * Refuse an unusable shared password at boot. A one- or two-character secret handed
+ * to every new account is worse than no shared password at all, and an empty value
+ * must mean "not configured" (fall back to the random credential), never "everyone
+ * gets an empty password".
+ */
+export function assertBootstrapPasswordUsable(): void {
+  const value = bootstrapPassword();
+  if (value === null) return;
+  if (value.length < 8) {
+    throw new Error(
+      "BOOTSTRAP_PASSWORD must be at least 8 characters, or unset to use the random, e-mailed one-time credential."
+    );
+  }
+}
+
+/** Logged once at boot so a deployment can never use a shared password silently. */
+export function bootstrapPasswordNotice(): string | null {
+  if (!usesBootstrapPassword()) return null;
+  return (
+    "BOOTSTRAP_PASSWORD is set: newly registered contract accounts start with the shared " +
+    "first password and MUST change it at their first login. No credential e-mail is sent to them. " +
+    "Unset BOOTSTRAP_PASSWORD to hand out random, e-mailed credentials instead."
+  );
 }
 
 /**
@@ -45,38 +91,20 @@ export const defaultWorkforceCredentialState = {
 /** The credential state a newly provisioned account starts in. */
 export type InitialCredential = { passwordHash: string; mustChangePassword: boolean };
 
-export function isLocalTestDatabase(): boolean {
-  return String(process.env.DATABASE_URL || "").startsWith("file:");
-}
-
 /**
- * Fail closed: the shared bootstrap password exists only so the dev SQLite box
- * can be used without a credential e-mail. Refuse to hand it out against a
- * PostgreSQL database (i.e. production), whatever NODE_ENV claims. No-op once
- * DEV_BOOTSTRAP_PASSWORD is null.
- */
-export function assertDevBootstrapAllowed(): void {
-  if (!usesDevBootstrapPassword()) return;
-  if (!isLocalTestDatabase()) {
-    throw new Error(
-      "The local dev bootstrap password is enabled but DATABASE_URL is not a file: SQLite database. " +
-        "Set DEV_BOOTSTRAP_PASSWORD to null in services/defaultLoginCredentials.ts before deploying.",
-    );
-  }
-}
-
-/**
- * Credentials for a newly provisioned account. Pre-production this is the fixed
- * bootstrap password, so a freshly registered person can log in straight away and
- * is not forced through a password change; set DEV_BOOTSTRAP_PASSWORD to null and
- * this reverts to the random, e-mail-delivered one-time credential.
+ * Credentials for a newly provisioned account.
+ *
+ * With BOOTSTRAP_PASSWORD configured: that shared password, and the account must
+ * change it at the first login. Without it: a random password that nobody knows
+ * until the queued credential is delivered, also with a forced change.
  */
 export async function initialCredentialState(): Promise<InitialCredential> {
-  if (!usesDevBootstrapPassword()) {
+  const shared = bootstrapPassword();
+  if (shared === null) {
     return { passwordHash: await hashDefaultWorkforcePassword(), mustChangePassword: true };
   }
-  assertDevBootstrapAllowed();
-  return { passwordHash: await bcrypt.hash(DEV_BOOTSTRAP_PASSWORD!, 10), mustChangePassword: false };
+  assertBootstrapPasswordUsable();
+  return { passwordHash: await bcrypt.hash(shared, 10), mustChangePassword: true };
 }
 
 export function usesEcNoLogin(role: string, employeeId: number | null | undefined): boolean {

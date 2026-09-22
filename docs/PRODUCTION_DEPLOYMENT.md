@@ -143,22 +143,21 @@ git checkout main          # or the release tag/branch you deploy from
 #    local development, and the image build FAILS on purpose if it is not swapped.
 Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
 
-# 2b. RELEASE STEP: remove the local dev bootstrap password. Without it the production
-#     build REFUSES to run ("[build-gate] Refusing to build: the local dev bootstrap
-#     password is still enabled"), and even a hand-built image would refuse to boot
-#     against PostgreSQL. It is a source literal by design, so it is removed on the
-#     deployment checkout rather than shipped in the repository.
-node -e "const fs=require('fs');const f='apps/api/src/services/defaultLoginCredentials.ts';let s=fs.readFileSync(f,'utf8');s=s.replace(/DEV_BOOTSTRAP_PASSWORD: string \| null = \"[^\"]*\";/, 'DEV_BOOTSTRAP_PASSWORD: string | null = null;');fs.writeFileSync(f,s);console.log('dev bootstrap password removed:', /null = null/.test(s));"
+# 2b. NOTHING TO REMOVE. The shared first password is configuration now, not a literal:
+#     set BOOTSTRAP_PASSWORD in .env.production (step 3). The image build only refuses a
+#     HARDCODED password in the source, so a clean checkout builds as-is.
 
 # 3. Create the environment file and edit it (see section 2 for every value).
 Copy-Item infra\docker\.env.production.example infra\docker\.env.production
 notepad infra\docker\.env.production
 ```
 
-After step 2b, newly created accounts get a **random** one-time credential instead of the shared dev
-password: configure `SMTP_*` and `CREDENTIAL_DELIVERY_ENABLED=true` (section 2), or the new accounts
-stay unusable until someone sets a password by hand. Local development keeps the literal; only the
-deployment checkout is patched.
+`BOOTSTRAP_PASSWORD` is what contract supervisors and employees log in with the first time (they log
+in with their EC number). Every account provisioned afterwards must change it at that first login:
+the API answers `403 PASSWORD_CHANGE_REQUIRED` for everything except `/api/auth/me`,
+`/api/auth/logout` and `/api/auth/change-password` until they do. Leave the variable EMPTY and
+newly created accounts get a random, e-mailed one-time credential instead, in which case
+`SMTP_*` and `CREDENTIAL_DELIVERY_ENABLED=true` must be configured.
 
 Minimum edits in `infra\docker\.env.production`:
 
@@ -203,14 +202,14 @@ you want, but a first deploy hits all of them:
 
 | Gate | What it demands | Exact message |
 |---|---|---|
-| bootstrap password | `DEV_BOOTSTRAP_PASSWORD` must be `null` when `DATABASE_URL` is not `file:` | `The local dev bootstrap password is enabled but DATABASE_URL is not a file: SQLite database. Set DEV_BOOTSTRAP_PASSWORD to null in services/defaultLoginCredentials.ts before deploying.` |
+| bootstrap password | a shared first password must come from the ENVIRONMENT, never a literal in the source. The build refuses a hardcoded one (`[build-gate] Refusing to build: a shared first password is hardcoded in the source.`); a configured `BOOTSTRAP_PASSWORD` is allowed and the API logs a warning at boot, and every account it provisions must change it at first login |
 | database | a PostgreSQL URL, never SQLite | `SQLite is not permitted in production. A PostgreSQL DATABASE_URL is required.` |
 | secret | a non-placeholder `JWT_SECRET` of at least 32 characters | `JWT_SECRET must be a non-placeholder secret of at least 32 characters in production.` |
 | CORS | exact origins, no `*` | `CORS_ORIGINS must contain exact, valid origins in production.` |
 | throttle | the login rate limit on | `AUTH_RATE_LIMIT_ENABLED must be true in production.` |
 
-The image build has its own gate for the first row (`[build-gate] Refusing to build: the local dev
-bootstrap password is still enabled.`), so a build that succeeds will not be undone at boot.
+The image build has its own gate for the first row (`[build-gate] Refusing to build: a shared first
+password is hardcoded in the source.`), so a build that succeeds will not be undone at boot.
 
 ### 0.4 The five failures that happen in this topology
 
@@ -287,9 +286,10 @@ steps in 0.1-0.3:
 - A manual value (`7.25`, `MANUAL`) survived a later refresh untouched, and clearing it returned the
   day to the pending list - all on PostgreSQL.
 - Every boot gate in 0.3b was then triggered on purpose, each with the message quoted there.
-- Traps found and now documented: the dev bootstrap password blocks the build AND the boot; an
-  unquoted `#` in an env value truncates the password (dotenv comment rule); hand-seeded rows need
-  `updated_at`; the attendance fixture is refused in production.
+- Traps found and now documented: an unquoted `#` in an env value truncates the password (dotenv
+  comment rule); hand-seeded rows need `updated_at`; the attendance fixture is refused in
+  production. The shared first password is configuration (`BOOTSTRAP_PASSWORD`), so a clean
+  checkout builds and boots without editing source.
 
 **2. Every production setting the code reads is present in
 `infra/docker/.env.production.example`.** All 36 `process.env` names the API reads (and the two the

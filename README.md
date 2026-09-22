@@ -40,9 +40,12 @@ npm run dev:web
 
 ### Setting a password for a new account
 
-Accounts created through the UI (payroll Employee, HOD, Supervisor) get an unknown
-random password and a queued credential-e-mail row. With
-`CREDENTIAL_DELIVERY_ENABLED=false` nothing is mailed, so set one locally:
+Newly created accounts follow `BOOTSTRAP_PASSWORD` (`.env`): with it set, every account
+provisioned by a registration path starts with that shared first password and **must change it at
+its first login** — which is how contract workers and supervisors get in without an e-mail
+address. Leave it empty and accounts instead get an unknown random password plus a queued
+credential-e-mail row (nothing is mailed while `CREDENTIAL_DELIVERY_ENABLED=false`), so set one
+locally:
 
 ```bash
 node apps/api/set-dev-password.cjs EC1013                 # -> password@SDHI

@@ -2,7 +2,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../db";
 import { createSmtpTransport, safeSmtpError, smtpConfigured } from "./smtp";
-import { DEV_BOOTSTRAP_PASSWORD, usesDevBootstrapPassword } from "./defaultLoginCredentials";
+import { usesBootstrapPassword } from "./defaultLoginCredentials";
 
 /**
  * First-login credential e-mail for a newly registered employee.
@@ -53,29 +53,35 @@ export async function sendInitialCredentialEmail(
   });
   if (!user?.active) return { sent: false, recipient, reason: "Account is inactive." };
 
-  const devBootstrap = usesDevBootstrapPassword();
+  // A deployment that configures a shared first password does not need this route at
+  // all: those accounts already have a usable password and are forced to change it at
+  // first login. Never mail the shared secret - mail a real one-time credential.
+  if (usesBootstrapPassword()) {
+    return {
+      sent: false,
+      recipient,
+      reason: "BOOTSTRAP_PASSWORD is configured; accounts start with the shared first password and change it at first login.",
+    };
+  }
+
   const expiryHours = Math.max(1, Number(process.env.TEMP_PASSWORD_EXPIRY_HOURS || 24));
   let deliveredPassword: string;
   let expiresAt: Date | null = null;
 
   try {
-    if (devBootstrap) {
-      deliveredPassword = String(DEV_BOOTSTRAP_PASSWORD);
-    } else {
-      deliveredPassword = temporaryPassword();
-      const now = new Date();
-      expiresAt = new Date(now.getTime() + expiryHours * 60 * 60 * 1000);
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          passwordHash: await bcrypt.hash(deliveredPassword, 10),
-          mustChangePassword: true,
-          passwordExpiresAt: expiresAt,
-          credentialProvisionedAt: now,
-          tokenVersion: { increment: 1 },
-        },
-      });
-    }
+    deliveredPassword = temporaryPassword();
+    const now = new Date();
+    expiresAt = new Date(now.getTime() + expiryHours * 60 * 60 * 1000);
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        passwordHash: await bcrypt.hash(deliveredPassword, 10),
+        mustChangePassword: true,
+        passwordExpiresAt: expiresAt,
+        credentialProvisionedAt: now,
+        tokenVersion: { increment: 1 },
+      },
+    });
 
     const lines = [
       opts.ecNo ? "A Workforce login has been provisioned." : "A Workforce account has been provisioned.",

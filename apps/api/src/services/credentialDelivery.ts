@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../db";
-import { DEV_BOOTSTRAP_PASSWORD, usesDevBootstrapPassword, usesEcNoLogin } from "./defaultLoginCredentials";
+import { usesBootstrapPassword, usesEcNoLogin } from "./defaultLoginCredentials";
 import { createSmtpTransport, safeSmtpError, smtpConfigured } from "./smtp";
 
 export type CredentialDeliveryResult = {
@@ -64,34 +64,33 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
       continue;
     }
 
-    // While the dev bootstrap password is in force, a queued one-time credential
-    // would immediately overwrite the password the operator deliberately
-    // provisioned (and that an unauthenticated caller can poll for). Fail closed:
-    // mark the row FAILED with no attempt, and leave the password alone.
-    if (usesDevBootstrapPassword() && !currentUser.credentialSentAt) {
+    // When the deployment configures a shared first password (BOOTSTRAP_PASSWORD) the
+    // account can already log in with it, and the recipient list is exactly the contract
+    // workers who have no mailbox. Sending a one-time credential would either bounce or
+    // overwrite a password the yard has already been told, so the queue row is closed
+    // with a reason instead.
+    if (usesBootstrapPassword()) {
       await prisma.credentialDelivery.update({
         where: { id: delivery.id },
         data: {
-          status: "FAILED",
-          lastError: "Dev bootstrap password is enabled; a one-time credential would overwrite it.",
+          status: "CANCELLED",
+          lastError: "BOOTSTRAP_PASSWORD is configured: the account starts with the shared first password and must change it at first login. No credential e-mail is sent.",
         },
       });
       continue;
     }
 
     const ecNoAccount = usesEcNoLogin(currentUser.role, currentUser.employeeId);
-    // While the dev bootstrap password is in force the queue must disclose THAT
-    // password. Generating a fresh random one here would mail a secret nobody can
-    // read and silently lock the account out of the shared dev credential.
-    const devBootstrap = usesDevBootstrapPassword();
-    const deliveredPassword = devBootstrap ? String(DEV_BOOTSTRAP_PASSWORD) : temporaryPassword();
+    // Reaching here means no shared first password is configured, so the account is
+    // waiting for a random one-time credential that must be replaced at first login.
+    const deliveredPassword = temporaryPassword();
     try {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + expiryHours * 60 * 60 * 1000);
       const credentialData = {
         passwordHash: await bcrypt.hash(deliveredPassword, 10),
-        mustChangePassword: !devBootstrap,
-        passwordExpiresAt: devBootstrap ? null : expiresAt,
+        mustChangePassword: true,
+        passwordExpiresAt: expiresAt,
         credentialProvisionedAt: now,
         tokenVersion: { increment: 1 },
       };
@@ -107,21 +106,23 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
       await transporter.sendMail({
         from: process.env.SMTP_FROM!.trim(),
         to: delivery.recipient,
-        subject: `Workforce ${devBootstrap ? "account credentials" : "supervisor temporary credential"} (${delivery.purpose})`,
+        subject: `Workforce supervisor temporary credential (${delivery.purpose})`,
         text: ecNoAccount
           ? [
               "A Workforce login has been provisioned.",
               `Name: ${delivery.user.name}`,
               `Login EC No: ${delivery.user.employee?.ecNo ?? "Not linked"}`,
               `Password: ${deliveredPassword}`,
-              ...(devBootstrap ? [] : [`Expires: ${expiresAt.toISOString()}`, "The user must change this password at first login."]),
+              `Expires: ${expiresAt.toISOString()}`,
+              "The user must change this password at first login.",
             ].join("\n")
           : [
               "A Workforce administrative credential has been provisioned.",
               `Name: ${delivery.user.name}`,
               `Login email: ${delivery.user.email}`,
               `Password: ${deliveredPassword}`,
-              ...(devBootstrap ? [] : [`Expires: ${expiresAt.toISOString()}`, "The user must change this password at first login."]),
+              `Expires: ${expiresAt.toISOString()}`,
+              "The user must change this password at first login.",
             ].join("\n"),
       });
 

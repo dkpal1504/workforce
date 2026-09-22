@@ -160,12 +160,13 @@ What it does, in order:
    clears `mustChangePassword`.
 
 Accounts registered later from the web UI do not need this helper: while
-`DEV_BOOTSTRAP_PASSWORD` is present in
-`apps/api/src/services/defaultLoginCredentials.ts`, every new Employee / Supervisor
-/ HOD registration is provisioned with `password@SDHI` and no forced password
-change. That constant cannot reach production — the API build fails while it
-exists (`scripts/check-no-dev-bootstrap-password.mjs`) and the server refuses to
-boot against PostgreSQL while it is enabled.
+`BOOTSTRAP_PASSWORD` is set in `.env` (this box uses `password@SDHI`), every new
+Employee / Supervisor / HOD registration is provisioned with that shared first
+password and **must change it at the first login** (the API answers
+`403 PASSWORD_CHANGE_REQUIRED` for everything except the change-password
+lifecycle until it is changed). The value is configuration, never a literal:
+`apps/api/scripts/check-no-dev-bootstrap-password.mjs` fails the production build if
+a shared password is ever hardcoded again.
 
 `BADGEVIEW_SYNC_ENABLED` stays `false` in `.env` — the scheduler still does
 nothing; this is a one-shot manual call. `SMTP_*` being set does not matter
