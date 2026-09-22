@@ -61,6 +61,36 @@ sudo -u postgres psql --set=app_password='THE_REAL_PASSWORD' -f database/00-crea
 The database exists after this step and is EMPTY. The tables are created by the
 `migrate` container in 0.3 (recommended), so do not run `01-schema.sql` as well.
 
+### 0.1b Reusing a PostgreSQL instance that is already on the network
+
+Another application on the Docker host already talks to a database on 5432. That does not
+by itself force a new port here, because a PostgreSQL port is a **server-side listen port**, not
+something each client reserves: any number of applications can connect to the same instance on the
+same port, and a client needs no port of its own. Decide from the table:
+
+| Situation | Port for this app | What to change |
+|---|---|---|
+| PostgreSQL already runs on `10.5.1.178` at 5432 and can host another database | **5432** | `DATABASE_URL` only. Add our role + database (0.1.3) and one `pg_hba` line for our role/database from `10.5.1.193/32`; no `postgresql.conf` edit and no firewall change if that host already accepts 5432 from the Docker host |
+| We add a SECOND cluster to `10.5.1.178` (the 5432 one belongs to another team/product) | **5439** | everything in 0.1 (listen port, firewall, `pg_hba`) |
+| The other application's database is on a different machine | **5432** normally | `DATABASE_URL`; nothing on that other machine is affected |
+| The other application's 5432 is a container published *on* `10.5.1.193` (e.g. `5433:5432`) | irrelevant to us | our app connects OUTWARD to the database host; the production compose has **no postgres service**, so this stack binds no database port on the Windows host at all |
+
+Whichever row applies, three things stay separate:
+
+- **Role and database, never a shared login.** `database/00-create-database.sql` creates
+  `workforce_app` and a database of its own, and revokes `PUBLIC`. A `pg_hba` rule is matched per
+  database + role, so an existing rule for the other application does not cover ours: add
+  `host  workforce  workforce_app  10.5.1.193/32  scram-sha-256`.
+- **Published host ports on `10.5.1.193`.** This is the only thing that can genuinely collide with
+  the other stack, and the only port we publish is the web port (`WEB_PORT`, 8099). If that number
+  is taken, pick another and change that one line. The API and the database are never published.
+- **Failure domain (a policy choice, not a technical one).** Sharing the instance is fine and simple;
+  giving Workforce its own cluster (or its own host) is worth it only if the two products must not
+  share backup windows, connection limits or a restart. If they must not, use the 5439 row above.
+
+So: reuse 5432 when the existing instance can host the database, and use 5439 only when a second
+cluster has to live on a host that already serves 5432.
+
 ### 0.2 TLS between the two hosts (decide once)
 
 The connection string carries `sslmode`. Pick one and put it in
