@@ -70,7 +70,7 @@ npm run db:setup
 
 The local PostgreSQL container avoids a conflict with an existing PostgreSQL service on port `5432` by publishing `5433`.
 
-Keep `BADGEVIEW_SYNC_ENABLED=false` and `CREDENTIAL_DELIVERY_ENABLED=false` until you intentionally test those external integrations. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path. The enforced role matrix is documented in [`docs/ROLE_BASED_ACCESS.md`](docs/ROLE_BASED_ACCESS.md).
+Keep `BADGEVIEW_SYNC_ENABLED=false` and `CREDENTIAL_DELIVERY_ENABLED=false` until you intentionally test those external integrations. See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the production path - **section 0** covers this deployment specifically: PostgreSQL on the Linux host `10.5.1.178` (port **5439**) and the Docker stack on Windows `10.5.1.193` (web UI on port **8099**, API and database not published), including the PowerShell steps, the TLS choice and the preflight checks. The enforced role matrix is documented in [`docs/ROLE_BASED_ACCESS.md`](docs/ROLE_BASED_ACCESS.md).
 
 - Web: http://localhost:5173
 - API: http://localhost:4000

@@ -4,10 +4,223 @@ This deployment runs the React UI in an unprivileged Nginx container and the API
 in a separate unprivileged Node.js container. PostgreSQL runs on a different
 Linux machine. Only the web port is published by Docker.
 
+## 0. THIS deployment: database on 10.5.1.178, Docker on Windows (10.5.1.193)
+
+The two hosts and the ports chosen for them. Standard ports are already taken on this
+network (8080 among them), so every published port is a non-standard one: change the
+numbers in one place - `infra/docker/.env.production` - if they clash too.
+
+| Host | What runs there | Port |
+|---|---|---|
+| `10.5.1.178` (Linux) | PostgreSQL 15+ | **5439** (not 5432) |
+| `10.5.1.193` (Windows, Docker Desktop) | `web` (Nginx + SPA) | **8099** published -> UI at `http://10.5.1.193:8099` |
+| `10.5.1.193` (Docker network only) | `api` (Node) | 4000, NOT published; Nginx proxies `/api/` to it |
+| `10.5.1.193` (Docker network only) | `migrate` (Prisma, one-shot) | - |
+| `10.5.1.106` (existing) | LabourWorks SQL Server (badge sync + clocked hours) | 1433, unchanged, read-only |
+
+Nothing else is published. The API and PostgreSQL are never exposed to the LAN directly;
+the only reachable endpoint is the web port on `10.5.1.193`.
+
+### 0.1 Database host - 10.5.1.178 (Linux)
+
+```bash
+# --- 1. PostgreSQL listens on 5439 and accepts the Docker host ----------------
+# Find the two files that matter (Debian/Ubuntu: /etc/postgresql/15/main/...;
+# RHEL/SLES: /var/lib/pgsql/15/data/...).
+sudo -u postgres psql -tAc "SHOW config_file; SHOW hba_file;"
+
+# Edit postgresql.conf: uncomment/append these two lines.
+listen_addresses = '*'
+port = 5439
+
+# Append ONE line to pg_hba.conf, scoped to the Docker host only. Never use a
+# wider range and never 'trust': the app password must be checked.
+#   host    workforce   workforce_app   10.5.1.193/32   scram-sha-256
+
+sudo systemctl restart postgresql
+sudo systemctl enable postgresql
+```
+
+```bash
+# --- 2. Open the firewall only for the Docker host ---------------------------
+# ufw:
+sudo ufw allow from 10.5.1.193 to any port 5439 proto tcp
+# firewalld instead:
+sudo firewall-cmd --permanent   --add-rich-rule='rule family=ipv4 source address=10.5.1.193/32 port port=5439 protocol=tcp accept'
+sudo firewall-cmd --reload
+```
+
+```bash
+# --- 3. Create the login and the empty database ------------------------------
+# Run from a copy of this repository. The password never goes into a file that is
+# committed; read it from a protected secret file if you prefer.
+cd /path/to/workforce
+sudo -u postgres psql --set=app_password='THE_REAL_PASSWORD' -f database/00-create-database.sql
+```
+
+The database exists after this step and is EMPTY. The tables are created by the
+`migrate` container in 0.3 (recommended), so do not run `01-schema.sql` as well.
+
+### 0.2 TLS between the two hosts (decide once)
+
+The connection string carries `sslmode`. Pick one and put it in
+`infra/docker/.env.production`:
+
+| Situation | `sslmode` | Comment |
+|---|---|---|
+| PostgreSQL has no TLS configured (common on a fresh install) | `prefer` | Encrypts when the server offers it, falls back to plaintext. Acceptable inside this LAN; the password still travels inside the tunnel or the LAN. |
+| TLS enabled with a self-signed certificate | `require` | Encrypts. Does not verify the host name/certificate (so it cannot detect a substituted server). |
+| TLS enabled with your own CA | `verify-full` | Encrypts and verifies. The CA file must be mounted into the containers, e.g. add `- ./certs/ca.crt:/etc/ssl/certs/pg-ca.crt:ro` and `&sslrootcert=/etc/ssl/certs/pg-ca.crt` to the URL. |
+
+The API refuses to start against PostgreSQL when `DATABASE_URL` is a `file:` (SQLite)
+URL, so a stray dev value fails fast instead of writing to a local file.
+
+### 0.3 Docker host - 10.5.1.193 (Windows, PowerShell)
+
+Docker Desktop must be running with **Linux containers**. Run these in PowerShell
+(each command on one line - PowerShell line continuation needs a backtick, so the
+examples avoid it).
+
+```powershell
+# 1. Get a copy of the branch onto the host, e.g.:
+cd C:git clone <repository-url> workforce
+cd C:\workforce
+git checkout main          # or the release tag/branch you deploy from
+```
+
+```powershell
+# 2. PRODUCTION SCHEMA. The repository's schema.prisma is the SQLite variant used for
+#    local development, and the image build FAILS on purpose if it is not swapped.
+Copy-Item appspi\prisma\schema.postgresql.prisma appspi\prisma\schema.prisma -Force
+
+# 3. Create the environment file and edit it (see section 2 for every value).
+Copy-Item infra\docker\.env.production.example infra\docker\.env.production
+notepad infra\docker\.env.production
+```
+
+Minimum edits in `infra\docker\.env.production`:
+
+```
+DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5439/workforce?schema=public&sslmode=prefer
+JWT_SECRET=<48 random bytes, one line, no quotes>
+CORS_ORIGINS=http://10.5.1.193:8099
+WEB_PORT=8099
+TZ=Asia/Kolkata
+```
+
+- URL encode the password: `@` -> `%40`, `#` -> `%23`, `:` -> `%3A`, `/` -> `%2F`.
+- `CORS_ORIGINS` must be the exact origin the browser uses. With no TLS it is
+  `http://10.5.1.193:8099`; behind a TLS proxy use the `https://` name instead.
+- `TZ=Asia/Kolkata` is not cosmetic: the timesheet's "today", the daily hour limits and
+  the 09:00 / 21:00 attendance job all use the container's local clock.
+
+```powershell
+# 4. Build, migrate, start. The migrate container runs first and must succeed.
+docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml build --pull
+docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml up -d
+```
+
+```powershell
+# 5. Verify - from the host, not from inside a container.
+docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml ps
+curl.exe -fsS http://127.0.0.1:8099/healthz
+curl.exe -fsS http://127.0.0.1:8099/api/health/ready
+Start-Process http://10.5.1.193:8099
+```
+
+`/api/health/ready` answers only when the API can reach PostgreSQL, so a green answer is
+the end-to-end proof of the connection. If it fails, read
+`docker compose ... logs migrate api` - section 0.4 lists the failures that actually
+happen here.
+
+### 0.4 The five failures that happen in this topology
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ERROR: apps/api/prisma/schema.prisma declares the 'sqlite' datasource provider` during `build` | step 0.3.2 was skipped | run the `Copy-Item`, then build again |
+| `no pg_hba.conf entry for host "10.5.1.193"` | the `host workforce workforce_app 10.5.1.193/32 scram-sha-256` line is missing (or the Docker host's outbound IP differs) | add the line for the real source address, `sudo systemctl reload postgresql` |
+| `connect ECONNREFUSED 10.5.1.178:5439` | `listen_addresses` still `localhost`, PostgreSQL not restarted, or the firewall blocks 5439 | the two settings in 0.1.1 and the rule in 0.1.2 |
+| `server does not support SSL connections` | `sslmode=require` against a server without TLS | use `sslmode=prefer` (table in 0.2) or enable TLS on the server |
+| `password authentication failed` | the password in the URL is not URL encoded, or it is not the one set in 0.1.3 | re-encode it; re-run `00-create-database.sql` with the right password |
+| Migration stops on `column ... already exists` | someone applied `01-schema.sql` by hand first | drop and recreate the empty database, then let `migrate` run (never edit an applied migration) |
+
+Check the network path from the Docker host before blaming the app (PowerShell):
+
+```powershell
+Test-NetConnection 10.5.1.178 -Port 5439
+docker run --rm -e PGPASSWORD=THE_REAL_PASSWORD postgres:15-alpine psql "postgresql://workforce_app@10.5.1.178:5439/workforce?sslmode=prefer" -tAc "select version(), current_database();"
+```
+
+The second command runs from a container on the same bridge network as the app, so it
+proves exactly the path the API will use.
+
+### 0.4b Preflight that was actually run for this topology (2026-09-22)
+
+Two checks stand behind the steps above, both re-runnable before touching 10.5.1.178.
+
+**1. The whole migration chain was applied to an EMPTY PostgreSQL 16 cluster** (throwaway
+`initdb`/`pg_ctl`, no Docker, no sudo), which is exactly what the `migrate` container does on a
+fresh database. Result: **all 10 migrations applied cleanly -> 31 tables**, and the clocked-hours
+columns arrived with the intended shape:
+
+| column | type | nullable | default |
+|---|---|---|---|
+| `in_out_hours` | double precision | yes | - |
+| `in_out_source` | text | yes | - |
+| `in_out_checked_at` | timestamp(3) | yes | - |
+| `in_out_attempts` | integer | no | `0` |
+
+Six behaviour tests were run against that database, and all six behaved as expected:
+
+- the **first-Admin `INSERT`** printed in section 1b succeeds on the migrated schema (it also proves
+  every `NOT NULL` column *without* a database default is fillable by plain SQL - the Prisma
+  `@updatedAt` columns have none);
+- a new `timesheet_days` row defaults to `in_out_attempts = 0` with NULL hours and NULL source;
+- a fetched figure stores with `in_out_source = 'LABOURWORKS'`; a manual one with `'MANUAL'`;
+- a **second** `timesheet_days` row for the same employee, work date and tagger is refused
+  (the `(employee_id, work_date, tagged_by)` unique index is real), and an orphan `employee_id` is
+  refused by the foreign key.
+
+The test seed used for this was appended to a temporary copy of the chain and is **not** part of any
+migration. To repeat the check, apply `apps/api/prisma/migrations/*/migration.sql` in filename order
+to a scratch database with `psql -v ON_ERROR_STOP=1`.
+
+**2. Every production setting the code reads is present in
+`infra/docker/.env.production.example`.** All 36 `process.env` names the API reads (and the two the
+compose file interpolates, `WEB_PORT` and `IMAGE_TAG`) are listed there with a default or a
+placeholder, so an operator cannot miss one - including `BADGEVIEW_*`, `ATTENDANCE_*`,
+`MAX_OT_HOURS` and `CREDENTIAL_DELIVERY_BATCH_SIZE`. Keep it that way: a new env var must appear in
+that file in the same change.
+
+### 0.5 LabourWorks from inside the container (badge sync + clocked hours)
+
+The containers reach `10.5.1.106:1433` through the Windows host's network stack. Two
+things to arrange:
+
+- The SQL Server firewall must allow the Docker host's address. Container traffic is
+  NAT'ed, so the source address SQL Server sees is the host's, not the container's.
+- The read-only login needs `SELECT` on `dbo.BadgeView` (badge sync) **and** on
+  `dbo.Report_Attendance_Intermediate` (clocked hours).
+
+Test it from the running API container (PowerShell):
+
+```powershell
+docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml exec api node -e "const sql=require('mssql');(async()=>{const p=await new sql.ConnectionPool({server:process.env.BADGEVIEW_DB_HOST,port:Number(process.env.BADGEVIEW_DB_PORT||1433),user:process.env.BADGEVIEW_DB_USER,password:process.env.BADGEVIEW_DB_PASSWORD,database:process.env.BADGEVIEW_DB_NAME,options:{encrypt:false,trustServerCertificate:true,readOnlyIntent:true}}).connect();const r=await p.request().query('SELECT TOP 1 IDNo, ManHours FROM dbo.Report_Attendance_Intermediate ORDER BY [Date] DESC');console.log('OK',r.recordset);await p.close()})().catch(e=>{console.error('FAIL',e.message);process.exit(1)})"
+```
+
+Then, once the clocked-hours job should run unattended, set in
+`infra\docker\.env.production`:
+
+```
+ATTENDANCE_HOURS_ENABLED=true
+ATTENDANCE_HOURS_CRON=0 9,21 * * *
+```
+
 ## 1. Prepare PostgreSQL on the database server
 
-Install PostgreSQL 15 or newer, enable TLS, and restrict port 5432 in the firewall
-to the Docker host. As the PostgreSQL administrator, create the login and database:
+Install PostgreSQL 15 or newer and restrict its port (5439 in this deployment - see
+section 0) in the firewall to the Docker host. As the PostgreSQL administrator, create
+the login and database:
 
 ```bash
 sudo -u postgres psql \
@@ -27,15 +240,16 @@ container in production**: `infra/docker/compose.production.yml` starts `migrate
 `api` and `web` only. (`infra/docker/docker-compose.yml`, which does run a local
 PostgreSQL container, is the **development** stack and is not used in production.)
 
-For a database server at `10.5.1.178`, `infra/docker/.env.production` carries:
+For a database server at `10.5.1.178` listening on 5439, `infra/docker/.env.production`
+carries (section 0.2 explains the `sslmode` choice):
 
 ```
-DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5432/workforce?schema=public&sslmode=require
+DATABASE_URL=postgresql://workforce_app:URL_ENCODED_PASSWORD@10.5.1.178:5439/workforce?schema=public&sslmode=prefer
 ```
 
 - URL encode the password (`@` becomes `%40`). Use `sslmode=verify-full` with your
   CA when the server presents a certificate you can verify.
-- Allow port 5432 from the Docker host to `10.5.1.178` in the firewall, and grant
+- Allow the PostgreSQL port from the Docker host to `10.5.1.178` in the firewall, and grant
   `workforce_app` `CONNECT` on `workforce`. The containers need no other route to
   the database.
 - The `migrate` container applies the schema over that same URL, so the two must
@@ -91,6 +305,8 @@ The repository's migrations are the authoritative, reviewed DDL. Current history
 | `20260918000001_job_order_progress_remarks` | `job_order_progress_remarks` — every quantity remark kept as its own row (stage, author, role, time), with the remarks that already existed backfilled. |
 | `20260918000002_job_order_wbs_project_fk` | Composite foreign key on `job_orders (project_wbs_id, project_id)` → `project_wbs (id, project_id)` with the supporting unique index, so a Job Order's Project must be the Project that owns its WBS. Declared in the Prisma schema (`projectWbsOfProject`), so `migrate dev` will not drop it. |
 | `20260918000003_network_wbs_scope` | `networks.wbs_id` — a Network belongs to one WBS element of its project, not to the whole project. Each existing Network is backfilled onto the **first** WBS row of its project (lowest sort order, then lowest WBS code, and the pick is not limited to active WBS rows) and the column is made NOT NULL. Apply it through `prisma migrate deploy`, which wraps the migration in one transaction: with a bare `psql -f` the added column survives the failed guard and a re-run stops on `column "wbs_id" already exists`. The migration **stops and names the Network codes** when a Network's project has no WBS row at all: add a WBS row to that project (or delete the Network) and re-run. `(project_id, code)` uniqueness is unchanged. See `docs/MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`. |
+| `20260921000000_timesheet_in_out_hours` | `timesheet_days.in_out_hours` (DOUBLE PRECISION, nullable) - the hours each contract worker actually clocked in and out, read from LabourWorks. Nullable with **no backfill by design**: the value comes from an external system and is absent until it is fetched. Reset to NULL by every submit. |
+| `20260922000000_timesheet_in_out_pending_state` | `timesheet_days.in_out_source` (null / LABOURWORKS / MANUAL), `in_out_checked_at`, `in_out_attempts` - the pending-state columns that let a late regularization be seen ("still 0 after N checks") and let an Admin's manual figure survive every refresh. |
 | `20260918000000_project_wbs_job_order_master` | Project → WBS → Job Order master data: renames `projects_wbs` to `project_wbs` and links it to its Project, adds `uom` and `networks`, adds `uom_id` / `network_id` / `budgeted_quantity` / `section_id` to `job_orders` and limits its status to active / inactive, adds `job_order_budget_revisions` and `job_order_progress`, and adds the attribution snapshot columns to `timesheet_entries` and `employee_allocations`. It backfills everything it makes required, so it runs against a populated database. See `docs/MASTER_DATA_PROJECT_WBS_JOB_ORDER.md`. |
 
 Apply them with the `migrate` container (option A) or directly:
@@ -192,16 +408,17 @@ docker compose --env-file infra/docker/.env.production \
   -f infra/docker/compose.production.yml up -d
 ```
 
-Open `http://DOCKER_HOST:8080` (or `WEB_PORT`). Put a TLS reverse proxy or load
-balancer in front for HTTPS. Do not expose the API port or PostgreSQL publicly.
+Open `http://DOCKER_HOST:8099` (the `WEB_PORT` in `infra/docker/.env.production`). Put a
+TLS reverse proxy or load balancer in front for HTTPS. Do not expose the API port or
+PostgreSQL publicly.
 
 Check status and logs:
 
 ```bash
 docker compose -f infra/docker/compose.production.yml ps
 docker compose -f infra/docker/compose.production.yml logs migrate api web
-curl -fsS http://127.0.0.1:8080/healthz
-curl -fsS http://127.0.0.1:8080/api/health/ready
+curl.exe -fsS http://127.0.0.1:8099/healthz
+curl.exe -fsS http://127.0.0.1:8099/api/health/ready
 ```
 
 ## Operations
@@ -220,7 +437,7 @@ curl -fsS http://127.0.0.1:8080/api/health/ready
   `up -d` alone is a no-op when the image tag has not changed and the containers are
   already running — pair `build` with `up -d --force-recreate`.
 - Verify the deployed code, not just that the container is up:
-  `curl -fsS http://127.0.0.1:8080/api/health/ready` then log in as an Admin and confirm
+  `curl.exe -fsS http://127.0.0.1:8099/api/health/ready` then log in as an Admin and confirm
   **Approvals** shows the *HOD Approval Cover* panel and **Employees** shows *HOD
   Registration & Department / Section Mapping*.
 - Apply later migrations with `docker compose ... run --rm migrate`, then restart the
