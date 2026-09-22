@@ -34,6 +34,8 @@ export type CapabilityMap = {
   manageJobOrderMaster: boolean;
   /** Punch quantity progress (HOD, Department Head) and approve it (PM, Admin). */
   manageJobOrderProgress: boolean;
+  /** Read/refresh the clocked attendance hours (in/out) from LabourWorks (Admin only). */
+  manageAttendanceHours: boolean;
 };
 
 export function capabilitiesFor(role: string): CapabilityMap {
@@ -56,6 +58,9 @@ export function capabilitiesFor(role: string): CapabilityMap {
     manageJobOrderMaster: admin || role === "PM",
     // HODs punch the cumulative quantity progress; PMs approve, reject or send it back.
     manageJobOrderProgress: admin || role === "PM" || role === "HOD" || role === "DEPT_HEAD",
+    // The clocked (in/out) figure is an audit over every department's submitted
+    // sheets, so only Admin may read it or trigger a refresh.
+    manageAttendanceHours: admin,
   };
 }
 

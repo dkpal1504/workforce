@@ -18,6 +18,7 @@ import { RoleAssignmentPage } from "./pages/RoleAssignmentPage";
 import { MasterDataPage } from "./pages/MasterDataPage";
 import { JobOrderProgressPage } from "./pages/JobOrderProgressPage";
 import { JobOrderUploadPage } from "./pages/JobOrderUploadPage";
+import { AttendanceHoursPage } from "./pages/AttendanceHoursPage";
 
 function LoadingSession() {
   return <div className="loading-state" style={{ margin: "20vh auto", maxWidth: 420 }}>Checking your session…</div>;
@@ -105,6 +106,10 @@ export function App() {
           {/* Quantity progress: HOD punches, PM approves. */}
           <Route element={<RequireCapability capability="manageJobOrderProgress" />}>
             <Route path="/job-order-progress" element={<JobOrderProgressPage />} />
+          </Route>
+          {/* Clocked attendance hours (in/out) from LabourWorks — ADMIN only. */}
+          <Route element={<RequireCapability capability="manageAttendanceHours" />}>
+            <Route path="/attendance-hours" element={<AttendanceHoursPage />} />
           </Route>
           {/* Offered, not forced: accounts on the shared dev password can change it
               whenever they like, and are not trapped in the flow. */}

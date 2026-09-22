@@ -24,6 +24,8 @@ import { jobOrderCsvRouter } from "./routes/jobOrderCsv";
 import { jobOrderProgressRouter } from "./routes/jobOrderProgress";
 import { delegationRouter } from "./routes/delegations";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
+import { attendanceHoursRouter } from "./routes/attendanceHours";
+import { startAttendanceHoursScheduler, stopAttendanceHoursScheduler } from "./services/attendanceHoursScheduler";
 import { prisma } from "./db";
 import { assertDevBootstrapAllowed } from "./services/defaultLoginCredentials";
 
@@ -130,6 +132,8 @@ api.use("/job-order-upload", jobOrderCsvRouter);
 api.use("/job-order-progress", jobOrderProgressRouter);
 api.use("/master-data", masterDataRouter);
 api.use("/delegations", delegationRouter);
+// Clocked attendance hours (in/out) for submitted timesheets, ADMIN only.
+api.use("/attendance-hours", attendanceHoursRouter);
 app.use("/api", api);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -140,6 +144,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const server = app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
   startBadgeViewSyncScheduler();
+  startAttendanceHoursScheduler();
 });
 
 async function shutdown(signal: string): Promise<void> {
@@ -147,6 +152,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   console.log(`${signal} received; shutting down.`);
   stopBadgeViewSyncScheduler();
+  stopAttendanceHoursScheduler();
   server.close(async () => {
     await prisma.$disconnect();
     process.exit(0);

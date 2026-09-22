@@ -474,6 +474,12 @@ model TimesheetDay {
   taggedBy   User     @relation("TaggedBy", fields: [taggedById], references: [id])
   status     String   @default("DRAFT")
   remarks    String?
+  /// Clocked attendance hours for this employee-day, read from the LabourWorks
+  /// attendance view (`ManHours` for `IDNo` = the employee ecNo). NULL means
+  /// "not fetched yet": every submit resets it, and only an Admin refresh or the
+  /// 09:00 / 21:00 job fills it in. Never written by a supervisor, never part of
+  /// the booked-hours arithmetic.
+  inOutHours Float?   @map("in_out_hours")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 

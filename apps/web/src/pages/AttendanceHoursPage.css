@@ -1,0 +1,140 @@
+/* Clocked attendance hours (in/out) — ADMIN screen.
+   The desktop table uses the shared .sup-table (hidden below 1024px), so the card
+   list below it is what a phone or tablet sees. */
+
+.att-filters {
+  align-items: flex-end;
+}
+
+.att-filters__check {
+  min-width: 220px;
+}
+
+.att-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.att-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+}
+
+.att-filters__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.att-summary {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.att-table-wrap {
+  overflow-x: auto;
+}
+
+.att-table td {
+  vertical-align: middle;
+}
+
+.att-diff {
+  font-weight: 650;
+}
+
+.att-diff--over {
+  color: var(--warning);
+}
+
+.att-diff--under {
+  color: var(--danger);
+}
+
+.att-source {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.att-source li {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.att-source span {
+  min-width: 110px;
+  color: var(--text-muted);
+}
+
+.att-source strong {
+  font-weight: 550;
+  word-break: break-word;
+}
+
+/* Phone / tablet rendering: cards, never the wide table. */
+.att-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.att-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+}
+
+.att-card__top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.att-card__meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (min-width: 1024px) {
+  .att-cards {
+    display: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .att-table-wrap {
+    display: none;
+  }
+
+  .att-filters__actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .att-filters__actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .att-source li {
+    flex-direction: column;
+    gap: 2px;
+  }
+}

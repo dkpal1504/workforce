@@ -171,3 +171,10 @@ match the employee's own Section.
   organisation history so a transfer splits department reports from the transfer date.
 - The **quantity progress amendment trail** in the demo data leaves one DRAFT booking behind
   after the e2e run; harmless, but tidy it if the demo must be pristine.
+- **Clocked hours (in/out) is live, with one dependency to watch.** IT granted SELECT on
+  `[LabourWorks].[dbo].[Report_Attendance_Intermediate]` to the read-only login `it` on 2026-09-21, so
+  `POST /api/attendance-hours/refresh` and the 09:00 / 21:00 job read the real view. Confirmed against
+  it: `IDNo` = the employee ecNo, `ManHours` = the hours, and the DATE column is `Date` (the earlier
+  `AttDate` default was a placeholder and is gone). The view holds one row per check-in/out pair, so a
+  worker can appear twice on one date and the day's figure is the SUM (see `docs/MANUAL.md` §12.1). If
+  the grant is ever revoked the feature fails closed: the refresh answers 502 and names the login.

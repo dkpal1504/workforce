@@ -416,6 +416,50 @@ Source-of-truth for **contract workers and supervisors** is the external **Labou
 - Only writes to SYNC rows; never overwrites MANUAL / PAYROLL fields (the partial-write guard). A PM/Admin organisation transfer creates a durable override so the next sync does not undo it.
 - One-off runs on the dev box: `node apps/api/run-sync-once.cjs` (see `docs/DEV_SQLITE_TESTING.md`) — same service, with a known dev password and no e-mail.
 
+### 12.1 Clocked hours (in/out) for submitted timesheets
+
+**Screen:** `/attendance-hours` (ADMIN).
+
+The supervisor books shift slots; LabourWorks knows how long the worker actually clocked in and
+out. This screen puts the two figures side by side so contract attendance can be validated.
+
+- **Every submit resets the column.** `timesheet_days.in_out_hours` is NULL when a sheet is
+  submitted — first submit, a re-submit after a send-back, and a resubmitted amendment alike. Nothing
+  a supervisor does writes it, and nothing else in the app reads it: it can never change booked hours,
+  approvals or reports.
+- **The value comes from LabourWorks.** The join key is the employee **`ecNo`**, which the source view
+  calls `IDNo`; the hours field is `ManHours`, and the date is `Date` (all three confirmed against the
+  live view on 2026-09-21). The screen reads the view named by `ATTENDANCE_DB_VIEW` (default
+  `dbo.Report_Attendance_Intermediate`) and stamps every matching non-draft sheet in the chosen date
+  range. A sheet whose employee has no attendance row is left untouched and reported, never cleared.
+- **A day can hold more than one record.** The view keeps one row per check-in/out pair, so a split day
+  or a night shift whose checkout lands the next morning appears twice (observed: 09:03-12:18 = 3.15h
+  and 18:04-08:59 = 14.55h for the same worker and date). `in_out_hours` is the **sum** of the day's
+  records, which is why a clocked figure above 8h is normal; the row shows `n records` when more than
+  one was added up.
+- **Preview first.** *Preview (no save)* runs the exact same computation as *Fetch & save hours* with
+  `dryRun` on, so what you see before saving is what gets written. The panel shows the booked hours,
+  the clocked hours, the difference, and why a row has no clocked figure (`No attendance row` /
+  `No ManHours in the row`).
+- **Off-peak job.** `ATTENDANCE_HOURS_ENABLED=true` starts the in-process job that runs at **09:00 and
+  21:00** daily (`ATTENDANCE_HOURS_CRON=0 9,21 * * *`). Each tick refreshes today plus
+  `ATTENDANCE_HOURS_LOOKBACK_DAYS` (default 3) for non-draft sheets, because attendance lands in
+  LabourWorks only after the shift ends. It is idempotent: a second run with the same source data
+  writes nothing, so the job and the button can run back to back.
+- **The source is configuration, not code.** `ATTENDANCE_DB_ID_COLUMN`, `ATTENDANCE_DB_HOURS_COLUMN`
+  and `ATTENDANCE_DB_DATE_COLUMN` name the columns, and `ATTENDANCE_DB_QUERY` replaces the generated
+  SQL entirely (it must bind `@workDate`) when the view already filters the date itself or the DBA
+  supplies the exact query. The screen shows the resolved view, columns and connection, and reports the
+  source error verbatim — including "the login needs SELECT on the view", which is what an unprivileged
+  read-only login answers with.
+- **Scope.** Only ADMIN may read it or trigger a refresh (`manageAttendanceHours`), and every refresh
+  that writes is audited (`ATTENDANCE_HOURS_REFRESH`).
+- **Drafts.** A DRAFT sheet is still being written, so it is skipped unless *Include draft sheets* is
+  ticked (the scheduled job never includes drafts).
+- **Offline testing.** `ATTENDANCE_HOURS_FIXTURE` points the reader at a local JSON
+  (`{"2026-09-21":{"FRNEGJ018":8.58}}`) or CSV (`date,IDNo,ManHours`) file instead of SQL Server. It is
+  refused when `NODE_ENV=production`.
+
 ---
 
 ## 13. Master Data: Project, WBS and Job Order

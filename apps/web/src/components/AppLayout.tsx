@@ -24,6 +24,7 @@ function titleForPath(pathname: string, role?: string) {
   if (pathname.startsWith("/master-data")) return "Project Master Data";
   if (pathname.startsWith("/job-order-upload")) return "Job Order Upload";
   if (pathname.startsWith("/job-order-progress")) return "Quantity Progress";
+  if (pathname.startsWith("/attendance-hours")) return "Clocked Hours (In/Out)";
   return "Select Team for Today";
 }
 
@@ -77,6 +78,7 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
       { to: "/timesheet", label: "Timesheet", cap: "editTimesheet", icon: "clock" },
       { to: "/summary", label: "Summary", cap: "viewSummary", icon: "chart" },
       { to: "/approvals", label: "Approvals", cap: "approveTimesheets", icon: "check" },
+      { to: "/attendance-hours", label: "Clocked hours", cap: "manageAttendanceHours", icon: "clock" },
       { to: "/allocations", label: "My hours", cap: "allocateHours", icon: "hours" },
     ],
   },
@@ -124,6 +126,7 @@ const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string;
   { prefix: "/role-assignment", lede: "Search an account and set the role and scope it may act within." },
   { prefix: "/job-order-upload", lede: "Upload the job order list from the CSV the commercial team exports." },
   { prefix: "/job-order-progress", lede: "Punch the quantity achieved per job order, then approve the entries." },
+  { prefix: "/attendance-hours", lede: "Fill the clocked in/out hours from LabourWorks next to the hours the supervisors booked." },
   { prefix: "/csv-upload", lede: "Load the employee roster from a CSV file." },
   { prefix: "/account/password", lede: "Change the password you sign in with." },
 ];
@@ -369,6 +372,11 @@ export function AppLayout() {
           {capabilities?.manageJobOrderProgress && (
             <NavLink to="/job-order-progress" className={({ isActive }) => (isActive ? "active" : "")}>
               Qty Progress
+            </NavLink>
+          )}
+          {capabilities?.manageAttendanceHours && (
+            <NavLink to="/attendance-hours" className={({ isActive }) => (isActive ? "active" : "")}>
+              Clocked Hours
             </NavLink>
           )}
           {capabilities?.assignRoles && (

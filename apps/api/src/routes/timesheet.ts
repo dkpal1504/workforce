@@ -1868,7 +1868,11 @@ timesheetRouter.post("/submit", serializeTimesheetMutation, async (req, res) => 
 
     await prisma.timesheetDay.update({
       where: { id: dayId },
-      data: { status: "SUBMITTED" },
+      // A submit ALWAYS clears the clocked attendance figure. It is an audit value
+      // fetched from LabourWorks for the sheet as submitted, so a first submit, a
+      // re-submit after a send-back, and a resubmitted amendment all start from NULL
+      // and wait for the next refresh (Admin button or the 09:00 / 21:00 job).
+      data: { status: "SUBMITTED", inOutHours: null },
     });
 
     if (hasProtectedEntries) {
