@@ -303,16 +303,49 @@ registration; they log in with their **EC number** and `password@SDHI`, and must
 
 ## Phase 8 — Optional integrations (do these after the core works)
 
-**LabourWorks sync (supervisors, contract workers, departments, sections):**
-1. Put the real read-only credentials in `infra/docker/.env.production`:
+**LabourWorks sync (departments, sections, contract workers, supervisors) - do this FIRST**
+
+Nothing can be registered before it runs: the Employee form has no Department to select until the
+sync has created them. There is **no Sync button in the UI** - the sync is the scheduler and the
+`POST /api/admin/sync/badgeview` endpoint.
+
+1. Put the read-only credentials in `infra/docker/.env.production` (they are already in the example):
    `BADGEVIEW_DB_HOST=10.5.1.106`, `BADGEVIEW_DB_PORT=1433`, `BADGEVIEW_DB_USER=it`,
    `BADGEVIEW_DB_PASSWORD="..."` (QUOTE it if it contains `#`), `BADGEVIEW_DB_NAME=LabourWorks`,
-   `BADGEVIEW_DB_VIEW=BadgeView`, `BADGEVIEW_DB_ENCRYPT=false`.
+   `BADGEVIEW_DB_VIEW=BadgeView`, `BADGEVIEW_DB_ENCRYPT=false`,
+   `BADGEVIEW_SYNC_ACTIVE_ONLY=true`, `BADGEVIEW_SYNC_MIN_ROWS=1`, `BADGEVIEW_SYNC_MIN_RATIO=0.9`.
 2. The yard's SQL Server firewall must allow **10.5.1.193** (container traffic is NAT'ed, so the
-   source address SQL Server sees is the host's).
-3. `BADGEVIEW_SYNC_ENABLED=true` then restart the API and run one sync from *Admin → Sync*
-   (or wait for 06:00 / 18:00). The snapshot guards (`BADGEVIEW_SYNC_MIN_ROWS`/`_MIN_RATIO`) abort a
-   suspiciously small feed instead of retiring the workforce.
+   source address SQL Server sees is the host's). Prove it from the container:
+   ```powershell
+   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml exec api node -e "const sql=require('mssql');new sql.ConnectionPool({server:process.env.BADGEVIEW_DB_HOST,port:Number(process.env.BADGEVIEW_DB_PORT||1433),user:process.env.BADGEVIEW_DB_USER,password:process.env.BADGEVIEW_DB_PASSWORD,database:process.env.BADGEVIEW_DB_NAME,options:{encrypt:false,trustServerCertificate:true,readOnlyIntent:true}}).connect().then(async(p)=>{const r=await p.request().input('c',sql.NVarChar(32),'ASSOCIATES').query(\"SELECT COUNT(*) AS n FROM [dbo].[\"+process.env.BADGEVIEW_DB_VIEW+\"] WHERE [Card Type]=@c\");console.log('rows:',r.recordset[0].n);await p.close()}).catch((e)=>{console.error('FAIL',e.message);process.exit(1)})"
+   ```
+3. Turn the job on and re-create the API so the in-process scheduler starts:
+   `BADGEVIEW_SYNC_ENABLED=true` and `BADGEVIEW_SYNC_CRON=0 6,18 * * *` (06:00 and 18:00 daily;
+   any valid cron expression is accepted), then
+   ```powershell
+   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml up -d --force-recreate api
+   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml logs --tail 20 api | Select-String "badgeViewSync"
+   ```
+   Expected in the log: `[badgeViewSync] Scheduled with cron "0 6,18 * * *".`
+4. **Run it once NOW** with the one-shot script (no browser, no token, no proxy timeout):
+   ```powershell
+   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml exec api node apps/api/scripts/sync-labourworks.mjs
+   ```
+   Expected on a fresh database (measured against the live yard source): about five seconds and
+   a result like
+   ```
+   { "ok": true, "workersUpserted": 490, "supervisorsLinked": 26, "departmentsCreated": 26,
+     "sectionsCreated": 39, "exceptions": 2, "credentialsQueued": 26, "seconds": 5.2 }
+   ```
+   Then reload the Employees screen: the Department list is populated and Supervisors exist.
+5. Review the exceptions (`sync_exceptions`), which are rows the sync deliberately skipped instead of
+   guessing their identity - typically a mobile number shared by two workers. List them with:
+   ```powershell
+   docker run --rm -e PGPASSWORD=WorkforceDb2026Pass postgres:15-alpine psql -h 10.5.1.178 -p 5432 -U workforce_app -d workforce -c "select ec_no, error_code, message from sync_exceptions order by last_seen_at desc;"
+   ```
+6. `credentialsQueued` rows stay queued: with `BOOTSTRAP_PASSWORD` set nobody is e-mailed, and the
+   supervisors log in with the shared first password (they must change it). If you leave
+   `BOOTSTRAP_PASSWORD` empty, `CREDENTIAL_DELIVERY_ENABLED=true` plus `SMTP_*` becomes mandatory.
 
 **Clocked hours (in/out) from the attendance view:** the read-only login needs `SELECT` on
 `dbo.Report_Attendance_Intermediate` as well. Then `ATTENDANCE_HOURS_ENABLED=true` starts the
