@@ -6,6 +6,12 @@ Linux machine. Only the web port is published by Docker.
 
 ## 0. THIS deployment: database on 10.5.1.178, Docker on Windows (10.5.1.193)
 
+> **Starting from nothing? Follow [`PRODUCTION_GO_LIVE_CHECKLIST.md`](PRODUCTION_GO_LIVE_CHECKLIST.md) instead.**
+> It is the same deployment as a numbered, copy-paste sequence (database creation, code checkout,
+> `.env.production`, build, migrate, first Admin, PM/HOD onboarding, firewall, day-2 operations) with
+> the expected output after every step and a failure-to-fix appendix. This document is the reference
+> behind it.
+
 The two hosts and the ports chosen for them. Standard ports are already taken on this
 network (8080 among them), so every published port is a non-standard one: change the
 numbers in one place - `infra/docker/.env.production` - if they clash too.
