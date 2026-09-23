@@ -42,3 +42,13 @@ test("requestOrigin reads the proxy headers when they are present", () => {
   assert.equal(requestOrigin(direct), "http://10.5.1.193:8099");
   assert.equal(requestOrigin({ protocol: "http", get: () => undefined, headers: {} }), "");
 });
+
+test("an EMPTY list means not configured, which is local development (Vite on another port)", () => {
+  assert.equal(isAllowedOrigin("http://localhost:5173", { configured: [], sameOrigin: "http://localhost:4000" }), true);
+  assert.equal(isAllowedOrigin("http://10.5.1.193:8099", { configured: [], sameOrigin: "http://127.0.0.1:4000" }), true);
+  // Production always has a list (the boot gate refuses an empty one), so the strict path holds there.
+  assert.equal(
+    isAllowedOrigin("http://localhost:5173", { configured: ["http://10.5.1.193:8099"], sameOrigin: "http://10.5.1.193:8099" }),
+    false
+  );
+});

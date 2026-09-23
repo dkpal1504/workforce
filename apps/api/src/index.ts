@@ -83,6 +83,9 @@ if (process.env.NODE_ENV === "production") {
 //   - the API's own origin -> allowed, because that is the SPA itself
 //   - anything else     -> 403 ORIGIN_NOT_ALLOWED with the origin in the body and the log,
 //                          instead of an opaque 500
+// An EMPTY CORS_ORIGINS means "not configured": every origin is allowed, which is what local
+// development needs (Vite serves the SPA on 5173 and proxies to the API on 4000, so the call
+// arrives cross-origin). Production cannot run with an empty list - the boot gate above refuses.
 app.use((req, res, next) => {
   const origin = req.get("origin");
   const sameOrigin = requestOrigin(req);

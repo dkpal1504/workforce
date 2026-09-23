@@ -35,9 +35,14 @@ export function requestOrigin(req: {
 /** True when this Origin may proceed. `origin` undefined/empty means "not a browser call". */
 export function isAllowedOrigin(
   origin: string | undefined | null,
-  options: { configured: string[]; sameOrigin: string },
+  options: { configured: string[]; sameOrigin: string; allowWhenUnconfigured?: boolean },
 ): boolean {
   if (!origin) return true;
+  // An EMPTY list means "not configured" - which is local development, where the SPA is served
+  // by Vite on another port (localhost:5173 -> localhost:4000) and every call therefore arrives
+  // cross-origin. Production cannot reach this branch: the API refuses to boot in production
+  // when CORS_ORIGINS has no entries (index.ts), so the deployment always has a real list.
+  if (options.configured.length === 0 && options.allowWhenUnconfigured !== false) return true;
   if (options.configured.includes(origin)) return true;
   // Same-origin POSTs carry an Origin header, so this is the case that must never fail.
   return options.sameOrigin !== "" && origin === options.sameOrigin;
