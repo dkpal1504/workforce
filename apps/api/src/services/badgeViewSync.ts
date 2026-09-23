@@ -371,12 +371,22 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
           matched = inactiveMatches[0];
         } else if (mobileMatches.length > 0) {
           for (const candidate of mobileMatches) seenEmployeeIds.add(candidate.id);
+          // Name the colliding rows: an operator cannot act on "did not resolve". The two
+          // real cases are a re-hire whose mobile matches several rows, and two DIFFERENT
+          // workers who share one number in LabourWorks - the second is what the yard hits,
+          // because the row processed first is already imported and ACTIVE by the time the
+          // second one arrives.
+          const collidesWith = mobileMatches
+            .map((candidate) => `${candidate.ecNo} (${candidate.name}, ${candidate.active ? "active" : "inactive"})`)
+            .join("; ");
           await recordException(
             externalKey,
             ecNo,
             mobile,
             "MOBILE_IDENTITY_CONFLICT",
-            "Mobile fallback did not resolve to exactly one inactive CLMS Employee."
+            `Mobile ${mobile} is already used by ${collidesWith}, so it cannot identify this row. ` +
+              "Mobile is used only to re-link ONE inactive employee who returned with a new EcNo; " +
+              "two different workers sharing one number must be corrected in LabourWorks (or linked by an Admin), then run the sync again."
           );
           result.exceptions += 1;
           continue;
