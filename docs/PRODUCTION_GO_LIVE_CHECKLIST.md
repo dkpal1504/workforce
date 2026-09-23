@@ -282,6 +282,26 @@ Then, in a browser on the LAN:
 
 ## Phase 7 — Onboard the PM team, then the HODs
 
+### 7.0 Rules that decide who may become an ADMIN or a PM
+- **Never promote a LabourWorks-synced account to ADMIN.** The sync's supervisor branch force-writes
+  `role = "SUPERVISOR"` on the user of every CLMS supervisor on each run, and because the role
+  differed it also re-issues that person's credential and revokes their sessions - so an ADMIN
+  promotion would be silently reverted at 06:00 / 18:00. Create admin/PM accounts from **payroll
+  employees** (*Employees → Register payroll employee*), which the sync never touches. If such a
+  payroll employee's ecNo also appears in LabourWorks, the sync records an `ECNO_SOURCE_COLLISION`
+  exception and leaves the account alone (the partial-write guard) - expected, not an error.
+- **The login identifier follows the role.** `EMPLOYEE`, `SUPERVISOR`, `HOD`, `DEPT_HEAD` and `PM`
+  sign in with their **EC number**; `ADMIN`, `HR` and `FINANCE` sign in with their **e-mail address**.
+  Record the account's e-mail before switching it to ADMIN (query below).
+- A role change **revokes that person's sessions** and is audited as `USER_ROLE_ASSIGNMENT`
+  (from → to). The screen cannot change your own account's role, so use a different admin.
+
+```powershell
+# Before you promote anyone: what is this account, exactly?
+docker run --rm -e PGPASSWORD=WorkforceDb2026Pass postgres:15-alpine psql -h 10.5.1.178 -p 5432 -U workforce_app -d workforce -c "select u.id, u.email, u.role, u.active as user_active, u.source as user_source, e.ec_no, e.name, e.source as employee_source, e.employment_type from users u left join employees e on e.id = u.employee_id where e.ec_no = '1098' or u.email = '1098';"
+```
+`employee_source = MANUAL` (a payroll registration) may be promoted. `employee_source = SYNC` must not.
+
 **PM (2-3 people):**
 1. *Employees → Register payroll employee* for each PM person (department + section + ecNo). They
    start on `password@SDHI` and must change it at their first login.
