@@ -8,6 +8,7 @@ dotenv.config();
 import "express-async-errors";
 import express from "express";
 import cors from "cors";
+import { isAllowedOrigin, requestOrigin } from "./services/corsOrigins";
 import { rateLimit } from "express-rate-limit";
 import { authRouter } from "./routes/auth";
 import { mastersRouter } from "./routes/masters";
@@ -72,13 +73,33 @@ if (process.env.NODE_ENV === "production") {
     throw new Error("API_PORT must be an integer from 1 to 65535.");
   }
 }
-app.use(cors({
-  credentials: false,
-  origin(origin, callback) {
-    if (!origin || configuredOrigins.length === 0 || configuredOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("Origin is not allowed by CORS."));
-  },
-}));
+// CORS. The SPA is served from the SAME origin as the API, and browsers send an `Origin`
+// header on POST/PUT/PATCH/DELETE even then - so a CORS_ORIGINS list that names only the
+// eventual hostname must never break same-origin use. That mistake used to surface as
+// `500 Internal server error` on every login and every save (the CORS middleware threw and the
+// global error handler hid the reason). It is now checked before CORS runs:
+//   - no Origin header  -> allowed (curl, health probes, server-to-server)
+//   - a listed origin   -> allowed (CORS_ORIGINS accepts a comma-separated list)
+//   - the API's own origin -> allowed, because that is the SPA itself
+//   - anything else     -> 403 ORIGIN_NOT_ALLOWED with the origin in the body and the log,
+//                          instead of an opaque 500
+app.use((req, res, next) => {
+  const origin = req.get("origin");
+  const sameOrigin = requestOrigin(req);
+  if (origin && !isAllowedOrigin(origin, { configured: configuredOrigins, sameOrigin })) {
+    console.warn(
+      `[cors] refused origin "${origin}" (this API is served as "${sameOrigin || "unknown"}"); ` +
+        `CORS_ORIGINS=${configuredOrigins.join(",") || "(empty)"}`
+    );
+    return res.status(403).json({
+      error: "This origin is not allowed to call the API.",
+      code: "ORIGIN_NOT_ALLOWED",
+      origin,
+    });
+  }
+  next();
+});
+app.use(cors({ credentials: false, origin: true }));
 app.use(express.json({ limit: "2mb" }));
 // Brute-force protection on login. In production the strict default matters, so it
 // stays enforced unless it is disabled explicitly. For local testing set

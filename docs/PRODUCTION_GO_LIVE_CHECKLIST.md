@@ -203,7 +203,7 @@ API_HOST=0.0.0.0
 API_PORT=4000
 DATABASE_URL=postgresql://workforce_app:WorkforceDb2026Pass@10.5.1.178:5432/workforce?schema=public&sslmode=require
 JWT_SECRET=<the 48 characters you just generated>
-CORS_ORIGINS=http://10.5.1.193:8099
+CORS_ORIGINS=http://10.5.1.193:8099,https://workforce.swan.co.in   # every origin users type, comma-separated
 TRUST_PROXY=true
 AUTH_RATE_LIMIT_ENABLED=true
 AUTH_RATE_LIMIT_WINDOW_MS=900000
@@ -378,6 +378,7 @@ sudo -u postgres pg_dump --format=custom workforce > /backup/workforce-$(date +%
 | `connect ECONNREFUSED 10.5.1.178:5432` | firewall, `listen_addresses`, or the wrong host | Phase 1.2/1.6, then `Test-NetConnection` |
 | `server does not support SSL connections` | `sslmode=require` against a server without TLS | use `sslmode=prefer` |
 | `password authentication failed for user "workforce_app"` | wrong password, or a value that got truncated by an unquoted `#`, or special characters not percent-encoded | Phase 0 password rule; quote env values |
+| Login (or any save) answers **500 Internal server error** while the pages load fine | the browser's origin is missing from `CORS_ORIGINS`: browsers send an `Origin` header on POST/PUT/DELETE even for same-origin calls, so the API refused the request. Fix the list (comma-separated, no trailing slash) and re-create the api container: `docker compose ... up -d --force-recreate api`. Since 2026-09-23 a same-origin call is always allowed and a foreign origin answers `403 ORIGIN_NOT_ALLOWED` with a warning in the log instead of a 500 |
 | `CORS_ORIGINS must contain exact, valid origins in production.` | `*` or a placeholder origin | put the exact `http://10.5.1.193:8099` |
 | `JWT_SECRET must be a non-placeholder secret of at least 32 characters` | the example value was kept | generate and paste a real one |
 | `SQLite is not permitted in production.` | a dev `.env` was copied | `DATABASE_URL` must be the `postgresql://` URL |
