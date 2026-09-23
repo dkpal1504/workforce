@@ -5,6 +5,15 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
+# Prisma finds the right engine by running the `openssl` CLI. The slim Node base image does
+# not ship it, so Prisma warns "failed to detect the libssl/openssl version", falls back to
+# the openssl-1.1.x engine and then tries to DOWNLOAD that engine at run time - which fails
+# in an unprivileged container with "Can't write to /app/node_modules/@prisma/engines".
+# Installing openssl (it also provides libssl3, which the engine links against at run time)
+# is the fix that warning itself recommends.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 RUN npm ci
 
 FROM dependencies AS build
@@ -36,6 +45,15 @@ RUN npm run db:generate -w @workforce/api \
 
 FROM dependencies AS migrate
 ENV NODE_ENV=production
+# Prisma finds the right engine by running the `openssl` CLI. The slim Node base image does
+# not ship it, so Prisma warns "failed to detect the libssl/openssl version", falls back to
+# the openssl-1.1.x engine and then tries to DOWNLOAD that engine at run time - which fails
+# in an unprivileged container with "Can't write to /app/node_modules/@prisma/engines".
+# Installing openssl (it also provides libssl3, which the engine links against at run time)
+# is the fix that warning itself recommends.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 COPY apps/api/prisma apps/api/prisma
 # The migration SQL under prisma/migrations is PostgreSQL dialect, so pin the
 # datasource explicitly. This also overrides the sqlite provider used for local
@@ -50,6 +68,12 @@ RUN set -eux; \
     echo "migrate stage datasource provider: '${provider}'"; \
     [ "$provider" = "postgresql" ]; \
     cp /tmp/schema.check "$schema"
+# Prisma must be able to touch its own engine directory even in the unlikely case it needs to
+# fetch one; the container runs as the unprivileged `node` user.
+RUN set -eux; \
+    for dir in /app/node_modules/@prisma /app/node_modules/prisma /app/node_modules/.prisma; do \
+      if [ -d "$dir" ]; then chown -R node:node "$dir"; fi; \
+    done
 USER node
 CMD ["npx", "prisma", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
 
@@ -64,6 +88,16 @@ RUN npm ci --omit=dev
 FROM node:22-bookworm-slim AS api
 ENV NODE_ENV=production API_HOST=0.0.0.0 API_PORT=4000
 WORKDIR /app
+# Prisma finds the right engine by running the `openssl` CLI. The slim Node base image does
+# not ship it, so Prisma warns "failed to detect the libssl/openssl version", falls back to
+# the openssl-1.1.x engine and then tries to DOWNLOAD that engine at run time - which fails
+# in an unprivileged container with "Can't write to /app/node_modules/@prisma/engines".
+# Installing openssl (it also provides libssl3, which the engine links against at run time)
+# is the fix that warning itself recommends.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/apps/api/dist ./apps/api/dist
@@ -73,6 +107,9 @@ COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/scripts ./apps/api/scripts
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
+# The generated client and its engine are copied from the build stage as root; the API runs
+# as `node`, so hand them over.
+RUN chown -R node:node /app/node_modules/.prisma
 USER node
 EXPOSE 4000
 CMD ["node", "apps/api/dist/index.js"]
