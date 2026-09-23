@@ -53,6 +53,21 @@ Find the two configuration files (paths differ per distribution):
 sudo -u postgres psql -tAc "show config_file; show hba_file;"
 ```
 
+### 1.1b What an outside probe can and cannot tell you (verified 2026-09-22)
+
+PostgreSQL on `10.5.1.178:5432` answers TCP, offers TLS, and a **password rule already covers LAN
+hosts**: a connection attempt from a random user returns `FATAL: password authentication failed`,
+never `no pg_hba.conf entry for host ...`. So step 1.5 is normally a no-op here - a broad rule such
+as `host all all 10.5.1.0/24 scram-sha-256` must already be in force, because your other application
+connects from this LAN. Add the explicit `workforce_app` line only if you also want it documented,
+and remember that `pg_hba.conf` is first-match-wins: a line appended AFTER a broad rule is never
+reached. Verify with 1.7 rather than assuming.
+
+What a probe from outside can NOT tell you: whether the role or the database exists. PostgreSQL
+returns the same `password authentication failed` for a missing role as for a wrong password (a
+control probe with a name that certainly does not exist gives the identical message), so accounts
+cannot be enumerated from outside. Check it ON the server, as 1.2 and 1.2b do.
+
 ### 1.2 Confirm this database does not exist yet (it must be a NEW, empty database)
 
 ```bash
@@ -64,9 +79,13 @@ whether to reuse it (then skip 1.3-1.4) or pick another name (and use it in Phas
 ### 1.3 Create the login (the application's own role, never the `postgres` superuser)
 
 ```bash
+# 1.2b check the ROLE as well - a half-finished earlier attempt leaves a role behind
+sudo -u postgres psql -tAc "select rolname from pg_roles where rolname='workforce_app';"
+
 sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE workforce_app LOGIN PASSWORD 'WorkforceDb2026Pass';"
 ```
-Expected: `CREATE ROLE`.
+Expected: `CREATE ROLE`; verify with
+`sudo -u postgres psql -tAc "select rolname from pg_roles where rolname='workforce_app';"` -> `workforce_app`.
 
 ### 1.4 Create the database, owned by that role
 
@@ -75,6 +94,15 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE workforce OWNER wor
 sudo -u postgres psql -v ON_ERROR_STOP=1 -c "REVOKE ALL ON DATABASE workforce FROM PUBLIC;"
 sudo -u postgres psql -v ON_ERROR_STOP=1 -c "GRANT CONNECT, TEMPORARY ON DATABASE workforce TO workforce_app;"
 ```
+
+If a step answers **already exists**, every line above is safe to re-run:
+
+| Message | What to do |
+|---|---|
+| `role "workforce_app" already exists` | re-set its password instead: `sudo -u postgres psql -c "ALTER ROLE workforce_app LOGIN PASSWORD 'WorkforceDb2026Pass';"` |
+| `database "workforce" already exists` | if it is EMPTY and you want a clean start: `sudo -u postgres psql -c "DROP DATABASE workforce;"` then re-run the `CREATE DATABASE` line. Never drop it once the application has written data - take a `pg_dump` first |
+| `CREATE DATABASE cannot run inside a transaction block` | run that line on its own, exactly as written (do not combine it with other statements in one `-c`) |
+
 Expected: `CREATE DATABASE`, `REVOKE`, `GRANT`. The database is EMPTY — the tables are created in
 Phase 5 by the `migrate` container. **Never** run `database/01-schema.sql` as well: a hand-applied
 baseline collides with the migrations (`column ... already exists`).
