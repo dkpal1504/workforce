@@ -56,6 +56,19 @@ const ROLE_EFFECT: Record<Role, string> = {
   FINANCE: "Read-only approved summary.",
 };
 
+/**
+ * The identifier that ACTUALLY works for a role, which is not always the EC number:
+ * `EMPLOYEE`, `SUPERVISOR`, `HOD`, `DEPT_HEAD` and `PM` authenticate with their EC number, while
+ * `ADMIN`, `HR` and `FINANCE` authenticate with their e-mail address
+ * (`usesEcNoLogin` in the API's defaultLoginCredentials). Showing the EC number for an account
+ * that is being moved to ADMIN would name a login that no longer works - the mistake this column
+ * used to invite.
+ */
+function loginIdentifierFor(role: string, ecNo: string | null, email: string): string {
+  const byEcNo = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM"].includes(role);
+  return byEcNo ? ecNo ?? email : email;
+}
+
 export function RoleAssignmentPage() {
   const { user } = useAuth();
   const [roles, setRoles] = useState<Role[]>([]);
@@ -186,7 +199,7 @@ export function RoleAssignmentPage() {
           {selected && (
             <div className="alloc-note" style={{ marginTop: 12 }}>
               <div>
-                <strong>{selected.name}</strong> · login {selected.employee?.ecNo ?? selected.email} ·{" "}
+                <strong>{selected.name}</strong> · login {loginIdentifierFor(selected.role, selected.employee?.ecNo ?? null, selected.email)} ·{" "}
                 {selected.employee?.employmentType ?? "no Employee record"} · currently{" "}
                 <strong>{selected.role}</strong>
               </div>
@@ -300,7 +313,11 @@ export function RoleAssignmentPage() {
                   : changePending
                   ? `This moves ${selected.name} from ${selected.role} to ${pickedRole}` +
                     (pickedRole === "HOD" ? ` (${hodScope === "DEPARTMENT" ? "Department-wide" : "Section"})` : "") +
-                    ` and revokes their current sessions.`
+                    ` and revokes their current sessions.` +
+                    (loginIdentifierFor(pickedRole, selected.employee?.ecNo ?? null, selected.email) !==
+                    loginIdentifierFor(selected.role, selected.employee?.ecNo ?? null, selected.email)
+                      ? ` They will sign in with ${loginIdentifierFor(pickedRole, selected.employee?.ecNo ?? null, selected.email)} from now on.`
+                      : "")
                   : "Tick a different role to enable the update."}
               </span>
             </div>
