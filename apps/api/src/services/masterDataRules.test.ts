@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  PROJECT_DEACTIVATION_MAX_CODES,
+  projectDeactivationError,
   colorKeyError,
   colorKeyConflictMessage,
   exampleForUomCode,
@@ -389,4 +391,43 @@ test("an unchanged budget is recognised, so no revision is written for nothing",
   assert.equal(isUnchangedBudget({ budgetedHours: 100, budgetedQuantity: 10 }, { budgetedHours: 101, budgetedQuantity: 10 }), false);
   assert.equal(isUnchangedBudget({ budgetedHours: null, budgetedQuantity: null }, { budgetedHours: 0, budgetedQuantity: 0 }), true, "null reads as zero");
   assert.equal(isUnchangedBudget({ budgetedHours: null, budgetedQuantity: null }, { budgetedHours: 5, budgetedQuantity: 0 }), false);
+});
+
+/* ---------------------------------------------------------------------------
+   Project deactivation: every Job Order of the project must be In-Active first.
+   --------------------------------------------------------------------------- */
+
+test("a project with no active Job Order may be deactivated", () => {
+  assert.equal(projectDeactivationError({ code: "PRJ-A", name: "Project A" }, []), null);
+});
+
+test("a project with one active Job Order is refused, and the message names it", () => {
+  const refusal = projectDeactivationError({ code: "PRJ-A", name: "Project A" }, [{ code: "1900000107", wbsCode: "A.HULL.0010.100" }]);
+  assert.ok(refusal);
+  assert.equal(refusal.code, "PROJECT_HAS_ACTIVE_JOB_ORDERS");
+  assert.match(refusal.message, /Cannot deactivate project "Project A" \(PRJ-A\)/);
+  assert.match(refusal.message, /1 active Job Order - 1900000107 \(WBS A\.HULL\.0010\.100\)\./);
+  assert.match(refusal.message, /Set every Job Order of this project to In-Active first/);
+  assert.match(refusal.message, /Project Master Data → Job Order → status/);
+});
+
+test("several active Job Orders are listed, and the message says how many", () => {
+  const refusal = projectDeactivationError({ code: "PRJ-A", name: "Project A" }, [
+    { code: "1900000107" },
+    { code: "1900000108" },
+    { code: "1900000109" },
+  ]);
+  assert.ok(refusal);
+  assert.match(refusal.message, /3 active Job Orders - 1900000107, 1900000108, 1900000109\./);
+});
+
+test("a long list is capped and summarised", () => {
+  const many = Array.from({ length: 9 }, (_, index) => ({ code: `19000001${String(index).padStart(2, "0")}` }));
+  const refusal = projectDeactivationError({ code: "PRJ-A", name: "Project A" }, many);
+  assert.ok(refusal);
+  assert.equal(PROJECT_DEACTIVATION_MAX_CODES, 6);
+  assert.match(refusal.message, /9 active Job Orders - /);
+  assert.match(refusal.message, /, and 3 more\./);
+  const listed = (refusal.message.match(/19000001\d\d/g) ?? []).length;
+  assert.equal(listed, PROJECT_DEACTIVATION_MAX_CODES);
 });

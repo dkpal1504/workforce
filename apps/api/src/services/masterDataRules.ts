@@ -362,6 +362,50 @@ export function networkCodeConflictMessage(conflict: NetworkRow, project: { code
 }
 
 /** A delete is refused while other rows point at the master row. */
+/**
+ * Retiring a Project is a two-step decision: every Job Order of that project must be
+ * In-Active FIRST.
+ *
+ * Why: a Job Order is what hours are booked against, and the booking picker offers the
+ * ACTIVE Job Orders of the chosen project. Deactivating the project while one of its Job
+ * Orders is still Active would leave a bookable Job Order behind a project that no screen
+ * offers any more - the hours would be unreachable for reporting and impossible to correct
+ * through the pickers. Ordering the two steps keeps `active` a fact rather than a hint.
+ *
+ * The refusal names the offending Job Order codes (capped, with a remainder count) and the
+ * screen that changes them, so it is actionable without opening the database.
+ */
+export const PROJECT_HAS_ACTIVE_JOB_ORDERS = "PROJECT_HAS_ACTIVE_JOB_ORDERS";
+
+/** How many Job Order codes a refusal names before it summarises the rest. */
+export const PROJECT_DEACTIVATION_MAX_CODES = 6;
+
+/** The active Job Orders of a project, as the refusal needs them. */
+export type ActiveJobOrderRef = { code: string; wbsCode?: string | null };
+
+/**
+ * The refusal message, or null when the project may be deactivated.
+ * Pure: the route passes the active Job Orders it counted.
+ */
+export function projectDeactivationError(
+  project: { code: string; name: string },
+  activeJobOrders: ActiveJobOrderRef[]
+): { code: typeof PROJECT_HAS_ACTIVE_JOB_ORDERS; message: string } | null {
+  if (activeJobOrders.length === 0) return null;
+  const codes = activeJobOrders
+    .slice(0, PROJECT_DEACTIVATION_MAX_CODES)
+    .map((jobOrder) => (jobOrder.wbsCode ? `${jobOrder.code} (WBS ${jobOrder.wbsCode})` : jobOrder.code));
+  const remaining = activeJobOrders.length - codes.length;
+  const list = `${codes.join(", ")}${remaining > 0 ? `, and ${remaining} more` : ""}`;
+  const count = activeJobOrders.length;
+  return {
+    code: PROJECT_HAS_ACTIVE_JOB_ORDERS,
+    message:
+      `Cannot deactivate ${projectLabel(project)}: it still has ${count} active Job Order${count === 1 ? "" : "s"} - ${list}. ` +
+      'Set every Job Order of this project to In-Active first (Project Master Data → Job Order → status), then deactivate the project.',
+  };
+}
+
 export function referencedDeleteMessage(label: string, references: Array<{ what: string; count: number }>): string {
   const parts = references.filter((reference) => reference.count > 0).map((reference) => `${reference.count} ${reference.what}`);
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts.join("");

@@ -94,6 +94,8 @@ type ProjectRow = {
   wbsRows: WbsRow[];
   networks: NetworkRow[];
   _count?: { jobOrders: number; timesheetEntries: number };
+  /** Active Job Orders of this project: while any exists the project cannot be deactivated. */
+  activeJobOrderCount?: number;
 };
 
 type UomRow = {
@@ -389,7 +391,7 @@ export function MasterDataPage() {
               <td>{row.wbsRows.length} WBS · {row.networks.length} network{row.networks.length === 1 ? "" : "s"}</td>
               <td>{row._count?.jobOrders ?? 0}</td>
               <td><span className={`md-status${row.active ? "" : " md-status--off"}`}>{row.active ? "Active" : "Inactive"}</span></td>
-              <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "project", item: row })} onToggle={() => run(() => api(deactivatePath("project", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("project", row.id), { method: "POST" }))} /></td>
+              <td><Actions busy={busy} active={row.active} blockReason={projectDeactivationReason(row)} onEdit={() => setEditor({ type: "project", item: row })} onToggle={() => run(() => api(deactivatePath("project", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("project", row.id), { method: "POST" }))} /></td>
             </tr>
           ))}
           {tab === "wbs" && visibleWbs.map((row) => (
@@ -474,22 +476,46 @@ export function MasterDataPage() {
   </div>;
 }
 
-function Actions({ active, busy, onEdit, onToggle, onActivate }: { active: boolean; busy: boolean; onEdit: () => void; onToggle: () => void; onActivate: () => void }) {
+/**
+ * Why this row cannot be deactivated yet, or null when it can. A Project may only be retired
+ * once EVERY Job Order of it is In-Active (the API enforces the same rule with a 409 naming the
+ * Job Orders), so the button is disabled with the reason instead of offering a click that fails.
+ */
+function projectDeactivationReason(row: ProjectRow): string | null {
+  if (!row.active || !row.activeJobOrderCount) return null;
+  return `${row.activeJobOrderCount} active Job Order${row.activeJobOrderCount === 1 ? "" : "s"} — set them In-Active first`;
+}
+
+function Actions({ active, busy, blockReason, onEdit, onToggle, onActivate }: { active: boolean; busy: boolean; blockReason?: string | null; onEdit: () => void; onToggle: () => void; onActivate: () => void }) {
   return (
     <div className="sup-table__actions">
       <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit}>
         <MdIcon name="pencil" />Edit
       </button>
       {active ? (
-        <button
-          type="button"
-          disabled={busy}
-          className="btn btn-danger btn-sm"
-          title="Deactivated rows stay in history but disappear from the pickers. A referenced row is never deleted."
-          onClick={() => window.confirm("Deactivate this master row? It stays in history and disappears from the pickers.") && onToggle()}
-        >
-          Deactivate
-        </button>
+        <>
+          <button
+            type="button"
+            disabled={busy || Boolean(blockReason)}
+            className="btn btn-danger btn-sm"
+            title={
+              blockReason ??
+              "Deactivated rows stay in history but disappear from the pickers. A referenced row is never deleted."
+            }
+            onClick={() =>
+              window.confirm(
+                blockReason
+                  ? `This project still has active Job Orders: ${blockReason}`
+                  : "Deactivate this master row? It stays in history and disappears from the pickers."
+              ) &&
+              !blockReason &&
+              onToggle()
+            }
+          >
+            Deactivate
+          </button>
+          {blockReason && <span className="muted">{blockReason}</span>}
+        </>
       ) : (
         <button type="button" disabled={busy} className="btn btn-secondary btn-sm" onClick={onActivate}>Activate</button>
       )}

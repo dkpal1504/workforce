@@ -583,6 +583,14 @@ The **WBS is not part of the Network duplicate rule**: a Network code is unique 
   `project "Project A" (PRJ-A) is referenced by 7 WBS rows, 2 Networks, 4 Job Orders and 12 timesheet rows. Deactivate it instead of deleting it.`
   Only a row that nothing references can be deleted, and the screen offers Deactivate / Activate rather than Delete.
 - Deactivating a **WBS row** that owns Networks leaves those Networks in place, but the WBS can no longer own a new one; a Network row is deactivated on its own tab.
+- **A Project is retired in two steps, in this order.** Every **Job Order** of the project must be set to
+  **In-Active** first (Job Order tab → status); only then can the project be deactivated. The API refuses
+  the project with `409 PROJECT_HAS_ACTIVE_JOB_ORDERS` and names the offending Job Orders, for example
+  `Cannot deactivate project "Project A" (PRJ-A): it still has 2 active Job Orders - 1900000107 (WBS A.HULL.0010.100), 1900000110 (WBS A.HULL.0010.100). Set every Job Order of this project to In-Active first (Project Master Data → Job Order → status), then deactivate the project.`
+  The screen disables **Deactivate** for such a project and shows how many Job Orders block it. The rule
+  exists because the booking picker offers the *active* Job Orders of a project: an active Job Order
+  behind an inactive project would hold hours nobody could reach. **Activating** a project is never
+  blocked, and this step is **ADMIN and PM only** (the same roles as every other master-data write).
 
 ### 14.4 The Job Order tab — revising a Job Order's budget
 

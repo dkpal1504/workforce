@@ -14,6 +14,7 @@ import {
   networkSourceForWrite,
   prismaConflictMessage,
   projectCodeConflictMessage,
+  projectDeactivationError,
   projectLabel,
   referencedDeleteMessage,
   uomCodeConflictMessage,
@@ -99,6 +100,14 @@ async function allWbsRowsWithProject() {
  * belongs to, so the screen can show and filter a WBS column without a second call.
  */
 masterDataRouter.get("/projects", async (_req, res) => {
+  // Counted separately (not through `_count`, whose `jobOrders` key already means "all of
+  // them") so the Project tab can show how many Job Orders would block a deactivation.
+  const activeJobOrderRows = await prisma.jobOrder.groupBy({
+    by: ["projectId"],
+    where: { status: "active" },
+    _count: { _all: true },
+  });
+  const activeJobOrderCounts = new Map(activeJobOrderRows.map((row) => [row.projectId, row._count._all]));
   const projects = await prisma.project.findMany({
     orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
     include: {
@@ -117,6 +126,8 @@ masterDataRouter.get("/projects", async (_req, res) => {
   res.json({
     projects: projects.map((project) => ({
       ...project,
+      /** Active Job Orders: a project with any of these cannot be deactivated yet. */
+      activeJobOrderCount: activeJobOrderCounts.get(project.id) ?? 0,
       networks: project.networks.map(({ wbs, ...network }) => ({
         ...network,
         wbsCode: wbs?.wbsCode ?? null,
@@ -406,6 +417,11 @@ type Activation = {
   setActive: (id: number, active: boolean) => Promise<void>;
   deactivateAction: string;
   activateAction: string;
+  /**
+   * Checked BEFORE a deactivation is applied. Returning a refusal stops it with the given
+   * status/code/message; activation is never guarded.
+   */
+  guard?: (id: number) => Promise<{ status: number; code: string; message: string } | null>;
 };
 
 /**
@@ -421,6 +437,12 @@ function registerActivation(basePath: string, activation: Activation) {
         return notFound(res, `${activation.singular} not found.`, "MASTER_DATA_NOT_FOUND");
       }
       try {
+        if (!active && activation.guard) {
+          const refusal = await activation.guard(id);
+          if (refusal) {
+            return res.status(refusal.status).json({ error: refusal.message, code: refusal.code });
+          }
+        }
         await activation.setActive(id, active);
         await writeAudit(req.user!.id, active ? activation.activateAction : activation.deactivateAction, activation.entityType, id, { by: req.user!.role, active });
         return res.json({ ok: true, id, active });
@@ -439,6 +461,23 @@ registerActivation("/projects", {
   setActive: async (id, active) => { await prisma.project.update({ where: { id }, data: { active } }); },
   deactivateAction: "ADMIN_DEACTIVATE_PROJECT",
   activateAction: "ADMIN_ACTIVATE_PROJECT",
+  /**
+   * A project may only be retired once EVERY Job Order of it is In-Active: the booking
+   * picker offers the active Job Orders of the chosen project, so leaving an active one
+   * behind a deactivated project would make booked hours unreachable. ADMIN and PM only
+   * (the route's `writeOnly`), and activation is never blocked.
+   */
+  guard: async (id) => {
+    const project = await prisma.project.findUnique({ where: { id }, select: { code: true, name: true } });
+    if (!project) return null;
+    const activeJobOrders = await prisma.jobOrder.findMany({
+      where: { projectId: id, status: "active" },
+      select: { code: true, projectWbs: { select: { wbsCode: true } } },
+      orderBy: { code: "asc" },
+    });
+    const refusal = projectDeactivationError(project, activeJobOrders.map((row) => ({ code: row.code, wbsCode: row.projectWbs?.wbsCode ?? null })));
+    return refusal ? { status: 409, code: refusal.code, message: refusal.message } : null;
+  },
 });
 
 registerActivation("/wbs", {
