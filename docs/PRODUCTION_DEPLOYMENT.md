@@ -427,32 +427,73 @@ so a failed migration blocks the deploy instead of serving a half-migrated schem
 
 ## 1b. Create the first administrator
 
-A fresh database has **no accounts**, and every user-creating endpoint requires an
-existing ADMIN or HR token — so a new deployment cannot be logged into at all until one
-account exists. There is deliberately no bootstrap route or published default password
-(the seed is blocked in production).
+A fresh database has **no accounts at all**. The production stack never runs a seed
+(`prisma/seed.ts` refuses when `NODE_ENV=production`, because it creates accounts with a
+known development password), and there is deliberately no bootstrap HTTP route — so the
+first Admin is created by an explicit operator action. Until it exists nothing can be
+logged into and no other user can be created.
 
-Create the first Admin deliberately, on the database host:
+### 1b.1 Recommended: the one-shot script (no Node needed on the host)
 
-1. Generate a bcrypt hash of the password you will hand over:
+The `api` image carries the database connection, Prisma and bcryptjs, so the Docker host
+needs no tooling beyond Docker. Add these two lines to `infra/docker/.env.production`
+first (they are read by the script, and `ADMIN_PASSWORD` may be omitted to fall back to
+`BOOTSTRAP_PASSWORD`):
 
-   ```bash
-   cd apps/api && node -e "console.log(require('bcryptjs').hashSync(process.argv[1], 10))" 'YourFirstPassword'
-   ```
+```
+ADMIN_EMAIL=admin@swan.co.in
+ADMIN_NAME=Platform Admin
+# ADMIN_PASSWORD=...        # optional; BOOTSTRAP_PASSWORD is used when this is unset
+```
 
-2. Insert the account, then hand the password over and have it changed at first login:
+```powershell
+docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml run --rm api node apps/api/scripts/create-first-admin.mjs
+```
 
-   ```sql
-   INSERT INTO users (email, password_hash, name, role, source, active, must_change_password,
-                      token_version, created_at, updated_at)
-   VALUES ('admin@yourdomain.example', '<hash from step 1>', 'Platform Admin', 'ADMIN',
-           'MANUAL', true, true, 0, now(), now());
-   ```
+It refuses to run when an ADMIN already exists, when the e-mail is taken, or when the
+password is shorter than 8 characters, and it writes an audit row
+`BOOTSTRAP_FIRST_ADMIN` with a null actor. The new Admin must change the password at the
+first login (the application enforces it). Expected output:
 
-3. Log in, then create everyone else through the application (Employees → Register
-   Payroll Employee / HOD Registration, Supervisors → register). Those accounts receive
-   a one-time credential by e-mail, so configure `SMTP_*` and set
-   `CREDENTIAL_DELIVERY_ENABLED=true` — otherwise new accounts have no usable password.
+```
+[first-admin] Created ADMIN #1 <admin@swan.co.in> (Platform Admin).
+```
+
+### 1b.2 Alternative: by hand on the database host
+
+Only if you prefer SQL. Generate a bcrypt hash and insert the row (both timestamp columns
+are required: the Prisma `@updatedAt` columns have no database default):
+
+```bash
+cd apps/api && node -e "console.log(require('bcryptjs').hashSync(process.argv[1], 10))" 'YourFirstPassword'
+```
+
+```sql
+INSERT INTO users (email, password_hash, name, role, source, active, must_change_password,
+                   token_version, created_at, updated_at)
+VALUES ('admin@yourdomain.example', '<hash from above>', 'Platform Admin', 'ADMIN',
+       'MANUAL', true, true, 0, now(), now());
+```
+
+### 1b.3 Then onboard the rest from the application
+
+1. Log in as that Admin at `http://10.5.1.193:8099` and set your own password.
+2. **The PM team (2-3 people).** Each of them needs an Employee record first: *Employees →
+   Register payroll employee* (department + section + ecNo). That login starts with
+   `BOOTSTRAP_PASSWORD` and must be changed at first login — or with an e-mailed one-time
+   credential when the variable is empty, in which case configure `SMTP_*` and
+   `CREDENTIAL_DELIVERY_ENABLED=true`.
+3. **Give each of them the PM role:** *Role Assignment* (`/role-assignment`, ADMIN only) →
+   search the account → set role **PM**. PM requires a linked, active Employee (step 2
+   provides it) and is organisation-wide: every PM sees the same HOD-approved queue and
+   whichever PM decides first is recorded as the approver, so several PMs work natively.
+   A PM can also create HODs (**Employees → HOD Registration & Department / Section
+   Mapping**) — that route accepts PM and ADMIN.
+4. **HODs:** register each payroll employee, then promote them in the HOD Registration
+   panel and choose their Section (or Department-wide scope). A supervisor or contract
+   worker cannot be an HOD: HODs are payroll staff.
+5. **Supervisors and contract employees** arrive from the LabourWorks sync
+   (`BADGEVIEW_SYNC_ENABLED=true`) or by registration; they log in with their EC number.
 
 ## 2. Configure the Docker host
 
@@ -555,7 +596,7 @@ curl.exe -fsS http://127.0.0.1:8099/api/health/ready
   `DEV_SEED_PASSWORD` and **no business data**. `prisma/seed-demo.ts`
   (`npm run db:seed:demo`) is the full demonstration set. Both are blocked when
   `NODE_ENV=production`, and both create accounts with a known password, so a deployment
-  creates its first Admin by hand (step 1b) and adds its masters through the screens.
+  creates its first Admin once with `docker compose ... run --rm api node apps/api/scripts/create-first-admin.mjs` (step 1b) and adds its masters through the screens.
 - Rotate `JWT_SECRET` deliberately; rotation signs all users out.
 - Monitor both `/healthz` and `/api/health/ready`.
 - Approval-cover and HOD-scope changes bump a user's `tokenVersion`, so affected users

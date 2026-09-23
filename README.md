@@ -80,7 +80,7 @@ Keep `BADGEVIEW_SYNC_ENABLED=false` and `CREDENTIAL_DELIVERY_ENABLED=false` unti
 
 ### Seeded accounts
 
-Both seeds are for local use only and are blocked when `NODE_ENV=production`. The default development password is `WorkforceDev@2026` and can be changed with `DEV_SEED_PASSWORD` before you run the seed.
+Both seeds are for local use only and are blocked when `NODE_ENV=production`. The default development password is `WorkforceDev@2026` and can be changed with `DEV_SEED_PASSWORD` before you run the seed. **A production database therefore starts with no accounts at all** and its first Admin is created once inside the api container: `docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml run --rm api node apps/api/scripts/create-first-admin.mjs` (see `docs/PRODUCTION_DEPLOYMENT.md` 1b, which also covers onboarding the PM team and the HODs).
 
 `npm run db:seed` — the **minimal, production-like bootstrap**: no business data, and no supervisor, HOD or employee login.
 

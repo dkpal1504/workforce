@@ -68,6 +68,9 @@ COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
+# Operator scripts (create-first-admin.mjs) run inside this image: it already has the
+# database connection, Prisma and bcryptjs, so the Docker host needs no Node install.
+COPY --from=build /app/apps/api/scripts ./apps/api/scripts
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 USER node
