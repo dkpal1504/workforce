@@ -52,3 +52,23 @@ test("an EMPTY list means not configured, which is local development (Vite on an
     false
   );
 });
+
+test("a forwarded host that KEEPS the port makes the same-origin check work (nginx $http_host)", () => {
+  // The proxy used to send `Host: workforce.swan.co.in` (no port) while the browser sent
+  // `Origin: http://workforce.swan.co.in:8099`, so a same-origin POST looked foreign and was
+  // refused unless that exact origin was listed too. nginx now forwards $http_host.
+  const req = {
+    protocol: "http",
+    get: (name: string) => (name.toLowerCase() === "host" ? "workforce.swan.co.in:8099" : undefined),
+  };
+  assert.equal(requestOrigin(req), "http://workforce.swan.co.in:8099");
+  assert.equal(
+    isAllowedOrigin("http://workforce.swan.co.in:8099", { configured: ["https://workforce.swan.co.in"], sameOrigin: requestOrigin(req) }),
+    true
+  );
+  // And a bare host (the old behaviour) does NOT match a ported origin - which is the bug.
+  assert.equal(
+    isAllowedOrigin("http://workforce.swan.co.in:8099", { configured: ["https://workforce.swan.co.in"], sameOrigin: "http://workforce.swan.co.in" }),
+    false
+  );
+});
