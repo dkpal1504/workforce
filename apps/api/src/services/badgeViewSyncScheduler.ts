@@ -1,6 +1,7 @@
 import cron, { ScheduledTask } from "node-cron";
 import { runBadgeViewSync } from "./badgeViewSync";
 import { processCredentialDeliveries } from "./credentialDelivery";
+import { writeAudit } from "../audit";
 
 /**
  * In-process BadgeView sync scheduler.
@@ -31,6 +32,7 @@ async function runOnce(): Promise<void> {
     return;
   }
   running = true;
+  const startedAt = new Date();
   try {
     const result = await runBadgeViewSync();
     if (result.ok) {
@@ -44,7 +46,38 @@ async function runOnce(): Promise<void> {
     } else {
       console.error(`[badgeViewSync] FAILED — ${result.error}`);
     }
-
+    // A SCHEDULED run used to leave no server-side record at all: the counters went to stdout,
+    // and only the manual POST /api/admin/sync/badgeview wrote audit (ADMIN_BADGEVIEW_SYNC).
+    // That made "is the sync working in production?" unanswerable from the database, and it
+    // made a manual run look exactly like a scheduled one. Written with a null actor, because
+    // the scheduler is not a person, and a distinct action so the two can be told apart.
+    await writeAudit(null, "SYNC_SCHEDULED_RUN", "sync", "LABOURWORKS", {
+      ok: result.ok,
+      error: result.error ?? null,
+      workersUpserted: result.workersUpserted,
+      supervisorsLinked: result.supervisorsLinked,
+      departmentsCreated: result.departmentsCreated,
+      sectionsCreated: result.sectionsCreated,
+      terminated: result.terminated,
+      reactivated: result.reactivated,
+      exceptions: result.exceptions,
+      credentialsQueued: result.credentialsQueued,
+      trigger: "SCHEDULER",
+      cron: getCronExpr(),
+      startedAt: result.startedAt.toISOString(),
+      finishedAt: result.finishedAt.toISOString(),
+    });
+  } catch (error) {
+    // The sync itself catches its own failures, so this is the last resort: still record that
+    // the tick happened and how it ended, or a crash would leave no trace either.
+    await writeAudit(null, "SYNC_SCHEDULED_RUN", "sync", "LABOURWORKS", {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      trigger: "SCHEDULER",
+      cron: getCronExpr(),
+      startedAt: startedAt.toISOString(),
+    });
+    console.error("[badgeViewSync] Scheduler tick threw:", error instanceof Error ? error.message : error);
   } finally {
     running = false;
   }
