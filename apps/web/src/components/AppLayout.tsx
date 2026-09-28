@@ -120,7 +120,7 @@ const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string;
   { prefix: "/approvals", lede: "Review the submitted days in your chain, then approve, reject or send them back." },
   { prefix: "/select-team", lede: "Confirm who is on site today. The day's bookings are recorded against this team." },
   { prefix: "/allocations", lede: "Assign future slots to the people who will work them, before the day is booked." },
-  { prefix: "/supervisors", lede: "Register supervisors and review the records that arrive from the CLMS feed." },
+  { prefix: "/supervisors", lede: "Register supervisors, reset a payroll employee's password, and review the records that arrive from the CLMS feed." },
   { prefix: "/employees", lede: "Register payroll employees and project heads, and map each head to a scope." },
   { prefix: "/departments", lede: "Maintain departments, sections and cost centres." },
   { prefix: "/role-assignment", lede: "Search an account and set the role and scope it may act within." },

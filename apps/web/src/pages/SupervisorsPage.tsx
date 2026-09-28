@@ -7,31 +7,95 @@ type Section = { id: number; departmentId: number; code: string; name: string; c
 type Employee = { id: number; ecNo: string; name: string; employmentType?: string; active?: boolean; department?: Department };
 type Supervisor = { id: number; name: string; email: string; source: string; active?: boolean; employeeId: number | null; departmentId: number | null; department: Department | null; employee: { id: number; ecNo: string; mobile?: string | null; active?: boolean; employmentType?: string; sectionAssignment?: { section: Section } | null } | null };
 type Override = { id: number; employeeId: number; reason: string; revokedAt?: string | null; createdAt: string; employee: Employee; createdBy?: { name: string } | null };
-type Mode = "list" | "overrides";
+/**
+ * One payroll (white-collar) Employee and the login attached to it, as returned by
+ * GET /api/supervisors/payroll-employees. `login` is the EC No for every role that signs
+ * in with one, and the e-mail for the administrative roles that kept an e-mail login;
+ * `resettable` is false for an inactive account or a role above Employee/Supervisor, and
+ * the row then explains which screen owns that person instead of offering a dead button.
+ */
+type PayrollEmployee = {
+  employeeId: number; ecNo: string; name: string; designation: string; category: string;
+  department: { id: number; code: string; name: string } | null;
+  section: { id: number; code: string; name: string } | null;
+  userId: number; role: string; accountActive: boolean; login: string;
+  mustChangePassword: boolean; resettable: boolean;
+};
+type Mode = "list" | "payroll" | "overrides";
 type Modal = { kind: "create" } | { kind: "edit"; supervisor: Supervisor } | { kind: "override" } | null;
 
 function errorText(e: unknown) { return e instanceof ApiError && e.payload && typeof e.payload === "object" && "error" in e.payload ? String((e.payload as { error: string }).error) : e instanceof Error ? e.message : "Request failed"; }
 function sectionOf(s: Supervisor) { return s.employee?.sectionAssignment?.section ?? null; }
+function roleLabel(role: string) { return role === "EMPLOYEE" ? "Employee" : role === "SUPERVISOR" ? "Supervisor" : role; }
 
 export function SupervisorsPage() {
   const [mode, setMode] = useState<Mode>("list"); const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]); const [departments, setDepartments] = useState<Department[]>([]);
   const [sections, setSections] = useState<Section[]>([]); const [employees, setEmployees] = useState<Employee[]>([]);
+  const [payroll, setPayroll] = useState<PayrollEmployee[]>([]); const [resetPassword, setResetPassword] = useState("");
+  const [payrollDepartmentId, setPayrollDepartmentId] = useState(""); const [payrollSectionId, setPayrollSectionId] = useState("");
   const [search, setSearch] = useState(""); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false);
   const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [modal, setModal] = useState<Modal>(null);
   const load = useCallback(async () => { setLoading(true); setError(""); try {
-    const [s,o,d,se,e] = await Promise.all([api<{supervisors:Supervisor[]}>("/supervisors"),api<{overrides:Override[]}>("/supervisors/overrides"),api<{departments:Department[]}>("/departments"),api<{sections:Section[]}>("/sections"),api<{employees:Employee[]}>("/employees")]);
+    const [s,o,d,se,e,p] = await Promise.all([
+      api<{supervisors:Supervisor[]}>("/supervisors"),
+      api<{overrides:Override[]}>("/supervisors/overrides"),
+      api<{departments:Department[]}>("/departments"),
+      api<{sections:Section[]}>("/sections"),
+      api<{employees:Employee[]}>("/employees"),
+      // The password a reset will apply, alongside the rows: the confirmation names it, so
+      // the operator can read it back to the person instead of quoting a stale password.
+      api<{employees:PayrollEmployee[]; resetPassword:string}>("/supervisors/payroll-employees"),
+    ]);
     setSupervisors(s.supervisors); setOverrides(o.overrides); setDepartments(d.departments); setSections(se.sections); setEmployees(e.employees);
+    setPayroll(p.employees); setResetPassword(p.resetPassword);
   } catch(e) { setError(errorText(e)); } finally { setLoading(false); } }, []);
   useEffect(() => { void load(); }, [load]);
   async function run(fn:()=>Promise<unknown>, success?:string) { setBusy(true); setError(""); setNotice(""); try { await fn(); setModal(null); if(success)setNotice(success); await load(); } catch(e){setError(errorText(e));} finally{setBusy(false);} }
   const q=search.trim().toLowerCase();
   const shown=useMemo(()=>supervisors.filter(s=>[s.name,s.email,s.employee?.ecNo,s.department?.name,sectionOf(s)?.name].some(v=>v?.toLowerCase().includes(q))),[supervisors,q]);
   const shownOverrides=useMemo(()=>overrides.filter(o=>[o.employee.name,o.employee.ecNo,o.reason].some(v=>v?.toLowerCase().includes(q))),[overrides,q]);
+  // Employee search stays local, so typing filters the table instantly with no round trip.
+  // The two dropdowns narrow by organisation only; matching ecNo / name / designation /
+  // section / role in one box is what an operator actually has to hand when someone calls.
+  const shownPayroll=useMemo(()=>payroll.filter(p=>
+    (!payrollDepartmentId || String(p.department?.id ?? "")===payrollDepartmentId) &&
+    (!payrollSectionId || String(p.section?.id ?? "")===payrollSectionId) &&
+    [p.ecNo,p.name,p.designation,p.category,p.department?.name,p.section?.name,roleLabel(p.role),p.login]
+      .some(v=>v?.toLowerCase().includes(q))
+  ),[payroll,q,payrollDepartmentId,payrollSectionId]);
+  const payrollSections=useMemo(()=>sections.filter(s=>!payrollDepartmentId||String(s.departmentId)===payrollDepartmentId),[sections,payrollDepartmentId]);
   return <>
-    <div className="supervisors-toolbar"><div className="supervisors-actions" role="tablist"><button type="button" className={`btn ${mode==="list"?"btn-primary":"btn-ghost"}`} onClick={()=>setMode("list")}>Supervisors</button><button type="button" className={`btn ${mode==="overrides"?"btn-primary":"btn-ghost"}`} onClick={()=>setMode("overrides")}>CLMS Overrides</button></div><div className="supervisors-actions"><input className="search-input" style={{marginBottom:0,minWidth:200}} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name or ecNo…" />{mode==="list"?<button className="btn btn-primary" onClick={()=>setModal({kind:"create"})}>+ Register Supervisor</button>:<button className="btn btn-primary" onClick={()=>setModal({kind:"override"})}>+ Add Override</button>}</div></div>
-    <p className="muted" style={{marginTop:0}}>ecNo is the canonical employee identity. Supervisors sign in with ecNo and the current rollout default password. Password matching remains case-sensitive.</p>
-    {error&&<div className="error-banner">{error}</div>}{notice&&<div className="alloc-note">{notice}</div>}{loading?<div className="loading-state">Loading supervisors…</div>:mode==="list"?<SupervisorTable rows={shown} busy={busy} onEdit={s=>setModal({kind:"edit",supervisor:s})} onReset={s=>window.confirm(`Reset ${s.name} to the rollout default password?`)&&run(()=>api(`/supervisors/${s.id}/credential-reset`,{method:"POST"}),"Default password restored; notification queued.")} onDisable={s=>window.confirm(`Disable ${s.name}'s login?`)&&run(()=>api(`/supervisors/${s.id}`,{method:"DELETE"}),"Supervisor login disabled.")} />:<OverrideTable rows={shownOverrides} busy={busy} onRevoke={o=>window.confirm(`Revoke the override for ${o.employee.name}?`)&&run(()=>api(`/supervisors/overrides/${o.id}`,{method:"DELETE"}),"Override revoked.")} />}
+    <div className="supervisors-toolbar"><div className="supervisors-actions" role="tablist">
+      <button type="button" className={`btn ${mode==="list"?"btn-primary":"btn-ghost"}`} onClick={()=>setMode("list")}>Supervisors</button>
+      <button type="button" className={`btn ${mode==="payroll"?"btn-primary":"btn-ghost"}`} onClick={()=>setMode("payroll")}>Employees (Payroll)</button>
+      <button type="button" className={`btn ${mode==="overrides"?"btn-primary":"btn-ghost"}`} onClick={()=>setMode("overrides")}>CLMS Overrides</button>
+    </div><div className="supervisors-actions">
+      {/* The search box serves all three tabs; only its hint changes, so the operator never
+          has to wonder whether it is filtering the table in front of them. */}
+      <input className="search-input" style={{marginBottom:0,minWidth:200}} value={search} onChange={e=>setSearch(e.target.value)} placeholder={mode==="overrides"?"Search employee or reason…":mode==="payroll"?"Search ecNo, name or designation…":"Search name or ecNo…"} />
+      {mode==="list"&&<button className="btn btn-primary" onClick={()=>setModal({kind:"create"})}>+ Register Supervisor</button>}
+      {mode==="overrides"&&<button className="btn btn-primary" onClick={()=>setModal({kind:"override"})}>+ Add Override</button>}
+    </div></div>
+    {mode==="payroll"&&<div className="supervisors-filters">
+      <label htmlFor="payroll-department">Department</label>
+      <select id="payroll-department" value={payrollDepartmentId} onChange={e=>{setPayrollDepartmentId(e.target.value);setPayrollSectionId("");}}>
+        <option value="">All departments</option>
+        {departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+      </select>
+      <label htmlFor="payroll-section">Section</label>
+      <select id="payroll-section" value={payrollSectionId} onChange={e=>setPayrollSectionId(e.target.value)}>
+        <option value="">All sections</option>
+        {payrollSections.map(s=><option key={s.id} value={s.id}>{s.code} · {s.name}</option>)}
+      </select>
+      <span className="supervisors-toolbar__count">{shownPayroll.length} of {payroll.length} payroll employees</span>
+    </div>}
+    <p className="muted" style={{marginTop:0}}>{mode==="payroll"
+      ? <>Only employee categories appear here — contract labour comes from the CLMS feed and has no login. A reset sets the account to the shared first password {resetPassword?<strong>{resetPassword}</strong>:"(unset — a random credential is e-mailed instead)"} and forces a change at the next login.</>
+      : "ecNo is the canonical employee identity. Supervisors sign in with ecNo and the current rollout default password. Password matching remains case-sensitive."}</p>
+    {error&&<div className="error-banner">{error}</div>}{notice&&<div className="alloc-note">{notice}</div>}
+    {loading?<div className="loading-state">Loading supervisors…</div>:mode==="list"?<SupervisorTable rows={shown} busy={busy} onEdit={s=>setModal({kind:"edit",supervisor:s})} onReset={s=>window.confirm(`Reset ${s.name} to the rollout default password?`)&&run(()=>api(`/supervisors/${s.id}/credential-reset`,{method:"POST"}),"Default password restored; notification queued.")} onDisable={s=>window.confirm(`Disable ${s.name}'s login?`)&&run(()=>api(`/supervisors/${s.id}`,{method:"DELETE"}),"Supervisor login disabled.")} />:mode==="payroll"?<PayrollEmployeeTable rows={shownPayroll} busy={busy} onReset={p=>window.confirm(`Reset the password for ${p.name} (${p.ecNo})?\n\nSign-in: ${p.login}\nPassword: ${resetPassword}\n\nThey must set their own password at the next login.`)&&run(()=>api(`/supervisors/payroll-employees/${p.employeeId}/credential-reset`,{method:"POST"}),`Password reset for ${p.name}. Sign in with ${p.login} and ${resetPassword}.`)} />:<OverrideTable rows={shownOverrides} busy={busy} onRevoke={o=>window.confirm(`Revoke the override for ${o.employee.name}?`)&&run(()=>api(`/supervisors/overrides/${o.id}`,{method:"DELETE"}),"Override revoked.")} />}
+    {mode==="payroll"&&!loading&&!shownPayroll.length&&!error&&<div className="empty-state">No payroll employee matches this search. Clear the search or widen the filters.</div>}
     {modal?.kind==="create"&&<SupervisorForm departments={departments} sections={sections} busy={busy} onClose={()=>setModal(null)} onSave={body=>run(()=>api("/supervisors",{method:"POST",body:JSON.stringify(body)}),"Supervisor registered with ecNo login and the rollout default password.")} />}
     {modal?.kind==="edit"&&<SupervisorForm supervisor={modal.supervisor} departments={departments} sections={sections} busy={busy} onClose={()=>setModal(null)} onSave={body=>run(()=>api(`/supervisors/${modal.supervisor.id}`,{method:"PUT",body:JSON.stringify(body)}),"Supervisor updated.")} />}
     {modal?.kind==="override"&&<OverrideForm employees={employees} busy={busy} onClose={()=>setModal(null)} onSave={body=>run(()=>api("/supervisors/overrides",{method:"POST",body:JSON.stringify(body)}),"Supervisor override recorded.")} />}
@@ -40,6 +104,30 @@ export function SupervisorsPage() {
 
 function SupervisorTable({rows,busy,onEdit,onReset,onDisable}:{rows:Supervisor[];busy:boolean;onEdit:(s:Supervisor)=>void;onReset:(s:Supervisor)=>void;onDisable:(s:Supervisor)=>void}) { if(!rows.length)return <div className="empty-state">No supervisors found.</div>; return <table className="sup-table"><thead><tr><th>Supervisor</th><th>ecNo</th><th>Organisation</th><th>Cost Center</th><th>Status</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>{rows.map(s=>{const section=sectionOf(s);return <tr key={s.id}><td><strong>{s.name}</strong><div className="muted">{s.email}</div></td><td><strong>{s.employee?.ecNo??"Not linked"}</strong><div className="muted">{s.employee?.mobile??""}</div></td><td>{s.department?.name??"—"}<div className="muted">{section?`${section.code} · ${section.name}`:"No section"}</div></td><td>{section?.costCenter?`${section.costCenter.code} · ${section.costCenter.name}`:"—"}</td><td><span className={`badge badge--${s.active===false?"sync":"manual"}`}>{s.active===false?"Disabled":s.source}</span></td><td><div className="sup-table__actions"><button className="btn btn-ghost btn-sm" onClick={()=>onEdit(s)}>Edit</button><button disabled={busy||s.active===false} className="btn btn-secondary btn-sm" onClick={()=>onReset(s)}>Reset password</button>{s.source!=="SYNC"&&s.employee?.employmentType!=="CLMS"&&<button disabled={busy||s.active===false} className="btn btn-danger btn-sm" onClick={()=>onDisable(s)}>Disable</button>}</div></td></tr>})}</tbody></table>; }
 function OverrideTable({rows,busy,onRevoke}:{rows:Override[];busy:boolean;onRevoke:(o:Override)=>void}) { if(!rows.length)return <div className="empty-state">No CLMS supervisor overrides found.</div>; return <table className="sup-table"><thead><tr><th>Employee</th><th>Department</th><th>Reason</th><th>Created</th><th>Status</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>{rows.map(o=><tr key={o.id}><td><strong>{o.employee.name}</strong><div className="muted">ecNo {o.employee.ecNo}</div></td><td>{o.employee.department?.name??"—"}</td><td>{o.reason}</td><td>{new Date(o.createdAt).toLocaleDateString()}<div className="muted">{o.createdBy?.name}</div></td><td>{o.revokedAt?<span className="badge badge--sync">Revoked</span>:<span className="badge badge--manual">Active override</span>}</td><td><div className="sup-table__actions">{!o.revokedAt&&<button disabled={busy} className="btn btn-danger btn-sm" onClick={()=>onRevoke(o)}>Revoke</button>}</div></td></tr>)}</tbody></table>; }
+
+/**
+ * Payroll (white-collar) Employees and the password reset for their own login.
+ *
+ * A row whose account was promoted above Employee/Supervisor keeps its place in the table
+ * — the operator needs to see that the person HAS a login — but its button is replaced by
+ * the reason and the screen that owns it, so nobody is left clicking a dead control.
+ */
+function PayrollEmployeeTable({rows,busy,onReset}:{rows:PayrollEmployee[];busy:boolean;onReset:(p:PayrollEmployee)=>void}) {
+  if(!rows.length)return null;
+  return <table className="sup-table"><thead><tr><th>Employee</th><th>Sign-in</th><th>Department</th><th>Designation</th><th>Role</th><th>Password</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>
+    {rows.map(p=><tr key={p.employeeId} className={p.resettable?"":"sup-row--readonly"}>
+      <td><strong>{p.name}</strong><div className="muted">ecNo {p.ecNo}</div></td>
+      <td><strong>{p.login||"—"}</strong><div className="muted">{p.accountActive?"Signs in with EC No":"Login disabled"}</div></td>
+      <td>{p.department?.name??"—"}<div className="muted">{p.section?`${p.section.code} · ${p.section.name}`:"No section"}</div></td>
+      <td>{p.designation||"—"}<div className="muted">{p.category||""}</div></td>
+      <td><span className={`badge badge--${p.role==="SUPERVISOR"?"sync":"manual"}`}>{roleLabel(p.role)}</span></td>
+      <td>{p.mustChangePassword?<span className="badge badge--sync">Must change</span>:"Set by the user"}</td>
+      <td><div className="sup-table__actions">{p.resettable
+        ? <button disabled={busy} className="btn btn-secondary btn-sm" onClick={()=>onReset(p)}>Reset password</button>
+        : <span className="muted">{p.role==="HOD"||p.role==="DEPT_HEAD"||p.role==="PM"?"Manage from Role Assignment":"Login disabled"}</span>}</div></td>
+    </tr>)}
+  </tbody></table>;
+}
 
 function Shell({title,onClose,children}:{title:string;onClose:()=>void;children:React.ReactNode}) { return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><div className="modal__header"><h2>{title}</h2><button className="modal__close" onClick={onClose}>×</button></div><div className="modal__body">{children}</div></div></div>; }
 function Field({label,children}:{label:string;children:React.ReactNode}) { return <div className="sup-field"><label>{label}</label>{children}</div>; }

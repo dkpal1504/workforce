@@ -73,6 +73,23 @@ export function bootstrapPasswordNotice(): string | null {
 }
 
 /**
+ * What a fresh reset will hand the account, in words an operator can read out loud.
+ *
+ * The point of this function is that it lives NEXT TO `initialCredentialState()`: the
+ * label and the hash come from the same branch of the same configuration, so the screen
+ * can never claim "the shared first password is in force" while the code provisions a
+ * random one. The shared value is deliberately DISCLOSED to the caller — an Admin/HR
+ * account is already trusted with it (it is what the yard is told at the gate, and
+ * `create-first-admin.mjs` reads it from the environment), and a reset screen that
+ * cannot name the password it just applied is useless to the person on the phone.
+ * Nothing here may be hardcoded: the value is read from BOOTSTRAP_PASSWORD only, which
+ * `assertBootstrapPasswordUsable()` and the production build gate both police.
+ */
+export function initialCredentialStateLabel(): string {
+  return bootstrapPassword() ?? "a random one-time credential (sent by e-mail)";
+}
+
+/**
  * Give a newly queued account an unknown random password until its one-time
  * credential is delivered. This prevents pending accounts from sharing a
  * usable, published bootstrap password.

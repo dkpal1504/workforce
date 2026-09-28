@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { initialCredentialState } from "../services/defaultLoginCredentials";
+import { initialCredentialState, initialCredentialStateLabel } from "../services/defaultLoginCredentials";
+import { loginIdentifierFor, payrollPasswordResettable } from "../services/payrollPasswordReset";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
@@ -33,6 +34,69 @@ const supervisorSelect = {
 supervisorRegistrationRouter.get("/", async (_req, res) => {
   const supervisors = await prisma.user.findMany({ where: { role: "SUPERVISOR" }, select: supervisorSelect, orderBy: { name: "asc" } });
   res.json({ supervisors });
+});
+
+/**
+ * Payroll (white-collar) Employees and their own login, for the Admin/HR password reset.
+ *
+ * One row per payroll Employee that already HAS an account: a payroll Employee with no
+ * account has no password to reset (register it from Employee Registration first). The
+ * Supervisor rows the first tab owns appear here too, on purpose — a Supervisor IS a
+ * payroll Employee and this is the same reset against the same account. Rows whose
+ * account has been promoted to an approver/administrative role (HOD / Dept Head / PM) are
+ * returned with `resettable: false` rather than hidden: the operator needs to see that the
+ * person has a login, and needs to be told which screen owns it.
+ */
+supervisorRegistrationRouter.get("/payroll-employees", async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const departmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
+  const sectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
+  const employees = await prisma.employee.findMany({
+    where: {
+      active: true,
+      employmentType: "PAYROLL",
+      ...(departmentId ? { departmentId } : {}),
+      ...(sectionId ? { sectionAssignment: { sectionId } } : {}),
+      ...(q ? { OR: [{ ecNo: { contains: q } }, { name: { contains: q } }, { designation: { contains: q } }] } : {}),
+    },
+    select: {
+      id: true, ecNo: true, name: true, designation: true, category: true,
+      department: { select: { id: true, code: true, name: true } },
+      sectionAssignment: { select: { sectionId: true, section: { select: { id: true, code: true, name: true } } } },
+      user: { select: { id: true, role: true, email: true, active: true, mustChangePassword: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+
+  const rows = employees
+    .filter((employee) => employee.user !== null)
+    .map((employee) => {
+      const user = employee.user!;
+      // An ecNo-login role signs in with the EC No; anything else (HR/FINANCE/ADMIN, which
+      // never hold an ecNo login) shows its e-mail, or the screen would name an identifier
+      // that cannot actually log in.
+      const login = loginIdentifierFor(user.role, employee.ecNo, user.email);
+      return {
+        employeeId: employee.id,
+        ecNo: employee.ecNo,
+        name: employee.name,
+        designation: employee.designation,
+        category: employee.category,
+        department: employee.department,
+        section: employee.sectionAssignment?.section ?? null,
+        userId: user.id,
+        role: user.role,
+        accountActive: user.active,
+        login,
+        mustChangePassword: user.mustChangePassword,
+        resettable: user.active && payrollPasswordResettable(user.role),
+      };
+    });
+
+  // The password a reset applied, alongside the rows, so the button's confirmation can
+  // name it instead of guessing. Admin/HR only — the same trust boundary that already
+  // reads this value out of the environment at the gate.
+  res.json({ employees: rows, resetPassword: initialCredentialStateLabel() });
 });
 
 /** Register the canonical Employee, section assignment and linked User atomically. */
@@ -115,6 +179,95 @@ supervisorRegistrationRouter.put("/:id", async (req, res) => {
   res.json({ user: await prisma.user.findUnique({ where: { id }, select: supervisorSelect }), credentialQueued });
 });
 
+/**
+ * Apply the deployment's shared first credential to one account.
+ *
+ * NO password is accepted from the caller, stored, audited, logged or returned: the value
+ * is always whatever `initialCredentialState()` provisions for a newly created account, so
+ * a reset is indistinguishable from a fresh registration. `mustChangePassword` is already
+ * true in that state, so the person must set a password of their own at the next login.
+ *
+ * Two things are non-obvious and both matter:
+ *  - sessions are revoked (`tokenVersion` bump). Without it the person's open browser tab
+ *    keeps working with a token minted from the OLD password, which is exactly what the
+ *    operator is trying to take away.
+ *  - an already PENDING/PROCESSING delivery row is REUSED rather than duplicated. The
+ *    worker (CREDENTIAL_DELIVERY_CRON, default every five minutes) overwrites the hash with
+ *    a fresh random secret when it runs, so a second row would not just be noise: it would
+ *    defeat the reset a second time. Reusing the row also means the reset is honoured by
+ *    the next worker run — the hash it writes is the same shared first password, because
+ *    this deployment has one configured.
+ */
+async function applySharedFirstCredential(userId: number, purpose: string) {
+  const pending = await prisma.credentialDelivery.findFirst({ where: { userId, status: { in: ["PENDING", "PROCESSING"] } } });
+  const credential = await initialCredentialState();
+  const delivery = await prisma.$transaction(async (tx) => {
+    await tx.user.update({ where: { id: userId }, data: { ...credential, tokenVersion: { increment: 1 } } });
+    return pending ?? tx.credentialDelivery.create({ data: { userId, recipient: credentialRecipient(), purpose } });
+  });
+  return { delivery, alreadyPending: Boolean(pending) };
+}
+
+/**
+ * Reset a PAYROLL (white-collar) Employee's own login to the deployment's shared first
+ * password. The account is addressed by its EMPLOYEE id, not a User id, because that is
+ * what the operator has in front of them on the row (and it is the identifier that is
+ * stable when the account is later promoted to another role).
+ *
+ * Refusals are deliberate and each names a different screen:
+ *  - no account yet        -> 404 ACCOUNT_NOT_FOUND  (register from Employee Registration)
+ *  - not PAYROLL           -> 400 NOT_PAYROLL_EMPLOYEE (CLMS workers have no ecNo login)
+ *  - account inactive      -> 409 ACCOUNT_INACTIVE
+ *  - role above EMPLOYEE/SUPERVISOR -> 409 ROLE_NOT_RESETTABLE (HOD/PM: Role Assignment,
+ *    and a role move re-provisions that account anyway)
+ */
+supervisorRegistrationRouter.post("/payroll-employees/:employeeId/credential-reset", async (req, res) => {
+  const employeeId = Number(req.params.employeeId);
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { id: true, ecNo: true, name: true, active: true, employmentType: true, user: { select: { id: true, role: true, active: true } } },
+  });
+  if (!employee) return res.status(404).json({ error: "Employee not found", code: "EMPLOYEE_NOT_FOUND" });
+  if (employee.employmentType !== "PAYROLL") {
+    return res.status(400).json({ error: "Only a payroll employee has an EC No login to reset.", code: "NOT_PAYROLL_EMPLOYEE" });
+  }
+  if (!employee.user) {
+    return res.status(404).json({
+      error: `${employee.name} (${employee.ecNo}) has no login yet. Register the employee to create one.`,
+      code: "ACCOUNT_NOT_FOUND",
+    });
+  }
+  if (!employee.active || !employee.user.active) {
+    return res.status(409).json({ error: "Credentials cannot be reset for an inactive employee.", code: "ACCOUNT_INACTIVE" });
+  }
+  if (!payrollPasswordResettable(employee.user.role)) {
+    return res.status(409).json({
+      error: `${employee.name} signs in as ${employee.user.role}, not as a payroll employee. Change or reset that role from Role Assignment.`,
+      code: "ROLE_NOT_RESETTABLE",
+    });
+  }
+
+  const { delivery, alreadyPending } = await applySharedFirstCredential(employee.user.id, "RESET");
+  await writeAudit(req.user!.id, "PAYROLL_EMPLOYEE_CREDENTIAL_RESET", "employee", employee.id, {
+    userId: employee.user.id,
+    ecNo: employee.ecNo,
+    deliveryId: delivery.id,
+    alreadyPending,
+    sharedFirstPassword: true,
+  });
+  // `resetPassword` is what the confirmation names to the operator. It is the shared first
+  // password of THIS deployment, never a literal in the source (see the build gate).
+  res.status(202).json({
+    reset: true,
+    queued: true,
+    deliveryId: delivery.id,
+    alreadyPending,
+    employee: { id: employee.id, ecNo: employee.ecNo, name: employee.name, role: employee.user.role },
+    resetPassword: initialCredentialStateLabel(),
+    mustChangePassword: true,
+  });
+});
+
 /** Queue a reset. No password is accepted, stored, audited, logged, or returned. */
 supervisorRegistrationRouter.post("/:id/credential-reset", async (req, res) => {
   const id = Number(req.params.id);
@@ -123,17 +276,9 @@ supervisorRegistrationRouter.post("/:id/credential-reset", async (req, res) => {
   if (!existing.active || (existing.employeeId != null && !existing.employee?.active)) {
     return res.status(409).json({ error: "Credentials cannot be reset for an inactive Supervisor.", code: "ACCOUNT_INACTIVE" });
   }
-  const pending = await prisma.credentialDelivery.findFirst({ where: { userId: id, status: { in: ["PENDING", "PROCESSING"] } } });
-  const credential = await initialCredentialState();
-  const delivery = await prisma.$transaction(async (tx) => {
-    await tx.user.update({ where: { id }, data: {
-      ...credential,
-      tokenVersion: { increment: 1 },
-    } });
-    return pending ?? tx.credentialDelivery.create({ data: { userId: id, recipient: credentialRecipient(), purpose: "RESET" } });
-  });
-  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET", "user", id, { deliveryId: delivery.id, oneTimeCredential: true });
-  res.status(202).json({ reset: true, queued: true, deliveryId: delivery.id, alreadyPending: Boolean(pending) });
+  const { delivery, alreadyPending } = await applySharedFirstCredential(id, "RESET");
+  await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET", "user", id, { deliveryId: delivery.id, alreadyPending, sharedFirstPassword: true });
+  res.status(202).json({ reset: true, queued: true, deliveryId: delivery.id, alreadyPending });
 });
 
 /** Create or reactivate an audited CLMS supervisor override by employeeId or ecNo. */

@@ -74,6 +74,45 @@ To give a single existing account a known password instead, use
 while it exists, and `assertDevBootstrapAllowed()` refuses to boot a PostgreSQL
 instance while it is enabled. See `docs/DEV_SQLITE_TESTING.md`.
 
+## Reset a payroll employee's password
+
+**Path:** `/supervisors` → tab **Employees (Payroll)** (Admin and HR only —
+`manageSupervisors`, the same gate as Supervisor Registration).
+
+The tab lists every **payroll** (white-collar) Employee that already has a login,
+one row per person, with the identifier they actually sign in with: the `ecNo` for
+Employee/Supervisor, the e-mail for an account holding an administrative role. Search
+matches ecNo, name, designation, category, department, section, role and login id; the
+Department and Section dropdowns narrow the same list, and the count reads
+`n of m payroll employees`.
+
+**Reset password** applies the deployment's shared first password — the same value
+`initialCredentialState()` provisions a newly registered account with
+(`BOOTSTRAP_PASSWORD`; `password@SDHI` on the dev box) — sets
+`mustChangePassword = true`, revokes live sessions (`tokenVersion` bump) and reuses any
+pending `credential_deliveries` row instead of adding a second one. The API returns the
+password it applied, so the confirmation dialogue and the on-screen notice name it and
+the operator can read it back to the person; nothing else is e-mailed. Because the
+change is forced, the person replaces it at the next login.
+
+`POST /api/supervisors/payroll-employees/{employeeId}/credential-reset` is the endpoint;
+the list comes from `GET /api/supervisors/payroll-employees` (both Admin/HR, both on the
+Supervisor Registration router so the auth behaviour cannot drift from the Supervisor
+row's own **Reset password**). It accepts no password from the caller, stores none, and
+audits `PAYROLL_EMPLOYEE_CREDENTIAL_RESET`.
+
+Rows that cannot be reset are shown, not hidden, and say why:
+
+| Row | Response | Why |
+|---|---|---|
+| Employee has no login yet | `404 ACCOUNT_NOT_FOUND` | register them from Employee Registration first |
+| Not a payroll employee (CLMS) | `400 NOT_PAYROLL_EMPLOYEE` | contract labour has no ecNo login |
+| Employee or account inactive | `409 ACCOUNT_INACTIVE` | there is no one to hand the password to |
+| Account is HOD / Dept Head / PM | `409 ROLE_NOT_RESETTABLE` | an approver login is re-provisioned by Role Assignment |
+
+Supervisors appear on both tabs on purpose: a Supervisor **is** a payroll Employee, and
+both buttons run the same reset against the same account.
+
 ## HOD approval cover (delegation)
 
 An HOD who is away can have another HOD of the **same Section** named as approval

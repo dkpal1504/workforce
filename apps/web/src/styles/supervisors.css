@@ -23,6 +23,55 @@
   gap: 8px;
 }
 
+/* ---- Employee-tab filters (Department / Section) ----------- */
+/* A phone stacks these to one column; the toolbar above already wraps at 767px, and
+   these two selects plus the count are the only controls the payroll tab adds. */
+.supervisors-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.supervisors-filters label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.supervisors-filters select {
+  min-width: 170px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md, 8px);
+}
+
+.supervisors-filters .supervisors-toolbar__count {
+  margin-left: auto;
+}
+
+@media (max-width: 767px) {
+  .supervisors-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .supervisors-filters select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .supervisors-filters .supervisors-toolbar__count {
+    margin-left: 0;
+  }
+}
+
 /* ---- Source + pin badges ----------------------------------- */
 .badge {
   display: inline-flex;
