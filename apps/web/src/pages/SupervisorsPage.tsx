@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { availabilityNeedsServerCheck, resetActionLabel, resetAvailability, signInNote } from "./payrollResetAvailability";
 import "../styles/supervisors.css";
 
 type Department = { id: number; name: string; code?: string };
@@ -18,8 +19,9 @@ type PayrollEmployee = {
   employeeId: number; ecNo: string; name: string; designation: string; category: string;
   department: { id: number; code: string; name: string } | null;
   section: { id: number; code: string; name: string } | null;
-  userId: number; role: string; accountActive: boolean; login: string;
-  mustChangePassword: boolean; resettable: boolean;
+  userId: number; role: string; accountActive: boolean; employeeActive: boolean;
+  employeeSource: string; accountSource: string; roleOwned: boolean;
+  login: string; mustChangePassword: boolean; resettable: boolean; canDisableLogin: boolean;
 };
 type Mode = "list" | "payroll" | "overrides";
 type Modal = { kind: "create" } | { kind: "edit"; supervisor: Supervisor } | { kind: "override" } | null;
@@ -94,7 +96,9 @@ export function SupervisorsPage() {
       ? <>Only employee categories appear here — contract labour comes from the CLMS feed and has no login. A reset sets the account to the shared first password {resetPassword?<strong>{resetPassword}</strong>:"(unset — a random credential is e-mailed instead)"} and forces a change at the next login.</>
       : "ecNo is the canonical employee identity. Supervisors sign in with ecNo and the current rollout default password. Password matching remains case-sensitive."}</p>
     {error&&<div className="error-banner">{error}</div>}{notice&&<div className="alloc-note">{notice}</div>}
-    {loading?<div className="loading-state">Loading supervisors…</div>:mode==="list"?<SupervisorTable rows={shown} busy={busy} onEdit={s=>setModal({kind:"edit",supervisor:s})} onReset={s=>window.confirm(`Reset ${s.name} to the rollout default password?`)&&run(()=>api(`/supervisors/${s.id}/credential-reset`,{method:"POST"}),"Default password restored; notification queued.")} onDisable={s=>window.confirm(`Disable ${s.name}'s login?`)&&run(()=>api(`/supervisors/${s.id}`,{method:"DELETE"}),"Supervisor login disabled.")} />:mode==="payroll"?<PayrollEmployeeTable rows={shownPayroll} busy={busy} onReset={p=>window.confirm(`Reset the password for ${p.name} (${p.ecNo})?\n\nSign-in: ${p.login}\nPassword: ${resetPassword}\n\nThey must set their own password at the next login.`)&&run(()=>api(`/supervisors/payroll-employees/${p.employeeId}/credential-reset`,{method:"POST"}),`Password reset for ${p.name}. Sign in with ${p.login} and ${resetPassword}.`)} />:<OverrideTable rows={shownOverrides} busy={busy} onRevoke={o=>window.confirm(`Revoke the override for ${o.employee.name}?`)&&run(()=>api(`/supervisors/overrides/${o.id}`,{method:"DELETE"}),"Override revoked.")} />}
+    {loading?<div className="loading-state">Loading supervisors…</div>:mode==="list"?<SupervisorTable rows={shown} busy={busy} onEdit={s=>setModal({kind:"edit",supervisor:s})} onReset={s=>window.confirm(`Reset ${s.name} to the rollout default password?`)&&run(()=>api(`/supervisors/${s.id}/credential-reset`,{method:"POST"}),"Default password restored; notification queued.")} onDisable={s=>window.confirm(`Disable ${s.name}'s login?`)&&run(()=>api(`/supervisors/${s.id}`,{method:"DELETE"}),"Supervisor login disabled.")} />:mode==="payroll"?<PayrollEmployeeTable rows={shownPayroll} busy={busy}
+      onReset={(p,roleOwned)=>window.confirm(`Reset the password for ${p.name} (${p.ecNo})?\n\nSign-in: ${p.login}\nPassword: ${resetPassword}\n\nThey must set their own password at the next login.`)&&run(()=>api(`/supervisors/payroll-employees/${p.employeeId}/credential-reset`,{method:"POST",body:JSON.stringify({roleOwned})}),`Password reset for ${p.name}. Sign in with ${p.login} and ${resetPassword}.`)}
+      onSetLogin={(p,active)=>run(()=>api(`/supervisors/payroll-employees/${p.employeeId}/login-status`,{method:"POST",body:JSON.stringify({active})}),active?`Login enabled for ${p.name}.`:`Login disabled for ${p.name}.`)} />:<OverrideTable rows={shownOverrides} busy={busy} onRevoke={o=>window.confirm(`Revoke the override for ${o.employee.name}?`)&&run(()=>api(`/supervisors/overrides/${o.id}`,{method:"DELETE"}),"Override revoked.")} />}
     {mode==="payroll"&&!loading&&!shownPayroll.length&&!error&&<div className="empty-state">No payroll employee matches this search. Clear the search or widen the filters.</div>}
     {modal?.kind==="create"&&<SupervisorForm departments={departments} sections={sections} busy={busy} onClose={()=>setModal(null)} onSave={body=>run(()=>api("/supervisors",{method:"POST",body:JSON.stringify(body)}),"Supervisor registered with ecNo login and the rollout default password.")} />}
     {modal?.kind==="edit"&&<SupervisorForm supervisor={modal.supervisor} departments={departments} sections={sections} busy={busy} onClose={()=>setModal(null)} onSave={body=>run(()=>api(`/supervisors/${modal.supervisor.id}`,{method:"PUT",body:JSON.stringify(body)}),"Supervisor updated.")} />}
@@ -108,24 +112,39 @@ function OverrideTable({rows,busy,onRevoke}:{rows:Override[];busy:boolean;onRevo
 /**
  * Payroll (white-collar) Employees and the password reset for their own login.
  *
- * A row whose account was promoted above Employee/Supervisor keeps its place in the table
- * — the operator needs to see that the person HAS a login — but its button is replaced by
- * the reason and the screen that owns it, so nobody is left clicking a dead control.
+ * Every cell here was written after a live mis-diagnosis: the old action cell rendered
+ * "Login disabled" for an ACTIVE account whose role was above Employee/Supervisor, so a
+ * PM/ADMIN row read "Signs in with EC No" on one line and "Login disabled" on the next.
+ * The words now come from `payrollResetAvailability.ts` (unit-tested) so an account state
+ * and a role state can never produce the same sentence again.
  */
-function PayrollEmployeeTable({rows,busy,onReset}:{rows:PayrollEmployee[];busy:boolean;onReset:(p:PayrollEmployee)=>void}) {
+function PayrollEmployeeTable({rows,busy,onReset,onSetLogin}:{rows:PayrollEmployee[];busy:boolean;onReset:(p:PayrollEmployee,roleOwned:boolean)=>void;onSetLogin:(p:PayrollEmployee,active:boolean)=>void}) {
   if(!rows.length)return null;
   return <table className="sup-table"><thead><tr><th>Employee</th><th>Sign-in</th><th>Department</th><th>Designation</th><th>Role</th><th>Password</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>
-    {rows.map(p=><tr key={p.employeeId} className={p.resettable?"":"sup-row--readonly"}>
+    {rows.map(p=>{
+      const availability=resetAvailability(p.accountActive,p.role);
+      const needsServerCheck=availabilityNeedsServerCheck(availability);
+      return <tr key={p.employeeId} className={p.accountActive?"":"sup-row--readonly"}>
       <td><strong>{p.name}</strong><div className="muted">ecNo {p.ecNo}</div></td>
-      <td><strong>{p.login||"—"}</strong><div className="muted">{p.accountActive?"Signs in with EC No":"Login disabled"}</div></td>
+      <td><strong>{p.login||"—"}</strong><div className="muted">{signInNote(p.accountActive,p.role,!(p.role==="HR"||p.role==="FINANCE"||p.role==="ADMIN"))}</div></td>
       <td>{p.department?.name??"—"}<div className="muted">{p.section?`${p.section.code} · ${p.section.name}`:"No section"}</div></td>
       <td>{p.designation||"—"}<div className="muted">{p.category||""}</div></td>
-      <td><span className={`badge badge--${p.role==="SUPERVISOR"?"sync":"manual"}`}>{roleLabel(p.role)}</span></td>
+      <td><span className={`badge badge--${p.role==="SUPERVISOR"?"sync":p.roleOwned?"readonly":"manual"}`}>{roleLabel(p.role)}</span>
+        <div className="muted">{p.accountActive?"Active login":"Inactive login"} · {p.employeeSource}</div></td>
       <td>{p.mustChangePassword?<span className="badge badge--sync">Must change</span>:"Set by the user"}</td>
-      <td><div className="sup-table__actions">{p.resettable
-        ? <button disabled={busy} className="btn btn-secondary btn-sm" onClick={()=>onReset(p)}>Reset password</button>
-        : <span className="muted">{p.role==="HOD"||p.role==="DEPT_HEAD"||p.role==="PM"?"Manage from Role Assignment":"Login disabled"}</span>}</div></td>
-    </tr>)}
+      <td><div className="sup-table__actions">
+        {/* A promoted account (PM/ADMIN/HOD) IS resettable, but only deliberately: the click
+            asks for the role-owned path explicitly so an ordinary mis-click never touches it. */}
+        {needsServerCheck
+          ? <button disabled={busy} className="btn btn-secondary btn-sm" onClick={()=>onReset(p,false)}>Reset password</button>
+          : p.accountActive&&p.roleOwned
+            ? <button disabled={busy} className="btn btn-secondary btn-sm" onClick={()=>window.confirm(`Reset the password for ${p.name} (${p.ecNo})?\n\nThis account holds the ${p.role} role. The reset applies the shared first password and they must change it at the next login.\n\nSign-in: ${p.login}`)&&onReset(p,true)}>Reset password</button>
+            : <span className="muted">{resetActionLabel(availability,p.role)}</span>}
+        {p.accountActive
+          ? p.canDisableLogin&&<button disabled={busy} className="btn btn-danger btn-sm" onClick={()=>window.confirm(`Disable the login for ${p.name} (${p.ecNo})?`)&&onSetLogin(p,false)}>Disable login</button>
+          : <button disabled={busy} className="btn btn-ghost btn-sm" onClick={()=>onSetLogin(p,true)}>Enable login</button>}
+      </div></td>
+    </tr>})}
   </tbody></table>;
 }
 

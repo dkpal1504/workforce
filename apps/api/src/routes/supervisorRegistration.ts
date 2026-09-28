@@ -60,10 +60,10 @@ supervisorRegistrationRouter.get("/payroll-employees", async (req, res) => {
       ...(q ? { OR: [{ ecNo: { contains: q } }, { name: { contains: q } }, { designation: { contains: q } }] } : {}),
     },
     select: {
-      id: true, ecNo: true, name: true, designation: true, category: true,
+      id: true, ecNo: true, name: true, designation: true, category: true, source: true, active: true,
       department: { select: { id: true, code: true, name: true } },
       sectionAssignment: { select: { sectionId: true, section: { select: { id: true, code: true, name: true } } } },
-      user: { select: { id: true, role: true, email: true, active: true, mustChangePassword: true } },
+      user: { select: { id: true, role: true, email: true, active: true, source: true, mustChangePassword: true } },
     },
     orderBy: { name: "asc" },
   });
@@ -76,6 +76,7 @@ supervisorRegistrationRouter.get("/payroll-employees", async (req, res) => {
       // never hold an ecNo login) shows its e-mail, or the screen would name an identifier
       // that cannot actually log in.
       const login = loginIdentifierFor(user.role, employee.ecNo, user.email);
+      const roleOwned = !payrollPasswordResettable(user.role);
       return {
         employeeId: employee.id,
         ecNo: employee.ecNo,
@@ -87,9 +88,21 @@ supervisorRegistrationRouter.get("/payroll-employees", async (req, res) => {
         userId: user.id,
         role: user.role,
         accountActive: user.active,
+        employeeActive: employee.active,
+        // WHO owns this row, so the screen can say why it is unmanageable instead of
+        // showing a bare "disabled": PAYROLL/MANUAL is ours, SYNC belongs to LabourWorks.
+        employeeSource: employee.source,
+        accountSource: user.source,
+        roleOwned,
         login,
         mustChangePassword: user.mustChangePassword,
-        resettable: user.active && payrollPasswordResettable(user.role),
+        // The ordinary payroll row (Employee/Supervisor). A promoted account is resettable
+        // too, but only through an explicit, audited `roleOwned` request.
+        resettable: user.active && !roleOwned,
+        // Enabling is only offered to a promoted account or an ENABLED one: turning off your
+        // own last Admin login from a list is a worse failure than the one we are fixing, and
+        // an HR account on this screen could otherwise lock the office out.
+        canDisableLogin: user.active && (!roleOwned || req.user!.role === "ADMIN"),
       };
     });
 
@@ -214,12 +227,15 @@ async function applySharedFirstCredential(userId: number, purpose: string) {
  * what the operator has in front of them on the row (and it is the identifier that is
  * stable when the account is later promoted to another role).
  *
- * Refusals are deliberate and each names a different screen:
- *  - no account yet        -> 404 ACCOUNT_NOT_FOUND  (register from Employee Registration)
- *  - not PAYROLL           -> 400 NOT_PAYROLL_EMPLOYEE (CLMS workers have no ecNo login)
- *  - account inactive      -> 409 ACCOUNT_INACTIVE
- *  - role above EMPLOYEE/SUPERVISOR -> 409 ROLE_NOT_RESETTABLE (HOD/PM: Role Assignment,
- *    and a role move re-provisions that account anyway)
+ * Two kinds of account reach the shared-credential path:
+ *  - role EMPLOYEE / SUPERVISOR: the payroll tab's own row.
+ *  - any role ABOVE that (HOD / DEPT_HEAD / PM / HR / FINANCE / ADMIN) **when the caller
+ *    asks for it explicitly** with `{ "roleOwned": true }`. Those payroll employees are
+ *    promoted staff — the PM team on this deployment are payroll employees with a PM role —
+ *    and their credential is otherwise unreachable: Role Assignment deliberately never
+ *    touches a password, so without this an operator has no lever for "the PM forgot their
+ *    password" except hand-editing the hash. The flag is required rather than implied so a
+ *    mis-click on the payroll tab can never reset an Admin account.
  */
 supervisorRegistrationRouter.post("/payroll-employees/:employeeId/credential-reset", async (req, res) => {
   const employeeId = Number(req.params.employeeId);
@@ -240,7 +256,8 @@ supervisorRegistrationRouter.post("/payroll-employees/:employeeId/credential-res
   if (!employee.active || !employee.user.active) {
     return res.status(409).json({ error: "Credentials cannot be reset for an inactive employee.", code: "ACCOUNT_INACTIVE" });
   }
-  if (!payrollPasswordResettable(employee.user.role)) {
+  const roleOwned = req.body?.roleOwned === true;
+  if (!payrollPasswordResettable(employee.user.role) && !roleOwned) {
     return res.status(409).json({
       error: `${employee.name} signs in as ${employee.user.role}, not as a payroll employee. Change or reset that role from Role Assignment.`,
       code: "ROLE_NOT_RESETTABLE",
@@ -251,9 +268,13 @@ supervisorRegistrationRouter.post("/payroll-employees/:employeeId/credential-res
   await writeAudit(req.user!.id, "PAYROLL_EMPLOYEE_CREDENTIAL_RESET", "employee", employee.id, {
     userId: employee.user.id,
     ecNo: employee.ecNo,
+    role: employee.user.role,
     deliveryId: delivery.id,
     alreadyPending,
     sharedFirstPassword: true,
+    // Recorded so the trail shows a promoted account (PM/ADMIN) was reset deliberately
+    // rather than through the ordinary payroll row.
+    roleOwnedOverride: roleOwned && !payrollPasswordResettable(employee.user.role),
   });
   // `resetPassword` is what the confirmation names to the operator. It is the shared first
   // password of THIS deployment, never a literal in the source (see the build gate).
@@ -265,6 +286,70 @@ supervisorRegistrationRouter.post("/payroll-employees/:employeeId/credential-res
     employee: { id: employee.id, ecNo: employee.ecNo, name: employee.name, role: employee.user.role },
     resetPassword: initialCredentialStateLabel(),
     mustChangePassword: true,
+  });
+});
+
+/**
+ * Re-open a payroll employee's login, or close it again.
+ *
+ * WHY the payload is `{ "active": true|false }` rather than two REST-ier routes: the
+ * payroll tab is a list with a per-row action, and the operator's intent is one boolean
+ * about one row. An explicit boolean also means a replayed request cannot flip the state,
+ * which a toggle route could.
+ *
+ * A payroll Employee's lifecycle is ours to manage (source is PAYROLL, and the LabourWorks
+ * sync only ever writes `source: "SYNC"` rows), so unlike the Supervisor Disable action
+ * there is no CLMS ownership to defer to. Re-enabling also clears `terminatedAt` so the
+ * record is not left looking terminated, and bumps `tokenVersion` in both directions: a
+ * disable must end live sessions, and an enable must not resurrect the pre-disable ones.
+ */
+supervisorRegistrationRouter.post("/payroll-employees/:employeeId/login-status", async (req, res) => {
+  const employeeId = Number(req.params.employeeId);
+  const desired = req.body?.active;
+  if (typeof desired !== "boolean") {
+    return res.status(400).json({ error: "active (boolean) is required", code: "INVALID_ACTIVE" });
+  }
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { id: true, ecNo: true, name: true, active: true, employmentType: true, user: { select: { id: true, role: true, active: true } } },
+  });
+  if (!employee) return res.status(404).json({ error: "Employee not found", code: "EMPLOYEE_NOT_FOUND" });
+  if (employee.employmentType !== "PAYROLL") {
+    return res.status(400).json({ error: "Only a payroll employee's login can be managed here.", code: "NOT_PAYROLL_EMPLOYEE" });
+  }
+  if (!employee.user) {
+    return res.status(404).json({ error: `${employee.name} (${employee.ecNo}) has no login yet.`, code: "ACCOUNT_NOT_FOUND" });
+  }
+  if (employee.user.active === desired) {
+    // Idempotent: report what is true rather than bumping a session counter for nothing.
+    return res.json({ ok: true, changed: false, accountActive: desired, employee: { id: employee.id, ecNo: employee.ecNo, name: employee.name, role: employee.user.role } });
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    // Enabling a login for a terminated employee would be a contradiction, so the employee
+    // record is re-opened with it; disabling a login leaves the employee record alone
+    // (they are still on the rolls, they simply cannot sign in) unless it was already off.
+    if (desired && !employee.active) {
+      await tx.employee.update({ where: { id: employee.id }, data: { active: true, terminatedAt: null } });
+    }
+    return tx.user.update({
+      where: { id: employee.user!.id },
+      data: { active: desired, tokenVersion: { increment: 1 } },
+      select: { id: true, active: true },
+    });
+  });
+
+  await writeAudit(req.user!.id, desired ? "PAYROLL_EMPLOYEE_LOGIN_ENABLE" : "PAYROLL_EMPLOYEE_LOGIN_DISABLE", "employee", employee.id, {
+    userId: employee.user.id,
+    ecNo: employee.ecNo,
+    role: employee.user.role,
+    employeeReopened: desired && !employee.active,
+  });
+  res.json({
+    ok: true,
+    changed: true,
+    accountActive: updated.active,
+    employee: { id: employee.id, ecNo: employee.ecNo, name: employee.name, role: employee.user.role },
   });
 });
 

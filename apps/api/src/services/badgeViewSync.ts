@@ -3,6 +3,7 @@ import sql from "mssql";
 import { initialCredentialState } from "./defaultLoginCredentials";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
+import { writeAudit } from "../audit";
 import { effectiveOrganisation } from "./roleAccess";
 
 /** One row from the LabourWorks BadgeView source. */
@@ -269,6 +270,48 @@ async function assertCompleteSnapshot(rows: BadgeViewRow[]): Promise<void> {
       `Completeness guard rejected ${validEcNos.size} distinct employees; expected at least ${Math.ceil(existingCount * minimumRatio)}.`
     );
   }
+}
+
+/**
+ * Terminate the employees that a validated snapshot no longer contains, and record an audit
+ * row for each.
+ *
+ * Takes its list as an argument rather than querying it because the caller's version is
+ * inherently global — it acts on every active SYNC row the snapshot omits. Keeping the list
+ * as a parameter makes the sweep (including its audit obligation) directly testable without
+ * driving a whole sync, which in dev would terminate the entire dataset.
+ */
+export async function sweepAbsentEmployees(
+  absent: { id: number; user: { id: number; active: boolean } | null }[],
+  now: Date
+): Promise<number> {
+  let terminated = 0;
+  for (const employee of absent) {
+    await prisma.$transaction(async (tx) => {
+      await tx.employee.update({
+        where: { id: employee.id },
+        data: { active: false, terminatedAt: now, lastSyncedAt: now },
+      });
+      if (employee.user?.active) {
+        await tx.user.update({
+          where: { id: employee.user.id },
+          data: { active: false, tokenVersion: { increment: 1 } },
+        });
+      }
+      if (employee.user) await tx.credentialDelivery.updateMany({ where: { userId: employee.user.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: "Employee absent from validated LabourWorks snapshot." } });
+    });
+    // A trail for the sweep. Without it this path disables a login and leaves NOTHING an
+    // operator can query: the sync only logged its counters to stdout, so "who disabled
+    // this account?" was unanswerable from the database. The row is written per employee
+    // with a null actor, which is what "the LabourWorks integration did it" means.
+    await writeAudit(null, "SYNC_ABSENCE_SWEEP", "employee", employee.id, {
+      reason: "Absent from a validated LabourWorks snapshot",
+      accountDisabled: Boolean(employee.user?.active),
+      syncedAt: now.toISOString(),
+    });
+    terminated += 1;
+  }
+  return terminated;
 }
 
 /**
@@ -555,22 +598,7 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
       select: { id: true, user: { select: { id: true, active: true } } },
     });
     const absent = activeSyncEmployees.filter((employee) => !seenEmployeeIds.has(employee.id));
-    for (const employee of absent) {
-      await prisma.$transaction(async (tx) => {
-        await tx.employee.update({
-          where: { id: employee.id },
-          data: { active: false, terminatedAt: now, lastSyncedAt: now },
-        });
-        if (employee.user?.active) {
-          await tx.user.update({
-            where: { id: employee.user.id },
-            data: { active: false, tokenVersion: { increment: 1 } },
-          });
-        }
-        if (employee.user) await tx.credentialDelivery.updateMany({ where: { userId: employee.user.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: "Employee absent from validated LabourWorks snapshot." } });
-      });
-      result.terminated += 1;
-    }
+    result.terminated += await sweepAbsentEmployees(absent, now);
 
     result.ok = true;
     result.finishedAt = new Date();
