@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { changePasswordSchema } from "@workforce/shared";
+import { apiErrorMessage } from "../api/apiErrorMessage";
 import { useAuth } from "../auth/AuthContext";
 
 export function ChangePasswordPage() {
@@ -17,6 +19,13 @@ export function ChangePasswordPage() {
     setError("");
     if (newPassword !== confirmPassword) {
       setError("New passwords do not match.");
+      return;
+    }
+    // Validate against the API's OWN schema (packages/shared), not a copy of it, so the rules
+    // can never drift: a user is told which rule they missed before any round trip.
+    const parsed = changePasswordSchema.safeParse({ currentPassword, newPassword });
+    if (!parsed.success) {
+      setError(apiErrorMessage(parsed.error.flatten(), "Check your new password."));
       return;
     }
     setLoading(true);

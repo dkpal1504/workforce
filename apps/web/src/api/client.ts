@@ -1,3 +1,5 @@
+import { apiErrorMessage } from "./apiErrorMessage";
+
 const TOKEN_KEY = "workforce_token";
 const USER_KEY = "workforce_user";
 export const SESSION_CLEARED_EVENT = "workforce:session-cleared";
@@ -101,7 +103,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       if (!window.location.pathname.startsWith("/change-password")) window.location.assign("/change-password");
     }
     const err = data.error;
-    const message = typeof err === "string" ? err : err?.formErrors?.[0] || err?.message || res.statusText || "Request failed";
+    const message = apiErrorMessage(err, res.statusText);
     throw new ApiError(res.status, message, data);
   }
   return data as T;
