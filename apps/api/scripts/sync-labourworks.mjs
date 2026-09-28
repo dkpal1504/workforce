@@ -17,8 +17,27 @@
  * the same service: BADGEVIEW_SYNC_ENABLED + BADGEVIEW_SYNC_CRON (default 06:00 and 18:00).
  */
 import { runBadgeViewSync } from "../dist/services/badgeViewSync.js";
+import { writeAudit } from "../dist/audit.js";
 
 const started = new Date();
+
+/**
+ * Record the run in audit_log.
+ *
+ * The manual ADMIN endpoint (POST /api/admin/sync/badgeview) and the scheduler both write an
+ * audit row; this script - which is the one an operator reaches for to prove the sync works -
+ * did not, so a verification run left no trace and was indistinguishable from a sync that never
+ * happened. Best-effort: a failure to write the trail must not change the script's outcome,
+ * which is what the exit code reports.
+ */
+async function recordRun(payload) {
+  try {
+    await writeAudit(null, "SYNC_ONE_SHOT_RUN", "sync", "LABOURWORKS", payload);
+  } catch (error) {
+    console.error("[sync] Could not write the audit trail:", error instanceof Error ? error.message : error);
+  }
+}
+
 try {
   const result = await runBadgeViewSync();
   const summary = {
@@ -36,6 +55,7 @@ try {
     seconds: Math.round((result.finishedAt.getTime() - result.startedAt.getTime()) / 100) / 10,
     error: result.error ?? null,
   };
+  await recordRun({ ...summary, trigger: "ONE_SHOT_SCRIPT" });
   console.log(JSON.stringify(summary, null, 2));
   if (!result.ok) {
     console.error("[sync] FAILED — the database was left as it was; fix the cause and run again.");
@@ -46,6 +66,14 @@ try {
   }
   process.exit(result.ok ? 0 : 1);
 } catch (error) {
-  console.error(`[sync] FAILED after ${Math.round((Date.now() - started.getTime()) / 100) / 10}s:`, error instanceof Error ? error.message : error);
+  const message = error instanceof Error ? error.message : String(error);
+  await recordRun({
+    ok: false,
+    error: message,
+    trigger: "ONE_SHOT_SCRIPT",
+    startedAt: started.toISOString(),
+    seconds: Math.round((Date.now() - started.getTime()) / 100) / 10,
+  });
+  console.error(`[sync] FAILED after ${Math.round((Date.now() - started.getTime()) / 100) / 10}s:`, message);
   process.exit(1);
 }
