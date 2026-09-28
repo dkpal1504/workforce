@@ -615,6 +615,54 @@ a {
   margin-bottom: 14px;
 }
 
+/* Live password checklist on Change password. Sits between the new-password input and the
+   confirm field, so the rules are visible while typing. Colours come from the theme tokens,
+   which exist in all five themes (harbor/atlas/daybreak/forge/nocturne). */
+.password-rules {
+  list-style: none;
+  margin: -6px 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.password-rules__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.password-rules__item.is-met {
+  color: var(--success);
+}
+
+.password-rules__mark {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.password-rules__state {
+  margin-left: auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+.password-rules__count {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.password-rules__count--warn {
+  color: var(--danger-ink);
+}
+
 .warning-banner,
 .error-banner,
 .carry-banner {
