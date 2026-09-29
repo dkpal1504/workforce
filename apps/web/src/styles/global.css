@@ -1127,3 +1127,154 @@ a {
     transition: none;
   }
 }
+
+/* ============================================================================
+   Admin "Last refreshed" badge (LabourWorks sync freshness).
+
+   Answers "is the refresh happening on time?" without an operator running SQL.
+   Rendered twice by the shell — in .page-head__aside at >=1200px and in
+   .app-header__actions below it — because the top bar and the page head are
+   never both visible (see the min-width:1200px block above). Only an Admin
+   renders it: the API refuses /api/admin/sync/status to everyone else.
+
+   Tones come from the shared state tokens, so every theme re-skins the badge
+   for free. --muted is deliberately NOT an alarm colour: a switched-off
+   schedule is a configuration state, not a fault.
+   ============================================================================ */
+.sync-badge {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.sync-badge__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  max-width: 100%;
+  padding: 0 12px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--surface-glass);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sync-badge__button:hover {
+  border-color: var(--primary);
+}
+
+.sync-badge__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sync-badge__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.sync-badge--ok .sync-badge__dot { background: var(--success); }
+.sync-badge--warn .sync-badge__dot { background: var(--warning); }
+.sync-badge--bad .sync-badge__dot { background: var(--danger); }
+.sync-badge--muted .sync-badge__dot { background: var(--text-muted); }
+
+.sync-badge--warn .sync-badge__button { border-color: var(--warning); }
+.sync-badge--bad .sync-badge__button { border-color: var(--danger); }
+
+/* Above 1200px the badge sits in the page head; below it, inside the dark top
+   bar, which needs its own palette because that bar is not theme-surfaced. */
+.app-header .sync-badge__button {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.app-header .sync-badge__button:hover {
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.sync-badge__popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  width: min(360px, 84vw);
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: left;
+}
+
+.sync-badge__detail {
+  margin: 0 0 6px;
+}
+
+.sync-badge__label {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.sync-badge__runs {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text-muted);
+}
+
+.sync-badge__runs li {
+  margin-bottom: 2px;
+}
+
+.sync-badge__run-state {
+  font-weight: 700;
+}
+
+.sync-badge__run-state--ok { color: var(--success); }
+.sync-badge__run-state--bad { color: var(--danger); }
+
+.sync-badge__meta {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+}
+
+/* The inline variant for page bodies. */
+.sync-line {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.sync-line--warn { color: var(--warning); }
+.sync-line--bad { color: var(--danger); }
+.sync-line--ok { color: var(--success); }
+
+/* On a phone the top-bar badge keeps only the time text and shortens it, so it
+   cannot crowd out the menu button or the theme/logout actions. */
+@media (max-width: 767px) {
+  .app-header .sync-badge__button {
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+
+  .app-header .sync-badge__text {
+    max-width: 128px;
+  }
+}

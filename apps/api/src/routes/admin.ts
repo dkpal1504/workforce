@@ -10,6 +10,7 @@ import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employee
 import { initialCredentialState, initialCredentialStateLabel } from "../services/defaultLoginCredentials";
 import { canCreatePayrollEmployee } from "../services/roleAccess";
 import { jobOrderSectionError, jobOrderWbsMoveError } from "../services/masterDataRules";
+import { SYNC_RUN_ACTIONS, runTriggerLabel, syncCadence, syncFreshness } from "../services/syncFreshness";
 import {
   ASSIGNABLE_ROLES,
   creatableRolesFor,
@@ -1023,6 +1024,100 @@ adminRouter.get("/sync/exceptions", requireRoles("ADMIN"), async (req, res) => {
   const status = typeof req.query.status === "string" ? req.query.status : "OPEN";
   const exceptions = await prisma.syncException.findMany({ where: status === "ALL" ? undefined : { status }, orderBy: { lastSeenAt: "desc" }, take: 500 });
   res.json({ exceptions });
+});
+
+/**
+ * Is the LabourWorks refresh happening on time? (ADMIN only — this is the Admin badge.)
+ *
+ * Answers the operability question from durable state rather than from container logs, which
+ * rotate (`max-size: 10m`, `max-file: 3`) and are discarded on every recreate: a missing log
+ * line is not evidence, and the audit rows are the record.
+ *
+ * Two independent sources, on purpose:
+ *  - `audit_log` holds one row per RUN (`SYNC_SCHEDULED_RUN` / `SYNC_ONE_SHOT_RUN` /
+ *    `ADMIN_BADGEVIEW_SYNC`). `lastRun` says how the most recent attempt ENDED and which of
+ *    the three triggers it was — so "the schedule fires by itself" is distinguishable from
+ *    "someone keeps pressing the button".
+ *  - `Employee.lastSyncedAt` is stamped on every row the sync writes, so `lastRefreshAt` is
+ *    the real last-write time and survives a deleted audit row.
+ *
+ * Every timestamp leaves as an ISO-8601 UTC string (`Z`-suffixed) so the browser renders it
+ * in the operator's own timezone. Returning a bare `2026-09-29 00:30` is what makes a 06:00
+ * IST run look like it never happened: these columns hold UTC while the DB session renders
+ * and compares them in its own timezone.
+ *
+ * `enabled` comes from the same flag the scheduler reads, so a deployment with
+ * `BADGEVIEW_SYNC_ENABLED=false` says so instead of showing a feed that is quietly overdue
+ * forever.
+ */
+adminRouter.get("/sync/status", requireRoles("ADMIN"), async (_req, res) => {
+  const cronExpr = process.env.BADGEVIEW_SYNC_CRON || "0 6,18 * * *";
+  const enabled = String(process.env.BADGEVIEW_SYNC_ENABLED || "false").toLowerCase() === "true";
+  const cadence = syncCadence(cronExpr);
+
+  const [lastEmployeeStamp, lastRunRow, recentRuns, openExceptions] = await Promise.all([
+    prisma.employee.findFirst({ where: { lastSyncedAt: { not: null } }, orderBy: { lastSyncedAt: "desc" }, select: { lastSyncedAt: true } }),
+    prisma.auditLog.findFirst({
+      where: { action: { in: [...SYNC_RUN_ACTIONS] } },
+      orderBy: { createdAt: "desc" },
+      select: { action: true, createdAt: true, metadata: true },
+    }),
+    prisma.auditLog.findMany({
+      where: { action: { in: [...SYNC_RUN_ACTIONS] } },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+      select: { action: true, createdAt: true, metadata: true },
+    }),
+    prisma.syncException.count({ where: { status: "OPEN" } }),
+  ]);
+
+  // audit_log.metadata is TEXT holding JSON. A malformed row must not fail the whole badge.
+  const meta = (raw: string | null): Record<string, unknown> => {
+    if (!raw) return {};
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  };
+  const runSummary = (row: { action: string; createdAt: Date; metadata: string | null }) => {
+    const data = meta(row.metadata);
+    return {
+      action: row.action,
+      trigger: runTriggerLabel(row.action),
+      at: row.createdAt.toISOString(),
+      ok: typeof data.ok === "boolean" ? (data.ok as boolean) : null,
+      error: typeof data.error === "string" ? (data.error as string) : null,
+    };
+  };
+
+  const lastRun = lastRunRow ? runSummary(lastRunRow) : null;
+  const now = new Date();
+  const freshness = syncFreshness({
+    lastRefreshAt: lastEmployeeStamp?.lastSyncedAt ?? null,
+    lastRunOk: lastRun?.ok ?? null,
+    now,
+    overdueAfterHours: cadence?.overdueAfterHours ?? null,
+  });
+
+  res.json({
+    source: "LABOURWORKS",
+    enabled,
+    cron: cronExpr,
+    schedule: cadence,
+    nowUtc: now.toISOString(),
+    lastRefreshAt: lastEmployeeStamp?.lastSyncedAt?.toISOString() ?? null,
+    ageHours: freshness.ageHours == null ? null : Math.round(freshness.ageHours * 10) / 10,
+    overdueAfterHours: freshness.overdueAfterHours,
+    state: freshness.state,
+    lastRun,
+    // The last few attempts, so a stopped schedule (one cluster, then nothing) is visible
+    // rather than inferred from a single timestamp.
+    recentRuns: recentRuns.map(runSummary),
+    // A run that reports ok while exceptions accumulate is only half-working.
+    openExceptions,
+  });
 });
 
 adminRouter.post("/credentials/process", requireRoles("ADMIN"), async (req, res) => {

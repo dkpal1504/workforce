@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import type { AuthCapabilities, AuthUser } from "../api/client";
 import { useTheme } from "../theme/ThemeContext";
 import { ThemePanel } from "./ThemePanel";
+import { SyncStatusBadge } from "./SyncStatusBadge";
 
 function titleForPath(pathname: string, role?: string) {
   if (pathname.startsWith("/timesheet")) return "Daily Timesheet";
@@ -407,6 +408,10 @@ export function AppLayout() {
             </span>
           )}
           <div className="app-header__actions">
+            {/* Below 1200px the top bar replaces the rail and the page head is hidden, so the
+                freshness badge belongs here too — an Admin on a 1024px laptop must not lose it.
+                Same component, same rules, one source of truth. */}
+            {capabilities?.assignRoles && <SyncStatusBadge />}
             <button type="button" className="btn-header" onClick={openPanel}>
               Themes
             </button>
@@ -432,6 +437,9 @@ export function AppLayout() {
             {meta && <p className="page-head__lede">{meta.lede}</p>}
           </div>
           <div className="page-head__aside">
+            {/* Admin-only: whether the LabourWorks refresh is happening on time. Placed
+                before the identity so it reads as a status strip on the screen's top right. */}
+            {capabilities?.assignRoles && <SyncStatusBadge />}
             {/* The signed-in identity. It lives here, not in the rail footer: the
                 rail is an overlay that auto-hides, so the header is the only place
                 that is on screen at every desktop width. */}
