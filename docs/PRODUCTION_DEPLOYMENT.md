@@ -611,6 +611,24 @@ curl.exe -fsS http://127.0.0.1:8099/api/health/ready
 - Monitor both `/healthz` and `/api/health/ready`.
 - Approval-cover and HOD-scope changes bump a user's `tokenVersion`, so affected users
   are signed out and must log in again — expected, not an outage.
+- **Code-only releases still need `up -d --force-recreate`.** A release with no migration
+  (for example the Role Assignment listing fix) takes the same three commands, with the
+  migrate step optional and the `--force-recreate` step essential:
+  ```bash
+  docker compose --env-file infra/docker/.env.production \
+    -f infra/docker/compose.production.yml build --pull
+  docker compose --env-file infra/docker/.env.production \
+    -f infra/docker/compose.production.yml up -d --force-recreate api web
+  ```
+  Tagging the build makes the deployed revision unambiguous:
+  `IMAGE_TAG=$(git rev-parse --short HEAD)` in `infra/docker/.env.production` before `build`,
+  then the running image name carries the commit. With the tag left at `latest`, `build`
+  and `up -d` both look successful while the old container keeps serving the old code.
+- Verify the deployed code, not just that the container is up:
+  `curl.exe -fsS http://127.0.0.1:8099/api/health/ready` then log in as an Admin and confirm
+  the screen that only the new code has. For the Role Assignment release that is
+  **Role Assignment** listing people with *no login yet* (contract/blue-collar employees) —
+  search a blue-collar EC No, tick **Supervisor**, and **Create login and assign**.
 
 ### Pulling an update onto the deployment host
 
