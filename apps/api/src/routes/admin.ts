@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
@@ -7,10 +7,19 @@ import { writeAudit } from "../audit";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
-import { initialCredentialState } from "../services/defaultLoginCredentials";
+import { initialCredentialState, initialCredentialStateLabel } from "../services/defaultLoginCredentials";
 import { canCreatePayrollEmployee } from "../services/roleAccess";
 import { jobOrderSectionError, jobOrderWbsMoveError } from "../services/masterDataRules";
-import { ASSIGNABLE_ROLES, planRoleChange, type OpenWorkload, type RoleTarget } from "../services/roleAssignment";
+import {
+  ASSIGNABLE_ROLES,
+  creatableRolesFor,
+  planRoleChange,
+  refusalForRoleCreation,
+  roleTargetForNewAccount,
+  type OpenWorkload,
+  type RoleSourceEmployee,
+  type RoleTarget,
+} from "../services/roleAssignment";
 
 export const adminRouter = Router();
 
@@ -390,68 +399,137 @@ adminRouter.post("/cost-rates", requireRoles("ADMIN"), async (req, res) => {
 /**
  * Role Assignment (ADMIN only).
  *
- * Lists the accounts an Admin can move between roles, with the pay type and
- * organisation mapping that will be inherited on assignment. The payload carries
- * `roles` so the UI renders its tick boxes from the server list.
+ * Lists EVERY person an Admin can give a role to here, which is two populations:
+ *  - the accounts that already exist (the previous behaviour), and
+ *  - the active Employees that have NO account yet — the contract / blue-collar workforce,
+ *    which is the bulk of the yard and was invisible on this screen, so nobody could be
+ *    selected from it at all. That was the reported bug.
+ *
+ * A no-account row carries `creatableRoles`: only the roles that may be CREATED for that
+ * Employee (Employee/Supervisor for anyone, HOD/Department Head for payroll staff), from the
+ * unit-tested `creatableRolesFor`. It is a listing of what the assign endpoint will accept,
+ * so the screen never offers a role the API then refuses.
+ *
+ * Search is applied in JS rather than in SQL, on purpose: `mode: "insensitive"` does not
+ * exist on the SQLite dev provider, and a `contains` on a lowercased term matches on SQLite
+ * (its LIKE folds case) but NOT on PostgreSQL — where every name in this database is
+ * upper-case. That is precisely how a working dev search hides a broken production one, and
+ * production is where this screen is actually used.
+ *
+ * 5000 rows is a ceiling, not pagination: it is far above the yard's headcount, and
+ * `employeesTruncated` says so rather than silently showing a partial list.
  */
+const ROLE_ASSIGNMENT_EMPLOYEE_LIMIT = 5000;
+
 adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
   const search = String(req.query.search || "").trim().toLowerCase();
-  const users = await prisma.user.findMany({
-    where: search
-      ? { OR: [{ name: { contains: search } }, { email: { contains: search } }, { employee: { ecNo: { contains: search } } }] }
-      : undefined,
-    select: {
-      id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true,
-      department: { select: { id: true, name: true } },
-      scopeSection: { select: { id: true, name: true } },
-      employee: {
-        select: {
-          id: true, ecNo: true, name: true, active: true, employmentType: true, departmentId: true,
-          department: { select: { id: true, name: true } },
-          sectionAssignment: { select: { section: { select: { id: true, name: true, departmentId: true } } } },
+  const [users, employees] = await Promise.all([
+    prisma.user.findMany({
+      select: {
+        id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true,
+        department: { select: { id: true, name: true } },
+        scopeSection: { select: { id: true, name: true } },
+        employee: {
+          select: {
+            id: true, ecNo: true, name: true, active: true, employmentType: true, departmentId: true,
+            department: { select: { id: true, name: true } },
+            sectionAssignment: { select: { section: { select: { id: true, name: true, departmentId: true } } } },
+          },
         },
       },
-    },
-    orderBy: [{ role: "asc" }, { name: "asc" }],
-    take: 500,
-  });
+      orderBy: [{ role: "asc" }, { name: "asc" }],
+      take: 500,
+    }),
+    // Everyone on the rolls WITHOUT a login. `take + 1` is how truncation is detected
+    // without a second count query.
+    prisma.employee.findMany({
+      where: { active: true, user: null },
+      select: {
+        id: true, ecNo: true, name: true, designation: true, category: true, employmentType: true, source: true,
+        department: { select: { id: true, name: true } },
+        sectionAssignment: { select: { section: { select: { id: true, code: true, name: true, departmentId: true, active: true } } } },
+      },
+      orderBy: { name: "asc" },
+      take: ROLE_ASSIGNMENT_EMPLOYEE_LIMIT + 1,
+    }),
+  ]);
+
+  const employeesTruncated = employees.length > ROLE_ASSIGNMENT_EMPLOYEE_LIMIT;
+  const shownEmployees = employeesTruncated ? employees.slice(0, ROLE_ASSIGNMENT_EMPLOYEE_LIMIT) : employees;
+  const hit = (fields: (string | null | undefined)[]) =>
+    !search || fields.some((value) => String(value ?? "").toLowerCase().includes(search));
+
   res.json({
     roles: ASSIGNABLE_ROLES,
-    users: users.map((user) => ({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      active: user.active,
-      // An Admin may not change their own role, so the UI can disable the row.
-      self: user.id === req.user!.id,
-      employeeId: user.employeeId,
-      employee: user.employee
-        ? {
-            id: user.employee.id,
-            ecNo: user.employee.ecNo,
-            name: user.employee.name,
-            active: user.employee.active,
-            employmentType: user.employee.employmentType,
-            department: user.employee.department,
-            section: user.employee.sectionAssignment?.section ?? null,
-          }
-        : null,
-      department: user.department,
-      scopeSection: user.scopeSection,
-      // HOD with no Section = Department-level oversight.
-      hodScope: user.role === "HOD" ? (user.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
-    })),
+    users: users
+      .filter((user) => hit([user.name, user.email, user.employee?.ecNo]))
+      .map((user) => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        active: user.active,
+        // An Admin may not change their own role, so the UI can disable the row.
+        self: user.id === req.user!.id,
+        employeeId: user.employeeId,
+        employee: user.employee
+          ? {
+              id: user.employee.id,
+              ecNo: user.employee.ecNo,
+              name: user.employee.name,
+              active: user.employee.active,
+              employmentType: user.employee.employmentType,
+              department: user.employee.department,
+              section: user.employee.sectionAssignment?.section ?? null,
+            }
+          : null,
+        department: user.department,
+        scopeSection: user.scopeSection,
+        // HOD with no Section = Department-level oversight.
+        hodScope: user.role === "HOD" ? (user.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
+      })),
+    employees: shownEmployees
+      .filter((employee) => hit([employee.name, employee.ecNo, employee.department?.name, employee.sectionAssignment?.section?.name]))
+      .map((employee) => {
+        const identity: RoleSourceEmployee = {
+          id: employee.id,
+          ecNo: employee.ecNo,
+          name: employee.name,
+          active: true,
+          employmentType: employee.employmentType,
+          departmentId: employee.department?.id ?? 0,
+        };
+        return {
+          id: employee.id,
+          ecNo: employee.ecNo,
+          name: employee.name,
+          designation: employee.designation,
+          category: employee.category,
+          employmentType: employee.employmentType,
+          source: employee.source,
+          department: employee.department,
+          section: employee.sectionAssignment?.section ?? null,
+          // What this screen may CREATE for them. Empty for a row the API would refuse.
+          creatableRoles: creatableRolesFor(identity),
+        };
+      }),
+    employeesTruncated,
   });
 });
 
 /**
- * Move one account to another role. Department and Section are inherited from the
- * account's own Employee mapping, never from the request, so this endpoint cannot
- * be used to grant a scope the person does not belong to.
+ * Move one account to another role.
+ *
+ * Two ways in, and the distinction matters:
+ *  - `PUT /api/admin/users/:id/role` (existing User id) re-roles an account. Department and
+ *    Section are inherited from the account's own Employee mapping, never from the request,
+ *    so this endpoint cannot be used to grant a scope the person does not belong to.
+ *  - `PUT /api/admin/employees/:employeeId/role` (an Employee id with NO account) creates the
+ *    account with that role. Without it a blue-collar Employee could be listed but never
+ *    assigned, because the only roles this screen creates live on an account that does not
+ *    exist yet. The same `planRoleChange` decides the scope in both paths.
  */
-adminRouter.put("/users/:id/role", requireRoles("ADMIN"), async (req, res) => {
-  const userId = Number(req.params.id);
+async function assignRoleToExistingAccount(req: Request, res: Response, userId: number) {
   const requestedRole = req.body?.role;
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -540,14 +618,144 @@ adminRouter.put("/users/:id/role", requireRoles("ADMIN"), async (req, res) => {
     sectionId: plan.update.sectionId,
     hodScope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : undefined,
   });
-  res.json({
+  return res.json({
     user: updated,
     previousRole: user.role,
+    accountCreated: false,
     sessionsRevoked: true,
     // Tells the panel which scope was actually stored, so the UI can confirm it.
     scope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
   });
-});
+}
+
+/**
+ * Create the missing login for an Employee and give it a role in ONE action.
+ *
+ * WHY this is not "just list them": a role lives on an account. Listing the contract
+ * workforce without this would let an Admin select a blue-collar worker and then be refused,
+ * which is the same dead end in a new place.
+ *
+ * The refusal rules are `refusalForRoleCreation` (payroll-only for approver roles, exactly
+ * like HOD registration) and then the SAME `planRoleChange` the existing-account path uses,
+ * so scope inheritance cannot drift between the two. The account itself is provisioned
+ * through `initialCredentialState()`, so it starts on the deployment's shared first password
+ * (or a random, e-mailed one when there is none) and must be changed at first login.
+ */
+async function createAccountForEmployee(req: Request, res: Response, employeeId: number) {
+  const requestedRole = req.body?.role;
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: {
+      id: true, ecNo: true, name: true, active: true, employmentType: true, departmentId: true, user: { select: { id: true } },
+      sectionAssignment: { select: { sectionId: true, section: { select: { active: true, departmentId: true } } } },
+    },
+  });
+  if (!employee) return res.status(404).json({ error: "Employee not found.", code: "EMPLOYEE_NOT_FOUND" });
+  // Idempotence guard: between listing and clicking, the sync (or a credential worker) may
+  // have created the account. Never create a second one for the same person.
+  if (employee.user) {
+    return res.status(409).json({
+      error: `${employee.name} now has an account. Reload the list and assign the role to that account.`,
+      code: "ACCOUNT_ALREADY_EXISTS",
+    });
+  }
+
+  const identity: RoleSourceEmployee = {
+    id: employee.id,
+    ecNo: employee.ecNo,
+    name: employee.name,
+    active: employee.active,
+    employmentType: employee.employmentType,
+    departmentId: employee.departmentId,
+  };
+  const refusal = refusalForRoleCreation(identity, requestedRole);
+  if (refusal) {
+    const status = refusal.code === "INVALID_ROLE" ? 400 : 409;
+    return res.status(status).json(refusal);
+  }
+
+  const section = employee.sectionAssignment;
+  const target = roleTargetForNewAccount(identity, section && section.section
+    ? { sectionId: section.sectionId, sectionActive: section.section.active, sectionDepartmentId: section.section.departmentId }
+    : null);
+  // A brand-new account has no Employee-side workload and no approval queue by definition.
+  const plan = planRoleChange(req.user!.id, target, requestedRole, { returnedTimesheetDays: 0, pendingApprovals: 0 }, { hodScope: req.body?.hodScope });
+  if (!plan.ok) {
+    const status = plan.code === "INVALID_ROLE" || plan.code === "NO_CHANGE" ? 400 : 409;
+    return res.status(status).json({ error: plan.error, code: plan.code });
+  }
+
+  const credential = await initialCredentialState();
+  const created = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        employeeId: employee.id,
+        // Every creatable role signs in with the EC No, so the stored e-mail is only a
+        // unique handle for the unique index — never the login the person is told to use.
+        email: await uniqueEmployeeLoginEmail(canonicalEcNo(employee.ecNo)),
+        name: employee.name,
+        role: plan.update.role,
+        source: "MANUAL",
+        departmentId: plan.update.departmentId,
+        sectionId: plan.update.sectionId,
+        active: true,
+        ...credential,
+      },
+      select: { id: true, name: true, email: true, role: true, departmentId: true, sectionId: true },
+    });
+    await tx.credentialDelivery.create({
+      data: { userId: user.id, recipient: workforceCredentialRecipient(), purpose: "ROLE_ASSIGNMENT" },
+    });
+    return user;
+  });
+
+  await writeAudit(req.user!.id, "USER_ROLE_ASSIGNMENT", "user", created.id, {
+    from: null,
+    to: plan.update.role,
+    employeeId: employee.id,
+    ecNo: employee.ecNo,
+    employmentType: employee.employmentType,
+    departmentId: plan.update.departmentId,
+    sectionId: plan.update.sectionId,
+    hodScope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : undefined,
+    accountCreated: true,
+    credentialQueued: true,
+  });
+  return res.status(201).json({
+    user: created,
+    previousRole: null,
+    accountCreated: true,
+    sessionsRevoked: false,
+    scope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
+    // The identifier the person actually signs in with, and the password they start on, so
+    // the panel can tell the operator what to say at the gate. The password is the
+    // deployment's configured shared one, disclosed exactly as the payroll reset does.
+    login: employee.ecNo,
+    firstPassword: initialCredentialStateLabel(),
+    mustChangePassword: true,
+  });
+}
+
+adminRouter.put("/users/:id/role", requireRoles("ADMIN"), async (req, res) =>
+  roleAssignmentHandler(() => assignRoleToExistingAccount(req, res, Number(req.params.id)), res)
+);
+
+/**
+ * Express 4 does not await a router handler, so an unhandled rejection becomes a hanging
+ * request rather than a 500. Both role paths are wrapped so a database error still answers.
+ */
+async function roleAssignmentHandler(work: () => Promise<unknown>, res: Response) {
+  try {
+    await work();
+  } catch (error) {
+    console.error("[roleAssignment]", error);
+    if (!res.headersSent) res.status(500).json({ error: "The role change could not be saved.", code: "ROLE_ASSIGNMENT_FAILED" });
+  }
+}
+
+adminRouter.put("/employees/:employeeId/role", requireRoles("ADMIN"), async (req, res) =>
+  roleAssignmentHandler(() => createAccountForEmployee(req, res, Number(req.params.employeeId)), res)
+);
 
 /** Register a payroll employee and their canonical section assignment. */
 adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (req, res) => {

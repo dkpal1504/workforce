@@ -74,6 +74,115 @@ export function isAssignableRole(role: unknown): role is AssignableRole {
 }
 
 /**
+ * An Employee record as Role Assignment sees it, whether or not it already has an account.
+ *
+ * `ecNo` is nullable because a hand-created row can lack one, and every role that signs in
+ * with an EC No would then be unreachable — a login nobody can use is worse than a refusal.
+ */
+export type RoleSourceEmployee = {
+  id: number;
+  ecNo: string | null;
+  name: string;
+  active: boolean;
+  employmentType: string;
+  departmentId: number;
+};
+
+/**
+ * Roles that may be CREATED for an Employee that has no account yet.
+ *
+ * Deliberately narrower than ASSIGNABLE_ROLES:
+ *  - EMPLOYEE and SUPERVISOR are the two roles a payroll OR contract employee can hold with
+ *    no extra data: both sign in with the EC No and both are scoped to the Department on the
+ *    Employee record. This is what makes a blue-collar (CLMS) worker selectable as a
+ *    Supervisor.
+ *  - HOD and DEPT_HEAD add approval power and are PAYROLL-only, for the same reason
+ *    `POST /api/admin/hods` refuses a CLMS worker (`INVALID_EMPLOYEE`): an approver scope is
+ *    an organisation mapping a contract row does not reliably carry.
+ *  - PM, HR, FINANCE and ADMIN are not Employee roles at all (they are organisation-wide
+ *    logins), so they are never created from an Employee record. That account is created
+ *    first and then re-roled here — which is what a promoted payroll employee already does.
+ */
+export function creatableRolesFor(employee: RoleSourceEmployee): AssignableRole[] {
+  if (!employee.active || !employee.ecNo) return [];
+  return employee.employmentType === "PAYROLL"
+    ? ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD"]
+    : ["EMPLOYEE", "SUPERVISOR"];
+}
+
+/**
+ * Why an Employee may not be given `requestedRole` as a NEW account, or null when it may.
+ *
+ * Refusals name the rule and the next step, because every one of these is a real
+ * conversation at the yard gate ("he is contract labour, he cannot be an HOD") rather than a
+ * silent no-op. A role that IS creatable still has to pass `planRoleChange` for its scope.
+ */
+export function refusalForRoleCreation(
+  employee: RoleSourceEmployee,
+  requestedRole: unknown
+): { code: string; error: string } | null {
+  if (!isAssignableRole(requestedRole)) {
+    return { code: "INVALID_ROLE", error: `Role must be one of ${ASSIGNABLE_ROLES.join(", ")}.` };
+  }
+  if (!employee.active) {
+    return {
+      code: "EMPLOYEE_INACTIVE",
+      error: `${employee.name} is an inactive Employee. Reactivate the Employee before creating a login for them.`,
+    };
+  }
+  if (!employee.ecNo) {
+    return {
+      code: "EMPLOYEE_ECNO_REQUIRED",
+      error: `${employee.name} has no EC No, so no login can be created. Correct the Employee record first.`,
+    };
+  }
+  if (creatableRolesFor(employee).includes(requestedRole)) return null;
+  if ((requestedRole === "HOD" || requestedRole === "DEPT_HEAD") && employee.employmentType !== "PAYROLL") {
+    return {
+      code: "ROLE_REQUIRES_PAYROLL_EMPLOYEE",
+      error:
+        `${requestedRole} needs a payroll (white-collar) Employee. ${employee.name} is contract labour, ` +
+        "so they can be a Supervisor or an Employee — register them as a payroll Employee first for anything above that.",
+    };
+  }
+  return {
+    code: "ROLE_NOT_CREATABLE_FOR_EMPLOYEE",
+    error:
+      `${requestedRole} is not created from an Employee record: that account is organisation-wide. ` +
+      "Create the account first, then assign the role here.",
+  };
+}
+
+/**
+ * The RoleTarget for an Employee that has no account YET.
+ *
+ * Its only purpose is that the FIRST assignment goes through the same `planRoleChange` as
+ * every later one, so HOD scope, Department inheritance and the guard rails cannot drift
+ * into a second implementation. `id` is negative on purpose: it can never collide with a
+ * real User id, so the Admin can never be mistaken for the target of their own click.
+ */
+export function roleTargetForNewAccount(
+  employee: RoleSourceEmployee,
+  sectionAssignment: { sectionId: number; sectionActive: boolean; sectionDepartmentId: number } | null
+): RoleTarget {
+  return {
+    id: -employee.id,
+    name: employee.name,
+    role: "NONE",
+    active: employee.active,
+    currentSectionId: null,
+    employeeId: employee.id,
+    employee: {
+      id: employee.id,
+      active: employee.active,
+      employmentType: employee.employmentType,
+      departmentId: employee.departmentId,
+    },
+    sectionAssignment,
+  };
+}
+
+/**
  * Decide whether `actorId` may move `target` to `requestedRole`, and what the
  * account's organisation scope becomes. Returns a refusal code rather than
  * throwing so the route can map it straight to an HTTP status.

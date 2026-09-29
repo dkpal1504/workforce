@@ -1,36 +1,43 @@
-import { useEffect, useMemo, useState } from "react";
-import { api } from "../api/client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import {
+  assignmentNotice,
+  changePending,
+  findSelection,
+  loginFor,
+  parseSelection,
+  roleTicks,
+  rowKey,
+  targetSummary,
+  type PersonRow,
+} from "./roleAssignmentSelection";
 import "../styles/supervisors.css";
 
 type Role = "EMPLOYEE" | "SUPERVISOR" | "HOD" | "DEPT_HEAD" | "PM" | "ADMIN" | "HR" | "FINANCE";
-
-type EmployeeRef = {
-  id: number;
-  ecNo: string;
-  name: string;
-  active: boolean;
-  employmentType: string;
-  department: { id: number; name: string } | null;
-  section: { id: number; name: string; departmentId: number } | null;
-};
-
 type HodScope = "SECTION" | "DEPARTMENT";
 
-type Account = {
-  id: number;
-  name: string;
-  email: string;
-  role: Role;
-  active: boolean;
-  self: boolean;
+/** The two row shapes the server sends: an account, and an Employee with no account yet. */
+type AccountRow = {
+  id: number; name: string; email: string; role: Role; active: boolean; self: boolean;
   employeeId: number | null;
-  employee: EmployeeRef | null;
+  employee: { id: number; ecNo: string; name: string; active: boolean; employmentType: string;
+    department: { id: number; name: string } | null;
+    section: { id: number; name: string; departmentId: number } | null } | null;
   department: { id: number; name: string } | null;
   scopeSection: { id: number; name: string } | null;
-  /** For an HOD: whether it is scoped to one Section or the whole Department. */
   hodScope: HodScope | null;
 };
+
+type EmployeeRow = {
+  id: number; ecNo: string; name: string; designation: string; category: string;
+  employmentType: string; source: string;
+  department: { id: number; name: string } | null;
+  section: { id: number; code: string; name: string; departmentId: number } | null;
+  creatableRoles: string[];
+};
+
+type Payload = { roles: Role[]; users: AccountRow[]; employees: EmployeeRow[]; employeesTruncated: boolean };
 
 const ROLE_LABELS: Record<Role, string> = {
   EMPLOYEE: "Employee (My Hours)",
@@ -57,23 +64,80 @@ const ROLE_EFFECT: Record<Role, string> = {
 };
 
 /**
- * The identifier that ACTUALLY works for a role, which is not always the EC number:
- * `EMPLOYEE`, `SUPERVISOR`, `HOD`, `DEPT_HEAD` and `PM` authenticate with their EC number, while
- * `ADMIN`, `HR` and `FINANCE` authenticate with their e-mail address
- * (`usesEcNoLogin` in the API's defaultLoginCredentials). Showing the EC number for an account
- * that is being moved to ADMIN would name a login that no longer works - the mistake this column
- * used to invite.
+ * Why an Employee with no account is offered fewer roles. The SERVER decides this (it sends
+ * `creatableRoles` and, per refused role, the sentence to show); the panel only explains the
+ * one rule that is not per-row, so an operator understands the shape of the list at a glance.
  */
-function loginIdentifierFor(role: string, ecNo: string | null, email: string): string {
-  const byEcNo = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM"].includes(role);
-  return byEcNo ? ecNo ?? email : email;
+const CREATION_POLICY_NOTE =
+  "Contract (blue-collar) employees can be given Employee or Supervisor. HOD and Department Head need a payroll " +
+  "(white-collar) Employee; PM, HR, Finance and Admin are not Employee roles at all.";
+
+/** Cap on rendered picker options: a filtered select stays usable, an unfiltered 5000-row one does not. */
+const PICKER_OPTION_LIMIT = 200;
+
+/** The roles this panel can tick, used to sanity-check an account's stored role before pre-ticking it. */
+const SELECTABLE_ROLES: Role[] = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "ADMIN", "HR", "FINANCE"];
+
+function errorText(error: unknown): string {
+  if (error instanceof ApiError && error.payload && typeof error.payload === "object" && "error" in error.payload) {
+    return String((error.payload as { error: unknown }).error);
+  }
+  return error instanceof Error ? error.message : "Request failed";
+}
+
+function accountToRow(account: AccountRow): PersonRow {
+  return {
+    kind: "ACCOUNT",
+    id: account.id,
+    name: account.name,
+    ecNo: account.employee?.ecNo ?? null,
+    currentRole: account.role,
+    employmentType: account.employee?.employmentType ?? null,
+    designation: null,
+    department: account.employee?.department ?? account.department,
+    section: account.employee?.section ?? account.scopeSection,
+    active: account.active,
+    self: account.self,
+    creatableRoles: [],
+    roleRefusals: {},
+    hodScope: account.hodScope,
+  };
+}
+
+function employeeToRow(employee: EmployeeRow, roleRefusals: Record<string, string>): PersonRow {
+  return {
+    kind: "EMPLOYEE",
+    id: employee.id,
+    name: employee.name,
+    ecNo: employee.ecNo,
+    currentRole: null,
+    employmentType: employee.employmentType,
+    designation: employee.designation,
+    department: employee.department,
+    section: employee.section,
+    active: true,
+    self: false,
+    creatableRoles: employee.creatableRoles,
+    roleRefusals,
+    hodScope: null,
+  };
+}
+
+/** Local, instant filtering. The server already applies its own `search` for API callers. */
+function matches(row: PersonRow, term: string): boolean {
+  if (!term) return true;
+  return [row.name, row.ecNo, row.currentRole, row.employmentType, row.designation, row.department?.name, row.section?.name]
+    .some((value) => String(value ?? "").toLowerCase().includes(term));
 }
 
 export function RoleAssignmentPage() {
   const { user } = useAuth();
   const [roles, setRoles] = useState<Role[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [selectedId, setSelectedId] = useState<number | "">("");
+  /** Every role's refusal reason for an account-less Employee, keyed by role then employee. */
+  const [refusalsByEmployee, setRefusalsByEmployee] = useState<Record<number, Record<string, string>>>({});
+  const [rows, setRows] = useState<PersonRow[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [selectedKey, setSelectedKey] = useState("");
   const [pickedRole, setPickedRole] = useState<Role | "">("");
   const [hodScope, setHodScope] = useState<HodScope>("SECTION");
   const [search, setSearch] = useState("");
@@ -82,102 +146,136 @@ export function RoleAssignmentPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  async function load(term = search) {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api<{ roles: Role[]; users: Account[] }>(
-        `/admin/role-assignment${term.trim() ? `?search=${encodeURIComponent(term.trim())}` : ""}`
-      );
+      const data = await api<Payload>("/admin/role-assignment");
       setRoles(data.roles);
-      setAccounts(data.users);
-      setSelectedId((current) => (data.users.some((u) => u.id === current) ? current : ""));
+      // The API refuses a role per Employee with its own sentence; the panel shows the
+      // server's wording rather than inventing a second copy of the policy.
+      const refusals: Record<number, Record<string, string>> = {};
+      for (const employee of data.employees) {
+        const map: Record<string, string> = {};
+        for (const role of data.roles) {
+          if (employee.creatableRoles.includes(role)) continue;
+          map[role] =
+            (role === "HOD" || role === "DEPT_HEAD") && employee.employmentType !== "PAYROLL"
+              ? `${role} needs a payroll (white-collar) Employee. ${employee.name} is contract labour, so they can be an Employee or a Supervisor.`
+              : `${role} is not created from an Employee record. Create the account first, then assign the role here.`;
+        }
+        refusals[employee.id] = map;
+      }
+      setRefusalsByEmployee(refusals);
+      setRows([
+        ...data.users.map(accountToRow),
+        ...data.employees.map((employee) => employeeToRow(employee, refusals[employee.id] ?? {})),
+      ]);
+      setTruncated(data.employeesTruncated);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load accounts.");
+      setError(errorText(err));
     } finally {
       setLoading(false);
     }
-  }
-
-  useEffect(() => {
-    void load("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selected = useMemo(
-    () => accounts.find((account) => account.id === selectedId) ?? null,
-    [accounts, selectedId]
-  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const term = search.trim().toLowerCase();
+  const visibleRows = useMemo(() => rows.filter((row) => matches(row, term)), [rows, term]);
+  const selected = useMemo(() => findSelection(rows, selectedKey), [rows, selectedKey]);
+
+  // Keep the selection honest when a reload removes the person (e.g. their account was created
+  // elsewhere), so the panel can never act on a row that is no longer in the list.
+  useEffect(() => {
+    if (selectedKey && !findSelection(rows, selectedKey)) setSelectedKey("");
+  }, [rows, selectedKey]);
 
   // Ticking a different role is the change; the current role is pre-ticked.
   useEffect(() => {
-    setPickedRole(selected ? selected.role : "");
+    setPickedRole(selected?.currentRole && SELECTABLE_ROLES.includes(selected.currentRole as Role)
+      ? (selected.currentRole as Role)
+      : "");
     setHodScope(selected?.hodScope ?? "SECTION");
     setError("");
     setNotice("");
   }, [selected]);
 
-  const changePending = Boolean(
-    selected &&
-    pickedRole &&
-    (pickedRole !== selected.role || (pickedRole === "HOD" && hodScope !== (selected.hodScope ?? "SECTION")))
-  );
+  const pending = changePending(selected, pickedRole, hodScope);
+  const ticks = useMemo(() => (selected ? roleTicks<Role>(selected, roles) : []), [selected, roles]);
+  const pickerOptions = visibleRows.slice(0, PICKER_OPTION_LIMIT);
 
   async function apply() {
     if (!selected || !pickedRole) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      await api(`/admin/users/${selected.id}/role`, {
-        method: "PUT",
-        body: JSON.stringify({ role: pickedRole, ...(pickedRole === "HOD" ? { hodScope } : {}) }),
-      });
-      setNotice(
-        `${selected.name} is now ${pickedRole}` +
-          (pickedRole === "HOD" ? ` (${hodScope === "DEPARTMENT" ? "Department-wide, no Section" : "Section-scoped"})` : "") +
-          `. Their sessions were revoked, so they take the new screens on their next login.`
-      );
+      const body = JSON.stringify({ role: pickedRole, ...(pickedRole === "HOD" ? { hodScope } : {}) });
+      // An Employee with no account is addressed by Employee id and has the account CREATED;
+      // an existing account is re-roled by User id. Two routes, one set of rules behind them.
+      const path = selected.kind === "EMPLOYEE" ? `/admin/employees/${selected.id}/role` : `/admin/users/${selected.id}/role`;
+      const result = await api<{ accountCreated: boolean; firstPassword?: string }>(path, { method: "PUT", body });
+      setNotice(assignmentNotice(selected, pickedRole, hodScope, result.accountCreated, result.firstPassword ?? ""));
       setPickedRole("");
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not assign the role.");
+      setError(errorText(err));
     } finally {
       setBusy(false);
     }
   }
 
+  const accountCount = rows.filter((row) => row.kind === "ACCOUNT").length;
+  const noLoginCount = rows.filter((row) => row.kind === "EMPLOYEE").length;
+
   return (
     <>
       <div className="supervisors-toolbar">
         <p className="muted" style={{ margin: 0 }}>
-          Tick a role and update. Department and Section are inherited from the person&apos;s existing
-          Employee mapping — nothing is re-selected here. Payroll employees and contract supervisors are
-          both assignable.
+          Every person on the rolls is listed: {accountCount} with a login and {noLoginCount} without one. Picking
+          someone who has no login yet and ticking Employee or Supervisor creates that login in the same click — they
+          sign in with their EC No. Department and Section are always inherited from the person&apos;s Employee
+          mapping, never re-selected here.
         </p>
       </div>
       {error && <div className="error-banner">{error}</div>}
       {notice && <div className="alloc-note">{notice}</div>}
+      {truncated && (
+        <div className="error-banner">
+          This list hit its server limit, so it may be incomplete. Use the search box to narrow it down.
+        </div>
+      )}
 
       <div className="panel" style={{ marginTop: 12 }}>
         <div className="panel__header">
           <span>1 · Select a person</span>
-          <span className="panel__count">{accounts.length} accounts</span>
+          <span className="panel__count">
+            {visibleRows.length} of {rows.length} people
+          </span>
         </div>
         <div className="panel__body">
           <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
             <label className="filter-field" style={{ minWidth: 320 }}>
               <span>Employee / account</span>
               <select
-                value={selectedId}
-                onChange={(event) => setSelectedId(event.target.value ? Number(event.target.value) : "")}
+                value={selectedKey}
+                onChange={(event) => setSelectedKey(event.target.value)}
               >
                 <option value="">Select a person…</option>
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.employee?.ecNo ? `${account.employee.ecNo} · ` : ""}
-                    {account.name} — {account.role}
-                    {account.employee?.employmentType ? ` (${account.employee.employmentType})` : ""}
-                    {account.active ? "" : " · INACTIVE"}
+                {pickerOptions.map((row) => (
+                  <option key={rowKey(row.kind, row.id)} value={rowKey(row.kind, row.id)}>
+                    {row.ecNo ? `${row.ecNo} · ` : ""}
+                    {row.name} — {row.kind === "ACCOUNT" ? row.currentRole : "no login yet"}
+                    {row.employmentType ? ` (${row.employmentType})` : ""}
+                    {row.department?.name ? ` · ${row.department.name}` : ""}
+                    {row.active ? "" : " · INACTIVE"}
                   </option>
                 ))}
+                {visibleRows.length > pickerOptions.length && (
+                  <option value="" disabled>
+                    …and {visibleRows.length - pickerOptions.length} more — search to narrow the list
+                  </option>
+                )}
               </select>
             </label>
             <label className="filter-field" style={{ minWidth: 220 }}>
@@ -185,30 +283,22 @@ export function RoleAssignmentPage() {
               <input
                 className="search-input"
                 value={search}
-                placeholder="Name, ecNo or email…"
+                placeholder="Name, EC No, department or section…"
                 onChange={(event) => setSearch(event.target.value)}
-                onBlur={() => void load(search)}
-                onKeyDown={(event) => { if (event.key === "Enter") void load(search); }}
               />
             </label>
-            <button type="button" className="btn btn-secondary" disabled={loading} onClick={() => void load(search)}>
-              {loading ? "Loading…" : "Search"}
+            <button type="button" className="btn btn-secondary" disabled={loading} onClick={() => void load()}>
+              {loading ? "Loading…" : "Reload"}
             </button>
           </div>
 
           {selected && (
             <div className="alloc-note" style={{ marginTop: 12 }}>
-              <div>
-                <strong>{selected.name}</strong> · login {loginIdentifierFor(selected.role, selected.employee?.ecNo ?? null, selected.email)} ·{" "}
-                {selected.employee?.employmentType ?? "no Employee record"} · currently{" "}
-                <strong>{selected.role}</strong>
-              </div>
+              <div>{targetSummary(selected)}</div>
               <div className="muted" style={{ marginTop: 4 }}>
-                Department: {selected.employee?.department?.name ?? selected.department?.name ?? "—"} · Section:{" "}
-                {selected.employee?.section?.name ?? selected.scopeSection?.name ?? "not assigned"}
-                {selected.role === "HOD" && (
-                  <> · <strong>{selected.hodScope === "DEPARTMENT" ? "Department-level HOD" : "Section-level HOD"}</strong></>
-                )}
+                {selected.kind === "EMPLOYEE"
+                  ? `Signs in with EC No ${loginFor(selected)} once the login exists.`
+                  : `Login ${loginFor(selected)}`}
               </div>
               {selected.self && (
                 <div className="muted" style={{ marginTop: 4 }}>
@@ -220,6 +310,7 @@ export function RoleAssignmentPage() {
                   This account is inactive. Reactivate it before assigning a role.
                 </div>
               )}
+              {selected.kind === "EMPLOYEE" && <div className="muted" style={{ marginTop: 4 }}>{CREATION_POLICY_NOTE}</div>}
             </div>
           )}
         </div>
@@ -229,13 +320,17 @@ export function RoleAssignmentPage() {
         <div className="panel" style={{ marginTop: 16 }}>
           <div className="panel__header">
             <span>2 · Tick the role to assign</span>
-            <span className="panel__count">{pickedRole || "none"}</span>
+            <span className="panel__count">
+              {pickedRole || "none"}
+              {selected.kind === "EMPLOYEE" ? " · creates the login" : ""}
+            </span>
           </div>
           <div className="panel__body">
             <div style={{ display: "grid", gap: 8 }}>
-              {roles.map((role) => {
-                const active = role === selected.role;
+              {ticks.map(({ role, enabled, reason }) => {
+                const current = role === selected.currentRole;
                 const picked = role === pickedRole;
+                const disabled = busy || selected.self || !selected.active || !enabled;
                 return (
                   <label
                     key={role}
@@ -244,21 +339,25 @@ export function RoleAssignmentPage() {
                       padding: "8px 10px", borderRadius: 8,
                       border: picked ? "1px solid var(--primary)" : "1px solid var(--border-light)",
                       background: picked ? "var(--bg-elevated)" : "transparent",
-                      cursor: selected.self || !selected.active ? "not-allowed" : "pointer",
+                      opacity: enabled ? 1 : 0.6,
+                      cursor: disabled ? "not-allowed" : "pointer",
                     }}
                   >
                     <input
                       type="radio"
                       name="role"
                       checked={picked}
-                      disabled={selected.self || !selected.active || busy}
+                      disabled={disabled}
                       onChange={() => setPickedRole(role)}
                       style={{ marginTop: 3 }}
                     />
                     <span>
-                      <strong>{ROLE_LABELS[role]}</strong>
-                      {active && <span className="muted"> · current role</span>}
-                      <div className="muted">{ROLE_EFFECT[role]}</div>
+                      <strong>{ROLE_LABELS[role] ?? role}</strong>
+                      {current && <span className="muted"> · current role</span>}
+                      <div className="muted">{ROLE_EFFECT[role] ?? ""}</div>
+                      {/* A role this Employee cannot have is LISTED with the reason, never hidden:
+                          "why can he not be an HOD?" is the question the operator is asking. */}
+                      {!enabled && <div className="muted">{reason}</div>}
                     </span>
                   </label>
                 );
@@ -285,8 +384,8 @@ export function RoleAssignmentPage() {
                       {scope === "SECTION" ? "Section" : "Department"}
                       <span className="muted">
                         {scope === "SECTION"
-                          ? ` — ${selected.employee?.section?.name ?? "the Employee's Section"}`
-                          : ` — all Sections of ${selected.employee?.department?.name ?? "the Department"}`}
+                          ? ` — ${selected.section?.name ?? "the Employee's Section, or department-wide if they have none"}`
+                          : ` — all Sections of ${selected.department?.name ?? "the Department"}`}
                       </span>
                     </span>
                   </label>
@@ -297,12 +396,16 @@ export function RoleAssignmentPage() {
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
               <button
                 className="btn btn-primary"
-                disabled={busy || !changePending || selected.self || !selected.active}
+                disabled={busy || !pending}
                 onClick={() => void apply()}
               >
-                {busy ? "Updating…" : "Update role"}
+                {busy ? "Updating…" : selected.kind === "EMPLOYEE" ? "Create login and assign" : "Update role"}
               </button>
-              <button className="btn btn-ghost" disabled={busy} onClick={() => setPickedRole(selected.role)}>
+              <button
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => setPickedRole(selected.currentRole ? (selected.currentRole as Role) : "")}
+              >
                 Reset
               </button>
               <span className="muted">
@@ -310,14 +413,12 @@ export function RoleAssignmentPage() {
                   ? "You cannot change your own role."
                   : !selected.active
                   ? "Inactive accounts cannot be reassigned."
-                  : changePending
-                  ? `This moves ${selected.name} from ${selected.role} to ${pickedRole}` +
+                  : selected.kind === "EMPLOYEE"
+                  ? `This creates ${selected.name}'s login with the ${pickedRole || "selected"} role and the deployment's first password, which they must change at first login.`
+                  : pending
+                  ? `This moves ${selected.name} from ${selected.currentRole} to ${pickedRole}` +
                     (pickedRole === "HOD" ? ` (${hodScope === "DEPARTMENT" ? "Department-wide" : "Section"})` : "") +
-                    ` and revokes their current sessions.` +
-                    (loginIdentifierFor(pickedRole, selected.employee?.ecNo ?? null, selected.email) !==
-                    loginIdentifierFor(selected.role, selected.employee?.ecNo ?? null, selected.email)
-                      ? ` They will sign in with ${loginIdentifierFor(pickedRole, selected.employee?.ecNo ?? null, selected.email)} from now on.`
-                      : "")
+                    " and revokes their current sessions."
                   : "Tick a different role to enable the update."}
               </span>
             </div>
@@ -325,7 +426,11 @@ export function RoleAssignmentPage() {
         </div>
       )}
 
-      {!selected && !loading && <div className="empty-state" style={{ marginTop: 16 }}>Select a person to assign a role.</div>}
+      {!selected && !loading && (
+        <div className="empty-state" style={{ marginTop: 16 }}>
+          {rows.length ? "Select a person to assign a role." : "No people on the rolls were returned."}
+        </div>
+      )}
       {selected?.self && user?.id === selected.id && null}
     </>
   );

@@ -1,8 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ASSIGNABLE_ROLES, planRoleChange, type OpenWorkload, type RoleTarget } from "./roleAssignment";
+import {
+  ASSIGNABLE_ROLES,
+  creatableRolesFor,
+  planRoleChange,
+  refusalForRoleCreation,
+  roleTargetForNewAccount,
+  type OpenWorkload,
+  type RoleSourceEmployee,
+  type RoleTarget,
+} from "./roleAssignment";
 
 const NO_WORK: OpenWorkload = { returnedTimesheetDays: 0, pendingApprovals: 0 };
+
+/** An active payroll Employee with a Section — the ordinary case. */
+function payrollEmployee(overrides: Partial<RoleSourceEmployee> = {}): RoleSourceEmployee {
+  return { id: 900, ecNo: "40031988", name: "Payroll Person", active: true, employmentType: "PAYROLL", departmentId: 81, ...overrides };
+}
+
+/** An active contract (blue-collar) Employee — the population Role Assignment used to hide. */
+function contractEmployee(overrides: Partial<RoleSourceEmployee> = {}): RoleSourceEmployee {
+  return { id: 501, ecNo: "FRNEGJ115", name: "Contract Worker", active: true, employmentType: "CLMS", departmentId: 77, ...overrides };
+}
 
 function target(overrides: Partial<RoleTarget> = {}): RoleTarget {
   return {
@@ -78,6 +97,89 @@ test("an unknown HOD scope is refused rather than guessed", () => {
   const plan = planRoleChange(1, target(), "HOD", NO_WORK, { hodScope: "DIVISION" });
   assert.equal(plan.ok, false);
   assert.equal(!plan.ok && plan.code, "INVALID_HOD_SCOPE");
+});
+
+/**
+ * The reported bug: Role Assignment listed only the 36 people who already had a login, so a
+ * blue-collar (contract) Employee could not be picked at all. These tests pin the two rules
+ * that let a contract worker become a Supervisor WITHOUT opening the approver roles to them.
+ */
+test("a contract worker with no account can be created as a Supervisor or an Employee", () => {
+  const worker = contractEmployee();
+  assert.deepEqual(creatableRolesFor(worker), ["EMPLOYEE", "SUPERVISOR"]);
+  assert.equal(refusalForRoleCreation(worker, "SUPERVISOR"), null);
+  assert.equal(refusalForRoleCreation(worker, "EMPLOYEE"), null);
+});
+
+test("supervisor scope for a contract worker comes from the Employee record, not the request", () => {
+  const plan = planRoleChange(1, roleTargetForNewAccount(contractEmployee(), { sectionId: 210, sectionActive: true, sectionDepartmentId: 77 }), "SUPERVISOR", NO_WORK);
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 77, sectionId: null });
+});
+
+test("a contract worker is refused the approver roles with the reason, not silently dropped", () => {
+  const worker = contractEmployee();
+  for (const role of ["HOD", "DEPT_HEAD"]) {
+    const refusal = refusalForRoleCreation(worker, role);
+    assert.equal(refusal?.code, "ROLE_REQUIRES_PAYROLL_EMPLOYEE", `${role} must be payroll-only`);
+    assert.match(refusal!.error, /contract labour/i);
+  }
+});
+
+test("organisation-wide roles are never created from an Employee record", () => {
+  for (const role of ["PM", "HR", "FINANCE", "ADMIN"]) {
+    for (const employee of [payrollEmployee(), contractEmployee()]) {
+      const refusal = refusalForRoleCreation(employee, role);
+      assert.equal(refusal?.code, "ROLE_NOT_CREATABLE_FOR_EMPLOYEE", `${role} is not an Employee role`);
+      assert.match(refusal!.error, /Create the account first/);
+    }
+  }
+});
+
+test("a payroll Employee can be created as HOD / Department Head, still using the shared scope rules", () => {
+  const employee = payrollEmployee();
+  assert.equal(refusalForRoleCreation(employee, "HOD"), null);
+  assert.equal(refusalForRoleCreation(employee, "DEPT_HEAD"), null);
+
+  const asHod = planRoleChange(1, roleTargetForNewAccount(employee, { sectionId: 103, sectionActive: true, sectionDepartmentId: 81 }), "HOD", NO_WORK);
+  assert.equal(asHod.ok, true);
+  assert.deepEqual(asHod.ok && asHod.update, { role: "HOD", departmentId: 81, sectionId: 103 });
+
+  const asDepartmentHod = planRoleChange(1, roleTargetForNewAccount(employee, null), "HOD", NO_WORK);
+  assert.equal(asDepartmentHod.ok, true);
+  assert.deepEqual(asDepartmentHod.ok && asDepartmentHod.update, { role: "HOD", departmentId: 81, sectionId: null });
+
+  const asHead = planRoleChange(1, roleTargetForNewAccount(employee, null), "DEPT_HEAD", NO_WORK);
+  assert.equal(asHead.ok, true);
+  assert.deepEqual(asHead.ok && asHead.update, { role: "DEPT_HEAD", departmentId: 81, sectionId: null });
+});
+
+test("a newly created account is never the Admin's own account, whatever the Employee id", () => {
+  // The synthetic target id is negative so it cannot collide with a real User id: the Admin
+  // must never hit the SELF_ROLE_CHANGE guard by picking Employee #1.
+  const actorId = 1;
+  const plan = planRoleChange(actorId, roleTargetForNewAccount(contractEmployee({ id: 1 }), null), "SUPERVISOR", NO_WORK);
+  assert.equal(plan.ok, true);
+  assert.notEqual(roleTargetForNewAccount(contractEmployee({ id: 1 }), null).id, actorId);
+});
+
+test("the first assignment onto an Employee record has no current role, so nothing reads as a no-op", () => {
+  const created = roleTargetForNewAccount(contractEmployee(), null);
+  assert.equal(created.role, "NONE");
+  assert.equal(created.employeeId, 501);
+  assert.equal(created.employee?.employmentType, "CLMS");
+});
+
+test("an inactive or EC-No-less Employee cannot have a login created", () => {
+  assert.equal(refusalForRoleCreation(contractEmployee({ active: false }), "SUPERVISOR")?.code, "EMPLOYEE_INACTIVE");
+  assert.equal(refusalForRoleCreation(contractEmployee({ ecNo: null }), "SUPERVISOR")?.code, "EMPLOYEE_ECNO_REQUIRED");
+  assert.deepEqual(creatableRolesFor(contractEmployee({ active: false })), []);
+  assert.deepEqual(creatableRolesFor(payrollEmployee({ ecNo: "" })), []);
+});
+
+test("an unknown role is refused before any Employee rule is applied", () => {
+  const refusal = refusalForRoleCreation(contractEmployee(), "SUPERVIZOR");
+  assert.equal(refusal?.code, "INVALID_ROLE");
 });
 
 test("a Department Head is department-wide with no Section scope", () => {
