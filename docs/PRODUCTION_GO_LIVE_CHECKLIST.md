@@ -443,7 +443,7 @@ sudo -u postgres pg_dump --format=custom workforce > /backup/workforce-$(date +%
 | a stale migration folder in the working tree breaks `migrate deploy` (for example `20260826115630_init` from an older checkout) | `prisma migrate deploy` applies EVERY folder under `prisma/migrations`, in filename order, and the `migrate` image is built from that folder | delete the untracked folder(s), confirm `git status --short` shows only the schema swap, then rebuild the migrate image: `docker compose ... build migrate` |
 | `migrate` exits non-zero with `column ... already exists` | `01-schema.sql` was applied by hand | drop the database (`DROP DATABASE workforce;` then Phase 1.4) and let `migrate` run |
 | web is up but the pages are blank | the API is unhealthy behind nginx | `docker compose ... logs api`, then `/api/health/ready` |
-| `Login failed for user 'it'` (sync) | unquoted `#` in `BADGEVIEW_DB_PASSWORD` | quote the value: `BADGEVIEW_DB_PASSWORD="Swan!@#..."` |
+| `Login failed for user 'it'` (sync) | unquoted `#` in `BADGEVIEW_DB_PASSWORD` | quote the value: `BADGEVIEW_DB_PASSWORD="<the it password, as configured in .env.production>"` |
 | `/api/health/ready` is 503 right after `up -d` | the api container is still starting | wait 15 s and re-run; then read `logs api` |
 
 ## Appendix B — the whole sequence, condensed
