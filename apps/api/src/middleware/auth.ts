@@ -9,6 +9,11 @@ export type AuthUser = {
   role: string;
   departmentId: number | null;
   sectionId: number | null;
+  /**
+   * The Sections this user may act within. EMPTY means every Section of `departmentId` (the
+   * "Section Head for one whole Department" case). `sectionId` above is the legacy mirror.
+   */
+  sectionScope: number[];
   employeeId: number | null;
   mustChangePassword: boolean;
   tokenVersion: number;
@@ -63,6 +68,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         role: true,
         departmentId: true,
         sectionId: true,
+        scopeSections: { select: { sectionId: true } },
         employeeId: true,
         active: true,
         mustChangePassword: true,
@@ -91,6 +97,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       role: user.role,
       departmentId: user.departmentId,
       sectionId: user.sectionId,
+      // The authority-bearing scope. A user with rows uses the SET; a user with none but a
+      // Department falls back to their legacy single Section, and a user with neither falls back
+      // to EMPTY-with-no-Department, which matches nothing. The fallback matters during the
+      // transition: without it a half-migrated account would silently lose all authority.
+      sectionScope: user.scopeSections.length
+        ? user.scopeSections.map((scope) => scope.sectionId)
+        : (user.sectionId != null ? [user.sectionId] : []),
       employeeId: user.employeeId,
       mustChangePassword: user.mustChangePassword,
       tokenVersion: user.tokenVersion,

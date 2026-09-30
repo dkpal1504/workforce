@@ -18,6 +18,7 @@ const lifecycleUserSelect = {
   departmentId: true,
   sectionId: true,
   scopeSection: { select: { id: true, code: true, name: true, departmentId: true } },
+  scopeSections: { select: { sectionId: true } },
   employeeId: true,
   active: true,
   mustChangePassword: true,
@@ -63,6 +64,11 @@ function presentUser(user: any) {
     departmentId: user.departmentId,
     sectionId: user.sectionId,
     scopeSection: user.scopeSection,
+    // The Sections this account may act within; EMPTY means every Section of its Department.
+    // Same fallback as requireAuth, so the screen never disagrees with the API about authority.
+    sectionScope: (user.scopeSections?.length ?? 0)
+      ? user.scopeSections.map((scope: { sectionId: number }) => scope.sectionId)
+      : (user.sectionId != null ? [user.sectionId] : []),
     employeeId: user.employeeId,
     active: user.active,
     employeeActive: user.employee?.active ?? null,
