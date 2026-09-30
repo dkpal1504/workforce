@@ -21,6 +21,9 @@ model User {
   department              Department? @relation(fields: [departmentId], references: [id])
   sectionId               Int?        @map("section_id")
   scopeSection            Section?    @relation("UserScopeSection", fields: [sectionId], references: [id])
+  /// The Sections this user may act within. EMPTY means every Section of `departmentId`.
+  /// `sectionId` above is the legacy mirror (first section, or null) — see UserScopeSection.
+  scopeSections           UserScopeSection[] @relation("UserScopeSections")
   active                  Boolean     @default(true)
   mustChangePassword      Boolean     @default(false) @map("must_change_password")
   tokenVersion            Int         @default(0) @map("token_version")
@@ -143,6 +146,7 @@ model Section {
   costCenter          CostCenter?
   employeeAssignments EmployeeSectionAssignment[]
   scopedUsers         User[] @relation("UserScopeSection")
+  scopeGrants         UserScopeSection[] @relation("SectionScopeUsers")
   organisationOverrides EmployeeOrganisationOverride[]
   hodDelegations      HodDelegation[]
 
@@ -154,6 +158,33 @@ model Section {
   @@unique([departmentId, name])
   @@index([departmentId, active])
   @@map("sections")
+}
+
+/// The Sections a user may act within. ONE ROW PER SECTION.
+///
+/// This replaces the authority role of the single `User.sectionId` scalar, which is kept as a
+/// legacy mirror (first section, or null for department-wide — see `legacySectionId` in
+/// services/userScope.ts) so un-converted call sites keep working during the batched conversion,
+/// and so an API-only rollback still functions.
+///
+/// EMPTY SET is meaningful: a user with a Department and NO rows here is DEPARTMENT-WIDE (every
+/// Section of that Department) — exactly what `User.sectionId = null` means today. That is how
+/// "Section Head for one whole Department" is expressed.
+///
+/// Every row's section MUST belong to that user's own Department. The write path enforces it
+/// (`validateScopeSections`), and the read path (`hodScopeMatchesSet` in services/roleAccess.ts)
+/// gates on the Department FIRST, so even a stale row can never reach across Departments.
+model UserScopeSection {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  user      User     @relation("UserScopeSections", fields: [userId], references: [id], onDelete: Cascade)
+  sectionId Int      @map("section_id")
+  section   Section  @relation("SectionScopeUsers", fields: [sectionId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, sectionId])
+  @@index([sectionId])
+  @@map("user_scope_sections")
 }
 
 model CostCenter {

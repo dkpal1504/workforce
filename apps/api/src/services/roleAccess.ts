@@ -84,14 +84,52 @@ export function departmentScope(role: string, departmentId: number | null): numb
 export const SUMMARY_VISIBLE_STATUSES = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"] as const;
 
 /**
+ * Can this approver act on a resource, given a SET of sections?
+ *
+ *   departmentId set, sections EMPTY      -> whole Department (unchanged: was `sectionId == null`)
+ *   departmentId set, sections non-empty  -> exactly those Sections
+ *   departmentId null                     -> nothing
+ *
+ * The Department gate comes FIRST and is absolute: a Section from another Department can never
+ * match, even if a stale row existed. Callers must uphold the same-department rule when WRITING a
+ * scope (see `validateScopeSections`); this function is the read-side rule.
+ */
+export function hodScopeMatchesSet(
+  actorDepartmentId: number | null,
+  actorSectionIds: readonly number[],
+  resourceDepartmentId: number,
+  resourceSectionId: number | null
+): boolean {
+  if (actorDepartmentId == null) return false;
+  if (actorDepartmentId !== resourceDepartmentId) return false;
+  // An empty set means the WHOLE Department — the single-Department Section Head case.
+  if (actorSectionIds.length === 0) return true;
+  return resourceSectionId != null && actorSectionIds.includes(resourceSectionId);
+}
+
+/**
+ * The Prisma `employee` filter for an approver's scope.
+ *
+ * Replaces the two duplicated `hodEmployeeScope` copies (routes/approvals.ts and
+ * routes/employeeAllocation.ts). Note the two shapes are NOT interchangeable:
+ *   EMPTY set  -> `{ departmentId }`                     — no Section filter at all (every Section)
+ *   NON-empty  -> `{ departmentId, sectionAssignment }`  — narrows to those Sections
+ * Swapping them either hides rows or leaks every Section of the Department.
+ */
+export function hodEmployeeScopeSet(departmentId: number | null, actorSectionIds: readonly number[]) {
+  if (departmentId == null) return { id: -1 };
+  if (actorSectionIds.length === 0) return { departmentId };
+  return { departmentId, sectionAssignment: { sectionId: { in: [...actorSectionIds] } } };
+}
+
+/**
  * Can this approver act on a resource in the given Department/Section?
  *
  *   Section HOD (Department + Section)  -> must match BOTH.
  *   Department HOD (Department, no Section) -> matches the whole Department.
  *
- * The Department-wide branch is what lets a Department HOD see and (where the role
- * allows) action every Section under its Department. A Department HOD still cannot
- * reach another Department, and an approver with no Department at all matches nothing.
+ * Legacy single-section form, kept so un-converted callers keep their exact behaviour while the
+ * call sites move to `hodScopeMatchesSet`.
  */
 export function hodScopeMatches(
   actorDepartmentId: number | null,
@@ -99,10 +137,12 @@ export function hodScopeMatches(
   resourceDepartmentId: number,
   resourceSectionId: number | null
 ): boolean {
-  if (actorDepartmentId == null) return false;
-  if (actorDepartmentId !== resourceDepartmentId) return false;
-  if (actorSectionId == null) return true; // Department-level approver
-  return actorSectionId === resourceSectionId;
+  return hodScopeMatchesSet(
+    actorDepartmentId,
+    actorSectionId == null ? [] : [actorSectionId],
+    resourceDepartmentId,
+    resourceSectionId
+  );
 }
 
 export function effectiveOrganisation(

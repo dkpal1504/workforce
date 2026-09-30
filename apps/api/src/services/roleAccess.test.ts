@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { capabilitiesFor, canCreatePayrollEmployee, departmentScope, effectiveOrganisation, hodScopeMatches, landingPathFor } from "./roleAccess";
+import {
+  capabilitiesFor,
+  canCreatePayrollEmployee,
+  departmentScope,
+  effectiveOrganisation,
+  hodEmployeeScopeSet,
+  hodScopeMatches,
+  hodScopeMatchesSet,
+  landingPathFor,
+} from "./roleAccess";
 
 test("requested role capability matrix is enforced", () => {
   assert.deepEqual(
@@ -33,6 +42,39 @@ test("a Section HOD matches its own Department AND Section", () => {
   assert.equal(hodScopeMatches(2, 8, 2, 8), true);
   assert.equal(hodScopeMatches(2, 8, 2, 9), false, "another Section of the same Department");
   assert.equal(hodScopeMatches(2, 8, 3, 8), false, "another Department");
+});
+
+/**
+ * The multi-section Section Head: one person, several Sections of ONE Department.
+ * These tests are the contract for the whole feature — the read-side rule every screen uses.
+ */
+test("a multi-section HOD reaches exactly its own Sections, nothing else", () => {
+  assert.equal(hodScopeMatchesSet(4, [8, 42], 4, 8), true);
+  assert.equal(hodScopeMatchesSet(4, [8, 42], 4, 42), true);
+  assert.equal(hodScopeMatchesSet(4, [8, 42], 4, 9), false, "another Section of the same Department is not theirs");
+  assert.equal(hodScopeMatchesSet(4, [8, 42], 21, 8), false, "another Department never matches");
+  assert.equal(hodScopeMatchesSet(4, [8, 42], 4, null), false, "an unassigned Section is not one of theirs");
+});
+
+test("an EMPTY set still means department-wide, exactly like today's null section", () => {
+  for (const resourceSection of [8, 42, 999, null] as (number | null)[]) {
+    assert.equal(hodScopeMatchesSet(4, [], 4, resourceSection), true, `dept-wide must cover ${resourceSection}`);
+  }
+  assert.equal(hodScopeMatchesSet(4, [], 21, 8), false, "still cannot leave the Department");
+});
+
+test("no Department matches nothing at all, whatever the section set says", () => {
+  for (const sections of [[], [8], [8, 42]]) {
+    assert.equal(hodScopeMatchesSet(null, sections, 4, 8), false);
+  }
+});
+
+test("the employee filter narrows by Section, and drops the filter when department-wide", () => {
+  assert.deepEqual(hodEmployeeScopeSet(4, [8, 42]), { departmentId: 4, sectionAssignment: { sectionId: { in: [8, 42] } } });
+  // EMPTY means the whole Department, so NO section filter is applied — this is the difference
+  // between "every Section" and "no Section", and getting it backwards hides or leaks rows.
+  assert.deepEqual(hodEmployeeScopeSet(4, []), { departmentId: 4 });
+  assert.deepEqual(hodEmployeeScopeSet(null, [8]), { id: -1 }, "no Department matches nothing");
 });
 
 test("a Department HOD (no Section) matches every Section of its Department", () => {
