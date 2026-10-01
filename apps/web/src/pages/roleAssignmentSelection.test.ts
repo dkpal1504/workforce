@@ -6,9 +6,12 @@ import {
   findSelection,
   loginFor,
   parseSelection,
+  roleChangeAllowed,
+  roleChangeBlockers,
   roleTicks,
   rowKey,
   targetSummary,
+  unblocksByApprovingOthers,
   type PersonRow,
 } from "./roleAssignmentSelection";
 
@@ -24,8 +27,9 @@ function account(overrides: Partial<PersonRow> = {}): PersonRow {
     employmentType: "PAYROLL", designation: "Technician", department: { id: 81, name: "Production - SEZ" },
     section: { id: 103, name: "Hull and Outfitting" }, active: true, self: false,
     creatableRoles: [], roleRefusals: {}, hodScope: null,
+    blockers: { pendingApprovals: 0, returnedTimesheetDays: 0 },
     ...overrides,
-  };
+  } as PersonRow;
 }
 
 function contractEmployee(overrides: Partial<PersonRow> = {}): PersonRow {
@@ -43,8 +47,9 @@ function contractEmployee(overrides: Partial<PersonRow> = {}): PersonRow {
       ADMIN: "ADMIN is not created from an Employee record.",
     },
     hodScope: null,
+    blockers: { pendingApprovals: 0, returnedTimesheetDays: 0 },
     ...overrides,
-  };
+  } as PersonRow;
 }
 
 test("an account and an Employee with the same numeric id never collide in the picker", () => {
@@ -142,4 +147,63 @@ test("re-roling an existing account does not claim a login was created", () => {
 test("an HOD notice names the scope that was actually stored", () => {
   const notice = assignmentNotice(account(), "HOD", "DEPARTMENT", false, "x");
   assert.match(notice, /Department-wide, no Section/);
+});
+
+/**
+ * The reported bug: "I reassign an HOD as an Employee and the employee is ALWAYS shown as HOD."
+ *
+ * The API refuses the move while approval work is stranded in the HOD's queue, but the refusal was
+ * only visible in a banner at the top of the page while the Update button is far below — so a
+ * blocked move looked like a change that silently did not happen. These tests pin the rules that let
+ * the panel explain the block before the click and beside the button.
+ */
+test("a Section HOD with queued approvals is BLOCKED from becoming an Employee, with the count", () => {
+  const hod = account({ currentRole: "HOD", section: { id: 8, name: "Hull and Outfitting" }, blockers: { pendingApprovals: 32, returnedTimesheetDays: 0 } });
+  const reason = roleChangeBlockers(hod, "EMPLOYEE");
+  assert.ok(reason, "the move must be reported as blocked");
+  assert.match(reason!, /^Blocked: 32 timesheet day/);
+  assert.match(reason!, /approval queue/);
+  assert.equal(roleChangeAllowed(hod, "EMPLOYEE"), false);
+  // ...and the block is specific to a ROLE change: an HOD whose queue is clear can move.
+  assert.equal(roleChangeBlockers(account({ currentRole: "HOD" }), "EMPLOYEE"), null);
+});
+
+test("re-picking the SAME role is never reported as blocked (a scope-only move is allowed)", () => {
+  // Section -> Department is the same role, so planRoleChange never consults the queue. Reporting a
+  // blocker here would disable a legitimate move.
+  const hod = account({ currentRole: "HOD", hodScope: "SECTION", blockers: { pendingApprovals: 32, returnedTimesheetDays: 0 } });
+  assert.equal(roleChangeBlockers(hod, "HOD"), null);
+});
+
+test("a Supervisor with returned timesheets is blocked, and PM/Admin queues count too", () => {
+  const supervisor = account({ currentRole: "SUPERVISOR", blockers: { pendingApprovals: 0, returnedTimesheetDays: 3 } });
+  const reason = roleChangeBlockers(supervisor, "EMPLOYEE");
+  assert.match(reason!, /^Blocked: 3 timesheet/);
+  assert.match(reason!, /returned for correction/);
+
+  assert.match(roleChangeBlockers(account({ currentRole: "PM", blockers: { pendingApprovals: 5, returnedTimesheetDays: 0 } }), "EMPLOYEE")!, /5 timesheet day/);
+  assert.match(roleChangeBlockers(account({ currentRole: "ADMIN", blockers: { pendingApprovals: 1, returnedTimesheetDays: 0 } }), "EMPLOYEE")!, /1 timesheet day/);
+});
+
+test("a non-approver role is never blocked by a queue, and an account-less Employee never is", () => {
+  assert.equal(roleChangeBlockers(account({ currentRole: "EMPLOYEE", blockers: { pendingApprovals: 9, returnedTimesheetDays: 9 } }), "SUPERVISOR"), null);
+  assert.equal(roleChangeBlockers(contractEmployee(), "SUPERVISOR"), null);
+});
+
+test("a row from an older payload without blockers is treated as unblocked, not as blocked", () => {
+  const legacy = { ...account({ currentRole: "HOD" }) } as PersonRow;
+  delete (legacy as { blockers?: unknown }).blockers;
+  assert.equal(roleChangeBlockers(legacy, "EMPLOYEE"), null);
+});
+
+test("the panel says how many OTHER approvers could clear their queue instead", () => {
+  const hod = account({ id: 35, currentRole: "HOD", blockers: { pendingApprovals: 32, returnedTimesheetDays: 0 } });
+  const pm = account({ id: 36, currentRole: "PM" });
+  const otherHod = account({ id: 37, currentRole: "HOD", blockers: { pendingApprovals: 4, returnedTimesheetDays: 0 } });
+  const rows = [hod, pm, otherHod, account({ id: 38, currentRole: "EMPLOYEE" })];
+  // The queue is held by Department/Section, so its 32 days may belong to another approver of the
+  // same section — the operator is told how many alternatives exist rather than being sent to clear
+  // work that may not be this person's.
+  assert.equal(unblocksByApprovingOthers(rows, 35, "EMPLOYEE"), 2);
+  assert.equal(unblocksByApprovingOthers(rows, 38, "SUPERVISOR"), 0, "no queue = nothing to explain");
 });

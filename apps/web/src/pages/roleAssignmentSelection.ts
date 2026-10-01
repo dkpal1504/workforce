@@ -15,7 +15,9 @@
 
 export type PersonKind = "ACCOUNT" | "EMPLOYEE";
 
-/** One row of the picker, as returned by GET /api/admin/role-assignment. */
+/**
+ * One row of the picker, as returned by GET /api/admin/role-assignment.
+ */
 export type PersonRow = {
   kind: PersonKind;
   id: number;
@@ -34,7 +36,31 @@ export type PersonRow = {
   /** For an EMPLOYEE row: the server's own reason per refused role. */
   roleRefusals: Record<string, string>;
   hodScope: "SECTION" | "DEPARTMENT" | null;
+  /**
+   * Work the SERVER says would block the change — computed from the same numbers its guards use.
+   *
+   * WHY THE PANEL NEEDS THESE
+   *   The API refuses a move with `OPEN_APPROVALS` / `OPEN_TIMESHEETS` and a readable sentence, but
+   *   that sentence is only seen AFTER the click, as a banner at the very top of the page while the
+   *   Update button is far below it. A blocked move therefore looks exactly like a change that did
+   *   not happen: the operator clicks, nothing visibly moves, and the person still shows the old
+   *   role. That is the reported bug ("I reassign an HOD as an Employee and he is always shown as
+   *   HOD"). With the counts here the refusal is explained BEFORE the click, and the reason stays
+   *   beside the button afterwards.
+   */
+  blockers: { pendingApprovals: number; returnedTimesheetDays: number };
 };
+
+/** The blockers a row carries, defaulted for a row from an older payload or a test fixture. */
+function blockersOf(row: PersonRow): { pendingApprovals: number; returnedTimesheetDays: number } {
+  return { pendingApprovals: row.blockers?.pendingApprovals ?? 0, returnedTimesheetDays: row.blockers?.returnedTimesheetDays ?? 0 };
+}
+
+/** Roles that must not be left while approval work is still queued to them (mirrors APPROVER_ROLES). */
+const APPROVER_ROLES: string[] = ["HOD", "PM", "ADMIN"];
+/** Roles that must not be left while timesheets they own are back for correction. */
+const CAPTURE_ROLES: string[] = ["SUPERVISOR"];
+
 
 export function rowKey(kind: PersonKind, id: number): string {
   return `${kind}:${id}`;
@@ -55,6 +81,49 @@ export function findSelection(rows: PersonRow[], value: string): PersonRow | nul
   const parsed = parseSelection(value);
   if (!parsed) return null;
   return rows.find((row) => row.kind === parsed.kind && row.id === parsed.id) ?? null;
+}
+
+/**
+ * Work that will make the server REFUSE this move, explained before the click.
+ *
+ * Mirrors `planRoleChange` exactly, including the fact that these guards fire only when the ROLE
+ * actually changes — raising an HOD's scope from Section to Department is the same role and is
+ * never blocked by a queue. Returns null when the move is clear, so the caller can tell
+ * "no blockers" from "not checked".
+ *
+ * A reason is a sentence, because it is shown verbatim beside the button and under the role tick.
+ */
+export function roleChangeBlockers(row: PersonRow, pickedRole: string): string | null {
+  if (!row || !pickedRole) return null;
+  if (row.kind !== "ACCOUNT") return null; // No role yet, so no queue and no owned timesheets.
+  if (pickedRole === row.currentRole) return null; // Same role: scope-only moves are never blocked.
+  const blockers = blockersOf(row);
+  if (APPROVER_ROLES.includes(row.currentRole ?? "") && blockers.pendingApprovals > 0) {
+    return `Blocked: ${blockers.pendingApprovals} timesheet day(s) are still waiting in this account's approval queue. They must be approved, sent back, or covered (Approvals → arrange cover / delegations) before the role can change.`;
+  }
+  if (CAPTURE_ROLES.includes(row.currentRole ?? "") && blockers.returnedTimesheetDays > 0) {
+    return `Blocked: ${blockers.returnedTimesheetDays} timesheet(s) this account submitted were returned for correction. They must be resubmitted or resolved before the role can change.`;
+  }
+  return null;
+}
+
+/** Is this exact move allowed right now? The inverse of `roleChangeBlockers`, for the button. */
+export function roleChangeAllowed(row: PersonRow, pickedRole: string): boolean {
+  return changePending(row, pickedRole, row.hodScope ?? "SECTION") && roleChangeBlockers(row, pickedRole) === null;
+}
+
+/**
+ * Work the operator could clear to unblock the move, counted across the whole list.
+ *
+ * `targetId` is excluded: an approver's queue is keyed on department+section, not on the person, so
+ * the days the server counts for a Section HOD can legitimately include days tagged by ANOTHER
+ * approver of the same section. Telling the operator "clear the queue" is only useful if it also
+ * says whether any of that work is actually theirs.
+ */
+export function unblocksByApprovingOthers(rows: PersonRow[], targetId: number, pickedRole: string): number {
+  const reason = roleChangeBlockers(rows.find((row) => row.id === targetId) ?? ({} as PersonRow), pickedRole);
+  if (!reason || !/approval queue/.test(reason)) return 0;
+  return rows.filter((row) => row.kind === "ACCOUNT" && row.id !== targetId && APPROVER_ROLES.includes(row.currentRole ?? "")).length;
 }
 
 /** The identifier the person will actually sign in with. EC No for every role offered here. */

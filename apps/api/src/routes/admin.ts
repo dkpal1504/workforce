@@ -427,7 +427,7 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
   const [users, employees] = await Promise.all([
     prisma.user.findMany({
       select: {
-        id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true,
+        id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true, departmentId: true,
         department: { select: { id: true, name: true } },
         scopeSection: { select: { id: true, name: true } },
         employee: {
@@ -460,6 +460,39 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
   const hit = (fields: (string | null | undefined)[]) =>
     !search || fields.some((value) => String(value ?? "").toLowerCase().includes(search));
 
+  /**
+   * The blockers the guards in `planRoleChange` will apply, per account, computed up front.
+   *
+   * WHY: the refusal sentence only exists AFTER a click, in a banner at the top of a long page,
+   * while the role ticks and the Update button are far below it. A blocked move then looks exactly
+   * like a change that silently did not happen — the operator clicks, the person still shows the old
+   * role, and the screen never says why next to what they clicked. Sending the counts with the list
+   * lets the panel explain the block BEFORE the click and keep the reason beside the button.
+   *
+   * The numbers are deliberately the SAME ones `assignRoleToExistingAccount` computes and passes to
+   * `planRoleChange`; there is no second interpretation of the rule, only an earlier answer.
+   */
+  const [pendingApprovalCounts, returnedTimesheetCounts] = await Promise.all([
+    // Mirrors `pendingStatusesForRole` + the queue scope in routes/approvals.ts: an HOD's queue is
+    // SUBMITTED days inside HIS Department/Section, a PM's is HOD_APPROVED across all departments.
+    Promise.all(users.map(async (user) => {
+      const statuses = user.role === "HOD" ? ["SUBMITTED"] : user.role === "PM" ? ["HOD_APPROVED"] : null;
+      if (!statuses || !["HOD", "PM", "ADMIN"].includes(user.role)) return [user.id, 0] as const;
+      // A Department HOD (no Section) covers every Section of its Department; a Section HOD covers
+      // exactly its Section. An approver with no Department at all matches nothing (fails closed).
+      const scope = user.role !== "HOD"
+        ? {}
+        : user.departmentId == null
+          ? { employee: { id: -1 } }
+          : { employee: { departmentId: user.departmentId, ...(user.sectionId == null ? {} : { sectionAssignment: { sectionId: user.sectionId } }) } };
+      const count = await prisma.timesheetDay.count({ where: { status: { in: statuses }, ...scope } });
+      return [user.id, count] as const;
+    })),
+    prisma.timesheetDay.groupBy({ by: ["taggedById"], where: { status: "PLANNING_RETURNED" }, _count: { _all: true } }),
+  ]);
+  const blockedBy = new Map(pendingApprovalCounts);
+  const returnedBy = new Map(returnedTimesheetCounts.map((row) => [row.taggedById, row._count._all] as const));
+
   res.json({
     roles: ASSIGNABLE_ROLES,
     users: users
@@ -473,6 +506,12 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
         // An Admin may not change their own role, so the UI can disable the row.
         self: user.id === req.user!.id,
         employeeId: user.employeeId,
+        // Work that would BLOCK a role change, so the panel can explain it before the click
+        // instead of only after it.
+        blockers: {
+          pendingApprovals: blockedBy.get(user.id) ?? 0,
+          returnedTimesheetDays: returnedBy.get(user.id) ?? 0,
+        },
         employee: user.employee
           ? {
               id: user.employee.id,

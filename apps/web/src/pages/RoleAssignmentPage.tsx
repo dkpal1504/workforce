@@ -7,9 +7,11 @@ import {
   findSelection,
   loginFor,
   parseSelection,
+  roleChangeBlockers,
   roleTicks,
   rowKey,
   targetSummary,
+  unblocksByApprovingOthers,
   type PersonRow,
 } from "./roleAssignmentSelection";
 import "../styles/supervisors.css";
@@ -21,6 +23,8 @@ type HodScope = "SECTION" | "DEPARTMENT";
 type AccountRow = {
   id: number; name: string; email: string; role: Role; active: boolean; self: boolean;
   employeeId: number | null;
+  /** Work that would make the server refuse a role change, sent with the list. */
+  blockers?: { pendingApprovals: number; returnedTimesheetDays: number };
   employee: { id: number; ecNo: string; name: string; active: boolean; employmentType: string;
     department: { id: number; name: string } | null;
     section: { id: number; name: string; departmentId: number } | null } | null;
@@ -101,6 +105,8 @@ function accountToRow(account: AccountRow): PersonRow {
     creatableRoles: [],
     roleRefusals: {},
     hodScope: account.hodScope,
+    // The server's own counts for the guards, so a blocked move is explained BEFORE the click.
+    blockers: account.blockers ?? { pendingApprovals: 0, returnedTimesheetDays: 0 },
   };
 }
 
@@ -120,6 +126,9 @@ function employeeToRow(employee: EmployeeRow, roleRefusals: Record<string, strin
     creatableRoles: employee.creatableRoles,
     roleRefusals,
     hodScope: null,
+    // An Employee that has no account cannot have a queue or owned timesheets: it has no role yet,
+    // so no guard can fire. Stated explicitly rather than left undefined.
+    blockers: { pendingApprovals: 0, returnedTimesheetDays: 0 },
   };
 }
 
@@ -192,17 +201,35 @@ export function RoleAssignmentPage() {
     if (selectedKey && !findSelection(rows, selectedKey)) setSelectedKey("");
   }, [rows, selectedKey]);
 
-  // Ticking a different role is the change; the current role is pre-ticked.
+  /**
+   * Ticking a different role is the change; the current role is pre-ticked.
+   *
+   * This clears the error and the notice when the SELECTION changes, which is right — a message
+   * about the previous person has no business on this one. What it must not do is wipe the
+   * confirmation of the change that just happened: `apply()` reloads the list, the row object is
+   * rebuilt, and without protection the notice was cleared in the same tick it was set, so a
+   * successful change was announced and then silently withdrawn. `pending` is false right after a
+   * successful apply, and a change that was refused leaves `pending` TRUE — so only the success
+   * path (pending === false) keeps the notice.
+   */
   useEffect(() => {
     setPickedRole(selected?.currentRole && SELECTABLE_ROLES.includes(selected.currentRole as Role)
       ? (selected.currentRole as Role)
       : "");
     setHodScope(selected?.hodScope ?? "SECTION");
     setError("");
-    setNotice("");
+    if (selected && changePending(selected, selected.currentRole ?? "", selected.hodScope ?? "SECTION")) setNotice("");
   }, [selected]);
 
   const pending = changePending(selected, pickedRole, hodScope);
+  /**
+   * Work that will make the server refuse this move. Computed from the counts the API sends with the
+   * list, so the operator is told BEFORE clicking — and, because the banner sits at the top of a long
+   * page, the same sentence is repeated next to the Update button below.
+   */
+  const blockedReason = selected && pending ? roleChangeBlockers(selected, pickedRole) : null;
+  const canApply = pending && !blockedReason;
+  const alsoBlockedApprovers = selected ? unblocksByApprovingOthers(rows, selected.id, pickedRole) : 0;
   const ticks = useMemo(() => (selected ? roleTicks<Role>(selected, roles) : []), [selected, roles]);
   const pickerOptions = visibleRows.slice(0, PICKER_OPTION_LIMIT);
 
@@ -330,7 +357,7 @@ export function RoleAssignmentPage() {
               {ticks.map(({ role, enabled, reason }) => {
                 const current = role === selected.currentRole;
                 const picked = role === pickedRole;
-                const disabled = busy || selected.self || !selected.active || !enabled;
+                const disabled = busy || selected.self || !selected.active || !enabled || Boolean(blockedReason);
                 return (
                   <label
                     key={role}
@@ -393,10 +420,25 @@ export function RoleAssignmentPage() {
               </div>
             )}
 
+            {/* The reason a blocked move will be refused is repeated HERE, beside the button the
+                operator actually pressed. The page's own banner is at the very top, far above this
+                panel, so leaving the explanation only there is what made a refusal look like a
+                change that never happened. */}
+            {blockedReason && (
+              <div className="error-banner" style={{ marginTop: 14 }}>{blockedReason}</div>
+            )}
+            {blockedReason && alsoBlockedApprovers > 0 && (
+              <p className="muted" style={{ marginTop: 4 }}>
+                An approval queue is held by Department/Section, not by the person, so some of those days may
+                not be this account&apos;s own — there {alsoBlockedApprovers === 1 ? "is 1 other approver" : `are ${alsoBlockedApprovers} other approvers`} on
+                this list whose queue could be cleared instead.
+              </p>
+            )}
+
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
               <button
                 className="btn btn-primary"
-                disabled={busy || !pending}
+                disabled={busy || !canApply}
                 onClick={() => void apply()}
               >
                 {busy ? "Updating…" : selected.kind === "EMPLOYEE" ? "Create login and assign" : "Update role"}
@@ -413,6 +455,8 @@ export function RoleAssignmentPage() {
                   ? "You cannot change your own role."
                   : !selected.active
                   ? "Inactive accounts cannot be reassigned."
+                  : blockedReason
+                  ? "This change cannot be saved until the work above is cleared."
                   : selected.kind === "EMPLOYEE"
                   ? `This creates ${selected.name}'s login with the ${pickedRole || "selected"} role and the deployment's first password, which they must change at first login.`
                   : pending
