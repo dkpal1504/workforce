@@ -66,7 +66,7 @@ async function main() {
     console.log(`  ${fmt(run.createdAt)}`);
     console.log(`    trigger    : ${triggerLabel(run.action)}`);
     console.log(`    result     : ${ok}${meta.error ? ` — ${meta.error}` : ""}`);
-    const counters = ["workersUpserted", "supervisorsLinked", "terminated", "reactivated", "exceptions", "credentialsQueued"]
+    const counters = ["workersUpserted", "supervisorsLinked", "terminated", "reactivated", "accountsReopened", "exceptions", "credentialsQueued"]
       .filter((k) => meta[k] !== undefined)
       .map((k) => `${k}=${meta[k]}`)
       .join("  ");

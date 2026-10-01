@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { writeAudit } from "../audit";
 import { effectiveOrganisation } from "./roleAccess";
+import { supervisorAccountTransition } from "./supervisorAccountLifecycle";
 
 /** One row from the LabourWorks BadgeView source. */
 export type BadgeViewRow = {
@@ -29,6 +30,13 @@ export type SyncResult = {
   sectionsCreated: number;
   terminated: number;
   reactivated: number;
+  /**
+   * Supervisor logins the sync RE-OPENED because the person is active in LabourWorks and this
+   * app owns the account. Reported separately from `reactivated` (which counts the employee
+   * record coming back from inactive) because the two are different facts and an operator
+   * watching a Disabled row cares about this one.
+   */
+  accountsReopened: number;
   exceptions: number;
   credentialsQueued: number;
   startedAt: Date;
@@ -37,6 +45,9 @@ export type SyncResult = {
 };
 
 type Tx = Prisma.TransactionClient;
+
+/** A Prisma client OR one of its transaction clients — a helper that can run either way. */
+type PrismaLike = Pick<typeof prisma, "credentialDelivery">;
 
 function envRequired(name: string): string {
   const value = process.env[name];
@@ -69,7 +80,7 @@ function isNaturalSupervisor(value: unknown): boolean {
   return normalizeText(value).toLowerCase() === "supervisor";
 }
 
-function sourceTerminated(value: unknown): boolean {
+export function sourceTerminated(value: unknown): boolean {
   const normalized = normalizeText(value).toLowerCase();
   return value === true || value === 1 || normalized === "1" || normalized === "true" || normalized === "yes";
 }
@@ -163,7 +174,7 @@ function credentialRecipient(): string {
   return process.env.CREDENTIAL_DELIVERY_RECIPIENT?.trim() || "itsupport.shipyard@swan.co.in";
 }
 
-async function queueCredential(tx: Tx, userId: number, purpose: "NEW_SUPERVISOR" | "REACTIVATION") {
+export async function queueCredential(tx: PrismaLike, userId: number, purpose: "NEW_SUPERVISOR" | "REACTIVATION") {
   const alreadyQueued = await tx.credentialDelivery.findFirst({
     where: { userId, status: { in: ["PENDING", "PROCESSING"] } },
     select: { id: true },
@@ -207,6 +218,28 @@ export function activeWorkersOnly(rows: BadgeViewRow[]): { rows: BadgeViewRow[];
 
 function activeOnlyEnabled(): boolean {
   return String(process.env.BADGEVIEW_SYNC_ACTIVE_ONLY ?? "true").toLowerCase() !== "false";
+}
+
+/**
+ * One employee's `IsTerminated` as LabourWorks reports it right now.
+ *
+ * Used by the operator's Activate action before it re-opens a login, so the refusal is based on the
+ * SOURCE rather than on the stored `terminatedAt` we are in the middle of repairing. It reuses this
+ * module's own projection, view validation and flag rule on purpose: a second reading of the flag
+ * that could disagree with the sync is how a "the source says active" repair silently contradicts
+ * "the source says terminated".
+ *
+ * Returns `null` when the employee has no row in the view (absent), which the caller treats as
+ * "cannot be shown to be terminated" — an absence is one of the states that needs repairing.
+ * Throws only if the source is unreachable; the caller catches that and proceeds, because a
+ * momentary network failure must not be the reason a stuck account stays disabled.
+ */
+export async function sourceTerminatedForEcNo(ecNo: string): Promise<boolean | null> {
+  const wanted = normalizeEcNo(ecNo).toUpperCase();
+  if (!wanted) throw new Error("sourceTerminatedForEcNo needs an ecNo.");
+  const rows = await fetchBadgeViewRows();
+  const row = rows.find((candidate) => normalizeEcNo(candidate.EcNo).toUpperCase() === wanted);
+  return row ? sourceTerminated(row.IsTerminated) : null;
 }
 
 async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
@@ -329,6 +362,7 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
     sectionsCreated: 0,
     terminated: 0,
     reactivated: 0,
+    accountsReopened: 0,
     exceptions: 0,
     credentialsQueued: 0,
     startedAt,
@@ -512,6 +546,8 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
 
         let credentialsQueued = false;
         let supervisorLinked = false;
+        let accountReopened = false;
+        let supervisorWithdrawn = false;
         let user = await tx.user.findUnique({ where: { employeeId: employee.id } });
         if (user && user.departmentId !== employee.departmentId) {
           user = await tx.user.update({ where: { id: user.id }, data: { departmentId: employee.departmentId } });
@@ -568,24 +604,86 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
             }
           }
           supervisorLinked = true;
-        } else if (user?.active && user.role === "SUPERVISOR") {
-          await tx.user.update({
-            where: { id: user.id },
-            data: { active: false, tokenVersion: { increment: 1 } },
-          });
-          await tx.credentialDelivery.updateMany({ where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: "Supervisor eligibility removed." } });
+        } else {
+          // Neither the source's NatureOfWork nor a live override describes this person as a
+          // supervisor. What that means depends on WHO PROVISIONED THE ACCOUNT, and conflating the
+          // two was the reported bug:
+          //
+          //  - `SYNC` account: LabourWorks owns the roster, so the old behaviour stands — the login
+          //    is closed ("Supervisor eligibility removed"). Unchanged.
+          //  - app-owned account (Role Assignment granted the SUPERVISOR role to an Employee that
+          //    had no login, or a payroll registration): the role grant is THIS APP's decision, and
+          //    a contract worker's NatureOfWork is their TRADE ("Office Assistant", "Technician"),
+          //    which is never going to read "Supervisor". Re-deciding the app's own grant from the
+          //    job title closed these logins on every single tick while the withdrawal branch alone
+          //    could never re-open one — an account that was guaranteed Disabled for good. The
+          //    decision now lives in services/supervisorAccountLifecycle.ts, which also RE-OPENS the
+          //    login while the person is active in LabourWorks, because this sync is the only thing
+          //    that runs on a schedule and so is the only place the fix can converge by itself.
+          const transition = user
+            ? supervisorAccountTransition({
+                accountSource: user.source,
+                employeeActive: employee.active,
+                accountActive: user.active,
+                role: user.role,
+              })
+            : ({ change: false } as const);
+          if (transition.change && user) {
+            const changedUser = user;
+            user = await tx.user.update({
+              where: { id: changedUser.id },
+              data: { active: transition.active, tokenVersion: { increment: 1 } },
+            });
+            if (transition.active) {
+              // Re-opened WITHOUT touching the password hash: this person has been signing in with
+              // a password of their own (the audit trail shows a successful login and a
+              // PASSWORD_CHANGE), so re-provisioning the shared first credential here would replace
+              // a password they know with one they do not, and lock them out of the account we are
+              // restoring. Only live sessions are revoked.
+              accountReopened = true;
+              if (!(await queueCredential(tx, user.id, "REACTIVATION"))) {
+                // A row is already pending/processing, so nothing to queue.
+              }
+            } else {
+              supervisorWithdrawn = true;
+              await tx.credentialDelivery.updateMany({ where: { userId: changedUser.id, status: { in: ["PENDING", "PROCESSING"] } }, data: { status: "CANCELLED", lastError: transition.reason } });
+            }
+          }
         }
 
         await resolveExceptions(tx, externalKey);
-        return { employeeId: employee.id, credentialsQueued, supervisorLinked };
+        return { employeeId: employee.id, credentialsQueued, supervisorLinked, accountReopened, supervisorWithdrawn };
       });
 
       seenEmployeeIds.add(applied.employeeId);
       result.workersUpserted += 1;
       if (applied.supervisorLinked) result.supervisorsLinked += 1;
       if (applied.credentialsQueued) result.credentialsQueued += 1;
+      if (applied.accountReopened) result.accountsReopened += 1;
       if (terminated && (!matched || matched.active)) result.terminated += 1;
       if (!terminated && wasInactive) result.reactivated += 1;
+
+      // A supervisor-role change is a lifecycle change an operator has to be able to find
+      // afterwards. The withdrawal branch used to write NOTHING: it disabled a supervisor and left
+      // no trace at all, which is why "who disabled this account?" had no answer from the database
+      // and the reported bug had to be reconstructed from the sync's counters. Both directions are
+      // now recorded with the reason and the evidence that produced the decision.
+      if (applied.supervisorWithdrawn) {
+        await writeAudit(null, "SYNC_SUPERVISOR_WITHDRAWN", "employee", applied.employeeId, {
+          reason: "Supervisor eligibility removed: LabourWorks owns this account and no longer describes the employee as a Supervisor.",
+          accountSource: "SYNC",
+          employeeActive: true,
+          syncedAt: now.toISOString(),
+        });
+      }
+      if (applied.accountReopened) {
+        await writeAudit(null, "SYNC_ACCOUNT_REOPENED", "employee", applied.employeeId, {
+          reason: "Supervisor login re-opened: this app owns the account and the employee is active in LabourWorks.",
+          accountSource: "app-owned",
+          employeeActive: true,
+          syncedAt: now.toISOString(),
+        });
+      }
     }
 
     // Absence remains a soft termination, but only after the snapshot passes the
@@ -636,6 +734,7 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
       sectionsCreated: 0,
       terminated: 0,
       reactivated: 0,
+      accountsReopened: 0,
       exceptions: 0,
       credentialsQueued: 0,
       startedAt,

@@ -48,6 +48,7 @@ try {
     sectionsCreated: result.sectionsCreated,
     terminated: result.terminated,
     reactivated: result.reactivated,
+    accountsReopened: result.accountsReopened,
     exceptions: result.exceptions,
     credentialsQueued: result.credentialsQueued,
     startedAt: result.startedAt,

@@ -39,7 +39,7 @@ async function runOnce(): Promise<void> {
       console.log(
         `[badgeViewSync] OK — workers=${result.workersUpserted} supervisorsLinked=${result.supervisorsLinked} ` +
           `departments=${result.departmentsCreated} sections=${result.sectionsCreated} ` +
-          `terminated=${result.terminated} reactivated=${result.reactivated} exceptions=${result.exceptions} ` +
+          `terminated=${result.terminated} reactivated=${result.reactivated} accountsReopened=${result.accountsReopened} exceptions=${result.exceptions} ` +
           `credentialsQueued=${result.credentialsQueued} ` +
           `(${result.startedAt.toISOString()} → ${result.finishedAt.toISOString()})`
       );
@@ -60,6 +60,7 @@ async function runOnce(): Promise<void> {
       sectionsCreated: result.sectionsCreated,
       terminated: result.terminated,
       reactivated: result.reactivated,
+      accountsReopened: result.accountsReopened,
       exceptions: result.exceptions,
       credentialsQueued: result.credentialsQueued,
       trigger: "SCHEDULER",

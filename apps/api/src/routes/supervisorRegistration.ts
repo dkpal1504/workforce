@@ -5,6 +5,7 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
+import { queueCredential, sourceTerminatedForEcNo } from "../services/badgeViewSync";
 
 export const supervisorRegistrationRouter = Router();
 
@@ -364,6 +365,121 @@ supervisorRegistrationRouter.post("/:id/credential-reset", async (req, res) => {
   const { delivery, alreadyPending } = await applySharedFirstCredential(id, "RESET");
   await writeAudit(req.user!.id, "SUPERVISOR_CREDENTIAL_RESET", "user", id, { deliveryId: delivery.id, alreadyPending, sharedFirstPassword: true });
   res.status(202).json({ reset: true, queued: true, deliveryId: delivery.id, alreadyPending });
+});
+
+/**
+ * Re-open a supervisor login that the LabourWorks sync switched off, by recording an audited
+ * Supervisor OVERRIDE for a named reason.
+ *
+ * WHY THIS IS AN OVERRIDE AND NOT `PUT /:id { active: true }`
+ *   `PUT /:id` refuses a CLMS account with `409 CLMS_SYNC_OWNED`, and that refusal is correct: the
+ *   sync owns the LIFECYCLE of an account whose Employee row and `IsTerminated` flag do not belong
+ *   to this app, so a bare activation would be re-decided at the next tick. A SupervisorOverride is
+ *   the one mechanism in this app that the sync treats as an assertion rather than as derived data
+ *   — it survives every run and it is visible on the CLMS Overrides tab. The operator therefore has
+ *   to supply a REASON, and the reason is what makes the record accountable.
+ *
+ * WHAT IT REFUSES, AND WHY THAT IS NOT AN OBSTACLE
+ *   Only a genuinely terminated employee is refused (`SOURCE_TERMINATED`): activating a login for
+ *   somebody LabourWorks reports as terminated would contradict the source on a fact that matters,
+ *   and the fix for that is in LabourWorks, not here. An "absent from the snapshot" employee is
+ *   deliberately NOT refused — that is one of the states that needs repairing by hand (the absence
+ *   sweep and the pre-fix sync are both capable of leaving an active person disabled), and re-opening
+ *   the login and the employee record together is precisely the repair.
+ *
+ * WHAT IT DOES
+ *   - upserts the override (reactivating a revoked one, audited as such);
+ *   - reopens the employee record if it was soft-terminated, clearing `terminatedAt`;
+ *   - sets the login active and bumps `tokenVersion`, so a stale browser session cannot continue;
+ *   - queues a REACTIVATION credential only when the account was actually closed;
+ *   - writes a `SUPERVISOR_ACTIVATE` audit row naming the reason, the override and the old state.
+ *
+ * It deliberately does NOT touch the password hash: the person has been signing in with a password
+ * of their own, and re-provisioning the shared first credential here would lock them out of the very
+ * account being restored.
+ */
+supervisorRegistrationRouter.post("/:id/activate", async (req, res) => {
+  const id = Number(req.params.id);
+  const reason = String(req.body?.reason ?? "").trim();
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "A supervisor id is required.", code: "INVALID_ID" });
+  if (reason.length < 3) {
+    return res.status(400).json({ error: "A reason (at least 3 characters) is required — it is recorded against the override.", code: "REASON_REQUIRED" });
+  }
+
+  const existing = await prisma.user.findUnique({
+    where: { id },
+    include: { employee: { select: { id: true, ecNo: true, name: true, active: true, terminatedAt: true, source: true, employmentType: true } } },
+  });
+  if (!existing || existing.role !== "SUPERVISOR") return res.status(404).json({ error: "Supervisor not found", code: "SUPERVISOR_NOT_FOUND" });
+  if (!existing.employee) {
+    return res.status(409).json({ error: "This supervisor account is not linked to an employee record, so it cannot be verified against LabourWorks.", code: "EMPLOYEE_NOT_LINKED" });
+  }
+
+  // Is the source really reporting them as terminated? Read the SAME view with the SAME flag rule
+  // the sync uses, rather than trusting the stored `terminatedAt` (which may predate this repair).
+  const terminatedInSource = await sourceTerminatedForEcNo(existing.employee.ecNo).catch(() => null);
+  if (terminatedInSource === true) {
+    return res.status(409).json({
+      error: `${existing.name} (${existing.employee.ecNo}) is reported TERMINATED in LabourWorks. Correct the record there, then run the sync — activating the login here would contradict the source.`,
+      code: "SOURCE_TERMINATED",
+    });
+  }
+
+  const alreadyActive = existing.active && existing.employee.active;
+  const before = { accountActive: existing.active, employeeActive: existing.employee.active, terminatedAt: existing.employee.terminatedAt };
+  // Read the override BEFORE upserting so the audit row can say whether this re-activated a revoked
+  // override or created the first one — the two are different decisions by the operator.
+  const previousOverride = await prisma.supervisorOverride.findUnique({
+    where: { employeeId: existing.employee.id },
+    select: { id: true, revokedAt: true, reason: true },
+  });
+
+  const result = await prisma.$transaction(async (tx) => {
+    const override = await tx.supervisorOverride.upsert({
+      where: { employeeId: existing.employee!.id },
+      create: { employeeId: existing.employee!.id, createdById: req.user!.id, reason },
+      update: { createdById: req.user!.id, reason, revokedAt: null },
+    });
+    if (!existing.employee!.active) {
+      await tx.employee.update({ where: { id: existing.employee!.id }, data: { active: true, terminatedAt: null } });
+    }
+    let credentialQueued = false;
+    if (!existing.active) {
+      const updated = await tx.user.update({
+        where: { id },
+        data: { active: true, tokenVersion: { increment: 1 } },
+        select: { id: true, active: true },
+      });
+      credentialQueued = await queueCredential(tx, updated.id, "REACTIVATION");
+      return { override, user: updated, credentialQueued };
+    }
+    const current = await tx.user.findUniqueOrThrow({ where: { id }, select: { id: true, active: true } });
+    return { override, user: current, credentialQueued };
+  });
+
+  await writeAudit(req.user!.id, "SUPERVISOR_ACTIVATE", "user", id, {
+    reason,
+    overrideId: result.override.id,
+    overrideCreated: previousOverride === null,
+    overrideReactivated: Boolean(previousOverride?.revokedAt),
+    previousOverrideReason: previousOverride?.reason ?? null,
+    ecNo: existing.employee.ecNo,
+    source: existing.employee.source,
+    employeeType: existing.employee.employmentType,
+    before,
+    after: { accountActive: result.user.active, employeeActive: true },
+    credentialQueued: result.credentialQueued,
+    sourceTerminatedChecked: terminatedInSource !== null,
+  });
+
+  res.status(200).json({
+    ok: true,
+    alreadyActive,
+    user: { id: result.user.id, name: existing.name, active: result.user.active },
+    employee: { id: existing.employee.id, ecNo: existing.employee.ecNo, active: true },
+    override: { id: result.override.id, reason: result.override.reason, revokedAt: result.override.revokedAt },
+    credentialQueued: result.credentialQueued,
+  });
 });
 
 /** Create or reactivate an audited CLMS supervisor override by employeeId or ecNo. */
