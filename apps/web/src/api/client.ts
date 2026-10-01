@@ -20,6 +20,8 @@ export type AuthCapabilities = {
   manageJobOrderMaster: boolean;
   manageJobOrderProgress: boolean;
   manageAttendanceHours: boolean;
+  /** Department-wide READ-ONLY employee listing (HOD shapes and Department Head). */
+  viewEmployees: boolean;
 };
 
 export type AuthUser = {

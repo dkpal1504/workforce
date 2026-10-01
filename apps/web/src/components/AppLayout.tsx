@@ -87,7 +87,7 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
     label: "People",
     items: [
       { to: "/supervisors", label: "Supervisors", cap: "manageSupervisors", icon: "supervisor" },
-      { to: "/employees", label: "Employees", cap: "manageEmployees", icon: "people" },
+      { to: "/employees", label: "Employees", cap: "viewEmployees", icon: "people" },
     ],
   },
   {
@@ -122,7 +122,7 @@ const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string;
   { prefix: "/select-team", lede: "Confirm who is on site today. The day's bookings are recorded against this team." },
   { prefix: "/allocations", lede: "Assign future slots to the people who will work them, before the day is booked." },
   { prefix: "/supervisors", lede: "Register supervisors, reset a payroll employee's password, and review the records that arrive from the CLMS feed." },
-  { prefix: "/employees", lede: "Register payroll employees and project heads, and map each head to a scope." },
+  { prefix: "/employees", lede: "See the employees in your department, and register payroll employees." },
   { prefix: "/departments", lede: "Maintain departments, sections and cost centres." },
   { prefix: "/role-assignment", lede: "Search an account and set the role and scope it may act within." },
   { prefix: "/job-order-upload", lede: "Upload the job order list from the CSV the commercial team exports." },
@@ -350,7 +350,7 @@ export function AppLayout() {
               My Hours
             </NavLink>
           )}
-          {capabilities?.manageEmployees && (
+          {capabilities?.viewEmployees && (
             <NavLink to="/employees" className={({ isActive }) => (isActive ? "active" : "")}>
               Employees
             </NavLink>

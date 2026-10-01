@@ -89,7 +89,11 @@ export function App() {
           <Route element={<RequireCapability capability="allocateHours" />}>
             <Route path="/allocations" element={<AllocationsPage />} />
           </Route>
-          <Route element={<RequireCapability capability="manageEmployees" />}>
+          {/* The employee listing serves two audiences from one screen: HOD/PM/ADMIN/HR reach it for
+              registration (`manageEmployees`), and a Department Head reaches it READ-ONLY
+              (`viewEmployees`). Gating on `manageEmployees` alone hid the department-wide head
+              listing from the Department Head, who is refused registration by the API. */}
+          <Route element={<RequireCapability capability="viewEmployees" />}>
             <Route path="/employees" element={<EmployeesPage />} />
           </Route>
           <Route element={<RequireCapability capability="uploadEmployees" />}>

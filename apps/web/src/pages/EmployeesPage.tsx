@@ -22,6 +22,17 @@ type Employee = {
 export function EmployeesPage() {
   const { user } = useAuth();
   const isHod = user?.role === "HOD";
+  const isDepartmentHead = user?.role === "DEPT_HEAD";
+  /**
+   * A HEAD (HOD of either shape, or a Department Head) lists the WHOLE DEPARTMENT.
+   *
+   * This is the point of the screen for them: a Section-scoped HOD used to see only his own
+   * Section, so he could not see the people in the other Sections he is accountable for. The
+   * API returns the department-wide list for these roles; the page must not re-narrow it.
+   */
+  const isHeadViewer = isHod || isDepartmentHead;
+  /** Registration is a HOD/PM/ADMIN/HR capability; a Department Head is refused it by the API. */
+  const canRegister = Boolean(user?.capabilities.manageEmployees);
   const canTransfer = Boolean(user?.capabilities.transferEmployees);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
@@ -84,7 +95,12 @@ export function EmployeesPage() {
     [employee.ecNo, employee.name, employee.department.name, employee.sectionAssignment?.section.name, employee.user?.role]
       .some((value) => value?.toLowerCase().includes(search.toLowerCase()))
   ), [employees, search]);
-  const hodMissingScope = isHod && (!user?.departmentId || !user?.sectionId);
+  /**
+   * A head needs a Department, not a Section: his listing is department-wide. Only REGISTRATION
+   * still needs a Section, because the API registers people into the HOD's own Section.
+   */
+  const headMissingDepartment = isHeadViewer && !user?.departmentId;
+  const registrationMissingSection = canRegister && isHod && !user?.sectionId;
   const transferChanged = Boolean(transfer && (String(transfer.department.id) !== targetDepartmentId || String(transfer.sectionAssignment?.section.id ?? "") !== targetSectionId));
 
   async function registerEmployee(event: React.FormEvent) {
@@ -155,11 +171,15 @@ export function EmployeesPage() {
   }
 
   return <>
-    <div className="supervisors-toolbar"><p className="muted">Register payroll employees. HOD access is restricted to the assigned Department and Section.</p><input className="search-input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search employees…" /></div>
-    {hodMissingScope && <div className="error-banner">Your HOD account has no Department/Section mapping. Ask PM or Admin to assign it.</div>}
+    <div className="supervisors-toolbar"><p className="muted">{isHeadViewer
+      ? "The employees of your Department — every Section. Registration stays inside your own Section."
+      : "Register payroll employees and project heads, and map each head to a scope."}</p><input className="search-input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search employees…" /></div>
+    {headMissingDepartment && <div className="error-banner">Your {isHod ? "HOD" : "Department Head"} account has no Department mapping, so there is no employee list to show. Ask PM or Admin to assign it.</div>}
     {error && <div className="error-banner">{error}</div>}{notice && <div className="alloc-note">{notice}</div>}
     <div className="employees-forms">
-    <div className="panel"><div className="panel__header"><span>Register Payroll Employee</span></div>
+    {/* A Department Head has the department-wide READ view only — the API refuses him registration
+        (`canCreatePayrollEmployee`), so the form is hidden rather than shown and then refused. */}
+    {canRegister && <div className="panel"><div className="panel__header"><span>Register Payroll Employee</span></div>
       <form className="panel__body sup-form" onSubmit={registerEmployee}>
         <div className="sup-form__grid">
           <div className="sup-field"><label>Canonical ecNo</label><input required value={ecNo} onChange={(e) => setEcNo(e.target.value)} /></div>
@@ -170,9 +190,9 @@ export function EmployeesPage() {
           <div className="sup-field"><label>Category</label><input value={category} onChange={(e) => setCategory(e.target.value)} /></div>
           <div className="sup-field"><label>Mobile</label><input value={mobile} onChange={(e) => setMobile(e.target.value)} /></div>
           <div className="sup-field"><label>Login email (optional)</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
-        </div><button className="btn btn-primary" disabled={busy || hodMissingScope}>{busy ? "Saving…" : "Register Employee"}</button>
+        </div><button className="btn btn-primary" disabled={busy || registrationMissingSection}>{busy ? "Saving…" : "Register Employee"}</button>
       </form>
-    </div>
+    </div>}
     {canTransfer && <div className="panel"><div className="panel__header"><span>HOD Registration &amp; Department / Section Mapping</span><span className="panel__count">{hods.length}</span></div>
       <form className="panel__body sup-form" onSubmit={(e) => { e.preventDefault(); void registerHod(); }}>
         <p className="muted employees-hod-note">An HOD is an existing payroll Employee promoted to a Department/Section scope — register the Employee first, then create the HOD account here. HOD login uses the employee&apos;s ecNo. A one-time credential is queued; no password is shown or emailed until delivery is configured.</p>

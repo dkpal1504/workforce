@@ -36,6 +36,12 @@ export type CapabilityMap = {
   manageJobOrderProgress: boolean;
   /** Read/refresh the clocked attendance hours (in/out) from LabourWorks (Admin only). */
   manageAttendanceHours: boolean;
+  /**
+   * READ-ONLY employee listing for a head who does not register people: the whole Department for
+   * HOD (both shapes) and Department Head. See services/employeeListScope.ts for why this exists
+   * separately from `manageEmployees`.
+   */
+  viewEmployees: boolean;
 };
 
 export function capabilitiesFor(role: string): CapabilityMap {
@@ -61,6 +67,10 @@ export function capabilitiesFor(role: string): CapabilityMap {
     // The clocked (in/out) figure is an audit over every department's submitted
     // sheets, so only Admin may read it or trigger a refresh.
     manageAttendanceHours: admin,
+    // A Department Head has the department-wide READ view but no employee registration, so it
+    // needs a listing capability of its own; HOD keeps `manageEmployees` (registration form
+    // included) and therefore already satisfies this too.
+    viewEmployees: admin || role === "HR" || ["HOD", "PM", "DEPT_HEAD"].includes(role),
   };
 }
 

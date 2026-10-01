@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { departmentScope } from "../services/roleAccess";
+import { employeeListScopeFor, employeeListWhere } from "../services/employeeListScope";
 
 export const mastersRouter = Router();
 
@@ -16,17 +17,16 @@ mastersRouter.get("/departments", async (req, res) => {
   res.json({ departments });
 });
 
-mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "PM", "ADMIN", "HR"), async (req, res) => {
-  const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
-  const departmentId = ["SUPERVISOR", "HOD"].includes(req.user!.role)
-    ? (req.user!.departmentId ?? -1)
-    : requestedDepartmentId;
+mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "ADMIN", "HR"), async (req, res) => {
+  // One endpoint, three kinds of caller. The visibility rule — and in particular why a HOD's listing
+  // is department-wide even when his account is narrowed to one Section — is in
+  // services/employeeListScope.ts, where it is unit-tested.
+  const scope = employeeListScopeFor(req.user!);
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const employees = await prisma.employee.findMany({
     where: {
       active: true,
-      ...(departmentId ? { departmentId } : {}),
-      ...(req.user!.role === "HOD" ? { sectionAssignment: { sectionId: req.user!.sectionId ?? -1 } } : {}),
+      ...employeeListWhere(scope),
       ...(q
         ? {
             OR: [{ name: { contains: q } }, { ecNo: { contains: q } }],
@@ -40,7 +40,7 @@ mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "PM", "ADMIN",
     },
     orderBy: { name: "asc" },
   });
-  res.json({ employees });
+  res.json({ employees, scope: scope.kind });
 });
 
 /**
