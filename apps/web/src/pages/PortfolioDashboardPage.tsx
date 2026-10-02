@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, getToken } from "../api/client";
 import {
   BANDS,
@@ -11,6 +11,10 @@ import {
   type PortfolioFilterState,
   type PortfolioStatus,
 } from "./portfolioFilters";
+// The tested, pure pagination rules — reused verbatim, never reimplemented here.
+import { paginate, pageNumbers } from "./portfolioPaging";
+// The pure `% Qty` formatting rule (see the module header for why it is exported, not inline).
+import { fmtQtyCompletePct, qtyCompleteNote } from "./portfolioQty";
 import "../styles/portfolio.css";
 
 /* ============================================================================
@@ -51,6 +55,12 @@ export type PortfolioJobRow = {
   targetQty: number;
   achievedQty: number;
   qtyPct: number | null;
+  /**
+   * Quantity completion as a FRACTION, ALWAYS finite (the API never sends NaN/Infinity/null).
+   * This is the `% Qty` figure; it is ADDITIVE to `qtyPct`, which keeps its "null = not
+   * measurable" reporting meaning. Rendered through `fmtQtyCompletePct`.
+   */
+  qtyCompletePct: number;
   qtyBand: PortfolioBand;
   balanceQty: number;
   lastBooking: string | null;
@@ -192,6 +202,99 @@ export const BAND_LABELS: Record<PortfolioBand, string> = {
 /** The RAG badge — one badge class per band, using the app's own soft colours. */
 export function BandBadge({ band }: { band: PortfolioBand }) {
   return <span className={`pf-badge pf-badge--${band}`}>{BAND_LABELS[band]}</span>;
+}
+
+/**
+ * The `% Qty` cell: the API's `qtyCompletePct` (a fraction) as a one-decimal percentage.
+ *
+ * Uses the pure `fmtQtyCompletePct`, whose guard is why a stale bundle or an old cached
+ * payload shows "0.0%" rather than the literal "NaN%" (see portfolioQty.ts). A short
+ * `qtyCompleteNote` is appended INLINE (never a wider column) so a 0.0% from "nothing done yet"
+ * and a 0.0% from "no quantity budget" are told apart; a positive target's zero gets no note
+ * because its non-zero QTY BDG already says which case it is.
+ */
+export function PctQtyCell({ row }: { row: PortfolioJobRow }) {
+  const note = qtyCompleteNote(row.targetQty);
+  return (
+    <td className="pf-num">
+      {fmtQtyCompletePct(row.qtyCompletePct)}
+      {note ? <span className="pf-cell-sub">{note}</span> : null}
+    </td>
+  );
+}
+
+/**
+ * A table pager for the two long tables on the operations screens.
+ *
+ * WHY IT IS NEVER A DEAD PAGER: it renders NOTHING unless the table spans more than one
+ * page (pageCount > 1), so a single-page table — including the empty one — carries no
+ * controls at all. The numbered buttons come straight from the tested `pageNumbers` helper.
+ *
+ * WHY CLICKING SCROLLS THE TABLE INTO VIEW: the pager sits BELOW its table, so changing the
+ * page would otherwise leave the reader looking at the pager while the rows changed above the
+ * fold. The `anchorRef` is the scroll target (`scroll-margin-top` keeps it clear of a sticky
+ * header).
+ *
+ * FILTER-CHANGE RESET lives in the CALLER: both pages reset to page 1 whenever the filter set
+ * changes (see the `useEffect` in each page), because a page index that is valid for one result
+ * set is meaningless for another.
+ */
+export function TablePager({
+  page,
+  pageCount,
+  total,
+  from,
+  to,
+  hasPrev,
+  hasNext,
+  onChange,
+  anchorRef,
+  label = "job orders",
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  from: number;
+  to: number;
+  hasPrev: boolean;
+  hasNext: boolean;
+  onChange: (page: number) => void;
+  anchorRef: React.RefObject<HTMLElement>;
+  label?: string;
+}) {
+  // A single-page table must not carry a dead pager.
+  if (pageCount <= 1) return null;
+  const go = (next: number) => {
+    onChange(next);
+    // Keep the reader with the rows: bring the table back into view after the page swaps.
+    anchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  return (
+    <div className="pf-pager">
+      <span className="pf-pager__info">
+        Showing {from}-{to} of {total} {label}
+      </span>
+      <div className="pf-pager__controls">
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!hasPrev} onClick={() => go(page - 1)}>
+          Previous
+        </button>
+        {pageNumbers(page, pageCount).map((number) => (
+          <button
+            key={number}
+            type="button"
+            className={`btn btn-sm ${number === page ? "btn-primary" : "btn-ghost"}`}
+            aria-current={number === page ? "page" : undefined}
+            onClick={() => go(number)}
+          >
+            {number}
+          </button>
+        ))}
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!hasNext} onClick={() => go(page + 1)}>
+          Next
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -558,7 +661,32 @@ export function PortfolioDashboardPage() {
   const [downloadError, setDownloadError] = useState("");
   const [busyFormat, setBusyFormat] = useState<"xlsx" | "pdf" | null>(null);
 
+  // Client-side paging for the two long tables. The page index is kept SEPARATE per table so
+  // paging one does not jump the other.
+  const [jobWorkPage, setJobWorkPage] = useState(1);
+  const [needsPushPage, setNeedsPushPage] = useState(1);
+  // The scroll targets: clicking a page button brings the matching table back into view.
+  const jobWorkAnchor = useRef<HTMLDivElement>(null);
+  const needsPushAnchor = useRef<HTMLDivElement>(null);
+
   const { report, loading, error, query, reload } = usePortfolioReport(filters);
+
+  // RESET TO PAGE 1 WHENEVER THE FILTER SET CHANGES. A page index is only meaningful for the
+  // result set it was chosen against: a reader on page 3 of 63 rows who narrows to 12 rows
+  // would otherwise be left on a clamped page with no explanation. `portfolioQuery` is the
+  // canonical, stable encoding of the filter state, so a filter change is exactly a change of
+  // that string. The downloads are UNAFFECTED — they never carry a page parameter.
+  const filterKey = useMemo(() => portfolioQuery(filters), [filters]);
+  useEffect(() => {
+    setJobWorkPage(1);
+    setNeedsPushPage(1);
+  }, [filterKey]);
+
+  // Paging is CLIENT-SIDE over the rows the API already returned: the query string sent to
+  // /reports/portfolio (and to the .xlsx/.pdf downloads) is untouched, so the export always
+  // carries every row while the screen shows one page.
+  const jobWorkSlice = useMemo(() => paginate(report?.jobWork ?? [], jobWorkPage), [report, jobWorkPage]);
+  const needsPushSlice = useMemo(() => paginate(report?.needsPush ?? [], needsPushPage), [report, needsPushPage]);
 
   // A filtered view is a shareable link: the initial scope came from the URL, and every
   // change is mirrored back to the address bar (defaults omitted by the encoder).
@@ -702,21 +830,22 @@ export function PortfolioDashboardPage() {
             {report.needsPush.length === 0 ? (
               <div className="empty-state">Nothing needs a push: no job order in scope carries an attention signal.</div>
             ) : (
-              <div className="pf-table-wrap">
+              <div className="pf-table-wrap" ref={needsPushAnchor}>
                 <table className="pf-table">
                   <thead>
                     <tr>
                       <th>Job order</th>
                       <th>Department</th>
                       <th>Band</th>
+                      <th className="pf-num">% Qty</th>
                       <th className="pf-num">Burn</th>
-                      <th>Forecast exhausted</th>
+                      <th>Forecast</th>
                       <th className="pf-num">Attention</th>
                       <th>Reasons</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {report.needsPush.map((row) => (
+                    {needsPushSlice.rows.map((row) => (
                       <tr key={row.id}>
                         <JobIdentityCell row={row} />
                         <td>
@@ -726,6 +855,7 @@ export function PortfolioDashboardPage() {
                         <td>
                           <BandBadge band={row.hoursBand} />
                         </td>
+                        <PctQtyCell row={row} />
                         <td className="pf-num">{fmtPct(row.burnPct)}</td>
                         <td className="pf-nowrap">{fmtDate(row.forecastExhaustedOn)}</td>
                         <td className="pf-num pf-attention">{row.attentionScore}</td>
@@ -735,11 +865,22 @@ export function PortfolioDashboardPage() {
                   </tbody>
                 </table>
                 {report.needsPushTotal > report.needsPush.length && (
-                  <p className="pf-panel__hint" style={{ padding: "10px 14px", margin: 0 }}>
+                  <p className="pf-panel__hint" style={{ padding: "10px 14px 0", margin: 0 }}>
                     Showing the top {report.needsPush.length} of {report.needsPushTotal} ranked job orders; the rest are
                     in the Job work table and the export.
                   </p>
                 )}
+                <TablePager
+                  page={needsPushSlice.page}
+                  pageCount={needsPushSlice.pageCount}
+                  total={needsPushSlice.total}
+                  from={needsPushSlice.from}
+                  to={needsPushSlice.to}
+                  hasPrev={needsPushSlice.hasPrev}
+                  hasNext={needsPushSlice.hasNext}
+                  onChange={setNeedsPushPage}
+                  anchorRef={needsPushAnchor}
+                />
               </div>
             )}
           </Panel>
@@ -763,7 +904,7 @@ export function PortfolioDashboardPage() {
                       <th className="pf-num">Budget</th>
                       <th className="pf-num">Actual</th>
                       <th className="pf-num">Burn</th>
-                      <th>Last booking</th>
+                      <th>Last bk</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -807,9 +948,10 @@ export function PortfolioDashboardPage() {
                       <th>Job order</th>
                       <th>Department</th>
                       <th>Band</th>
-                      <th className="pf-num">Target qty</th>
-                      <th className="pf-num">Achieved</th>
-                      <th>Last booking</th>
+                      <th className="pf-num">QTY BDG</th>
+                      <th className="pf-num">QTY Prgsd</th>
+                      <th className="pf-num">% Qty</th>
+                      <th>Last bk</th>
                       <th>Why unmeasurable</th>
                     </tr>
                   </thead>
@@ -823,6 +965,7 @@ export function PortfolioDashboardPage() {
                         </td>
                         <td className="pf-num">{fmtNumber(row.targetQty, 2)}</td>
                         <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
+                        <PctQtyCell row={row} />
                         <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
                         <td>
                           {row.measurableOnQuantity ? "Quantity measurable" : "No budgeted hours in force"}
@@ -845,7 +988,7 @@ export function PortfolioDashboardPage() {
             {report.jobWork.length === 0 ? (
               <div className="empty-state">No job order matches the current filters. Widen the filters or clear the band.</div>
             ) : (
-              <div className="pf-table-wrap">
+              <div className="pf-table-wrap" ref={jobWorkAnchor}>
                 <table className="pf-table">
                   <thead>
                     <tr>
@@ -858,14 +1001,15 @@ export function PortfolioDashboardPage() {
                       <th className="pf-num">Burn</th>
                       <th className="pf-num">h/day</th>
                       <th>Forecast</th>
-                      <th className="pf-num">Target qty</th>
-                      <th className="pf-num">Qty %</th>
-                      <th>Last booking</th>
-                      <th className="pf-num">Unapproved h</th>
+                      <th className="pf-num">QTY BDG</th>
+                      <th className="pf-num">QTY Prgsd</th>
+                      <th className="pf-num">% Qty</th>
+                      <th>Last bk</th>
+                      <th className="pf-num">Unappr h</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {report.jobWork.map((row) => (
+                    {jobWorkSlice.rows.map((row) => (
                       <tr key={row.id}>
                         <JobIdentityCell row={row} />
                         <td>{row.department.name}</td>
@@ -886,13 +1030,25 @@ export function PortfolioDashboardPage() {
                           {fmtNumber(row.targetQty, 2)}
                           {row.uom ? <span className="pf-cell-sub">{row.uom}</span> : null}
                         </td>
-                        <td className="pf-num">{row.measurableOnQuantity ? fmtPct(row.qtyPct) : "—"}</td>
+                        <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
+                        <PctQtyCell row={row} />
                         <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
                         <td className="pf-num">{fmtHours(row.unapprovedHours)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                <TablePager
+                  page={jobWorkSlice.page}
+                  pageCount={jobWorkSlice.pageCount}
+                  total={jobWorkSlice.total}
+                  from={jobWorkSlice.from}
+                  to={jobWorkSlice.to}
+                  hasPrev={jobWorkSlice.hasPrev}
+                  hasNext={jobWorkSlice.hasNext}
+                  onChange={setJobWorkPage}
+                  anchorRef={jobWorkAnchor}
+                />
               </div>
             )}
           </Panel>

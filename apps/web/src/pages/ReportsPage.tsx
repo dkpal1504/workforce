@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import {
   BandBadge,
@@ -6,7 +6,9 @@ import {
   JobIdentityCell,
   Panel,
   PortfolioFilterBar,
+  PctQtyCell,
   ReasonsCell,
+  TablePager,
   downloadPortfolioFile,
   fmtDate,
   fmtDateTime,
@@ -20,7 +22,8 @@ import {
   type SectionOption,
   type WbsOption,
 } from "./PortfolioDashboardPage";
-import { defaultFilters, decodeFilters, type PortfolioFilterState } from "./portfolioFilters";
+import { defaultFilters, decodeFilters, portfolioQuery, type PortfolioFilterState } from "./portfolioFilters";
+import { paginate } from "./portfolioPaging";
 import "../styles/portfolio.css";
 
 /**
@@ -46,6 +49,23 @@ export function ReportsPage() {
   const [busyFormat, setBusyFormat] = useState<"xlsx" | "pdf" | null>(null);
 
   const { report, loading, error, query } = usePortfolioReport(filters);
+
+  // Client-side paging, kept per table. RESET TO PAGE 1 WHENEVER THE FILTER SET CHANGES: a
+  // page index only means something for the result set it was chosen against, so a reader who
+  // was on page 3 and then narrows the filter is not left on a silently clamped page.
+  // The downloads below are UNAFFECTED — their query string never carries a page parameter.
+  const [needsPushPage, setNeedsPushPage] = useState(1);
+  const [jobWorkPage, setJobWorkPage] = useState(1);
+  const needsPushAnchor = useRef<HTMLDivElement>(null);
+  const jobWorkAnchor = useRef<HTMLDivElement>(null);
+  const filterKey = useMemo(() => portfolioQuery(filters), [filters]);
+  useEffect(() => {
+    setNeedsPushPage(1);
+    setJobWorkPage(1);
+  }, [filterKey]);
+
+  const needsPushSlice = useMemo(() => paginate(report?.needsPush ?? [], needsPushPage), [report, needsPushPage]);
+  const jobWorkSlice = useMemo(() => paginate(report?.jobWork ?? [], jobWorkPage), [report, jobWorkPage]);
 
   // Same URL contract as the dashboard: initial scope from the URL, every change mirrored back.
   useFilterUrlSync(filters);
@@ -179,29 +199,31 @@ export function ReportsPage() {
             {report.needsPush.length === 0 ? (
               <div className="empty-state">No job order in scope carries an attention signal.</div>
             ) : (
-              <div className="pf-table-wrap">
+              <div className="pf-table-wrap" ref={needsPushAnchor}>
                 <table className="pf-table">
                   <thead>
                     <tr>
                       <th>Job order</th>
                       <th>Department</th>
                       <th>Band</th>
+                      <th className="pf-num">% Qty</th>
                       <th className="pf-num">Budget h</th>
                       <th className="pf-num">Actual h</th>
                       <th className="pf-num">Burn</th>
-                      <th>Forecast exhausted</th>
+                      <th>Forecast</th>
                       <th className="pf-num">Attention</th>
                       <th>Reasons</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {report.needsPush.map((row) => (
+                    {needsPushSlice.rows.map((row) => (
                       <tr key={row.id}>
                         <JobIdentityCell row={row} />
                         <td>{row.department.name}</td>
                         <td>
                           <BandBadge band={row.hoursBand} />
                         </td>
+                        <PctQtyCell row={row} />
                         <td className="pf-num">{fmtHours(row.budgetHours)}</td>
                         <td className="pf-num">{fmtHours(row.actualHours)}</td>
                         <td className="pf-num">{fmtPct(row.burnPct)}</td>
@@ -212,6 +234,17 @@ export function ReportsPage() {
                     ))}
                   </tbody>
                 </table>
+                <TablePager
+                  page={needsPushSlice.page}
+                  pageCount={needsPushSlice.pageCount}
+                  total={needsPushSlice.total}
+                  from={needsPushSlice.from}
+                  to={needsPushSlice.to}
+                  hasPrev={needsPushSlice.hasPrev}
+                  hasNext={needsPushSlice.hasNext}
+                  onChange={setNeedsPushPage}
+                  anchorRef={needsPushAnchor}
+                />
               </div>
             )}
           </Panel>
@@ -231,7 +264,7 @@ export function ReportsPage() {
                       <th className="pf-num">Budget h</th>
                       <th className="pf-num">Actual h</th>
                       <th className="pf-num">Burn</th>
-                      <th>Last booking</th>
+                      <th>Last bk</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -270,9 +303,10 @@ export function ReportsPage() {
                       <th>Job order</th>
                       <th>Department</th>
                       <th>Band</th>
-                      <th className="pf-num">Target qty</th>
-                      <th className="pf-num">Achieved</th>
-                      <th>Last booking</th>
+                      <th className="pf-num">QTY BDG</th>
+                      <th className="pf-num">QTY Prgsd</th>
+                      <th className="pf-num">% Qty</th>
+                      <th>Last bk</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -288,6 +322,7 @@ export function ReportsPage() {
                           {row.uom ? <span className="pf-cell-sub">{row.uom}</span> : null}
                         </td>
                         <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
+                        <PctQtyCell row={row} />
                         <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
                       </tr>
                     ))}
@@ -306,7 +341,7 @@ export function ReportsPage() {
             {report.jobWork.length === 0 ? (
               <div className="empty-state">No job order matches the current filters.</div>
             ) : (
-              <div className="pf-table-wrap">
+              <div className="pf-table-wrap" ref={jobWorkAnchor}>
                 <table className="pf-table">
                   <thead>
                     <tr>
@@ -319,15 +354,15 @@ export function ReportsPage() {
                       <th className="pf-num">Burn</th>
                       <th className="pf-num">h/day</th>
                       <th>Forecast</th>
-                      <th className="pf-num">Target qty</th>
-                      <th className="pf-num">Achieved qty</th>
-                      <th className="pf-num">Qty %</th>
-                      <th>Last booking</th>
-                      <th className="pf-num">Unapproved h</th>
+                      <th className="pf-num">QTY BDG</th>
+                      <th className="pf-num">QTY Prgsd</th>
+                      <th className="pf-num">% Qty</th>
+                      <th>Last bk</th>
+                      <th className="pf-num">Unappr h</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {report.jobWork.map((row) => (
+                    {jobWorkSlice.rows.map((row) => (
                       <tr key={row.id}>
                         <JobIdentityCell row={row} />
                         <td>{row.department.name}</td>
@@ -349,13 +384,24 @@ export function ReportsPage() {
                           {row.uom ? <span className="pf-cell-sub">{row.uom}</span> : null}
                         </td>
                         <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
-                        <td className="pf-num">{row.measurableOnQuantity ? fmtPct(row.qtyPct) : "—"}</td>
+                        <PctQtyCell row={row} />
                         <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
                         <td className="pf-num">{fmtHours(row.unapprovedHours)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                <TablePager
+                  page={jobWorkSlice.page}
+                  pageCount={jobWorkSlice.pageCount}
+                  total={jobWorkSlice.total}
+                  from={jobWorkSlice.from}
+                  to={jobWorkSlice.to}
+                  hasPrev={jobWorkSlice.hasPrev}
+                  hasNext={jobWorkSlice.hasNext}
+                  onChange={setJobWorkPage}
+                  anchorRef={jobWorkAnchor}
+                />
               </div>
             )}
           </Panel>

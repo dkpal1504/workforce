@@ -8,7 +8,9 @@ import {
   hodEmployeeScopeSet,
   hodScopeMatches,
   hodScopeMatchesSet,
+  intersectDepartmentFilter,
   landingPathFor,
+  reportScopeFor,
 } from "./roleAccess";
 import { usesEcNoLogin } from "./defaultLoginCredentials";
 
@@ -40,7 +42,7 @@ test("requested role capability matrix is enforced", () => {
     [
       ["EMPLOYEE", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false }],
       ["SUPERVISOR", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false }],
-      ["HOD", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:true, manageJobOrderMaster:false, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:false }],
+      ["HOD", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:true, manageJobOrderMaster:false, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:true }],
       ["PM", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:true, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:true, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:true }],
       ["ADMIN", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:true, manageSupervisors:true, manageMasterData:true, manageEmployees:true, uploadEmployees:true, transferEmployees:true, allocateHours:true, assignRoles:true, viewDepartmentSummary:true, manageJobOrderMaster:true, manageJobOrderProgress:true, manageAttendanceHours:true, viewEmployees:true, viewPortfolioDashboard:true }],
     ]
@@ -152,12 +154,71 @@ test("the COO is a read-only organisation-wide role that lands on the portfolio"
 });
 
 test("the portfolio dashboard capability belongs to the oversight roles only", () => {
-  for (const role of ["PM", "ADMIN", "COO"]) {
+  // Organisation-wide readers AND the Department-scoped heads may OPEN the dashboard. For the
+  // heads the capability is only the DOOR: the SCOPE they then read is their own Department,
+  // applied server-side (`reportScopeFor`) — asserting the capability alone would miss that.
+  for (const role of ["PM", "ADMIN", "COO", "HOD", "DEPT_HEAD"]) {
     assert.equal(capabilitiesFor(role).viewPortfolioDashboard, true, `${role} sees the portfolio`);
   }
-  for (const role of ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "HR", "FINANCE"]) {
+  for (const role of ["EMPLOYEE", "SUPERVISOR", "HR", "FINANCE"]) {
     assert.equal(capabilitiesFor(role).viewPortfolioDashboard, false, `${role} must not see the portfolio`);
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * The report SCOPE helper — the pure decision the loader applies
+ * ------------------------------------------------------------------ */
+
+test("reportScopeFor: the organisation roles read everything, the heads read their one Department", () => {
+  for (const role of ["PM", "ADMIN", "COO"]) {
+    assert.deepEqual(reportScopeFor(role, 4), { kind: "ORGANISATION" }, `${role} is organisation-wide`);
+    assert.deepEqual(reportScopeFor(role, null), { kind: "ORGANISATION" }, `${role} needs no Department`);
+  }
+  // HOD (both shapes) and DEPT_HEAD: the Department is the scope, the Section is irrelevant.
+  assert.deepEqual(reportScopeFor("HOD", 4), { kind: "DEPARTMENT", departmentId: 4 });
+  assert.deepEqual(reportScopeFor("DEPT_HEAD", 4), { kind: "DEPARTMENT", departmentId: 4 });
+});
+
+test("reportScopeFor fails closed: a head with NO Department reads NOTHING, never the portfolio", () => {
+  // The leak this guards: Prisma treats an EMPTY `where` object as EVERY row, so a missing
+  // Department must resolve to an explicit zero-row scope, never to "no filter".
+  assert.deepEqual(reportScopeFor("HOD", null), { kind: "NONE" }, "unmapped HOD -> nothing");
+  assert.deepEqual(reportScopeFor("DEPT_HEAD", null), { kind: "NONE" }, "unmapped Dept Head -> nothing");
+});
+
+test("reportScopeFor: a non-account role is NONE, the second lock behind the router gate", () => {
+  // SUPERVISOR/EMPLOYEE/HR/FINANCE are refused at the reports router; if a caller somehow reached
+  // the loader directly they must read nothing rather than the whole organisation.
+  for (const role of ["SUPERVISOR", "EMPLOYEE", "HR", "FINANCE", "UNKNOWN"]) {
+    assert.deepEqual(reportScopeFor(role, 4), { kind: "NONE" }, `${role} must read nothing`);
+  }
+});
+
+test("intersectDepartmentFilter INTERSECTS the request with the actor's scope, never trusts it", () => {
+  const org = reportScopeFor("PM", 4);
+  const dept4 = reportScopeFor("HOD", 4);
+  const none = reportScopeFor("HOD", null);
+
+  // ORGANISATION: the request flows through unchanged (the actor's scope imposes no narrowing).
+  assert.deepEqual(intersectDepartmentFilter(org, [9]), [9], "organisation + single request -> that request passes straight through");
+  assert.equal(intersectDepartmentFilter(org, null), null, "organisation + no request -> no filter at all");
+
+  // DEPARTMENT: the HOD asking for ANOTHER department gets an EMPTY intersection -> zero rows.
+  assert.deepEqual(
+    intersectDepartmentFilter(dept4, [9]),
+    [],
+    "HOD(4) asking for 9 must intersect to the empty set, NOT be trusted with 9"
+  );
+  // Asking for his own Department narrows to exactly his Department.
+  assert.deepEqual(intersectDepartmentFilter(dept4, [4]), [4]);
+  // Asking for his own AND another keeps only his own.
+  assert.deepEqual(intersectDepartmentFilter(dept4, [4, 9]), [4], "the foreign id is dropped, never added");
+  // No request at all -> his whole Department (NOT null, which would mean 'everything').
+  assert.deepEqual(intersectDepartmentFilter(dept4, null), [4], "no request means his Department, never the organisation");
+
+  // NONE: always the empty set, whatever was asked for.
+  assert.deepEqual(intersectDepartmentFilter(none, [4]), []);
+  assert.deepEqual(intersectDepartmentFilter(none, null), []);
 });
 
 /**

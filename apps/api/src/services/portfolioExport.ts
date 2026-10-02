@@ -166,31 +166,49 @@ function addLabelValueSheet(
 /** Per-job-order columns for the detail sheets. The Band columns carry TEXT so the file is
  *  readable without colour — the colour is a bonus, never the message. */
 const JOB_DETAIL_COLUMNS: SheetColumn<ReportJobRow>[] = [
-  { header: "Project", width: 18, value: (row) => row.project.name },
+  { header: "Project", width: 16, value: (row) => row.project.name },
   { header: "WBS", width: 14, value: (row) => row.wbs.wbsCode },
   { header: "Code", width: 12, value: (row) => row.code },
-  { header: "Job", width: 30, value: (row) => row.name },
-  { header: "Department", width: 18, value: (row) => row.department.name },
+  { header: "Job", width: 28, value: (row) => row.name },
+  { header: "Department", width: 16, value: (row) => row.department.name },
   { header: "Section", width: 16, value: (row) => sectionName(row) },
   { header: "Status", width: 10, value: (row) => row.status },
   { header: "UoM", width: 8, value: (row) => row.uom },
+  // Excel column width is in CHARACTERS, so 15 holds the longest Band label "NOT_MEASURABLE"
+  // (14 characters) on ONE line with a spare character. Unlike the PDF there is no relative
+  // scaling to fight here — the number is the character budget itself, so it was already safe.
   { header: "Band", width: 15, value: (row) => row.hoursBand },
   { header: "Budget h", width: 12, numFmt: "0.00", value: (row) => row.budgetHours },
   { header: "Actual h", width: 12, numFmt: "0.00", value: (row) => row.actualHours },
   { header: "Burn %", width: 10, numFmt: "0.0%", value: (row) => row.burnPct },
   { header: "Hrs/day", width: 10, numFmt: "0.00", value: (row) => row.hoursPerDay },
-  { header: "Forecast exhausted", width: 16, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.forecastExhaustedOn) },
-  { header: "Target qty", width: 12, numFmt: "0.00", value: (row) => row.targetQty },
-  { header: "Achieved qty", width: 13, numFmt: "0.00", value: (row) => row.achievedQty },
-  { header: "Qty %", width: 10, numFmt: "0.0%", value: (row) => row.qtyPct },
+  // "Forecast exhausted" -> "Forecast": the date format below already says it is a date, so the
+  // second word was costing every row height in the sheet. The width is trimmed to 11 because
+  // that still holds the header on one line AND a `yyyy-mm-dd` value (10 visible characters).
+  { header: "Forecast", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.forecastExhaustedOn) },
+  // The three quantity columns, in the order the operator named them. The header strings are
+  // EXACT (QTY_BDG / QTY_Prgsd / %Qty) because this sheet is read in Excel alongside the
+  // operator's own trackers, which key off those literal names. They replace the old
+  // "Target qty" / "Achieved qty" / "Qty %" trio — leaving both would be two columns saying
+  // the same thing, which reads as a discrepancy to anyone scanning the sheet.
+  // The first two stay numeric with "0.00"; the third prints `qtyCompletePct`, the ALWAYS
+  // finite fraction (0, never blank/NaN) so a divide-by-zero is a real 0% in the cell.
+  { header: "QTY_BDG", width: 12, numFmt: "0.00", value: (row) => row.targetQty },
+  { header: "QTY_Prgsd", width: 12, numFmt: "0.00", value: (row) => row.achievedQty },
+  { header: "%Qty", width: 10, numFmt: "0.0%", value: (row) => row.qtyCompletePct },
+  // Kept: the band is a JUDGEMENT and the balance is REMAINING quantity — neither is derivable
+  // from the three columns above without re-applying rules the reader should not have to know.
   { header: "Qty band", width: 15, value: (row) => row.qtyBand },
   { header: "Balance qty", width: 12, numFmt: "0.00", value: (row) => row.balanceQty },
-  { header: "Last booking", width: 13, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.lastBooking) },
-  { header: "Days since activity", width: 14, numFmt: "0", value: (row) => row.daysSinceActivity },
-  { header: "Unapproved h", width: 13, numFmt: "0.00", value: (row) => row.unapprovedHours },
-  { header: "Oldest unapproved", width: 16, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.oldestUnapprovedAt) },
+  // "Last booking" -> "Last bk" and 13 -> 10: "bk" still reads as booking in context, and a date
+  // needs only 10 characters. "Days since activity" -> "Days idle": shorter AND clearer.
+  { header: "Last bk", width: 10, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.lastBooking) },
+  { header: "Days idle", width: 9, numFmt: "0", value: (row) => row.daysSinceActivity },
+  { header: "Unappr h", width: 10, numFmt: "0.00", value: (row) => row.unapprovedHours },
+  // "Oldest unapproved" -> "Oldest unappr": still unambiguous next to "Unappr h".
+  { header: "Oldest unappr", width: 12, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.oldestUnapprovedAt) },
   { header: "Attention", width: 10, numFmt: "0", value: (row) => row.attentionScore },
-  { header: "Reasons", width: 52, value: (row) => reasonsText(row) },
+  { header: "Reasons", width: 46, value: (row) => reasonsText(row) },
 ];
 
 /** The exception buckets, in the order the report defines them, with their printed names. */
@@ -352,10 +370,35 @@ export async function buildPortfolioXlsx(
  * --------------------------------------------------------------------------- */
 
 /** A4 landscape geometry (points). Kept as named constants so the table maths is checkable. */
-const PDF_FONT_SIZE = 7.5;
+export const PDF_FONT_SIZE = 7.5;
 const PDF_ROW_PADDING = 2;
+/**
+ * The horizontal inset applied on EACH side of a cell's text box when `drawTable` draws it (it
+ * draws at `x + 2` with `width - 4`). A column's resolved width therefore offers only
+ * `width - 2 * PDF_CELL_INSET` points of glyphs, and a fit test MUST subtract the same amount or
+ * it would measure a wider box than the renderer actually draws into.
+ */
+export const PDF_CELL_INSET = 2;
 
-type PdfColumn<T> = { header: string; width: number; value: (row: T) => string };
+export type PdfColumn<T> = { header: string; width: number; value: (row: T) => string };
+
+/**
+ * Resolve a table's RELATIVE column widths into points across the printable width.
+ *
+ * WHY THIS IS A SHARED FUNCTION AND NOT INLINE MATHS: the widths are proportions, so the only
+ * number that decides whether a value fits is `(units / totalUnits) * printableWidth`. The
+ * renderer and the Band-fit test must compute it identically, or the test would assert against a
+ * copy that can drift from what is drawn — which is exactly how the mid-word wrap shipped.
+ * `drawTable` calls this; `portfolioExport.test.ts` calls the SAME function and measures against
+ * it, so "the fit is measured, not guessed" is a property of the code, not a promise.
+ */
+export function resolvePdfTableWidths(
+  columns: readonly { width: number }[],
+  printableWidth: number
+): number[] {
+  const units = columns.reduce((sum, column) => sum + column.width, 0) || 1;
+  return columns.map((column) => (column.width / units) * printableWidth);
+}
 
 /**
  * Render a table section. A heading is followed by a header row, then the data. When a row
@@ -375,8 +418,7 @@ function drawTable<T>(
   const right = doc.page.width - doc.page.margins.right;
   const bottom = doc.page.height - doc.page.margins.bottom;
   const totalWidth = right - left;
-  const units = columns.reduce((sum, column) => sum + column.width, 0) || 1;
-  const widths = columns.map((column) => (column.width / units) * totalWidth);
+  const widths = resolvePdfTableWidths(columns, totalWidth);
   const headerHeight = PDF_FONT_SIZE + 8;
 
   // Keep the heading with at least its header row.
@@ -417,7 +459,13 @@ function drawTable<T>(
     for (const cell of cells) {
       height = Math.max(height, doc.heightOfString(cell.text, { width: cell.width - 4, lineGap: 0 }));
     }
-    if (doc.y + height > bottom) {
+    // Cells below are DRAWN at `y + 1`, so a row occupies `y + 1 + height`, not `y + height`.
+    // Testing `y + height` left a 1pt slop: a row measured to just fit could still push its tallest
+    // cell one point past the bottom margin, and pdfkit then paginated that cell automatically —
+    // spilling one row across two pages and leaving blank orphan pages behind it. Accounting for
+    // the draw offset keeps the manual break strictly ahead of pdfkit's automatic one, so rows can
+    // only ever break BETWEEN rows.
+    if (doc.y + 1 + height > bottom) {
       doc.addPage();
       drawHeader();
     }
@@ -443,19 +491,42 @@ function pdfHours(value: number): string {
 }
 
 /** The columns the three job-order sections share in the PDF (narrower than the workbook). */
-const PDF_JOB_COLUMNS: PdfColumn<ReportJobRow>[] = [
-  { header: "Project", width: 20, value: (row) => row.project.name },
-  { header: "Code", width: 12, value: (row) => row.code },
-  { header: "Job", width: 30, value: (row) => row.name },
-  { header: "Department", width: 20, value: (row) => row.department.name },
-  { header: "Band", width: 14, value: (row) => row.hoursBand },
-  { header: "Budget h", width: 11, value: (row) => pdfHours(row.budgetHours) },
-  { header: "Actual h", width: 11, value: (row) => pdfHours(row.actualHours) },
-  { header: "Burn %", width: 10, value: (row) => pdfPct(row.burnPct) },
-  { header: "Attention", width: 11, value: (row) => String(row.attentionScore) },
-  { header: "Last booking", width: 13, value: (row) => textOrDash(row.lastBooking) },
+export const PDF_JOB_COLUMNS: PdfColumn<ReportJobRow>[] = [
+  // Widths are RELATIVE UNITS scaled to the printable width by `drawTable`/`resolvePdfTableWidths`,
+  // so the SUM is what matters: the scale is printableWidth / sum. That is why the Band column
+  // could not simply be widened in isolation — every unit added to one column takes ~1/sum of the
+  // printable width from every other. The re-balance below keeps the sum at 199 units, so no
+  // unrelated column visibly moves.
+  //
+  // THE CONSTRAINT (why Band is 20, not the 12 it shipped with): the widest Band value,
+  // "NOT_MEASURABLE", measures 70.97pt at the table's 7.5pt Helvetica (doc.widthOfString). At 12
+  // units the column resolved to only 47.39pt (43.39pt of text after the cell's 2pt insets), so
+  // pdfkit wrapped it MID-WORD into "NOT_MEAS" / "URABLE" — a visibly broken cell AND a doubled
+  // row on every unmeasurable row. At 20 units it resolves to 78.98pt (74.98pt of text), which
+  // clears 70.97pt with ~4pt to spare. `portfolioExport.test.ts` MEASURES exactly this fit against
+  // the same scaling math and fails if the margin ever disappears; the number is not eyeballed.
+  // The 8 units Band gains come off the two widest text columns — Job (26 -> 23) and Reasons
+  // (32 -> 29) — so the extra room is real: those columns already wrap, so trimming them costs no
+  // legibility, whereas the Band value must not wrap at all.
+  { header: "Project", width: 17, value: (row) => row.project.name },
+  { header: "Code", width: 11, value: (row) => row.code },
+  { header: "Job", width: 23, value: (row) => row.name },
+  { header: "Department", width: 16, value: (row) => row.department.name },
+  { header: "Band", width: 20, value: (row) => row.hoursBand },
+  { header: "Budget h", width: 10, value: (row) => pdfHours(row.budgetHours) },
+  { header: "Actual h", width: 10, value: (row) => pdfHours(row.actualHours) },
+  { header: "Burn %", width: 9, value: (row) => pdfPct(row.burnPct) },
+  { header: "Attention", width: 10, value: (row) => String(row.attentionScore) },
+  // Same three names as the workbook, in the same order. `%Qty` prints `qtyCompletePct` — the
+  // always-finite fraction — so a target of 0 renders as "0.0%" here rather than "n/a".
+  { header: "QTY_BDG", width: 11, value: (row) => pdfHours(row.targetQty) },
+  { header: "QTY_Prgsd", width: 12, value: (row) => pdfHours(row.achievedQty) },
+  { header: "%Qty", width: 9, value: (row) => `${(row.qtyCompletePct * 100).toFixed(1)}%` },
+  // "Last booking" -> "Last bk", 12 units so a `yyyy-mm-dd` value ("2026-09-27") fits on ONE
+  // line: at 10 units it wrapped to "2026-09-2 / 7", doubling the height of every row.
+  { header: "Last bk", width: 12, value: (row) => textOrDash(row.lastBooking) },
   // The reason strings are the audit trail: a reader can see WHY a row is in "Needs push".
-  { header: "Reasons", width: 40, value: (row) => reasonsText(row) },
+  { header: "Reasons", width: 29, value: (row) => reasonsText(row) },
 ];
 
 /**
@@ -603,11 +674,15 @@ export async function buildPortfolioPdf(
         { header: "Count (shown)", width: 13, value: (item) => `${item.count} (${item.shown})` },
         { header: "Project", width: 20, value: (item) => item.row.project.name },
         { header: "Code", width: 12, value: (item) => item.row.code },
-        { header: "Band", width: 13, value: (item) => item.row.hoursBand },
+        // Same constraint as PDF_JOB_COLUMNS: 13 units resolved to only ~65pt, below the ~71pt
+        // "NOT_MEASURABLE" needs at 7.5pt Helvetica, so the Band value must take room from
+        // Reasons (40 -> 37) rather than wrap mid-word. Kept at the same 16 units as the job
+        // tables so a reader sees the Band column the same width on every section.
+        { header: "Band", width: 16, value: (item) => item.row.hoursBand },
         { header: "Budget h", width: 11, value: (item) => pdfHours(item.row.budgetHours) },
         { header: "Actual h", width: 11, value: (item) => pdfHours(item.row.actualHours) },
         { header: "Unapproved h", width: 12, value: (item) => pdfHours(item.row.unapprovedHours) },
-        { header: "Reasons", width: 40, value: (item) => reasonsText(item.row) },
+        { header: "Reasons", width: 37, value: (item) => reasonsText(item.row) },
       ];
       drawTable(doc, "Exceptions", exceptionColumns, exceptionRows);
 

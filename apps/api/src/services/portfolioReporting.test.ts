@@ -8,9 +8,13 @@ import {
   hoursBand,
   hoursPerDay,
   quantityBand,
+  qtyCompletePct,
   rollUpDepartments,
   rollUpProjects,
   sortByAttention,
+  BOOKED_HOURS_NOTE,
+  BOOKED_HOURS_STATUSES,
+  SUMMARY_APPROVED_HOURS_STATUSES,
   type JobOrderFacts,
 } from "./portfolioReporting";
 
@@ -103,6 +107,65 @@ test("quantityBand: the 75% edge is AMBER so it agrees with the attention reason
   // The other edge: below 25% is RED, exactly 25% is AMBER.
   assert.equal(quantityBand(100, 24), "RED");
   assert.equal(quantityBand(100, 25), "AMBER");
+});
+
+/* ------------------------------------------------------------------ *
+ * Task 1c — the finite quantity-completion percentage
+ * ------------------------------------------------------------------ */
+
+test("qtyCompletePct: a divide-by-zero displays as 0, never NaN/blank", () => {
+  // THE case the operator named: no quantity budget to measure against. The old
+  // `achieved / target` would be 0/0 = NaN here, and 50/0 = Infinity. Both are
+  // forbidden — the numeric column must print a finite number, and 0 is that number.
+  assert.equal(qtyCompletePct(0, 0), 0, "0 budgeted of 0 is 0 percent, not NaN");
+  assert.equal(qtyCompletePct(0, 50), 0, "nothing budgeted means no percent to state");
+});
+
+test("qtyCompletePct: a negative or corrupt target is 0, never a negative percent", () => {
+  // A negative target is not a denominator. Dividing by it would flip the sign and
+  // print a NEGATIVE completion, which is nonsense in a quantity column.
+  assert.equal(qtyCompletePct(-100, 50), 0);
+  assert.equal(qtyCompletePct(NaN, 50), 0, "a NaN target is unmeasurable, not NaN percent");
+  assert.equal(qtyCompletePct(Infinity, 50), 0, "an infinite target is unmeasurable");
+});
+
+test("qtyCompletePct: a corrupt achieved quantity is 0, never NaN/Infinity percent", () => {
+  // Corrupt input must never resolve to a NaN or Infinity percentage; those corrupt
+  // the column and every downstream arithmetic. 0 is the module's honest fallback.
+  assert.equal(qtyCompletePct(100, NaN), 0);
+  assert.equal(qtyCompletePct(100, Infinity), 0);
+  assert.equal(qtyCompletePct(100, -Infinity), 0);
+  // A finite negative numerator would divide to a NEGATIVE percent; the contract is
+  // "never negative", so corrupt negative delivery resolves to 0 too.
+  assert.equal(qtyCompletePct(100, -50), 0);
+});
+
+test("qtyCompletePct: ordinary completion is achieved/target", () => {
+  assert.equal(qtyCompletePct(100, 0), 0, "target set but nothing achieved is a real 0");
+  assert.equal(qtyCompletePct(100, 55), 0.55);
+  assert.equal(qtyCompletePct(100, 100), 1);
+  assert.equal(qtyCompletePct(200, 50), 0.25);
+});
+
+test("qtyCompletePct: over-achievement is NOT clamped — 150 of 100 is 1.5", () => {
+  // Over-achievement is REAL information (a crew delivered beyond the plan) and the
+  // quantity band already treats it as GREEN. Clamping to 1 would erase the fact that
+  // more than the target was delivered, so the raw ratio is carried unchanged.
+  assert.equal(qtyCompletePct(100, 150), 1.5);
+});
+
+test("qtyCompletePct: the result is always finite and never negative across a grid (invariant)", () => {
+  // The contract, stated once: for ANY pair of numbers — including NaN, ±Infinity,
+  // negatives and zeros — the return value is a finite number >= 0. This is the
+  // property the three surfaces (web, Excel, PDF) rely on to render one definition.
+  const values = [0, 1, -1, 0.5, 55, 100, 150, -100, NaN, Infinity, -Infinity];
+  for (const targetQty of values) {
+    for (const achievedQty of values) {
+      const pct = qtyCompletePct(targetQty, achievedQty);
+      assert.ok(Number.isFinite(pct), `not finite for target=${targetQty} achieved=${achievedQty}`);
+      assert.ok(pct >= 0, `negative for target=${targetQty} achieved=${achievedQty}`);
+    }
+  }
 });
 
 
@@ -637,6 +700,45 @@ test("buildJobOrderFacts: the quantity band and its reason AGREE — never GREEN
   }
 });
 
+test("buildJobOrderFacts: carries the finite qtyCompletePct alongside the existing qty facts", () => {
+  // The new ADDITIVE field: present and correct on the assembled facts, computed from
+  // the SAME target/achieved figures as qtyPct, through the shared pure helper.
+  const facts = buildJobOrderFacts(
+    buildInput({
+      jobOrder: { ...buildInput().jobOrder, budgetedQuantity: 100 },
+      budgetRevisions: [
+        { revisionNo: 1, budgetedHours: 100, budgetedQuantity: 100, effectiveFrom: new Date("2026-01-01T00:00:00Z") },
+      ],
+      progressRows: [
+        { status: "APPROVED", cumulativeQuantity: 55, progressDate: new Date("2026-02-20T00:00:00Z"), revisionNo: 1 },
+      ],
+    })
+  );
+  assert.equal(facts.qtyCompletePct, 0.55, "55 of 100 is 0.55");
+  // The pre-existing facts are untouched: qtyPct keeps its measurable-ratio semantics.
+  assert.equal(facts.qtyPct, 0.55);
+  assert.equal(facts.qtyBand, "AMBER");
+  assert.equal(facts.measurableOnQuantity, true);
+});
+
+test("buildJobOrderFacts: an unbudgeted job order reports qtyCompletePct 0 AND keeps qtyBand NOT_MEASURABLE", () => {
+  // THE distinction this field must not erase. No quantity budget means the band is
+  // NOT_MEASURABLE and qtyPct is null (the job is not measurable on quantity), yet the
+  // numeric column still prints 0 rather than a blank/NaN. Both facts coexist: the
+  // reader learns WHY via the Band column, not by a hole in the percentage column.
+  const facts = buildJobOrderFacts(
+    buildInput({
+      jobOrder: { ...buildInput().jobOrder, budgetedQuantity: 0 },
+      progressRows: [],
+    })
+  );
+  assert.equal(facts.qtyCompletePct, 0, "no budget to measure against shows 0 percent");
+  assert.equal(facts.targetQty, 0, "targetQty 0 = no quantity budget, preserved");
+  assert.equal(facts.measurableOnQuantity, false, "not measurable: unchanged");
+  assert.equal(facts.qtyBand, "NOT_MEASURABLE", "the band still says why 0 is not a good 0");
+  assert.equal(facts.qtyPct, null, "qtyPct keeps its null = not measurable semantics");
+});
+
 test("buildJobOrderFacts: a NaN actualHours is NOT_MEASURABLE on hours, never GREEN", () => {
   // THE test the reviewer said was missing. A corrupt hours figure must not be painted
   // GREEN, and no burn percentage or attention band may be invented from it.
@@ -753,6 +855,7 @@ function makeFacts(over: Partial<JobOrderFacts> = {}): JobOrderFacts {
     targetQty: 0,
     achievedQty: 0,
     qtyPct: null,
+    qtyCompletePct: 0,
     qtyBand: "NOT_MEASURABLE",
     balanceQty: 0,
     lastBooking: null,
@@ -822,4 +925,68 @@ test("rollUpDepartments: totals equal the sum of their job orders", () => {
   assert.equal(rolls[0].attentionScore, 50);
   assert.equal(rolls[0].hoursBand, "RED");
   assert.equal(rolls[0].sectionCount, 1);
+});
+
+/* ------------------------------------------------------------------ *
+ * The booked-hours definition — the note must be TRUE
+ * ------------------------------------------------------------------ */
+
+test("booked hours: the definition note does NOT claim parity with the Summary, and names the exact statuses summed", () => {
+  // THE regression test for the false claim this change removes. The shipped note said
+  // "Booked hours match GET /api/summary/job-order", which was untrue: this dashboard counts
+  // SUBMITTED/SUP_APPROVED alongside HOD_APPROVED/PM_APPROVED, while the Summary counts only
+  // PM_APPROVED. The note is printed on the screen, in the XLSX Filters sheet and on PDF page 1,
+  // so a false parity claim there is a lie to every reader. This test fails if the claim comes back.
+  const note = BOOKED_HOURS_NOTE;
+
+  // (a) No statement of parity with the Summary — in any of its old phrasings.
+  assert.ok(
+    !/match(es)?\s+GET \/api\/summary\/job-order/i.test(note),
+    `the note must not claim it matches the Summary: ${note}`
+  );
+  assert.ok(!/\bmatch(es)?\b/i.test(note), `the note must not use "match" about the Summary: ${note}`);
+  assert.ok(
+    !/same (figure|as) .*summary/i.test(note),
+    `the note must not claim the same figure as the Summary: ${note}`
+  );
+
+  // (b) It must EXPLICITLY distinguish the two figures, not merely omit the false claim.
+  assert.ok(
+    /NOT the Summary/i.test(note),
+    `the note must say plainly it is NOT the Summary's figure: ${note}`
+  );
+  assert.ok(
+    /PM_APPROVED/.test(note),
+    `the note must name the Summary's approved-only population so the difference is checkable: ${note}`
+  );
+  assert.ok(
+    /awaiting approval/i.test(note) && /exceed|higher/i.test(note),
+    `the note must say the booked figure includes not-yet-approved hours and can exceed the Summary's: ${note}`
+  );
+
+  // (c) The note documents the EXACT set the figure sums, named in full.
+  for (const status of BOOKED_HOURS_STATUSES) {
+    assert.ok(note.includes(status), `the note must name the status "${status}" it sums: ${note}`);
+  }
+
+  // (d) The documented statuses are exactly the set, in order, and a strict superset of the
+  // Summary's — the structural reason the booked figure equals or exceeds the approved-only one.
+  assert.deepEqual(
+    [...BOOKED_HOURS_STATUSES],
+    ["SUBMITTED", "SUP_APPROVED", "HOD_APPROVED", "PM_APPROVED"],
+    "the documented booked-hour statuses are exactly these four"
+  );
+  assert.deepEqual([...SUMMARY_APPROVED_HOURS_STATUSES], ["PM_APPROVED"]);
+  for (const status of SUMMARY_APPROVED_HOURS_STATUSES) {
+    assert.ok(
+      (BOOKED_HOURS_STATUSES as readonly string[]).includes(status),
+      `every Summary-approved status must also be counted as booked, or the figures could invert: ${status}`
+    );
+  }
+  assert.ok(
+    BOOKED_HOURS_STATUSES.length > SUMMARY_APPROVED_HOURS_STATUSES.length,
+    "booked is a STRICT superset of approved, which is why booked >= approved"
+  );
+  // DRAFT is deliberately NOT booked: never-submitted work is not yet booked.
+  assert.ok(!(BOOKED_HOURS_STATUSES as readonly string[]).includes("DRAFT"));
 });

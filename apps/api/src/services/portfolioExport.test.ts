@@ -25,6 +25,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 import ExcelJS from "exceljs";
+import PDFDocument from "pdfkit";
 import { buildJobOrderFacts, type JobOrderFacts } from "./portfolioReporting";
 import type { PortfolioFilters } from "./portfolioFilters";
 import {
@@ -32,7 +33,14 @@ import {
   type PortfolioReport,
   type ReportActor,
 } from "./portfolioReport";
-import { buildPortfolioPdf, buildPortfolioXlsx } from "./portfolioExport";
+import {
+  buildPortfolioPdf,
+  buildPortfolioXlsx,
+  PDF_CELL_INSET,
+  PDF_FONT_SIZE,
+  PDF_JOB_COLUMNS,
+  resolvePdfTableWidths,
+} from "./portfolioExport";
 
 const NOW = new Date("2026-10-02T00:00:00.000Z");
 const DAY = 86_400_000;
@@ -68,6 +76,9 @@ function makeFact(params: {
   projectId: number;
   budgetHours: number;
   budgetQuantity?: number;
+  /** An APPROVED progress entry at this cumulative quantity. Omitted means no progress at all,
+   *  which is what makes `targetQty`-only rows exercise the divide-by-zero fallback. */
+  approvedQty?: number;
   actualHours: number;
   unapprovedHours?: number;
   oldestUnapprovedAt?: Date | null;
@@ -105,7 +116,17 @@ function makeFact(params: {
     oldestUnapprovedAt: params.oldestUnapprovedAt ?? null,
     firstBooking: daysAgo(20),
     lastBooking: params.lastBooking ?? null,
-    progressRows: [],
+    progressRows:
+      params.approvedQty === undefined
+        ? []
+        : [
+            {
+              status: "APPROVED",
+              cumulativeQuantity: params.approvedQty,
+              progressDate: daysAgo(3),
+              revisionNo: 1,
+            },
+          ],
     asOf: NOW,
     now: NOW,
   });
@@ -128,8 +149,9 @@ function fixtureReport(): PortfolioReport {
     makeFact({ id: 2, projectId: 1, budgetHours: 100, actualHours: 80, lastBooking: daysAgo(1) }),
     // GREEN and measurable.
     makeFact({ id: 3, projectId: 1, budgetHours: 200, actualHours: 20, lastBooking: daysAgo(1) }),
-    // NOT_MEASURABLE: no budget at all.
-    makeFact({ id: 4, projectId: 2, budgetHours: 0, actualHours: 0 }),
+    // NOT_MEASURABLE on hours (no budget), AND the divide-by-zero case for quantity: a target of
+    // 0 with 50 approved still reports `qtyCompletePct` 0 rather than NaN/blank.
+    makeFact({ id: 4, projectId: 2, budgetHours: 0, budgetQuantity: 0, approvedQty: 50, actualHours: 0 }),
   ];
   return assemblePortfolioReport({ facts, filters: fixtureFilters(), actor: ACTOR, asOf: NOW, now: NOW });
 }
@@ -252,7 +274,7 @@ test("buildPortfolioXlsx: dates are real Date cells with a date format, and perc
   const rows = sheetRows(sheet);
   const redIndex = rows.findIndex((row) => String(row[header.indexOf("Band")]) === "RED");
   assert.ok(redIndex >= 0, "the RED row exists");
-  const lastBookingCell = sheet.getRow(redIndex + 2).getCell(column("Last booking"));
+  const lastBookingCell = sheet.getRow(redIndex + 2).getCell(column("Last bk"));
   assert.ok(lastBookingCell.value instanceof Date, `a date cell holds a Date, not text (got ${typeof lastBookingCell.value})`);
   assert.equal(lastBookingCell.numFmt, "yyyy-mm-dd", "and carries a date number format");
 
@@ -260,6 +282,104 @@ test("buildPortfolioXlsx: dates are real Date cells with a date format, and perc
   const burnCell = sheet.getRow(redIndex + 2).getCell(column("Burn %"));
   assert.equal(typeof burnCell.value, "number");
   assert.equal(burnCell.numFmt, "0.0%");
+});
+
+/* ------------------------------------------------------------------ *
+ * The quantity columns (QTY_BDG / QTY_Prgsd / %Qty)
+ * ------------------------------------------------------------------ */
+
+test("buildPortfolioXlsx: the Job work sheet has the three QTY headers EXACTLY and none of the old trio", async () => {
+  const report = fixtureReport();
+  const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  const header = (workbook.getWorksheet("Job work")!.getRow(1).values as unknown[]).slice(1).map(String);
+
+  // The operator named these three, and the file is read in Excel alongside their own trackers,
+  // so the header strings are exact.
+  assert.ok(header.includes("QTY_BDG"), "QTY_BDG column present");
+  assert.ok(header.includes("QTY_Prgsd"), "QTY_Prgsd column present");
+  assert.ok(header.includes("%Qty"), "%Qty column present");
+  // The old trio must be GONE: two columns saying the same thing read as a discrepancy.
+  for (const stale of ["Target qty", "Achieved qty", "Qty %"]) {
+    assert.ok(!header.includes(stale), `the redundant "${stale}" header was removed`);
+  }
+  // The band and balance carry information the three do not, so they must survive the trim.
+  assert.ok(header.includes("Qty band"), "Qty band kept");
+  assert.ok(header.includes("Balance qty"), "Balance qty kept");
+  // Exactly one column each — not a duplicate pair.
+  assert.equal(header.filter((h) => h === "QTY_BDG").length, 1, "QTY_BDG appears exactly once");
+  assert.equal(header.filter((h) => h === "QTY_Prgsd").length, 1, "QTY_Prgsd appears exactly once");
+  assert.equal(header.filter((h) => h === "%Qty").length, 1, "%Qty appears exactly once");
+});
+
+test("buildPortfolioXlsx: the %Qty cell is a numeric fraction with the 0.0% format, not text", async () => {
+  // 55 of 100 approved — a clean fraction to prove the CELL, not just the number.
+  const facts: JobOrderFacts[] = [
+    makeFact({ id: 1, projectId: 1, budgetHours: 100, budgetQuantity: 100, approvedQty: 55, actualHours: 10 }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: fixtureFilters(), actor: ACTOR, asOf: NOW, now: NOW });
+  const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  const sheet = workbook.getWorksheet("Job work")!;
+  const header = (sheet.getRow(1).values as unknown[]).slice(1).map(String);
+  const column = (name: string) => header.indexOf(name) + 1;
+
+  const cell = sheet.getRow(2).getCell(column("%Qty"));
+  assert.equal(typeof cell.value, "number", "the %Qty cell holds a number, so Excel does the maths");
+  assert.equal(cell.value, 0.55, "55 of 100 is stored as the fraction 0.55");
+  assert.equal(cell.numFmt, "0.0%", "and carries the 0.0% number format");
+
+  const bdgCell = sheet.getRow(2).getCell(column("QTY_BDG"));
+  assert.equal(bdgCell.value, 100, "QTY_BDG carries targetQty");
+  assert.equal(bdgCell.numFmt, "0.00", "QTY_BDG uses the 0.00 format");
+  const prgsdCell = sheet.getRow(2).getCell(column("QTY_Prgsd"));
+  assert.equal(prgsdCell.value, 55, "QTY_Prgsd carries achievedQty");
+  assert.equal(prgsdCell.numFmt, "0.00", "QTY_Prgsd uses the 0.00 format");
+});
+
+test("buildPortfolioXlsx: targetQty 0 shows %Qty as the number 0 — not NaN, not null, not blank", async () => {
+  // 0 budgeted with 50 approved: the divide-by-zero case. `qtyCompletePct` must resolve it to a
+  // real 0 so the cell prints "0.0%" and never "n/a", an empty cell, or an error.
+  const facts: JobOrderFacts[] = [
+    makeFact({ id: 1, projectId: 1, budgetHours: 0, budgetQuantity: 0, approvedQty: 50, actualHours: 0 }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: fixtureFilters(), actor: ACTOR, asOf: NOW, now: NOW });
+  const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  const sheet = workbook.getWorksheet("Job work")!;
+  const header = (sheet.getRow(1).values as unknown[]).slice(1).map(String);
+  const cell = sheet.getRow(2).getCell(header.indexOf("%Qty") + 1);
+
+  assert.equal(cell.value, 0, "a zero target resolves to a real 0, never NaN");
+  assert.equal(typeof cell.value, "number", "and it is a number, never blank/null/text");
+  assert.notEqual(cell.value, null, "never null");
+  assert.equal(cell.numFmt, "0.0%", "still carries the percent format, so it prints 0.0%");
+});
+
+test("buildPortfolioXlsx: over-achievement (150 of 100) shows 1.5, NOT a clamped 1.0", async () => {
+  // The file must tell the truth: delivering beyond the plan is real information, and clamping
+  // would hide it. `qtyCompletePct` is deliberately not clamped — this test is the tripwire.
+  const facts: JobOrderFacts[] = [
+    makeFact({ id: 1, projectId: 1, budgetHours: 100, budgetQuantity: 100, approvedQty: 150, actualHours: 10 }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: fixtureFilters(), actor: ACTOR, asOf: NOW, now: NOW });
+  const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  const sheet = workbook.getWorksheet("Job work")!;
+  const header = (sheet.getRow(1).values as unknown[]).slice(1).map(String);
+  const cell = sheet.getRow(2).getCell(header.indexOf("%Qty") + 1);
+
+  assert.equal(cell.value, 1.5, "150 of 100 is 1.5, never clamped to 1.0");
+  assert.equal(sheet.getRow(2).getCell(header.indexOf("QTY_BDG") + 1).value, 100, "QTY_BDG is the target");
+  assert.equal(sheet.getRow(2).getCell(header.indexOf("QTY_Prgsd") + 1).value, 150, "QTY_Prgsd is the delivered quantity");
 });
 
 /* ------------------------------------------------------------------ *
@@ -339,5 +459,120 @@ test("buildPortfolioPdf: the text carries the provenance block and the printed b
   assert.ok(
     text.includes("Burn and activity are separate measures"),
     "the PDF must carry the burn-vs-activity note that explains the On track / Needs push overlap"
+  );
+});
+
+test("buildPortfolioPdf: the Job-work table carries the QTY_BDG, QTY_Prgsd and %Qty headers and the shortened Last bk", async () => {
+  const report = fixtureReport();
+  const buffer = await buildPortfolioPdf(report, fixtureFilters(), undefined);
+  const text = extractPdfText(buffer);
+
+  // The PDF and the workbook name the quantity columns identically, so a reader moving between
+  // the two never has to translate. Adding three columns took the table from 11 to 14, so the
+  // headers must still be legible in the re-balanced widths.
+  assert.ok(text.includes("QTY_BDG"), "the QTY_BDG header is rendered");
+  assert.ok(text.includes("QTY_Prgsd"), "the QTY_Prgsd header is rendered");
+  assert.ok(text.includes("%Qty"), "the %Qty header is rendered");
+  // The four shared headers were shortened for the same reason as the workbook's.
+  assert.ok(text.includes("Last bk"), "the shortened \"Last bk\" header is rendered");
+  assert.ok(!text.includes("Last booking"), "the old \"Last booking\" header is gone from the PDF");
+});
+
+/* ------------------------------------------------------------------ *
+ * The Band column must not wrap — MEASURED, not eyeballed
+ * ------------------------------------------------------------------ */
+
+/**
+ * The widest Band label. Every other band value (RED / AMBER / GREEN) is shorter, so if this one
+ * fits its column on one line at the table's font size, they all do. If a future band is added
+ * with a longer name, it must be added here so it is measured too.
+ */
+const WIDEST_BAND_LABEL = "NOT_MEASURABLE";
+
+/** A4 landscape with 28pt margins, as `buildPortfolioPdf` opens the document — the width the
+ *  renderer actually scales the relative column units against. Kept in one place so the geometry
+ *  cannot silently drift from the PDF constructor. */
+const PDF_PRINTABLE_WIDTH = 785.89;
+
+/** A throwaway measurer: pdfkit exposes `widthOfString`/`heightOfString` only on a document, and
+ *  font metrics depend on neither the page size nor the layout, so this document is used purely
+ *  as a font-metrics oracle at the SAME family and size the tables are drawn with. */
+function measureWithPdfKit(text: string, width: number): { width: number; height: number } {
+  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 28 });
+  doc.font("Helvetica").fontSize(PDF_FONT_SIZE);
+  const measuredWidth = doc.widthOfString(text);
+  const measuredHeight = doc.heightOfString(text, { width, lineGap: 0 });
+  return { width: measuredWidth, height: measuredHeight };
+}
+
+test("buildPortfolioPdf: the Band column is MEASURED to fit \"NOT_MEASURABLE\" on one line", async () => {
+  // Resolve the widths the way the renderer does: the RELATIVE units of PDF_JOB_COLUMNS scaled
+  // across the printable width. This is the number that was ~47pt at 12 units — too small for a
+  // ~71pt value — which is exactly what wrapped "NOT_MEASURABLE" into "NOT_MEAS" / "URABLE".
+  const widths = resolvePdfTableWidths(PDF_JOB_COLUMNS, PDF_PRINTABLE_WIDTH);
+  const bandIndex = PDF_JOB_COLUMNS.findIndex((column) => column.header === "Band");
+  assert.ok(bandIndex >= 0, "the job tables still have a Band column");
+  const bandPt = widths[bandIndex];
+
+  // The glyph budget the cell actually gets: the renderer draws at `x + PDF_CELL_INSET` with a
+  // running width of `columnWidth - 2 * PDF_CELL_INSET`, so the usable text width is the column
+  // minus both insets. Measuring against the raw column would over-state the room by 4pt.
+  const textPt = bandPt - 2 * PDF_CELL_INSET;
+
+  const neededPt = measureWithPdfKit(WIDEST_BAND_LABEL, 10_000).width;
+  const singleLineHeight = measureWithPdfKit("RED", 10_000).height;
+  const wrappedHeightAtTextWidth = measureWithPdfKit(WIDEST_BAND_LABEL, textPt).height;
+
+  // STATE THE ARITHMETIC: the point needed versus the point available, so a failure reads as a
+  // measurement rather than a mystery. The width assertion is the real guarantee.
+  const detail =
+    `Band column ${bandPt.toFixed(2)}pt (${textPt.toFixed(2)}pt of text after insets); ` +
+    `"${WIDEST_BAND_LABEL}" needs ${neededPt.toFixed(2)}pt at ${PDF_FONT_SIZE}pt Helvetica`;
+  assert.ok(
+    neededPt <= textPt,
+    `the Band column must fit its widest value on ONE line: ${detail}`
+  );
+
+  // Belt and braces: pdfkit's own wrapper must agree. `heightOfString` returns ONE line height
+  // when the text fits and MORE when it wraps (it returned 17.34 vs 8.67 at the old width), so a
+  // wrap — the exact "NOT_MEAS / URABLE" defect — cannot slip through even if the width maths
+  // above were ever refactored.
+  assert.equal(
+    wrappedHeightAtTextWidth,
+    singleLineHeight,
+    `pdfkit must not wrap the widest Band value: ${detail}`
+  );
+  // A regression tripwire: the old 12-unit Band column must NOT satisfy the fit. If this ever
+  // passes, the measurement above has stopped checking the thing that broke.
+  const oldWidths = resolvePdfTableWidths(
+    PDF_JOB_COLUMNS.map((column) =>
+      column.header === "Band" ? { ...column, width: 12 } : column
+    ),
+    PDF_PRINTABLE_WIDTH
+  );
+  assert.ok(
+    neededPt > oldWidths[bandIndex] - 2 * PDF_CELL_INSET,
+    "the 12-unit width that shipped would still wrap the value, so this test is not vacuous"
+  );
+});
+
+test("buildPortfolioXlsx: the Band column can hold NOT_MEASURABLE without wrapping", async () => {
+  // Read the width off a REAL workbook rather than a constant, so the assertion measures what a
+  // reader actually opens. Excel's column width unit is a CHARACTER count, so the question is
+  // simply whether the longest value fits the column's characters: 15 > 14, so it does.
+  const report = fixtureReport();
+  const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+  const sheet = workbook.getWorksheet("Job work")!;
+  const header = (sheet.getRow(1).values as unknown[]).slice(1).map(String);
+  const bandColumnNumber = header.indexOf("Band") + 1;
+  assert.ok(bandColumnNumber >= 1, "the workbook still has a Band column");
+
+  const bandWidth = sheet.getColumn(bandColumnNumber).width ?? 0;
+  assert.ok(
+    bandWidth > WIDEST_BAND_LABEL.length,
+    `Excel Band width ${bandWidth} must exceed the ${WIDEST_BAND_LABEL.length}-character value "${WIDEST_BAND_LABEL}"`
   );
 });

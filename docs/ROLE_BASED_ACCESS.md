@@ -14,7 +14,7 @@ control which links are shown in the browser.
 | Can decide (approve / reject / send back) | — | — | Submitted, own Department+Section | HOD-approved, all Departments | **No** - Admin observes only; the API refuses with 403 | — |
 | Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section | — |
 | Organisation and supervisor administration | — | — | — | — | Yes | — (the API refuses: 403) |
-| Operations dashboard (`viewPortfolioDashboard`) | — | — | — | Yes | Yes | Yes (whole organisation, read only) |
+| Operations dashboard (`viewPortfolioDashboard`) | — | — | Own Department (whole, every Section) | Own Department (whole) | Yes | Yes (whole organisation, read only) |
 
 Each HOD must have an explicit `User.departmentId + User.sectionId` scope. HOD
 approval and creation permissions fail closed when either mapping is absent. HOD and
@@ -45,10 +45,24 @@ oversees every Department but acts on nothing.
 | Self-approval / work | Holds no approval queue, captures no team and fills no timesheet. |
 
 The new **`viewPortfolioDashboard`** capability gates the operations dashboard and its
-exports. It is granted to **COO, PM and Admin** — the three roles that are already
-organisation-wide — and to no Department-scoped role (an HOD or Department Head must never
-see another Department's portfolio). The capability is a flag of its own rather than a
-widening of `viewSummary`, which many Department-scoped roles hold.
+exports. It is granted to **COO, PM and Admin** (whole organisation) and to **HOD (either
+scope shape) and Department Head**, who are **scoped server-side to their own whole
+Department** — every Section of it, whether their account is narrowed to one Section (a
+Section Head) or not, so the two HOD shapes read identically. The Department filter a
+request carries is **intersected** with the actor's own scope and never trusted, so an HOD
+asking for another Department receives his own (and an unmapped head receives **zero rows**,
+never the portfolio). SUPERVISOR and EMPLOYEE remain refused. The scope actually applied is
+recorded in the report's provenance, so a forwarded export states its own limits. The
+capability is a flag of its own rather than a widening of `viewSummary`, which many
+Department-scoped roles hold; the `summary.ts` route list is deliberately unchanged.
+
+HOD scope is therefore two different things and both are correct:
+
+| Context | HOD visibility |
+|---|---|
+| Approvals, My Hours, timesheet decisions | Own Department **+ Section** (a Section Head) or the whole Department (a Department HOD) |
+| Employee listing and the operations report | Whole **Department**, for every HOD shape |
+
 
 `usesEcNoLogin` in `services/defaultLoginCredentials.ts` is the single switch that decides
 whether an account signs in by EC No; because the COO is not on that list, an e-mail sign-in

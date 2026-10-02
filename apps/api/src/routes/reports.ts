@@ -19,19 +19,26 @@ export const reportsRouter = Router();
 /**
  * Portfolio & Job-Work Operations Dashboard — the JSON screen.
  *
- * Gated on PM, ADMIN and COO, which are exactly the roles whose
- * `capabilitiesFor(role).viewPortfolioDashboard` is true (services/roleAccess.ts). Requiring
- * the ROLES rather than re-deriving the capability here follows the house pattern set by
- * `routes/summary.ts`: the capability flag drives the web navigation, and the router list is
- * the server-side enforcement of the same set. The COO is included because the dashboard is
- * its whole purpose; HOD / DEPT_HEAD are deliberately absent, because the dashboard crosses
- * every Department and must never be reachable by a Department-scoped reader.
+ * Gated on PM, ADMIN, COO, HOD and DEPT_HEAD, which are exactly the roles whose
+ * `capabilitiesFor(role).viewPortfolioDashboard` is true (services/roleAccess.ts). Requiring the
+ * ROLES rather than re-deriving the capability here follows the house pattern set by
+ * `routes/summary.ts`: the capability flag drives the web navigation, and the router list is the
+ * server-side enforcement of the same set.
+ *
+ * THE GATE IS NOT THE SCOPE. Admitting HOD/DEPT_HEAD here does NOT grant them the whole portfolio:
+ * PM/ADMIN/COO read every Department, while an HOD (either shape) and a DEPT_HEAD read their ONE
+ * Department, narrowed server-side in `buildPortfolioReport` via `reportScopeFor`. The request's
+ * `departmentIds` can only narrow that further, never widen it. A head with no Department mapping
+ * reads zero rows (fail closed). SUPERVISOR and EMPLOYEE stay 403.
+ *
+ * This single `requireRoles(...)` covers the JSON handler AND both downloads below: the router-level
+ * `use` runs for every route, so a scoped screen and an unscoped export cannot diverge.
  *
  * The JSON handler is READ-ONLY. The two DOWNLOAD handlers below are read-only as well, apart
- * from the audit row they are REQUIRED to write — \"who pulled these numbers\" has to be
+ * from the audit row they are REQUIRED to write — "who pulled these numbers" has to be
  * answerable later, and an export writes nothing else at all.
  */
-reportsRouter.use(requireAuth, requireRoles("PM", "ADMIN", "COO"));
+reportsRouter.use(requireAuth, requireRoles("PM", "ADMIN", "COO", "HOD", "DEPT_HEAD"));
 
 reportsRouter.get("/portfolio", async (req, res) => {
   // One parser for every format: the JSON screen, the XLSX and the PDF all go through
@@ -44,8 +51,15 @@ reportsRouter.get("/portfolio", async (req, res) => {
   }
 
   // The actor is stamped into the provenance block, because "who pulled the numbers" is a
-  // question an operations report has to be able to answer.
-  const actor = { id: req.user!.id, name: req.user!.name, role: req.user!.role };
+  // question an operations report has to be able to answer. `departmentId` is carried too, so the
+  // loader can derive the actor's OWN scope server-side (intersected with the request, never
+  // trusted from it).
+  const actor: ReportActor = {
+    id: req.user!.id,
+    name: req.user!.name,
+    role: req.user!.role,
+    departmentId: req.user!.departmentId,
+  };
 
   try {
     const report = await buildPortfolioReport(parsed.filters, actor);
@@ -98,7 +112,12 @@ function downloadHandler(format: PortfolioExportFormat) {
       return res.status(400).json({ error: failure.error, code: failure.code });
     }
 
-    const actor: ReportActor = { id: req.user!.id, name: req.user!.name, role: req.user!.role };
+    const actor: ReportActor = {
+      id: req.user!.id,
+      name: req.user!.name,
+      role: req.user!.role,
+      departmentId: req.user!.departmentId,
+    };
 
     try {
       // SAME assembly as GET /api/reports/portfolio. Nothing is recomputed for the file.

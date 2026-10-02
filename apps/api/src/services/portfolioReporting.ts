@@ -46,6 +46,73 @@ import {
 import { DEFAULT_ACTIVITY_DAYS } from "./portfolioFilters";
 
 /* --------------------------------------------------------------------------- *
+ * The booked-hours definition (deliberately DISTINCT from the Summary's)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The statuses whose timesheet hours this dashboard counts as BOOKED.
+ *
+ * WHY THE DEFINITION LIVES HERE, IN THE PURE MODULE: the loader in `portfolioReport.ts` sums
+ * exactly this set, and the printed definitions note (see `BOOKED_HOURS_NOTE`) documents exactly
+ * this set. Keeping both the query population and the wording that describes it in ONE pure
+ * module is what stops the note from drifting away from the number it claims to explain — the
+ * defect this constant exists to make impossible.
+ *
+ * WHY IT IS WIDER THAN THE SUMMARY'S SET, AND WHY THAT IS INTENTIONAL: `GET /api/summary/job-order`
+ * counts only `PM_APPROVED` hours, because the Summary is an APPROVED-hours screen. This dashboard
+ * is an OPERATIONS view: a COO looking at burn must see every hour BOOKED against a job order —
+ * including effort that exists but is stuck in approval — not just the approved subset. The two
+ * figures therefore serve different purposes and are NOT expected to agree. We keep both rather
+ * than force them to match; what we refuse to keep is a printed note that CLAIMS they match.
+ *
+ * `DRAFT` is deliberately absent: work never submitted is not booked yet (it appears only in the
+ * separate UNAPPROVED population the loader uses for the approval-aging signal).
+ */
+export const BOOKED_HOURS_STATUSES = [
+  "SUBMITTED",
+  "SUP_APPROVED",
+  "HOD_APPROVED",
+  "PM_APPROVED",
+] as const;
+
+/**
+ * The Summary's own population — the FINAL-approved hours it reports as "consumption".
+ *
+ * Carried here, beside the booked set, purely so the divergence is visible in code and testable:
+ * `BOOKED_HOURS_STATUSES` is a strict superset of this, which is the structural reason the
+ * dashboard's booked figure equals or exceeds the Summary's approved-only figure. This module
+ * does NOT expose an approved-only hours NUMBER (that would need its own database query, which
+ * belongs to the loader, not a pure module) — see the report of this change.
+ */
+export const SUMMARY_APPROVED_HOURS_STATUSES = ["PM_APPROVED"] as const;
+
+/**
+ * The reader-facing statement of what "booked hours" means on this report.
+ *
+ * THIS IS THE REPLACEMENT FOR A FALSE CLAIM. The note used to read "Booked hours match
+ * GET /api/summary/job-order", which was untrue on TWO counts:
+ *   1. the STATUS population — this dashboard counts SUBMITTED / SUP_APPROVED / HOD_APPROVED /
+ *      PM_APPROVED, while the Summary counts only PM_APPROVED;
+ *   2. the ARITHMETIC on a row carrying BOTH an `otHours` and a slot — the dashboard ADDS them
+ *      with `+`, the Summary's `??` counts only `otHours`.
+ * Only (1) is visible in the current dev data (no row carries both), but the note must be true of
+ * the definition, not merely of today's rows. Both arithmetics are left untouched; the note now
+ * describes what this report actually does and says so explicitly.
+ *
+ * The note is printed on the screen, in the XLSX Filters sheet and on PDF page 1, so it is the
+ * reader's only statement of what the number means — it MUST stay true. `portfolioReporting.test.ts`
+ * asserts it no longer claims parity and that it names the exact statuses summed.
+ */
+export const BOOKED_HOURS_NOTE =
+  "Booked hours are the dashboard's own operations figure: every timesheet entry SUBMITTED for " +
+  "approval or beyond — SUBMITTED, SUP_APPROVED, HOD_APPROVED and PM_APPROVED — counts, at 2h for " +
+  "a shift slot, 1h for a legacy hour slot, plus any explicit OT hours. This is NOT the Summary " +
+  "screen's approved figure and is not intended to be equal to it: GET /api/summary/job-order " +
+  "counts only PM_APPROVED hours, so the booked figure here INCLUDES hours still awaiting approval " +
+  "and equals or exceeds the Summary's approved-only total (it is higher whenever some booked " +
+  "hours are not yet PM-approved). The Unapproved hours figure is that not-yet-approved part.";
+
+/* --------------------------------------------------------------------------- *
  * Bands
  * ------------------------------------------------------------------------- */
 
@@ -152,6 +219,59 @@ export function quantityBand(targetQty: number, achievedQty: number): Band {
   if (pct > 0.75) return "GREEN";
   if (pct >= 0.25) return "AMBER";
   return "RED";
+}
+
+/**
+ * Quantity completed as a fraction, ALWAYS a finite number — 0 when there is nothing
+ * to measure against. This is the value the three surfaces (web `%Qty`, Excel `%Qty`,
+ * PDF `%Qty`) all render, so the definition lives in exactly ONE place and cannot drift
+ * between them.
+ *
+ * WHY THIS EXISTS ALONGSIDE `qtyPct`. `qtyPct` is `number | null`, where `null` is a
+ * genuine report fact: "not measurable" (no target, or no approved progress row yet).
+ * The operations dashboard now wants a numeric `%Qty` column that is NEVER blank and
+ * NEVER NaN, so it needs a DIFFERENT contract from `qtyPct` — one that always yields a
+ * printable number. Both fields are therefore carried, and `qtyPct` is left untouched.
+ *
+ * THE TWO ZEROES ARE DIFFERENT FACTS THAT HAPPEN TO SHARE ONE NUMBER. A 0% from
+ * "nothing completed" (targetQty > 0, achievedQty 0) and a 0% from "there is no quantity
+ * budget to measure against" (targetQty <= 0) are not the same situation, and this
+ * function deliberately returns 0 for BOTH. That distinction is NOT carried here — it is
+ * carried by the fields beside this one: `targetQty` (0 = no quantity budget),
+ * `measurableOnQuantity` (false = no APPROVED progress row yet, so nothing has been
+ * measured), `qtyBand` (NOT_MEASURABLE in the budget-less case) and `qtyPct` (null when
+ * not measurable). Those four are preserved exactly as they were; this field is ADDITIVE.
+ * The reader is told which zero applies by the Band column and the "Why unmeasurable"
+ * explanation, and a blank or an error in a numeric column is WORSE than a zero the
+ * report explains elsewhere — so the numeric column always prints a number and the
+ * qualitative columns explain it.
+ *
+ * Rules, in order:
+ *   - `targetQty > 0` and `achievedQty` finite -> `achievedQty / targetQty`.
+ *   - otherwise (target <= 0, NaN/±Infinity target or achieved) -> exactly `0`.
+ *
+ * A NEGATIVE `achievedQty` also returns 0. A finite negative numerator would divide to a
+ * negative percent, and the contract is "never negative": a negative quantity delivered is
+ * corrupt input, not a measurement, so it resolves to 0 in the same spirit as the other
+ * corrupt-input cases. (A negative achieved cannot arise from `achievedQuantity()`, which
+ * sums approved cumulative totals, but the helper is public and states its own contract.)
+ *
+ * Over-achievement is NOT clamped: 150 of 100 returns 1.5, because delivering beyond the
+ * plan is real information (and `quantityBand` already reads it as healthy). Clamping to
+ * 1 would hide it. A negative target is refused rather than divided by, so the result can
+ * never print a negative completion.
+ */
+export function qtyCompletePct(targetQty: number, achievedQty: number): number {
+  // `!(targetQty > 0)` also rejects NaN and negatives; `Number.isFinite(targetQty)`
+  // additionally rejects an Infinity target that would divide down to a fake 0%.
+  // A negative target must not be used as a denominator: it would flip the sign and
+  // print a NEGATIVE percentage, which is nonsense in a completion column.
+  if (!Number.isFinite(targetQty) || !(targetQty > 0)) return 0;
+  // A corrupt achieved quantity (NaN, ±Infinity, or negative) must never yield a
+  // NaN/Infinity/negative percent — those poison the column and every downstream sum.
+  // 0 is the honest fallback.
+  if (!Number.isFinite(achievedQty) || achievedQty < 0) return 0;
+  return achievedQty / targetQty; // never clamped: >1 means over-achievement, which is real
 }
 
 /* --------------------------------------------------------------------------- *
@@ -447,6 +567,13 @@ export type JobOrderFacts = {
   targetQty: number;
   achievedQty: number;
   qtyPct: number | null;
+  /**
+   * Quantity completed as a fraction, ALWAYS a finite number (never NaN/Infinity/null,
+   * never negative). 0 when there is no quantity budget to measure against. ADDITIVE to
+   * `qtyPct`: this is the always-printable `%Qty` figure the three surfaces share, while
+   * `qtyPct` keeps its "null = not measurable" reporting meaning. See `qtyCompletePct`.
+   */
+  qtyCompletePct: number;
   qtyBand: Band;
   balanceQty: number;
   lastBooking: Date | null;
@@ -508,6 +635,12 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
   const balance = quantityBalance(targetQty, achievedQty).balance;
 
   const qtyPct = measurableOnQuantity ? achievedQty / targetQty : null;
+  // The always-printable completion figure. Computed through the ONE shared pure helper
+  // (never inlined here) so the web, Excel and PDF surfaces cannot grow three definitions.
+  // Deliberately independent of `measurableOnQuantity`: a 0% from "nothing completed" and
+  // a 0% from "no quantity budget to measure against" share the number 0, and the Band
+  // column plus the "Why unmeasurable" note say which case applies. See `qtyCompletePct`.
+  const qtyComplete = qtyCompletePct(targetQty, achievedQty);
   // quantityBand, NOT hoursBand(targetQty, achievedQty): quantity is judged in its own
   // direction (more achieved is better), so a row can never say "quantity behind
   // target" while showing GREEN. See the function's docstring for why not to simplify.
@@ -564,6 +697,7 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
     targetQty,
     achievedQty,
     qtyPct,
+    qtyCompletePct: qtyComplete,
     qtyBand,
     balanceQty: balance,
     lastBooking: input.lastBooking,
