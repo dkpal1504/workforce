@@ -15,6 +15,7 @@ import { mastersRouter } from "./routes/masters";
 import { teamsRouter } from "./routes/teams";
 import { timesheetRouter } from "./routes/timesheet";
 import { summaryRouter } from "./routes/summary";
+import { reportsRouter } from "./routes/reports";
 import { adminRouter } from "./routes/admin";
 import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
@@ -149,6 +150,8 @@ api.use("/", mastersRouter);
 api.use("/teams", teamsRouter);
 api.use("/timesheet", timesheetRouter);
 api.use("/summary", summaryRouter);
+// Operations dashboard (portfolio burn, attention ranking) — PM / ADMIN / COO only.
+api.use("/reports", reportsRouter);
 api.use("/approvals", approvalsRouter);
 api.use("/admin", adminRouter);
 api.use("/supervisors", supervisorRegistrationRouter);

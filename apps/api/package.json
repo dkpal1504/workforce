@@ -20,6 +20,7 @@
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.21.1",
     "express-async-errors": "^3.1.1",
     "express-rate-limit": "^8.7.0",
@@ -27,6 +28,7 @@
     "mssql": "^12.7.0",
     "node-cron": "^4.6.0",
     "nodemailer": "^10.0.8",
+    "pdfkit": "^0.20.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -38,6 +40,7 @@
     "@types/node": "^22.9.0",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^8.0.1",
+    "@types/pdfkit": "^0.17.6",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"

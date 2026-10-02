@@ -3,17 +3,18 @@
 All restrictions below are enforced by the API. Navigation capability flags only
 control which links are shown in the browser.
 
-| View / action | Employee | Supervisor | HOD | PM | Admin |
-|---|---:|---:|---:|---:|---:|
-| My Hours (own linked Employee only) | Yes | Yes | Yes | Yes | Yes |
-| Own final-approved Summary | Yes | — | — | — | Yes |
-| Select contract labour by Department Section | — | Any Section in own Department | — | — | Any Supervisor |
-| Fill assigned-labour timesheet | — | Own daily team | — | — | Any Supervisor |
-| Timesheet decision Summary | Own approved | Own HOD decisions | Own decisions and PM returns for mapped Department/Section | Own decisions, all Departments | All |
-| Approval queue | — | — | Submitted, mapped Department/Section | HOD-approved, all Departments | Both stages, **read only** |
-| Can decide (approve / reject / send back) | — | — | Submitted, own Department+Section | HOD-approved, all Departments | **No** - Admin observes only; the API refuses with 403 |
-| Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section |
-| Organisation and supervisor administration | — | — | — | — | Yes |
+| View / action | Employee | Supervisor | HOD | PM | Admin | COO |
+|---|---:|---:|---:|---:|---:|---:|
+| My Hours (own linked Employee only) | Yes | Yes | Yes | Yes | Yes | — |
+| Own final-approved Summary | Yes | — | — | — | Yes | — |
+| Select contract labour by Department Section | — | Any Section in own Department | — | — | Any Supervisor | — |
+| Fill assigned-labour timesheet | — | Own daily team | — | — | Any Supervisor | — |
+| Timesheet decision Summary | Own approved | Own HOD decisions | Own decisions and PM returns for mapped Department/Section | Own decisions, all Departments | All | — |
+| Approval queue | — | — | Submitted, mapped Department/Section | HOD-approved, all Departments | Both stages, **read only** | — |
+| Can decide (approve / reject / send back) | — | — | Submitted, own Department+Section | HOD-approved, all Departments | **No** - Admin observes only; the API refuses with 403 | — |
+| Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section | — |
+| Organisation and supervisor administration | — | — | — | — | Yes | — (the API refuses: 403) |
+| Operations dashboard (`viewPortfolioDashboard`) | — | — | — | Yes | Yes | Yes (whole organisation, read only) |
 
 Each HOD must have an explicit `User.departmentId + User.sectionId` scope. HOD
 approval and creation permissions fail closed when either mapping is absent. HOD and
@@ -26,6 +27,34 @@ allows reports to retain the HOD decision after a later PM decision.
 
 Legacy HR and Finance permissions remain for their existing operational screens;
 they are outside this matrix. CSV upload remains Admin/HR-only.
+
+## The COO role (operations dashboard)
+
+`COO` (Chief Operating Officer) is an **organisation-wide, read-only** role added for the
+portfolio operations dashboard. It is deliberately the narrowest role in the system: it
+oversees every Department but acts on nothing.
+
+| Property | COO behaviour |
+|---|---|
+| Login identifier | **E-mail address only.** The COO holds no payroll Employee, so it is NOT an `usesEcNoLogin` role and is listed on the e-mail allow-list in `routes/auth.ts`. |
+| Landing page | `/portfolio` (`landingPathFor("COO")`), the operations dashboard. |
+| Read scope | **Whole organisation.** `departmentScope("COO", …)` returns `undefined`, so no Department filter is ever applied. |
+| Capabilities | `viewSummary: true`, `viewPortfolioDashboard: true`. **Every** mutating capability is `false` — no approvals, no allocation, no registration, no employee management, no master data, no timesheet editing, no role assignment. |
+| Router access | Present on the read-only `summary` router (`/api/summary/*`) and the portfolio router; **absent from every mutating `requireRoles(...)` list**, so the COO reaches only the reads its `viewSummary` / `viewPortfolioDashboard` capabilities advertise. |
+| Role assignment | Assignable in `ASSIGNABLE_ROLES`, takes **no** Employee linkage and **no** Section scope (like ADMIN/HR/FINANCE). It is never *created* from an Employee record. |
+| Self-approval / work | Holds no approval queue, captures no team and fills no timesheet. |
+
+The new **`viewPortfolioDashboard`** capability gates the operations dashboard and its
+exports. It is granted to **COO, PM and Admin** — the three roles that are already
+organisation-wide — and to no Department-scoped role (an HOD or Department Head must never
+see another Department's portfolio). The capability is a flag of its own rather than a
+widening of `viewSummary`, which many Department-scoped roles hold.
+
+`usesEcNoLogin` in `services/defaultLoginCredentials.ts` is the single switch that decides
+whether an account signs in by EC No; because the COO is not on that list, an e-mail sign-in
+reaches the e-mail branch of `POST /api/auth/login`. `roleAccess.test.ts` and
+`defaultLoginCredentials.test.ts` assert this, because adding a new role to `usesEcNoLogin`
+by mistake locks the account out entirely.
 
 ## Register an HOD
 

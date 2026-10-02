@@ -1,0 +1,383 @@
+/* ============================================================
+   Portfolio & Job-Work Operations Dashboard (/portfolio) and the
+   Reports screen (/reports) — shared, mobile-first, design tokens.
+
+   Breakpoints match the rest of the app: phone <=767px,
+   tablet 768-1199px, desktop >=1200px.
+
+   These screens are DELIBERATELY plain: no chart library exists in
+   this app and none may be added, so the RAG story is told with
+   badges, tabular numbers and dense tables.
+   ============================================================ */
+
+/* ---- Shared filter bar (ONE bar, both screens) ------------- */
+.pf-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  background: var(--surface-glass);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
+}
+
+/* The global .filter-field already styles the label and control; here it only
+   needs to stop the fixed min-width from forcing a horizontal overflow. */
+.pf-filters .filter-field {
+  min-width: 0;
+}
+
+.pf-filters__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+
+.pf-filters__note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---- KPI tiles --------------------------------------------- */
+.pf-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.pf-kpi {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  padding: 14px 16px;
+}
+
+.pf-kpi__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pf-kpi__value {
+  margin-top: 6px;
+  font-size: 24px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.pf-kpi__note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* A small clickable band tile that filters the whole screen to that band. */
+.pf-kpi--action {
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.pf-kpi--action:hover {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border-light));
+}
+
+.pf-kpi--active {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+/* ---- RAG band badge ---------------------------------------- */
+.pf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.pf-badge--RED {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.pf-badge--AMBER {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+.pf-badge--GREEN {
+  background: var(--success-soft);
+  color: var(--success-ink);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+}
+
+.pf-badge--NOT_MEASURABLE {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  border-color: var(--border-light);
+}
+
+/* ---- Panels ------------------------------------------------ */
+/* Reuses the house .panel / .panel__header markup; the modifier only relaxes
+   the fixed min-height a table panel does not need and lets the table scroll
+   inside the panel rather than pushing the page sideways. */
+.pf-panel.panel {
+  min-height: 0;
+  margin-bottom: 18px;
+}
+
+.pf-panel .panel__body {
+  padding: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pf-panel__hint {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---- Tables ------------------------------------------------ */
+.pf-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pf-table th,
+.pf-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  vertical-align: top;
+}
+
+.pf-table thead th {
+  background: color-mix(in srgb, var(--bg-subtle) 70%, var(--bg-elevated));
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pf-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.pf-table tbody tr:hover td {
+  background: var(--bg-subtle);
+}
+
+.pf-table .pf-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pf-table--compact th,
+.pf-table--compact td {
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+/* A row identity that wraps its two lines instead of forcing one narrow column. */
+.pf-cell-strong {
+  font-weight: 650;
+}
+
+.pf-cell-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pf-nowrap {
+  white-space: nowrap;
+}
+
+/* ---- Attention reasons (must be readable IN FULL) ---------- */
+.pf-reasons {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  min-width: 210px;
+}
+
+.pf-reasons li {
+  color: var(--text);
+}
+
+.pf-attention {
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- Download actions -------------------------------------- */
+.pf-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pf-downloads__note {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+  flex-basis: 100%;
+}
+
+/* ---- Report basis (provenance + the rules as data) --------- */
+.pf-basis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 18px;
+  padding: 14px 16px;
+}
+
+.pf-basis__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pf-basis__value {
+  font-size: 13px;
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+.pf-basis__notes {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ---- Exceptions -------------------------------------------- */
+.pf-exceptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.pf-exception {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md, 10px);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.pf-exception__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--bg-subtle) 55%, var(--bg-elevated));
+  border-bottom: 1px solid var(--border-light);
+}
+
+.pf-exception__title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pf-exception__count {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-exception__body {
+  padding: 0;
+  overflow-x: auto;
+}
+
+.pf-exception__empty {
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ---- Empty / loading states inside a panel ----------------- */
+.pf-panel .empty-state {
+  border: none;
+  border-radius: 0;
+  padding: 26px 20px;
+}
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+
+@media (max-width: 767px) {
+  /* The KPI grid and the filter bar stack/compact under 767px; the heavy tables
+     keep their width and scroll inside their panel (the same precedent as
+     .sup-table below 1024px), so the page itself never overflows off-screen. */
+  .pf-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .pf-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pf-kpi__value {
+    font-size: 20px;
+  }
+
+  .pf-exceptions {
+    grid-template-columns: 1fr;
+  }
+
+  .pf-filters__actions .btn {
+    flex: 1 1 auto;
+  }
+}

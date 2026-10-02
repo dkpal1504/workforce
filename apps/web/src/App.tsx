@@ -19,6 +19,8 @@ import { MasterDataPage } from "./pages/MasterDataPage";
 import { JobOrderProgressPage } from "./pages/JobOrderProgressPage";
 import { JobOrderUploadPage } from "./pages/JobOrderUploadPage";
 import { AttendanceHoursPage } from "./pages/AttendanceHoursPage";
+import { PortfolioDashboardPage } from "./pages/PortfolioDashboardPage";
+import { ReportsPage } from "./pages/ReportsPage";
 
 function LoadingSession() {
   return <div className="loading-state" style={{ margin: "20vh auto", maxWidth: 420 }}>Checking your session…</div>;
@@ -114,6 +116,14 @@ export function App() {
           {/* Clocked attendance hours (in/out) from LabourWorks — ADMIN only. */}
           <Route element={<RequireCapability capability="manageAttendanceHours" />}>
             <Route path="/attendance-hours" element={<AttendanceHoursPage />} />
+          </Route>
+          {/* Portfolio & Job-Work Operations Dashboard — the organisation-wide view (PM, ADMIN,
+              COO). Gated on `viewPortfolioDashboard`, which the API sends but the web capability
+              type did not carry until now. /reports is the same six datasets, table-first, for
+              taking away via the XLSX / PDF downloads. */}
+          <Route element={<RequireCapability capability="viewPortfolioDashboard" />}>
+            <Route path="/portfolio" element={<PortfolioDashboardPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
           </Route>
           {/* Offered, not forced: accounts on the shared dev password can change it
               whenever they like, and are not trapped in the flow. */}

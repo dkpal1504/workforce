@@ -26,6 +26,8 @@ function titleForPath(pathname: string, role?: string) {
   if (pathname.startsWith("/job-order-upload")) return "Job Order Upload";
   if (pathname.startsWith("/job-order-progress")) return "Quantity Progress";
   if (pathname.startsWith("/attendance-hours")) return "Clocked Hours (In/Out)";
+  if (pathname.startsWith("/portfolio")) return "Portfolio Dashboard";
+  if (pathname.startsWith("/reports")) return "Reports";
   return "Select Team for Today";
 }
 
@@ -46,7 +48,8 @@ const RAIL_PIN_KEY = "workforce_rail_pinned";
 type RailIconName =
   | "team" | "clock" | "chart" | "check" | "hours"
   | "supervisor" | "people" | "building" | "star"
-  | "folder" | "upload" | "trend" | "file" | "palette" | "logout" | "pin" | "chevron";
+  | "folder" | "upload" | "trend" | "file" | "palette" | "logout" | "pin" | "chevron"
+  | "portfolio" | "reports";
 
 const RAIL_ICONS: Record<RailIconName, string> = {
   team: "M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20c0-3 2.5-5 5-5s5 2 5 5M14 15.5c2.6.3 5 2.2 5 4.5",
@@ -66,6 +69,9 @@ const RAIL_ICONS: Record<RailIconName, string> = {
   logout: "M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 8l-4 4 4 4M6 12h9",
   pin: "M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Z",
   chevron: "M9 6l6 6-6 6",
+  // A briefcase, for the operations dashboard, and a clipboard, for the take-away reports.
+  portfolio: "M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 7h16v12H4V7Zm0 5h16M12 12v2",
+  reports: "M9 3h6v3H9V3Zm-2 1H5v17h14V4h-2M9 11h6M9 15h6M9 7h6",
 };
 
 type RailItem = { to: string; label: string; cap: keyof AuthCapabilities; icon: RailIconName };
@@ -95,6 +101,13 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
     items: [
       { to: "/departments", label: "Organisation", cap: "manageMasterData", icon: "building" },
       { to: "/role-assignment", label: "Role assignment", cap: "assignRoles", icon: "star" },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { to: "/portfolio", label: "Portfolio dashboard", cap: "viewPortfolioDashboard", icon: "portfolio" },
+      { to: "/reports", label: "Reports", cap: "viewPortfolioDashboard", icon: "reports" },
     ],
   },
   {
@@ -128,6 +141,15 @@ const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string;
   { prefix: "/job-order-upload", lede: "Upload the job order list from the CSV the commercial team exports." },
   { prefix: "/job-order-progress", lede: "Punch the quantity achieved per job order, then approve the entries." },
   { prefix: "/attendance-hours", lede: "Fill the clocked in/out hours from LabourWorks next to the hours the supervisors booked." },
+  {
+    prefix: "/portfolio",
+    lede: "The organisation-wide operations view: portfolio burn, the job orders that need a push and why, on-track work, department load and readiness exceptions.",
+  },
+  {
+    prefix: "/reports",
+    lede: "The same six datasets, table-first, for taking away — download the identical scope as Excel or PDF.",
+    action: { label: "Open dashboard", to: "/portfolio", icon: "portfolio" },
+  },
   { prefix: "/csv-upload", lede: "Load the employee roster from a CSV file." },
   { prefix: "/account/password", lede: "Change the password you sign in with." },
 ];
@@ -383,6 +405,16 @@ export function AppLayout() {
           {capabilities?.assignRoles && (
             <NavLink to="/role-assignment" className={({ isActive }) => (isActive ? "active" : "")}>
               Role Assignment
+            </NavLink>
+          )}
+          {capabilities?.viewPortfolioDashboard && (
+            <NavLink to="/portfolio" className={({ isActive }) => (isActive ? "active" : "")}>
+              Portfolio
+            </NavLink>
+          )}
+          {capabilities?.viewPortfolioDashboard && (
+            <NavLink to="/reports" className={({ isActive }) => (isActive ? "active" : "")}>
+              Reports
             </NavLink>
           )}
           {capabilities?.uploadEmployees && (

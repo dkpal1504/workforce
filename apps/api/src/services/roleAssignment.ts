@@ -10,7 +10,7 @@
  * returned `update`.
  */
 
-export const ASSIGNABLE_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "ADMIN", "HR", "FINANCE"] as const;
+export const ASSIGNABLE_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "ADMIN", "HR", "FINANCE", "COO"] as const;
 export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
 
 /** Roles that capture a team and fill timesheets for contract (CLMS) labour. */
@@ -19,6 +19,13 @@ export const CAPTURE_ROLES: string[] = ["SUPERVISOR"];
 export const APPROVER_ROLES: string[] = ["HOD", "PM", "ADMIN"];
 /** Roles that need to be linked to a person (they report on or act for real labour). */
 export const EMPLOYEE_LINKED_ROLES: string[] = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM"];
+/**
+ * Organisation-wide roles: they read or administer the WHOLE organisation and act for no single
+ * person, so they need no Employee record and ALWAYS get `sectionId = null`. The COO belongs here
+ * for the same reason as ADMIN/HR/FINANCE — it is the operations dashboard role, scoped to the
+ * entire portfolio, never to one Department or Section.
+ */
+export const ORGANISATION_WIDE_ROLES: string[] = ["ADMIN", "HR", "FINANCE", "COO"];
 
 export type RoleTargetEmployee = {
   id: number;
@@ -209,7 +216,7 @@ export function planRoleChange(
   // is NOT one: same role, different scope, so it must be allowed through).
   const resultingSectionId = requestedRole === "HOD"
     ? (options.hodScope === "DEPARTMENT" || (!options.hodScope && !target.sectionAssignment) ? null : target.sectionAssignment!.sectionId)
-    : requestedRole === "DEPT_HEAD" || requestedRole === "ADMIN" || requestedRole === "HR" || requestedRole === "FINANCE"
+    : (ORGANISATION_WIDE_ROLES.includes(requestedRole) || requestedRole === "DEPT_HEAD")
       ? null
       : requestedRole === "SUPERVISOR" || requestedRole === "PM" ? null
         : target.sectionAssignment?.sectionId ?? null;
@@ -303,6 +310,8 @@ export function planRoleChange(
     return { ok: true, update: { role: requestedRole, departmentId: employee!.departmentId, sectionId: null } };
   }
 
-  // ADMIN / HR / FINANCE are organisation-wide and need no Employee linkage.
+  // ADMIN / HR / FINANCE / COO are organisation-wide and need no Employee linkage. A linked
+  // Employee's Department is kept only as a display fact; the Section scope is always null
+  // because these roles are never narrowed below the whole organisation.
   return { ok: true, update: { role: requestedRole, departmentId: employee?.departmentId ?? null, sectionId: null } };
 }

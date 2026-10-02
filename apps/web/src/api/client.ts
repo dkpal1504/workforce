@@ -22,6 +22,12 @@ export type AuthCapabilities = {
   manageAttendanceHours: boolean;
   /** Department-wide READ-ONLY employee listing (HOD shapes and Department Head). */
   viewEmployees: boolean;
+  /**
+   * The organisation-wide operations dashboard (portfolio burn, attention ranking, exports).
+   * PM, ADMIN and the COO hold it; it is deliberately separate from `viewSummary`, because the
+   * dashboard crosses every Department and must never be reachable by a Department-scoped reader.
+   */
+  viewPortfolioDashboard: boolean;
 };
 
 export type AuthUser = {

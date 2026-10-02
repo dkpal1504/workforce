@@ -202,6 +202,43 @@ test("admin, HR and finance need no employee linkage", () => {
   }
 });
 
+/**
+ * The COO is an organisation-wide login exactly like ADMIN/HR/FINANCE: it reports on the whole
+ * portfolio rather than acting for one person, so it must NOT be in EMPLOYEE_LINKED_ROLES and
+ * must need no Employee record. Moving an account TO and FROM COO must both plan cleanly.
+ */
+test("the COO is assignable without an Employee, from and to", () => {
+  const unlinked = target({ employeeId: null, employee: null, role: "PM" });
+  const toCoo = planRoleChange(1, unlinked, "COO", NO_WORK);
+  assert.equal(toCoo.ok, true, "an account with no Employee can become the COO");
+  assert.deepEqual(toCoo.ok && toCoo.update, { role: "COO", departmentId: null, sectionId: null });
+
+  // A linked Employee moving OFF a payroll role onto COO keeps its Department as a display
+  // fact but takes NO Section scope (a COO is organisation-wide, never narrowed).
+  const linked = target({ role: "HOD", employeeId: 900 });
+  const fromLinked = planRoleChange(1, linked, "COO", NO_WORK);
+  assert.equal(fromLinked.ok, true, "an HOD can be re-roled to COO");
+  assert.deepEqual(fromLinked.ok && fromLinked.update, { role: "COO", departmentId: 81, sectionId: null });
+
+  // FROM COO: the move back out plans from the COO role itself, not just onto it.
+  const asCoo = planRoleChange(1, target({ role: "COO", employeeId: null, employee: null }), "ADMIN", NO_WORK);
+  assert.equal(asCoo.ok, true, "a COO can be moved off COO");
+  assert.equal(asCoo.ok && asCoo.update.role, "ADMIN");
+
+  assert.equal(ASSIGNABLE_ROLES.includes("COO"), true);
+});
+
+test("the COO is never created from an Employee record", () => {
+  // Like PM/HR/FINANCE the COO is an organisation-wide account, so it is not one of the roles
+  // an Employee can be promoted into from the listing: the account is created first, then
+  // re-roled to COO. This keeps the payroll-only approver rules out of reach of the COO.
+  for (const employee of [payrollEmployee(), contractEmployee()]) {
+    const refusal = refusalForRoleCreation(employee, "COO");
+    assert.equal(refusal?.code, "ROLE_NOT_CREATABLE_FOR_EMPLOYEE");
+    assert.match(refusal!.error, /Create the account first/);
+  }
+});
+
 test("an admin cannot change their own role", () => {
   const plan = planRoleChange(7, target({ id: 7, role: "ADMIN", employeeId: null, employee: null }), "SUPERVISOR", NO_WORK);
   assert.equal(plan.ok, false);

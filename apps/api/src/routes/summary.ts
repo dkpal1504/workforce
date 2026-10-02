@@ -16,7 +16,14 @@ import {
 
 export const summaryRouter = Router();
 
-summaryRouter.use(requireAuth, requireRoles("EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "FINANCE", "ADMIN"));
+// COO belongs here: it is a READ-ONLY, organisation-wide (whole-portfolio) viewer whose
+// `capabilitiesFor("COO").viewSummary` is true, and the web app gates `/summary` on that exact
+// flag (RequireCapability capability="viewSummary") — so without it the capability is advertised
+// in the UI but every request is refused with 403. Being absent from DEPARTMENT_VIEW_ROLES, the
+// COO is deliberately NOT department-pinned below: `isDepartmentViewRole("COO")` is false and
+// `departmentScope("COO", …)` returns `undefined`, so it reads every Department, which is the
+// whole point of the role. It grants no mutation — every handler on this router is read-only.
+summaryRouter.use(requireAuth, requireRoles("EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "FINANCE", "ADMIN", "COO"));
 
 type JoStatus = "all" | "active" | "inactive";
 

@@ -113,12 +113,16 @@ authRouter.post("/login", async (req, res) => {
 
   // Keep email login for administrative roles and older API clients. Stored
   // login emails are normalized to lowercase at creation time.
+  //
+  // The COO is an EMAIL-login role: it holds no payroll Employee, so it never takes the ecNo
+  // branch above and must be listed here or a sign-in with its e-mail address returns 401 even
+  // though the account exists. Every organisation-wide role is listed (ADMIN, HR, FINANCE, COO).
   const emailCandidate = ecNoUser ? null : await prisma.user.findUnique({
     where: { email: identifier.toLowerCase() },
     select: { ...lifecycleUserSelect, passwordHash: true },
   });
   const emailUser = emailCandidate
-    && ["ADMIN", "HR", "HOD", "DEPT_HEAD", "PM", "FINANCE"].includes(emailCandidate.role)
+    && ["ADMIN", "HR", "HOD", "DEPT_HEAD", "PM", "FINANCE", "COO"].includes(emailCandidate.role)
       ? emailCandidate
       : null;
   const user = ecNoUser ?? emailUser;

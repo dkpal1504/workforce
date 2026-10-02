@@ -42,6 +42,14 @@ export type CapabilityMap = {
    * separately from `manageEmployees`.
    */
   viewEmployees: boolean;
+  /**
+   * The organisation-wide operations dashboard (portfolio burn, attention ranking, exports).
+   *
+   * Deliberately a capability of its own rather than a widening of `viewSummary`: the dashboard
+   * crosses every Department, so it must never be reachable by a Department-scoped reader. It is
+   * granted to PM, ADMIN and the COO — the three roles that are already organisation-wide.
+   */
+  viewPortfolioDashboard: boolean;
 };
 
 export function capabilitiesFor(role: string): CapabilityMap {
@@ -49,7 +57,7 @@ export function capabilitiesFor(role: string): CapabilityMap {
   return {
     selectTeam: admin || role === "SUPERVISOR",
     editTimesheet: admin || role === "SUPERVISOR",
-    viewSummary: ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "FINANCE", "ADMIN"].includes(role),
+    viewSummary: ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "FINANCE", "ADMIN", "COO"].includes(role),
     approveTimesheets: ["HOD", "PM", "ADMIN"].includes(role),
   // Department Head: department-wide read-only oversight of approved hours.
     manageSupervisors: admin || role === "HR",
@@ -71,10 +79,19 @@ export function capabilitiesFor(role: string): CapabilityMap {
     // needs a listing capability of its own; HOD keeps `manageEmployees` (registration form
     // included) and therefore already satisfies this too.
     viewEmployees: admin || role === "HR" || ["HOD", "PM", "DEPT_HEAD"].includes(role),
+    // The portfolio dashboard crosses every Department, so it is limited to the roles that are
+    // already organisation-wide: PM, ADMIN and the COO. It is NOT derived from `viewSummary`,
+    // which many Department-scoped roles hold — widening that would hand a Section HOD the whole
+    // portfolio. The COO is a read-only role, so this is the ONLY capability it holds beyond
+    // `viewSummary`.
+    viewPortfolioDashboard: admin || role === "PM" || role === "COO",
   };
 }
 
 export function landingPathFor(role: string): string {
+  // The COO's whole job is the operations dashboard, so that is where the role lands. This must
+  // be checked before the `/summary` default below, or a COO would never see its own screen.
+  if (role === "COO") return "/portfolio";
   if (role === "DEPT_HEAD") return "/summary";
   if (["HOD", "PM", "ADMIN"].includes(role)) return "/approvals";
   if (role === "SUPERVISOR") return "/select-team";
@@ -88,6 +105,9 @@ export function canCreatePayrollEmployee(role: string): boolean {
 }
 
 export function departmentScope(role: string, departmentId: number | null): number | undefined {
+  // COO is intentionally absent: it reads the WHOLE organisation, so `undefined` (meaning "apply
+  // no Department filter") is the correct answer. Adding it to the list below would silently
+  // narrow the portfolio to one Department — the opposite of the role's purpose.
   return ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD"].includes(role) ? (departmentId ?? -1) : undefined;
 }
 

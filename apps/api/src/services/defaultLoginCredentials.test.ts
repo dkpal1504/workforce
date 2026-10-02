@@ -39,6 +39,10 @@ test("linked operational roles use ecNo login", () => {
   assert.equal(usesEcNoLogin("DEPT_HEAD", 10), true);
   assert.equal(usesEcNoLogin("SUPERVISOR", null), false);
   assert.equal(usesEcNoLogin("ADMIN", 10), false);
+  // The COO is an organisation-wide e-mail-login role. Were it ever added to the EC-No list the
+  // e-mail branch of POST /auth/login would be skipped and the account would 401 on its own
+  // address — the silent lockout this assertion guards against.
+  assert.equal(usesEcNoLogin("COO", 5), false);
 });
 
 test("no BOOTSTRAP_PASSWORD means a random credential that must be changed", async () => {
