@@ -166,58 +166,269 @@
   color: var(--text-muted);
 }
 
-/* ---- KPI tiles --------------------------------------------- */
-.pf-kpis {
+/* ---- The hero tiles ----------------------------------------
+   Three cards of deliberately UNEQUAL weight: burn leads, budget health explains,
+   the two attention figures sit beside them. Every colour is a theme token, never
+   a literal, so the dashboard follows all five themes (including the dark one) —
+   the mockup's own palette and its dark-mode block are intentionally NOT copied. */
+.pf-hero {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  grid-template-columns: 1.5fr 1.5fr 1.1fr;
+  gap: 14px;
   margin-bottom: 18px;
 }
 
-.pf-kpi {
+.pf-hero__card {
+  position: relative;
+  min-width: 0;
+  padding: 16px 18px;
+  background: var(--bg-elevated);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
   box-shadow: var(--shadow-sm);
-  padding: 14px 16px;
 }
 
-.pf-kpi__label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+/* Burn gets a warm wash ONLY when it is over budget: the fill is a signal, so it
+   must not be present when there is nothing to signal. */
+.pf-hero__card--burn.pf-hero__card--over {
+  background: linear-gradient(160deg, var(--danger-soft), var(--bg-elevated) 72%);
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+}
+
+.pf-hero__lab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
-.pf-kpi__value {
-  margin-top: 6px;
-  font-size: 24px;
-  font-weight: 750;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.1;
-}
-
-.pf-kpi__note {
-  margin-top: 4px;
+.pf-hero__lab-note {
+  font-weight: 500;
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.pf-hero__big {
+  margin: 8px 0 2px;
+  font-size: 48px;
+  font-weight: 750;
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-hero__card--over .pf-hero__big {
+  color: var(--danger-ink);
+}
+
+.pf-hero__big small,
+.pf-hero__mid small {
+  margin-left: 5px;
+  font-size: 0.36em;
+  font-weight: 500;
+  letter-spacing: 0;
   color: var(--text-muted);
 }
 
-/* A small clickable band tile that filters the whole screen to that band. */
-.pf-kpi--action {
-  cursor: pointer;
-  text-align: left;
+.pf-hero__mid {
+  margin-top: 4px;
+  font-size: 26px;
+  font-weight: 750;
+  line-height: 1.12;
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-hero__mid--warn {
+  color: var(--warning-ink);
+}
+
+.pf-hero__note {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.pf-hero__note--foot {
+  margin: 14px 0 0;
+}
+
+/* The two attention figures stack inside one card, separated by a hairline. */
+.pf-hero__card--att {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* A pill beside a card title — the mockup's "Over budget" tag. */
+.pf-tag {
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pf-tag--bad {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+
+.pf-tag--warn {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.pf-tag--good {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+/* ---- Burn track ---------------------------------------------
+   Fixed 0-150% scale. The value fills the bar; the marker is a stationary
+   reference line at 100% (budget), so the position of the fill is comparable
+   between two refreshes instead of always appearing full. */
+.pf-track {
+  position: relative;
+  height: 12px;
+  margin: 16px 0 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  overflow: visible;
+}
+
+.pf-track > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--danger);
+}
+
+.pf-track:not(.pf-track--over) > i {
+  background: var(--primary);
+}
+
+.pf-track > u {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  left: 66.67%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--text);
+}
+
+.pf-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.pf-scale__mid {
+  position: absolute;
+  left: 66.67%;
+  transform: translateX(-50%);
+}
+
+/* ---- Budget-health stack + clickable legend ----------------- */
+.pf-stack {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  margin: 16px 0 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-subtle);
+}
+
+/* Each segment's width comes from flexGrow = its count, so the bar is a true
+   proportion. A zero-count band is not rendered at all rather than leaving
+   a minimum-width sliver that would misstate the split. */
+.pf-stack__seg {
+  min-width: 6px;
+}
+
+.pf-stack__seg--RED {
+  background: var(--danger);
+}
+
+.pf-stack__seg--AMBER {
+  background: var(--warning);
+}
+
+.pf-stack__seg--GREEN {
+  background: var(--success);
+}
+
+.pf-stack__seg--NOT_MEASURABLE {
+  background: var(--border);
+}
+
+.pf-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+}
+
+/* Each legend row is the band filter. It is a button, so it must not look like
+   body text: the hover and pressed states have to be visible. */
+.pf-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
   font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
 
-.pf-kpi--action:hover {
-  border-color: color-mix(in srgb, var(--primary) 35%, var(--border-light));
+.pf-legend__row:hover {
+  background: var(--bg-subtle);
 }
 
-.pf-kpi--active {
+.pf-legend__row--on {
   border-color: var(--primary);
   box-shadow: var(--focus-ring);
+}
+
+.pf-legend__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-legend__row b {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+/* ---- Scope line under the tiles ---------------------------- */
+.pf-scope-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.pf-scope-line b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- RAG band badge ---------------------------------------- */
@@ -510,20 +721,48 @@
    Responsive
    ============================================================ */
 
+@media (max-width: 1199px) {
+  /* Tablet: burn and budget health share the top row, the attention figures drop
+     beneath them at full width rather than being squeezed into a third column. */
+  .pf-hero {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pf-hero__card--att {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    gap: 32px;
+  }
+
+  .pf-hero__card--att > div {
+    flex: 1;
+  }
+}
+
 @media (max-width: 767px) {
-  /* The KPI grid and the filter bar stack/compact under 767px; the heavy tables
+  /* The hero tiles and the filter bar stack under 767px; the heavy tables
      keep their width and scroll inside their panel (the same precedent as
      .sup-table below 1024px), so the page itself never overflows off-screen. */
   .pf-filters {
     grid-template-columns: 1fr;
   }
 
-  .pf-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .pf-hero {
+    grid-template-columns: 1fr;
   }
 
-  .pf-kpi__value {
-    font-size: 20px;
+  .pf-hero__card--att {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* The headline figure shrinks but stays the largest thing on the screen. */
+  .pf-hero__big {
+    font-size: 38px;
+  }
+
+  .pf-legend {
+    grid-template-columns: 1fr;
   }
 
   .pf-exceptions {

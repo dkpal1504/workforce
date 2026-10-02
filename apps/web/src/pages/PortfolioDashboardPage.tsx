@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, getToken } from "../api/client";
+import { burnSummary, healthSummary } from "./portfolioHero";
 import { MultiSelectFilter } from "./MultiSelectFilter";
 import {
   BANDS,
@@ -329,12 +330,12 @@ export function JobIdentityCell({ row, showProject = true }: { row: PortfolioJob
   );
 }
 
-export function Kpi({ label, value, note }: { label: string; value: React.ReactNode; note?: React.ReactNode }) {
+/** The shared card head: a title on the left, an optional muted note on the right. */
+export function CardLabel({ children, note }: { children: React.ReactNode; note?: React.ReactNode }) {
   return (
-    <div className="pf-kpi">
-      <div className="pf-kpi__label">{label}</div>
-      <div className="pf-kpi__value">{value}</div>
-      {note ? <div className="pf-kpi__note">{note}</div> : null}
+    <div className="pf-hero__lab">
+      {children}
+      {note ? <span className="pf-hero__lab-note">{note}</span> : null}
     </div>
   );
 }
@@ -717,54 +718,44 @@ export function PortfolioDashboardPage() {
         <div className="loading-state">Building the portfolio report…</div>
       ) : report ? (
         <>
-          {/* ---- KPI tiles from pulse ---- */}
-          <div className="pf-kpis">
-            <Kpi label="Projects" value={fmtNumber(pulse?.projects)} note="In scope" />
-            <Kpi label="Job orders" value={fmtNumber(pulse?.jobOrders)} note="In scope" />
-            <Kpi label="Budgeted hours" value={fmtHours(pulse?.budgetHours)} note="Budget in force at the as-of date" />
-            <Kpi label="Actual hours" value={fmtHours(pulse?.actualHours)} note="Booked, approval-status filtered" />
-            <Kpi
-              label="Portfolio burn"
-              value={fmtPct(pulse?.portfolioBurnPct)}
-              note={pulse?.portfolioBurnPct === null ? "No budgeted hours to measure against" : "Actual ÷ budgeted"}
+          {/* ---- The three hero tiles --------------------------------------------
+              Eleven equal tiles made every figure look equally important, which is the
+              same as none of them mattering. Burn leads because it is the number the
+              operator acts on; budget health follows as ONE story rather than four
+              counts; the two attention figures sit beside them. Nothing is lost: the
+              band counts are still CLICKABLE filters, they now live in the health
+              legend where they read as a breakdown instead of four separate tiles. */}
+          <section className="pf-hero" aria-label="Portfolio headline figures">
+            <BurnHero
+              burnPct={pulse?.portfolioBurnPct}
+              budgetHours={pulse?.budgetHours}
+              actualHours={pulse?.actualHours}
             />
-            {/* Band counts are the tile set; each is a toggle onto the whole screen so a
-                red tile can be clicked straight into the work behind it. A NOT-MEASURABLE
-                tile is its OWN tile, never folded into GREEN: a green tile must never be
-                borrowed from missing data. */}
-            {BANDS.map((band) => (
-              <button
-                key={band}
-                type="button"
-                className={`pf-kpi pf-kpi--action ${filters.bands.includes(band) ? "pf-kpi--active" : ""}`}
-                onClick={() => toggleBand(band)}
-                aria-pressed={filters.bands.includes(band)}
-                title={`Filter the screen to ${BAND_LABELS[band]}`}
-              >
-                <div className="pf-kpi__label">{BAND_LABELS[band]}</div>
-                <div className="pf-kpi__value">{fmtNumber(pulse?.bands?.[band])}</div>
-                <div className="pf-kpi__note">
-                  {band === "RED"
-                    ? "Budget exhausted"
-                    : band === "AMBER"
-                      ? "≥75% consumed"
-                      : band === "GREEN"
-                        ? "Measurable, under 75%"
-                        : "No budget to measure"}
-                </div>
-              </button>
-            ))}
-            <Kpi
-              label="No activity"
-              value={fmtNumber(pulse?.noActivity)}
-              note={`Measurable on hours, last booking older than ${filters.activityDays} day(s)`}
+            <BudgetHealth
+              bands={pulse?.bands}
+              activeBands={filters.bands}
+              onToggleBand={toggleBand}
             />
-            <Kpi
-              label="Hours awaiting approval"
-              value={fmtHours(pulse?.hoursAwaitingApproval)}
-              note={pulse?.oldestUnapprovedAt ? `Oldest booking: ${fmtDate(pulse.oldestUnapprovedAt)}` : "Nothing unapproved in scope"}
-            />
-          </div>
+            <AttentionFigures pulse={pulse} activityDays={filters.activityDays} />
+          </section>
+
+          {/* The scope the figures above are drawn from, and the hours they are built on.
+              These were five of the eleven old tiles; they are not headline figures, but they
+              must stay visible or a tile can be read without knowing what it covers. */}
+          <p className="pf-scope-line">
+            <span>
+              <b>{fmtNumber(pulse?.projects)}</b> project{(pulse?.projects ?? 0) === 1 ? "" : "s"}
+            </span>
+            <span>
+              <b>{fmtNumber(pulse?.jobOrders)}</b> job order{(pulse?.jobOrders ?? 0) === 1 ? "" : "s"} in scope
+            </span>
+            <span>
+              <b>{fmtHours(pulse?.budgetHours)}</b> budgeted
+            </span>
+            <span>
+              <b>{fmtHours(pulse?.actualHours)}</b> booked
+            </span>
+          </p>
 
           {/* ---- Needs push (the primary answer) ---- */}
           <Panel
@@ -1158,6 +1149,197 @@ export function PortfolioDashboardPage() {
         <div className="empty-state">The report could not be loaded. Adjust or reset the filters and try again.</div>
       )}
     </>
+  );
+}
+
+/**
+ * The burn hero: the portfolio's burn over a 0-150% scale.
+ *
+ * UNITS: the API sends burn as a RATIO (1.109 means 111%), not a percentage. Every comparison and
+ * the track width below are therefore against 1.0 / 1.5. Comparing against 100 silently produced a
+ * green "Within budget" pill on an over-budget portfolio and a bar filled to 0.7% — a wrong signal
+ * is worse than no signal, so the ratio is named as one throughout.
+ *
+ * WHY IT LEADS THE SCREEN
+ *   Burn is the one number an operations chief acts on, so it gets the largest type on the page and
+ *   the only card with a warm fill. The scale is capped at 150% rather than scaled to the value:
+ *   a bar that always fills its track would make 40% and 140% look identical, and the whole point
+ *   of the card is that the marker's position is comparable between refreshes.
+ *
+ * The 100% marker is a fixed reference line, so the question answered is visibly "how far past
+ * budget are we", not merely "what is the number".
+ */
+export function BurnHero({
+  burnPct,
+  budgetHours,
+  actualHours,
+}: {
+  /** A ratio: 0.75 is 75%, 1.109 is 111%. */
+  burnPct: number | null | undefined;
+  budgetHours: number | null | undefined;
+  actualHours: number | null | undefined;
+}) {
+  const { measurable, fillPct, over, tag } = burnSummary(burnPct);
+
+  return (
+    <article className={`pf-hero__card pf-hero__card--burn${over ? " pf-hero__card--over" : ""}`}>
+      <div className="pf-hero__lab">
+        Portfolio burn
+        {tag ? <span className={`pf-tag pf-tag--${tag.tone}`}>{tag.text}</span> : null}
+      </div>
+
+      <div className="pf-hero__big">
+        {measurable ? fmtPct(burnPct) : "—"}
+        {!measurable && <small>not measurable</small>}
+      </div>
+
+      <div className="pf-hero__note">
+        {measurable
+          ? `${fmtHours(actualHours)} booked against ${fmtHours(budgetHours)} budgeted`
+          : "No budgeted hours in force, so there is nothing to burn against."}
+      </div>
+
+      {/* role=img with a sentence: the bar is decoration, the label is the fact. */}
+      <div
+        className={`pf-track${over ? " pf-track--over" : ""}`}
+        role="img"
+        aria-label={measurable ? `Burn ${fmtPct(burnPct)} of budget` : "Burn not measurable"}
+      >
+        {measurable && <i style={{ width: `${fillPct}%` }} />}
+        <u />
+      </div>
+      <div className="pf-scale">
+        <span>0</span>
+        <span className="pf-scale__mid">Budget</span>
+        <span>150%</span>
+      </div>
+    </article>
+  );
+}
+
+/**
+ * Budget health: the four band counts as ONE bar plus a legend.
+ *
+ * THE BAND FILTER IS PRESERVED. Each legend row is a button that filters the whole screen to that
+ * band, exactly as the four band tiles used to — losing that would be a regression, and a red row
+ * is the most likely thing an operator wants to click. The row states `aria-pressed` so the active
+ * filter is announced as well as shown.
+ *
+ * NOT-MEASURABLE IS ITS OWN ROW, never folded into GREEN: a green figure must never be borrowed
+ * from missing data. The bar keeps that separation visible as an unfilled segment.
+ */
+export function BudgetHealth({
+  bands,
+  activeBands,
+  onToggleBand,
+}: {
+  bands?: Record<PortfolioBand, number>;
+  activeBands: PortfolioBand[];
+  onToggleBand: (band: PortfolioBand) => void;
+}) {
+  const { total, measurable, measurableShare, order } = healthSummary(bands);
+  const countOf = (band: PortfolioBand) => order.find((entry) => entry.band === band)?.count ?? 0;
+
+  const bandHint = (band: PortfolioBand) =>
+    band === "RED"
+      ? "Budget exhausted"
+      : band === "AMBER"
+        ? "75% or more used"
+        : band === "GREEN"
+          ? "Under 75%"
+          : "No budget to measure";
+
+  return (
+    <article className="pf-hero__card">
+      <div className="pf-hero__lab">
+        Budget health
+        <span className="pf-hero__lab-note">
+          {fmtNumber(total)} job order{total === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {/* Each segment is flex:count; a zero count renders nothing rather than a min-width sliver. */}
+      <div
+        className="pf-stack"
+        role="img"
+        aria-label={order.map((entry) => `${entry.count} ${bandHint(entry.band)}`).join(", ")}
+      >
+        {order.map((entry) =>
+          entry.count > 0 ? (
+            <span
+              key={entry.band}
+              className={`pf-stack__seg pf-stack__seg--${entry.band}`}
+              style={{ flexGrow: entry.count }}
+            />
+          ) : null
+        )}
+      </div>
+
+      <div className="pf-legend">
+        {order.map((entry) => (
+          <button
+            key={entry.band}
+            type="button"
+            className={`pf-legend__row${activeBands.includes(entry.band) ? " pf-legend__row--on" : ""}`}
+            onClick={() => onToggleBand(entry.band)}
+            aria-pressed={activeBands.includes(entry.band)}
+            title={`Filter the screen to ${BAND_LABELS[entry.band]}`}
+          >
+            <i className={`pf-dot pf-stack__seg--${entry.band}`} aria-hidden="true" />
+            <span className="pf-legend__label">{bandHint(entry.band)}</span>
+            <b>{fmtNumber(countOf(entry.band))}</b>
+          </button>
+        ))}
+      </div>
+
+      <p className="pf-hero__note pf-hero__note--foot">
+        {total === 0
+          ? "Nothing in scope to measure."
+          : `Only ${fmtNumber(measurable)} of ${fmtNumber(total)} job orders have a budget, so burn covers ${measurableShare}% of the portfolio.`}
+      </p>
+    </article>
+  );
+}
+
+/**
+ * The two attention figures, side by side because they are read together: hours that are booked but
+ * not yet approved, and measurable work that has gone quiet.
+ */
+export function AttentionFigures({
+  pulse,
+  activityDays,
+}: {
+  pulse?: { noActivity: number; hoursAwaitingApproval: number; oldestUnapprovedAt: string | null };
+  activityDays: number;
+}) {
+  const unapproved = pulse?.hoursAwaitingApproval ?? 0;
+  const noActivity = pulse?.noActivity ?? 0;
+
+  return (
+    <article className="pf-hero__card pf-hero__card--att">
+      <div>
+        <div className="pf-hero__lab">Hours awaiting approval</div>
+        <div className="pf-hero__mid">
+          {fmtHours(unapproved)}
+          <small>h</small>
+        </div>
+        <div className="pf-hero__note">
+          {pulse?.oldestUnapprovedAt
+            ? `Oldest booking ${fmtDate(pulse.oldestUnapprovedAt)}.`
+            : "Nothing unapproved in scope."}
+        </div>
+      </div>
+      <div>
+        <div className="pf-hero__lab">No recent activity</div>
+        <div className={`pf-hero__mid${noActivity > 0 ? " pf-hero__mid--warn" : ""}`}>
+          {fmtNumber(noActivity)}
+          <small>job order{noActivity === 1 ? "" : "s"}</small>
+        </div>
+        <div className="pf-hero__note">
+          Measurable on hours, last booking more than {activityDays} day{activityDays === 1 ? "" : "s"} ago.
+        </div>
+      </div>
+    </article>
   );
 }
 
