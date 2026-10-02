@@ -35,13 +35,134 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  align-items: end;
+  align-items: center;
+  /* Its own row: the filter fields occupy the first row(s), the actions never sit inside them. */
+  grid-column: 1 / -1;
 }
 
-.pf-filters__note {
-  grid-column: 1 / -1;
-  margin: 0;
+.pf-filters__hint {
   font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+/* ---- Multi-select checkbox dropdown (one per dimension, ONE row) ----------
+   Every dimension costs the same width whether it holds 3 options or 86, which
+   is what lets the whole filter bar sit on a single row. */
+.pf-ms {
+  position: relative;
+}
+
+.pf-ms__control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+}
+
+/* A selected filter is visibly active even when collapsed: the operator must be able to tell at a
+   glance that the report is filtered. */
+.pf-ms__control--active {
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.pf-ms__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-ms__caret {
+  flex: none;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+/* Absolutely positioned so opening a panel never reflows the row and shifts the other filters. */
+.pf-ms__panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-width: 340px;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: var(--shadow-lg, 0 10px 24px rgba(0, 0, 0, 0.18));
+}
+
+.pf-ms__search {
+  padding: 2px 2px 6px;
+}
+
+.pf-ms__search input {
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+}
+
+.pf-ms__list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.pf-ms__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 12.5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pf-ms__row:hover {
+  background: var(--bg-subtle);
+}
+
+/* "All (clear)" reads as a command rather than a value, so it is separated from the options. */
+.pf-ms__row--all {
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.pf-ms__row--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pf-ms__row-label {
+  white-space: nowrap;
+}
+
+.pf-ms__row-detail {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-ms__empty {
+  padding: 8px 6px;
+  font-size: 12.5px;
   color: var(--text-muted);
 }
 

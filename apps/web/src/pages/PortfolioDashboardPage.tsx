@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, getToken } from "../api/client";
+import { MultiSelectFilter } from "./MultiSelectFilter";
 import {
   BANDS,
   DEFAULT_ACTIVITY_DAYS,
@@ -471,98 +472,56 @@ export function PortfolioFilterBar({
     ? sections.filter((row) => filters.departmentIds.includes(row.departmentId))
     : sections;
 
-  const toggleId = (key: "projectIds" | "wbsIds" | "departmentIds" | "sectionIds", id: number) => {
-    const current = filters[key];
-    const next = current.includes(id) ? current.filter((value) => value !== id) : [...current, id].sort((a, b) => a - b);
-    // Choosing a project narrows the WBS list, so drop any WBS that no longer belongs.
-    if (key === "projectIds") {
-      onChange({ ...filters, projectIds: next, wbsIds: [] });
-      return;
-    }
-    if (key === "departmentIds") {
-      onChange({ ...filters, departmentIds: next, sectionIds: [] });
-      return;
-    }
-    onChange({ ...filters, [key]: next });
-  };
-
   return (
     <div className="pf-filters">
-      {/* Projects is a multi-select by checklist; a native <select multiple> is unusable
-          on a phone, and the set is small (single-digit projects). */}
-      <div className="filter-field">
-        <label>Projects</label>
-        <div className="pf-filters__actions" style={{ gap: 4 }}>
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              className={`btn btn-sm ${filters.projectIds.includes(project.id) ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => toggleId("projectIds", project.id)}
-              aria-pressed={filters.projectIds.includes(project.id)}
-              title={project.name}
-            >
-              {project.code}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* ONE ROW. Every dimension is the same checkbox-dropdown control, so a dimension with 40
+          options costs exactly as much space as one with 3. The previous layout rendered a button
+          per Project in a wrapping flex row: with 14 projects that column stacked down the page and
+          pushed the real filters out of view, which was the reported layout defect. */}
+      <MultiSelectFilter
+        label="Projects"
+        allLabel="All projects"
+        options={projects.map((project) => ({ id: project.id, label: project.code, detail: project.name }))}
+        selected={filters.projectIds}
+        // Choosing a project re-scopes the WBS list, so a WBS that no longer belongs is dropped here
+        // rather than left to build a filter that matches nothing.
+        onChange={(next) => onChange({ ...filters, projectIds: next.map(Number), wbsIds: [] })}
+        minWidth={190}
+      />
 
-      <div className="filter-field">
-        <label>WBS</label>
-        <select
-          value={filters.wbsIds.length === 1 ? String(filters.wbsIds[0]) : ""}
-          onChange={(e) => {
-            const value = e.target.value;
-            onChange({ ...filters, wbsIds: value ? [Number(value)] : [] });
-          }}
-        >
-          <option value="">{filters.wbsIds.length > 1 ? `${filters.wbsIds.length} WBS selected` : "All WBS"}</option>
-          {scopedWbs.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.projectId ? `${projects.find((p) => p.id === row.projectId)?.code ?? ""} · ` : ""}
-              {row.wbsCode}
-              {row.name ? ` · ${row.name}` : ""}
-            </option>
-          ))}
-        </select>
-      </div>
+      <MultiSelectFilter
+        label="WBS"
+        allLabel="All WBS"
+        options={scopedWbs.map((row) => ({
+          id: row.id,
+          label: row.wbsCode,
+          detail: [projects.find((p) => p.id === row.projectId)?.code, row.name].filter(Boolean).join(" · "),
+        }))}
+        selected={filters.wbsIds}
+        onChange={(next) => onChange({ ...filters, wbsIds: next.map(Number) })}
+        searchPlaceholder="Search WBS code…"
+        minWidth={168}
+      />
 
-      <div className="filter-field">
-        <label>Department</label>
-        <select
-          value={filters.departmentIds.length === 1 ? String(filters.departmentIds[0]) : ""}
-          onChange={(e) => {
-            const value = e.target.value;
-            onChange({ ...filters, departmentIds: value ? [Number(value)] : [], sectionIds: [] });
-          }}
-        >
-          <option value="">All departments</option>
-          {departments.map((department) => (
-            <option key={department.id} value={department.id}>
-              {department.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <MultiSelectFilter
+        label="Department"
+        allLabel="All departments"
+        options={departments.map((department) => ({ id: department.id, label: department.name }))}
+        selected={filters.departmentIds}
+        onChange={(next) => onChange({ ...filters, departmentIds: next.map(Number), sectionIds: [] })}
+        searchPlaceholder="Search department…"
+        minWidth={190}
+      />
 
-      <div className="filter-field">
-        <label>Section</label>
-        <select
-          value={filters.sectionIds.length === 1 ? String(filters.sectionIds[0]) : ""}
-          onChange={(e) => {
-            const value = e.target.value;
-            onChange({ ...filters, sectionIds: value ? [Number(value)] : [] });
-          }}
-        >
-          <option value="">All sections</option>
-          {scopedSections.map((section) => (
-            <option key={section.id} value={section.id}>
-              {section.code} · {section.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <MultiSelectFilter
+        label="Section"
+        allLabel="All sections"
+        options={scopedSections.map((section) => ({ id: section.id, label: `${section.code} · ${section.name}` }))}
+        selected={filters.sectionIds}
+        onChange={(next) => onChange({ ...filters, sectionIds: next.map(Number) })}
+        searchPlaceholder="Search section…"
+        minWidth={180}
+      />
 
       <div className="filter-field">
         <label>Status</label>
@@ -588,23 +547,14 @@ export function PortfolioFilterBar({
         </select>
       </div>
 
-      <div className="filter-field">
-        <label>Band</label>
-        <select
-          value={filters.bands.length === 1 ? filters.bands[0] : ""}
-          onChange={(e) => {
-            const value = e.target.value;
-            onChange({ ...filters, bands: value ? [value as PortfolioBand] : [] });
-          }}
-        >
-          <option value="">All bands</option>
-          {BANDS.map((band) => (
-            <option key={band} value={band}>
-              {BAND_LABELS[band]}
-            </option>
-          ))}
-        </select>
-      </div>
+      <MultiSelectFilter
+        label="Band"
+        allLabel="All bands"
+        options={BANDS.map((band) => ({ id: band, label: BAND_LABELS[band] }))}
+        selected={filters.bands}
+        onChange={(next) => onChange({ ...filters, bands: next as PortfolioBand[] })}
+        minWidth={170}
+      />
 
       <div className="filter-field">
         <label>As of</label>
@@ -633,17 +583,18 @@ export function PortfolioFilterBar({
         />
       </div>
 
+      {/* Actions and the explanatory note sit on their OWN row, after the filters — not inline, so a
+          long filter row never pushes the buttons around. `grid-column: 1 / -1` spans both. */}
       <div className="pf-filters__actions">
         <button type="button" className="btn btn-ghost btn-sm" onClick={onReset}>
           Reset filters
         </button>
         {extra}
+        <span className="pf-filters__hint">
+          Every filter is optional: empty means “no filter”, never “match nothing”. WBS follows the Projects you pick,
+          Sections follow the Department.
+        </span>
       </div>
-
-      <p className="pf-filters__note">
-        Every filter is optional. Leaving one empty means "no filter" for that dimension — it never means "match
-        nothing". WBS options are scoped to the Projects you pick, and Sections to the Department you pick.
-      </p>
     </div>
   );
 }
