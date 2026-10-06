@@ -148,28 +148,41 @@ export function validateCumulativeQuantity(
   return { ok: true, value: cumulativeQuantity };
 }
 
+import { legacySectionId } from "./userScope";
+
 export type ProgressActor = {
   id: number;
   role: string;
   departmentId: number | null;
+  /** Legacy mirror: the first of `sectionScope`, or null for department-wide. */
   sectionId: number | null;
+  /**
+   * The Sections this actor may punch in. EMPTY = the whole Department.
+   *
+   * REQUIRED on purpose: a construction site that forgets it would otherwise read as an
+   * empty set, which means department-wide — the widest possible reading, and the one a bug
+   * must never fall into. Making it required hands that failure to the compiler.
+   */
+  sectionScope: readonly number[];
 };
 
 /**
  * Which section a punch will be recorded against.
  *
- *   Section HOD (department + section)       -> always his own section; naming
- *                                               another section is refused.
- *   Department-level HOD (section is null)   -> owns every section of the
- *   Department Head (section is null)          department, so he MUST select one.
+ *   Sectional Head (a NON-EMPTY set)   -> any of HIS sections; naming one that is
+ *                                         not his is refused, and naming none picks
+ *                                         his first, exactly as the scalar did.
+ *   Department-level HOD /             -> owns every section of the department,
+ *   Department Head (EMPTY set)           so he MUST select one.
  *
- * The selected section is only a scope hint here: the caller still checks that it
- * belongs to the actor's department before anything is written.
+ * The returned `sectionIds` is the actor's whole scope; `fallbackSectionId` is the one
+ * section the punch will actually be written against. The caller still checks that the
+ * chosen section belongs to the actor's department before anything is written.
  */
 export function resolvePunchScope(
   actor: ProgressActor,
   requestedSectionId: number | null
-): RuleResult<number> {
+): RuleResult<{ sectionIds: number[]; fallbackSectionId: number }> {
   if (!isPunchRole(actor.role)) {
     return fail(
       "ROLE_NOT_ALLOWED",
@@ -185,17 +198,21 @@ export function resolvePunchScope(
     );
   }
   const requested = Number.isInteger(requestedSectionId) ? (requestedSectionId as number) : null;
+  const scope = [...actor.sectionScope];
 
-  if (actor.sectionId != null) {
-    if (requested != null && requested !== actor.sectionId) {
+  // A Sectional Head: his scope names the sections, so one of them is always the answer.
+  if (scope.length > 0) {
+    if (requested != null && !scope.includes(requested)) {
       return fail(
         "SECTION_OUT_OF_SCOPE",
-        "You may punch quantity progress only for your own section.",
+        "You may punch quantity progress only for a section you head.",
         403
       );
     }
-    return { ok: true, value: actor.sectionId };
+    const chosen = requested ?? legacySectionId(scope)!;
+    return { ok: true, value: { sectionIds: scope, fallbackSectionId: chosen } };
   }
+  // An EMPTY set is department-wide, so nothing can be assumed and one must be named.
   if (requested == null) {
     return fail(
       "SECTION_REQUIRED",
@@ -203,7 +220,7 @@ export function resolvePunchScope(
       400
     );
   }
-  return { ok: true, value: requested };
+  return { ok: true, value: { sectionIds: [], fallbackSectionId: requested } };
 }
 
 export type PunchableJobOrder = {
@@ -578,9 +595,9 @@ export function mapRemarkHistory(rows: readonly RemarkHistoryRow[]): RemarkHisto
  */
 export function remarkReportScope(
   actor: ProgressActor
-): RuleResult<{ departmentId: number | null; sectionId: number | null }> {
+): RuleResult<{ departmentId: number | null; sectionId: number | null; sectionIds: number[] }> {
   if (actor.role === "PM" || actor.role === "ADMIN") {
-    return { ok: true, value: { departmentId: null, sectionId: null } };
+    return { ok: true, value: { departmentId: null, sectionId: null, sectionIds: [] } };
   }
   if (actor.role === "HOD" || actor.role === "DEPT_HEAD") {
     if (actor.departmentId == null) {
@@ -590,7 +607,7 @@ export function remarkReportScope(
         403
       );
     }
-    return { ok: true, value: { departmentId: actor.departmentId, sectionId: actor.sectionId } };
+    return { ok: true, value: { departmentId: actor.departmentId, sectionId: actor.sectionId, sectionIds: [...actor.sectionScope] } };
   }
   return fail("ROLE_NOT_ALLOWED", "The remarks report is available to HOD, Department Head, PM and Admin.", 403);
 }

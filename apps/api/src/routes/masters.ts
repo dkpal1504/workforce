@@ -111,14 +111,27 @@ mastersRouter.get("/projects", async (_req, res) => {
 });
 
 
+/**
+ * The Section filter an HOD's pickers may offer, from the SET of Sections they cover.
+ *
+ * An EMPTY set keeps this file's existing meaning: it matches NOTHING. That is what
+ * `sectionId == null` produced here (`?? -1`), and a Section Head with no Section today sees
+ * no sections in these pickers. This change adds a MULTI-Section scope; it does not widen a
+ * department-wide HOD. `{ in: [-1] }` is used rather than `{ in: [] }` so the intent is
+ * explicit at the query and can never be read as 'no filter'.
+ */
+function hodPickerSectionFilter(scope: readonly number[]): { in: number[] } {
+  return { in: scope.length ? [...scope] : [-1] };
+}
+
 /** Active section picker, optionally scoped to a department. */
 mastersRouter.get("/sections", async (req, res) => {
   const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
   const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
   const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
-  const hodSectionId = req.user!.role === "HOD" ? (req.user!.sectionId ?? -1) : undefined;
+  const hodSectionIds = req.user!.role === "HOD" ? req.user!.sectionScope : undefined;
   const sections = await prisma.section.findMany({
-    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}), ...(hodSectionId !== undefined ? { id: hodSectionId } : {}) },
+    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}), ...(hodSectionIds !== undefined ? { id: hodPickerSectionFilter(hodSectionIds) } : {}) },
     select: { id: true, code: true, name: true, departmentId: true, costCenter: { select: { id: true, code: true, name: true, active: true } } },
     orderBy: { name: "asc" },
   });
@@ -128,12 +141,12 @@ mastersRouter.get("/sections", async (req, res) => {
 /** Active cost-centre picker; section/department filters are optional. */
 mastersRouter.get("/cost-centers", async (req, res) => {
   const requestedSectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
-  const sectionId = req.user!.role === "HOD" ? (req.user!.sectionId ?? -1) : requestedSectionId;
+  const sectionFilter = req.user!.role === "HOD" ? hodPickerSectionFilter(req.user!.sectionScope) : (requestedSectionId != null ? { in: [requestedSectionId] } : undefined);
   const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
   const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
   const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
   const costCenters = await prisma.costCenter.findMany({
-    where: { active: true, ...(sectionId ? { sectionId } : {}), ...(departmentId ? { section: { departmentId } } : {}) },
+    where: { active: true, ...(sectionFilter ? { sectionId: sectionFilter } : {}), ...(departmentId ? { section: { departmentId } } : {}) },
     select: { id: true, code: true, name: true, sectionId: true, section: { select: { id: true, code: true, name: true, departmentId: true } } },
     orderBy: { code: "asc" },
   });

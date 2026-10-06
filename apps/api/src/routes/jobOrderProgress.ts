@@ -96,7 +96,13 @@ const decisionSchema = z.object({
 
 function actorOf(req: Request): ProgressActor {
   const user = req.user!;
-  return { id: user.id, role: user.role, departmentId: user.departmentId, sectionId: user.sectionId };
+  return {
+    id: user.id,
+    role: user.role,
+    departmentId: user.departmentId,
+    sectionId: user.sectionId, // legacy mirror
+    sectionScope: user.sectionScope, // the authoritative SET; EMPTY = the whole Department
+  };
 }
 
 /** A refused rule answers with the rule's own status and a stable code. */
@@ -246,11 +252,16 @@ jobOrderProgressRouter.get("/mine", requireRoles("HOD", "DEPT_HEAD", "ADMIN"), a
   const actor = actorOf(req);
   const requestedSectionId = optionalInt(req.query.sectionId);
   const scope = resolvePunchScope(actor, requestedSectionId);
-  const resolvedSectionId = scope.ok ? scope.value : null;
+  const resolvedSectionId = scope.ok ? scope.value.fallbackSectionId : null;
   const departmentId = actor.departmentId;
 
   const sections = departmentId == null ? [] : await prisma.section.findMany({
-    where: { departmentId, active: true, ...(actor.sectionId != null ? { id: actor.sectionId } : {}) },
+    where: {
+      departmentId,
+      active: true,
+      // A Sectional Head sees only the Sections he heads; an EMPTY set is department-wide.
+      ...(actor.sectionScope.length > 0 ? { id: { in: [...actor.sectionScope] } } : {}),
+    },
     select: { id: true, code: true, name: true, departmentId: true },
     orderBy: { name: "asc" },
   });
@@ -337,7 +348,7 @@ jobOrderProgressRouter.get("/mine", requireRoles("HOD", "DEPT_HEAD", "ADMIN"), a
   const historyByKey = groupBy(historyRows, (row) => `${row.jobOrderId}|${formatDateOnly(row.progressDate)}`);
 
   res.json({
-    requiresSectionSelection: actor.sectionId == null,
+    requiresSectionSelection: actor.sectionScope.length === 0,
     sectionId: resolvedSectionId,
     ...(scope.ok ? {} : { scopeError: { code: scope.error.code, error: scope.error.error } }),
     sections,
@@ -504,7 +515,7 @@ jobOrderProgressRouter.get("/remarks", requireRoles("HOD", "DEPT_HEAD", "PM", "A
   const progressWhere: Record<string, unknown> = {
     ...(jobOrderId != null ? { jobOrderId } : {}),
     ...(Object.keys(jobOrderFilter).length ? { jobOrder: jobOrderFilter } : {}),
-    ...(scope.value.sectionId != null ? { sectionId: scope.value.sectionId } : {}),
+    ...(scope.value.sectionIds.length > 0 ? { sectionId: { in: scope.value.sectionIds } } : {}),
     ...(from || to
       ? { progressDate: { ...(from ? { gte: parseDateOnly(from) } : {}), ...(to ? { lte: parseDateOnly(to) } : {}) } }
       : {}),
@@ -565,7 +576,7 @@ jobOrderProgressRouter.post("/", requireRoles("HOD", "DEPT_HEAD", "ADMIN"), asyn
   if (!scope.ok) return sendRuleError(res, scope.error);
 
   const section = await prisma.section.findUnique({
-    where: { id: scope.value },
+    where: { id: scope.value.fallbackSectionId },
     select: { id: true, departmentId: true, active: true },
   });
   if (!section || section.departmentId !== actor.departmentId) {
@@ -585,7 +596,7 @@ jobOrderProgressRouter.post("/", requireRoles("HOD", "DEPT_HEAD", "ADMIN"), asyn
   });
   if (!jobOrder) return res.status(404).json({ error: "Job Order not found.", code: "JOB_ORDER_NOT_FOUND" });
 
-  const punchable = canPunchJobOrder(actor.departmentId, scope.value, {
+  const punchable = canPunchJobOrder(actor.departmentId, scope.value.fallbackSectionId, {
     code: jobOrder.code,
     status: jobOrder.status,
     departmentId: jobOrder.departmentId,
@@ -625,7 +636,7 @@ jobOrderProgressRouter.post("/", requireRoles("HOD", "DEPT_HEAD", "ADMIN"), asyn
           progressDate,
           cumulativeQuantity,
           revisionNo: plan.value.revisionNo,
-          sectionId: scope.value,
+          sectionId: scope.value.fallbackSectionId,
           status: "SUBMITTED",
           punchedById: actor.id,
           // The column keeps the latest message the screen shows; the history
@@ -656,7 +667,7 @@ jobOrderProgressRouter.post("/", requireRoles("HOD", "DEPT_HEAD", "ADMIN"), asyn
     progressDate: progressDateText,
     cumulativeQuantity,
     revisionNo: entry.revisionNo,
-    sectionId: scope.value,
+    sectionId: scope.value.fallbackSectionId,
   });
 
   res.status(201).json({ entry: mapEntry(entry) });
@@ -681,13 +692,22 @@ jobOrderProgressRouter.post("/:id/amend", requireRoles("HOD", "DEPT_HEAD", "ADMI
     return res.status(403).json({ error: "Only the HOD who punched this entry may amend it.", code: "NOT_OWNER" });
   }
 
-  // An amendment stays inside the punch scope: a section HOD cannot reach another
+  // An amendment stays inside the punch scope: a sectional HOD cannot reach another
   // section's entry, and a department-level HOD re-states the section it owns.
-  let scope: RuleResult<number | null> = resolvePunchScope(actor, entry.sectionId);
-  if (!scope.ok && entry.sectionId == null && scope.error.code === "SECTION_REQUIRED" && actor.departmentId === entry.jobOrder.departmentId) {
-    scope = { ok: true, value: null };
+  //
+  // Only the RULE matters here, never the resolved section: the amendment keeps the entry's own
+  // `sectionId`. So this holds just the refusal for the whole block rather than the rule's value,
+  // which is what keeps the check honest without inventing a section to satisfy a type.
+  let scopeError: RuleError | null = null;
+  const scope = resolvePunchScope(actor, entry.sectionId);
+  if (!scope.ok) {
+    const legacyDepartmentWideAmendment =
+      entry.sectionId == null &&
+      scope.error.code === "SECTION_REQUIRED" &&
+      actor.departmentId === entry.jobOrder.departmentId;
+    if (!legacyDepartmentWideAmendment) scopeError = scope.error;
   }
-  if (!scope.ok) return sendRuleError(res, scope.error);
+  if (scopeError) return sendRuleError(res, scopeError);
   if (actor.departmentId != null && actor.departmentId !== entry.jobOrder.departmentId) {
     return res.status(403).json({ error: "That Job Order belongs to another department.", code: "JOB_ORDER_OUT_OF_SCOPE" });
   }

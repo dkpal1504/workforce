@@ -4,7 +4,7 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours } from "../services/contractWorkHours";
-import { hodScopeMatches, isDepartmentViewRole } from "../services/roleAccess";
+import { hodEmployeeScopeSet, hodScopeMatchesSet, isDepartmentViewRole } from "../services/roleAccess";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
 import { rejectionStatusForEmployee } from "../services/employeeEligibility";
@@ -27,19 +27,12 @@ const APPROVER_ROLES = ["HOD", "PM", "ADMIN"] as const;
  */
 const DECIDER_ROLES = ["HOD", "PM"] as const;
 
-/**
- * The labour an approver may act on.
- *
- *   Section HOD      -> its Department + Section.
- *   Department HOD   -> the whole Department (every Section under it).
- *
- * An approver with no Department fails closed.
+/*
+ * The labour an approver may act on now lives in `hodEmployeeScopeSet`
+ * (services/roleAccess.ts), which takes the SET of Sections a multi-Section Section Head
+ * covers rather than one scalar. An EMPTY set means the whole Department, exactly as a
+ * null `sectionId` did before, so today's accounts behave identically.
  */
-function hodEmployeeScope(departmentId: number | null, sectionId: number | null) {
-  if (departmentId == null) return { id: -1 };
-  if (sectionId == null) return { departmentId };
-  return { departmentId, sectionAssignment: { sectionId } };
-}
 
 /** Legacy WBS link on a booking row. The WBS carries no colour of its own. */
 type ProjectWbsRef = { wbsCode: string; name: string | null } | null;
@@ -397,7 +390,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     where: {
       status: { in: statusFilter },
       ...(isDepartmentViewRole(role)
-        ? { employee: hodEmployeeScope(req.user!.departmentId, req.user!.sectionId) }
+        ? { employee: hodEmployeeScopeSet(req.user!.departmentId, req.user!.sectionScope) }
         : {}),
       // Only days that have at least one project-tagged hour (legacy WBS OR new JobOrder).
       entries: {
@@ -430,7 +423,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
       where: {
         status: "PLANNING_RETURNED",
         ...(isDepartmentViewRole(role)
-          ? { employee: hodEmployeeScope(req.user!.departmentId, req.user!.sectionId) }
+          ? { employee: hodEmployeeScopeSet(req.user!.departmentId, req.user!.sectionScope) }
           : {}),
         entries: {
           some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
@@ -502,7 +495,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
       ...(role === "PM" || role === "ADMIN"
         ? {}
         : isDepartmentViewRole(role)
-          ? { timesheetDay: { employee: hodEmployeeScope(req.user!.departmentId, req.user!.sectionId) } }
+          ? { timesheetDay: { employee: hodEmployeeScopeSet(req.user!.departmentId, req.user!.sectionScope) } }
           : { approverId: req.user!.id }),
     },
     include: {
@@ -565,13 +558,13 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
 approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), async (req, res) => {
   const role = req.user!.role;
   const departmentId = req.user!.departmentId;
-  const sectionId = req.user!.sectionId;
+  const sectionScope = req.user!.sectionScope;
 
   // Scope: only entries in this approver's department (via supervisor OR employee),
   // matching the pending view. If the approver has no department (e.g. PM), no
   // department filter is applied — consistent with the existing pending view.
   const deptWhere = role === "HOD"
-    ? { employee: hodEmployeeScope(departmentId, sectionId) }
+    ? { employee: hodEmployeeScopeSet(departmentId, sectionScope) }
     : {};
 
   const entries = await prisma.timesheetEntry.findMany({
@@ -663,7 +656,7 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
   res.json({ rows, role });
 });
 
-async function applyApprove(ids: number[], userId: number, role: string, departmentId: number | null, sectionId: number | null, comment: string | null) {
+async function applyApprove(ids: number[], userId: number, role: string, departmentId: number | null, sectionScope: readonly number[], comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
 
@@ -681,7 +674,7 @@ async function applyApprove(ids: number[], userId: number, role: string, departm
       errors.push({ id, error: "Not found" });
       continue;
     }
-    if (role === "HOD" && (!hodScopeMatches(departmentId, sectionId, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
+    if (role === "HOD" && (!hodScopeMatchesSet(departmentId, sectionScope, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
       errors.push({ id, error: "Timesheet belongs to another Department or the HOD has no Department." });
       continue;
     }
@@ -724,7 +717,7 @@ async function applyApprove(ids: number[], userId: number, role: string, departm
   return { results, errors };
 }
 
-async function applyReject(ids: number[], userId: number, role: string, departmentId: number | null, sectionId: number | null, comment: string | null) {
+async function applyReject(ids: number[], userId: number, role: string, departmentId: number | null, sectionScope: readonly number[], comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
 
@@ -742,7 +735,7 @@ async function applyReject(ids: number[], userId: number, role: string, departme
       errors.push({ id, error: "Not found" });
       continue;
     }
-    if (role === "HOD" && (!hodScopeMatches(departmentId, sectionId, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
+    if (role === "HOD" && (!hodScopeMatchesSet(departmentId, sectionScope, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
       errors.push({ id, error: "Timesheet belongs to another Department or the HOD has no Department." });
       continue;
     }
@@ -808,8 +801,8 @@ approvalsRouter.post("/batch", requireRoles(...DECIDER_ROLES), async (req, res) 
 
   const outcome =
     action === "approve"
-      ? await applyApprove(ids, req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionId, comment)
-      : await applyReject(ids, req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionId, comment);
+      ? await applyApprove(ids, req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment)
+      : await applyReject(ids, req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment);
 
   res.json({ ok: outcome.errors.length === 0, ...outcome });
 });
@@ -817,7 +810,7 @@ approvalsRouter.post("/batch", requireRoles(...DECIDER_ROLES), async (req, res) 
 approvalsRouter.post("/:id/approve", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
-  const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionId, comment);
+  const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment);
   if (errors.length) return res.status(400).json({ error: errors[0].error });
   res.json({ ok: true, status: results[0].status });
 });
@@ -825,7 +818,7 @@ approvalsRouter.post("/:id/approve", requireRoles(...DECIDER_ROLES), async (req,
 approvalsRouter.post("/:id/reject", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
-  const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionId, comment);
+  const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment);
   if (errors.length) return res.status(400).json({ error: errors[0].error });
   res.json({ ok: true, status: results[0].status });
 });
@@ -834,7 +827,7 @@ approvalsRouter.post("/:id/send-back", requireRoles("HOD"), async (req, res) => 
   const id = Number(req.params.id);
   const day = await prisma.timesheetDay.findUnique({ where: { id }, include: { employee: { select: { active: true, departmentId: true, sectionAssignment: { select: { sectionId: true } } } } } });
   if (!day) return res.status(404).json({ error: "Not found" });
-  if (req.user!.role === "HOD" && (!hodScopeMatches(req.user!.departmentId, req.user!.sectionId, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
+  if (req.user!.role === "HOD" && (!hodScopeMatchesSet(req.user!.departmentId, req.user!.sectionScope, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
     return res.status(403).json({ error: "Timesheet belongs to another Department or the HOD has no Department.", code: "FORBIDDEN" });
   }
   if (day.status !== "PLANNING_RETURNED") {

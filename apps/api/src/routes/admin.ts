@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { legacySectionId } from "../services/userScope";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
@@ -106,10 +107,31 @@ adminRouter.post("/users", requireRoles("ADMIN"), async (req, res) => {
   res.status(201).json({ user: safeUser, credentialQueued: true });
 });
 
+/**
+ * Does an account's section scope cover a section of its own Department?
+ *
+ * An EMPTY set is DEPARTMENT-WIDE, which covers every section — the same rule the read-side
+ * `hodScopeMatchesSet` applies. The Department gate is the caller's business, because a
+ * Section Head is still exactly one Department.
+ */
+function scopeCoversSection(scope: readonly number[], sectionId: number | null): boolean {
+  return scope.length === 0 || (sectionId != null && scope.includes(sectionId));
+}
+
+/** The scope set for an account, falling back to the legacy scalar during the rollout. */
+function scopeIdsFor(user: { sectionId: number | null; scopeSections?: { sectionId: number }[] }): number[] {
+  return user.scopeSections?.length
+    ? user.scopeSections.map((row) => row.sectionId)
+    : (user.sectionId != null ? [user.sectionId] : []);
+}
+
 adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, res) => {
   const userId = Number(req.params.id);
   const employeeId = req.body?.employeeId == null ? null : Number(req.body.employeeId);
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { scopeSections: { select: { sectionId: true } } },
+  });
   if (!user || !["HOD", "PM", "ADMIN"].includes(user.role)) {
     return res.status(404).json({ error: "Eligible role account was not found.", code: "USER_NOT_FOUND" });
   }
@@ -121,7 +143,12 @@ adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, r
     const existingLink = await prisma.user.findUnique({ where: { employeeId: employee.id }, select: { id: true } });
     if (existingLink && existingLink.id !== userId) return res.status(409).json({ error: "Employee is already linked to another account.", code: "EMPLOYEE_ALREADY_LINKED" });
   }
-  if (user.role === "HOD" && employee && (user.departmentId !== employee.departmentId || user.sectionId !== employee.sectionAssignment?.sectionId)) {
+  if (
+    user.role === "HOD" &&
+    employee &&
+    (user.departmentId !== employee.departmentId ||
+      !scopeCoversSection(scopeIdsFor(user), employee.sectionAssignment?.sectionId ?? null))
+  ) {
     return res.status(403).json({ error: "HOD and linked Employee Department/Section must match.", code: "WRONG_SCOPE" });
   }
   const updated = await prisma.user.update({
@@ -430,6 +457,8 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
         id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true, departmentId: true,
         department: { select: { id: true, name: true } },
         scopeSection: { select: { id: true, name: true } },
+        // The authoritative SET; `sectionId` is its legacy mirror (first, or null).
+        scopeSections: { select: { sectionId: true } },
         employee: {
           select: {
             id: true, ecNo: true, name: true, active: true, employmentType: true, departmentId: true,
@@ -480,11 +509,12 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
       if (!statuses || !["HOD", "PM", "ADMIN"].includes(user.role)) return [user.id, 0] as const;
       // A Department HOD (no Section) covers every Section of its Department; a Section HOD covers
       // exactly its Section. An approver with no Department at all matches nothing (fails closed).
+      const scopeIds = scopeIdsFor(user);
       const scope = user.role !== "HOD"
         ? {}
-        : user.departmentId == null
+        : user.departmentId == null || scopeIds.length === 0
           ? { employee: { id: -1 } }
-          : { employee: { departmentId: user.departmentId, ...(user.sectionId == null ? {} : { sectionAssignment: { sectionId: user.sectionId } }) } };
+          : { employee: { departmentId: user.departmentId, sectionAssignment: { sectionId: { in: scopeIds } } } };
       const count = await prisma.timesheetDay.count({ where: { status: { in: statuses }, ...scope } });
       return [user.id, count] as const;
     })),
@@ -575,6 +605,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     where: { id: userId },
     select: {
       id: true, name: true, role: true, active: true, employeeId: true, departmentId: true, sectionId: true,
+      scopeSections: { select: { sectionId: true } },
       employee: {
         select: {
           id: true, active: true, employmentType: true, departmentId: true,
@@ -614,9 +645,14 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
         where: {
           status: { in: queueStatuses },
           ...(user.role === "HOD"
-            ? user.departmentId == null || user.sectionId == null
+            ? user.departmentId == null || scopeIdsFor(user).length === 0
               ? { employee: { id: -1 } }
-              : { employee: { departmentId: user.departmentId, sectionAssignment: { sectionId: user.sectionId } } }
+              : {
+                  employee: {
+                    departmentId: user.departmentId,
+                    sectionAssignment: { sectionId: { in: scopeIdsFor(user) } },
+                  },
+                }
             : {}),
         },
       });
@@ -802,10 +838,16 @@ adminRouter.post("/employees", requireRoles("HOD", "PM", "ADMIN", "HR"), async (
   if (!canCreatePayrollEmployee(req.user!.role)) return res.status(403).json({ error: "Forbidden", code: "FORBIDDEN" });
   const { ecNo, name, departmentId, sectionId, designation, category, mobile, email } = req.body ?? {};
   const effectiveDepartmentId = req.user!.role === "HOD" ? req.user!.departmentId : Number(departmentId);
-  const effectiveSectionId = req.user!.role === "HOD" ? req.user!.sectionId : Number(sectionId);
+  // A Sectional Head registers into a Section he NAMES, validated against the set he heads; his
+  // former single scalar cannot express the choice. A department-wide Head (EMPTY set) has no
+  // section to default to and is refused, exactly as his null scalar refused him before.
+  const hodScope = req.user!.role === "HOD" ? req.user!.sectionScope : [];
+  const effectiveSectionId = req.user!.role === "HOD"
+    ? (hodScope.length > 0 ? (hodScope.includes(Number(sectionId)) ? Number(sectionId) : legacySectionId(hodScope)) : null)
+    : Number(sectionId);
   if (!ecNo || !name || !effectiveDepartmentId || !effectiveSectionId) return res.status(400).json({ error: "ecNo, name, departmentId and sectionId are required" });
   if (req.user!.role === "HOD" && (Number(departmentId) !== effectiveDepartmentId || Number(sectionId) !== effectiveSectionId)) {
-    return res.status(403).json({ error: "HOD can add employees only to the assigned Department/Section.", code: "WRONG_SCOPE" });
+    return res.status(403).json({ error: "An HOD can add employees only to a Section he heads, in his own Department.", code: "WRONG_SCOPE" });
   }
   const section = await prisma.section.findUnique({ where: { id: effectiveSectionId } });
   if (!section || !section.active || section.departmentId !== effectiveDepartmentId) return res.status(400).json({ error: "sectionId must be an active section in departmentId", code: "INVALID_SECTION" });

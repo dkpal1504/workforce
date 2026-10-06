@@ -20,6 +20,17 @@ export const summaryRouter = Router();
 // `capabilitiesFor("COO").viewSummary` is true, and the web app gates `/summary` on that exact
 // flag (RequireCapability capability="viewSummary") — so without it the capability is advertised
 // in the UI but every request is refused with 403. Being absent from DEPARTMENT_VIEW_ROLES, the
+/**
+ * Does this viewer read the WHOLE Department rather than named Sections?
+ *
+ * An EMPTY section scope means department-wide — exactly the meaning `sectionId == null` had
+ * before the scope became a set. Five sites in this router ask this one question, so it is
+ * asked once here rather than spelled out five times.
+ */
+function isDepartmentWideViewer(role: string, sectionScope: readonly number[]): boolean {
+  return isDepartmentViewRole(role) && sectionScope.length === 0;
+}
+
 // COO is deliberately NOT department-pinned below: `isDepartmentViewRole("COO")` is false and
 // `departmentScope("COO", …)` returns `undefined`, so it reads every Department, which is the
 // whole point of the role. It grants no mutation — every handler on this router is read-only.
@@ -108,7 +119,7 @@ summaryRouter.get("/job-order", async (req, res) => {
       status: "PM_APPROVED",
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
       ...(role === "EMPLOYEE" ? { employeeId: req.user!.employeeId ?? -1 } : {}),
-      ...(isDepartmentViewRole(role) && req.user!.sectionId == null ? {
+      ...(isDepartmentWideViewer(role, req.user!.sectionScope) ? {
         // Approved by a Section HOD of this Department (the Department HOD may not
         // have approved it personally), which is the department-level roll-up.
         timesheetDay: {
@@ -131,7 +142,7 @@ summaryRouter.get("/job-order", async (req, res) => {
       jobOrderId: { in: jobOrderIds },
       allocationDay: {
         status: "PM_APPROVED",
-        ...(isDepartmentViewRole(role) && req.user!.sectionId == null
+        ...(isDepartmentWideViewer(role, req.user!.sectionScope)
           ? {
               approvals: { some: { approverId: { not: req.user!.id }, approver: { role: "HOD" }, action: "APPROVE" } },
               employee: { departmentId: req.user!.departmentId ?? -1 },
@@ -345,7 +356,7 @@ summaryRouter.get("/decisions", async (req, res) => {
   } else if (role === "SUPERVISOR") {
     dayScope = { taggedById: userId, approvals: { some: { approver: { role: "HOD" } } } };
     allocationScope = { employeeId: employeeId ?? -1, approvals: { some: { approver: { role: "HOD" } } } };
-  } else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
+  } else if (isDepartmentWideViewer(role, req.user!.sectionScope)) {
     const departmentId = req.user!.departmentId ?? -1;
     dayScope = { employee: { departmentId } };
     allocationScope = { employee: { departmentId } };
@@ -428,7 +439,7 @@ summaryRouter.get("/", async (req, res) => {
     status: { in: visibleStatuses },
     timesheetDay: { approvals: { some: { approver: { role: "HOD" }, action: { in: ["APPROVE", "REJECT", "SEND_BACK"] } } } },
   };
-  else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
+  else if (isDepartmentWideViewer(role, req.user!.sectionScope)) {
     // Department HOD / Department Head: every Section of this Department, showing only
     // hours already APPROVED by the Section HODs. Work still sitting with a Section
     // HOD is deliberately excluded (it is not attendance yet) and belongs in the
@@ -487,7 +498,7 @@ summaryRouter.get("/", async (req, res) => {
     status: { in: visibleStatuses },
     approvals: { some: { approver: { role: "HOD" } } },
   };
-  else if (isDepartmentViewRole(role) && req.user!.sectionId == null) {
+  else if (isDepartmentWideViewer(role, req.user!.sectionScope)) {
     const departmentId = req.user!.departmentId ?? -1;
     allocationDayScope = { status: { in: visibleStatuses } };
     // Frozen snapshot first; a NULL snapshot is pre-snapshot history and falls back

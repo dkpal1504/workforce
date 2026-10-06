@@ -28,10 +28,10 @@ import {
   type RemarkHistoryRow,
 } from "./jobOrderProgress";
 
-const sectionHod: ProgressActor = { id: 11, role: "HOD", departmentId: 3, sectionId: 42 };
-const departmentHod: ProgressActor = { id: 12, role: "HOD", departmentId: 3, sectionId: null };
-const admin: ProgressActor = { id: 1, role: "ADMIN", departmentId: 3, sectionId: null };
-const supervisor: ProgressActor = { id: 9, role: "SUPERVISOR", departmentId: 3, sectionId: 42 };
+const sectionHod: ProgressActor = { id: 11, role: "HOD", departmentId: 3, sectionId: 42, sectionScope: [42] };
+const departmentHod: ProgressActor = { id: 12, role: "HOD", departmentId: 3, sectionId: null, sectionScope: [] };
+const admin: ProgressActor = { id: 1, role: "ADMIN", departmentId: 3, sectionId: null, sectionScope: [] };
+const supervisor: ProgressActor = { id: 9, role: "SUPERVISOR", departmentId: 3, sectionId: 42, sectionScope: [42] };
 
 function row(progressDate: string, revisionNo: number, cumulativeQuantity: number, status: string): ProgressRow {
   return { progressDate, revisionNo, cumulativeQuantity, status };
@@ -185,8 +185,14 @@ test("achieved quantity is the latest approved cumulative", () => {
 
 test("section scope: a section HOD punches its own section, a department-level HOD must select one", () => {
   // Section HOD: section is pre-selected and another section is refused.
-  assert.deepEqual(resolvePunchScope(sectionHod, null), { ok: true, value: 42 });
-  assert.deepEqual(resolvePunchScope(sectionHod, 42), { ok: true, value: 42 });
+  assert.deepEqual(resolvePunchScope(sectionHod, null), {
+    ok: true,
+    value: { sectionIds: [42], fallbackSectionId: 42 },
+  });
+  assert.deepEqual(resolvePunchScope(sectionHod, 42), {
+    ok: true,
+    value: { sectionIds: [42], fallbackSectionId: 42 },
+  });
   const otherSection = resolvePunchScope(sectionHod, 77);
   assert.equal(otherSection.ok === false && otherSection.error.code, "SECTION_OUT_OF_SCOPE");
   assert.equal(otherSection.ok === false && otherSection.error.status, 403);
@@ -195,8 +201,14 @@ test("section scope: a section HOD punches its own section, a department-level H
   const mustSelect = resolvePunchScope(departmentHod, null);
   assert.equal(mustSelect.ok === false && mustSelect.error.code, "SECTION_REQUIRED");
   assert.equal(mustSelect.ok === false && mustSelect.error.status, 400);
-  assert.deepEqual(resolvePunchScope(departmentHod, 77), { ok: true, value: 77 });
-  assert.deepEqual(resolvePunchScope(admin, 77), { ok: true, value: 77 });
+  assert.deepEqual(resolvePunchScope(departmentHod, 77), {
+    ok: true,
+    value: { sectionIds: [], fallbackSectionId: 77 },
+  });
+  assert.deepEqual(resolvePunchScope(admin, 77), {
+    ok: true,
+    value: { sectionIds: [], fallbackSectionId: 77 },
+  });
   assert.equal(resolvePunchScope(admin, null).ok === false, true);
 
   // Punching is an HOD duty.
@@ -209,8 +221,39 @@ test("section scope: a section HOD punches its own section, a department-level H
   assert.equal(noDepartment.ok === false && noDepartment.error.code, "DEPARTMENT_REQUIRED");
 });
 
+test("a multi-Section Head punches in any of HIS sections, and only those", () => {
+  // One payroll employee heads sections 8 and 42 of department 3. Before this change that was
+  // impossible by construction: the scope was a single scalar.
+  const multiHod: ProgressActor = { id: 15, role: "HOD", departmentId: 3, sectionId: 8, sectionScope: [8, 42] };
+
+  // Naming none picks his first section, exactly as the single-section scalar did.
+  assert.deepEqual(resolvePunchScope(multiHod, null), {
+    ok: true,
+    value: { sectionIds: [8, 42], fallbackSectionId: 8 },
+  });
+  // Both of his sections are his, and whichever he names is the one written.
+  assert.deepEqual(resolvePunchScope(multiHod, 8), {
+    ok: true,
+    value: { sectionIds: [8, 42], fallbackSectionId: 8 },
+  });
+  assert.deepEqual(resolvePunchScope(multiHod, 42), {
+    ok: true,
+    value: { sectionIds: [8, 42], fallbackSectionId: 42 },
+  });
+  // A THIRD section of the same department is still not his.
+  const notHis = resolvePunchScope(multiHod, 9);
+  assert.equal(notHis.ok === false && notHis.error.code, "SECTION_OUT_OF_SCOPE");
+  assert.equal(notHis.ok === false && notHis.error.status, 403);
+
+  // The remarks report covers both of his sections rather than one.
+  assert.deepEqual(remarkReportScope(multiHod), {
+    ok: true,
+    value: { departmentId: 3, sectionId: 8, sectionIds: [8, 42] },
+  });
+});
+
 test("a Department Head punches by selecting a section, while approval stays with the PM", () => {
-  const deptHead: ProgressActor = { id: 13, role: "DEPT_HEAD", departmentId: 3, sectionId: null };
+  const deptHead: ProgressActor = { id: 13, role: "DEPT_HEAD", departmentId: 3, sectionId: null, sectionScope: [] };
 
   assert.equal(isPunchRole("DEPT_HEAD"), true, "the Department Head punches");
   assert.equal(isDecisionRole("DEPT_HEAD"), false, "a Department Head never approves the figure he punched");
@@ -220,14 +263,17 @@ test("a Department Head punches by selecting a section, while approval stays wit
   const mustSelect = resolvePunchScope(deptHead, null);
   assert.equal(mustSelect.ok === false && mustSelect.error.code, "SECTION_REQUIRED");
   assert.equal(mustSelect.ok === false && mustSelect.error.status, 400);
-  assert.deepEqual(resolvePunchScope(deptHead, 9), { ok: true, value: 9 });
-  assert.deepEqual(resolvePunchScope(deptHead, 77), { ok: true, value: 77 }, "every section of his department is his");
+  assert.deepEqual(resolvePunchScope(deptHead, 9), { ok: true, value: { sectionIds: [], fallbackSectionId: 9 } });
+  assert.deepEqual(resolvePunchScope(deptHead, 77), { ok: true, value: { sectionIds: [], fallbackSectionId: 77 } }, "every section of his department is his");
   const noDepartment = resolvePunchScope({ ...deptHead, departmentId: null }, 9);
   assert.equal(noDepartment.ok === false && noDepartment.error.code, "DEPARTMENT_REQUIRED");
 
   // A Department Head who still carries a section scope keeps that section only.
-  const scopedDeptHead: ProgressActor = { id: 14, role: "DEPT_HEAD", departmentId: 3, sectionId: 42 };
-  assert.deepEqual(resolvePunchScope(scopedDeptHead, null), { ok: true, value: 42 });
+  const scopedDeptHead: ProgressActor = { id: 14, role: "DEPT_HEAD", departmentId: 3, sectionId: 42, sectionScope: [42] };
+  assert.deepEqual(resolvePunchScope(scopedDeptHead, null), {
+    ok: true,
+    value: { sectionIds: [42], fallbackSectionId: 42 },
+  });
   const scopedOtherSection = resolvePunchScope(scopedDeptHead, 77);
   assert.equal(scopedOtherSection.ok === false && scopedOtherSection.error.code, "SECTION_OUT_OF_SCOPE");
 
@@ -452,16 +498,16 @@ test("the remark history is oldest first and survives a missing or unknown autho
 });
 
 test("the remarks report is scoped to the caller's own department and section", () => {
-  assert.deepEqual(remarkReportScope({ id: 5, role: "PM", departmentId: 3, sectionId: null }), {
+  assert.deepEqual(remarkReportScope({ id: 5, role: "PM", departmentId: 3, sectionId: null, sectionScope: [] }), {
     ok: true,
-    value: { departmentId: null, sectionId: null },
+    value: { departmentId: null, sectionId: null, sectionIds: [] },
   });
-  assert.deepEqual(remarkReportScope(admin), { ok: true, value: { departmentId: null, sectionId: null } });
+  assert.deepEqual(remarkReportScope(admin), { ok: true, value: { departmentId: null, sectionId: null, sectionIds: [] } });
 
-  assert.deepEqual(remarkReportScope(sectionHod), { ok: true, value: { departmentId: 3, sectionId: 42 } });
-  assert.deepEqual(remarkReportScope(departmentHod), { ok: true, value: { departmentId: 3, sectionId: null } });
-  const deptHead: ProgressActor = { id: 13, role: "DEPT_HEAD", departmentId: 3, sectionId: null };
-  assert.deepEqual(remarkReportScope(deptHead), { ok: true, value: { departmentId: 3, sectionId: null } });
+  assert.deepEqual(remarkReportScope(sectionHod), { ok: true, value: { departmentId: 3, sectionId: 42, sectionIds: [42] } });
+  assert.deepEqual(remarkReportScope(departmentHod), { ok: true, value: { departmentId: 3, sectionId: null, sectionIds: [] } });
+  const deptHead: ProgressActor = { id: 13, role: "DEPT_HEAD", departmentId: 3, sectionId: null, sectionScope: [] };
+  assert.deepEqual(remarkReportScope(deptHead), { ok: true, value: { departmentId: 3, sectionId: null, sectionIds: [] } });
 
   const noDepartment = remarkReportScope({ ...deptHead, departmentId: null });
   assert.equal(noDepartment.ok === false && noDepartment.error.code, "DEPARTMENT_REQUIRED");
