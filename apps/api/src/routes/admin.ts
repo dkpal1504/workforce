@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
-import { legacySectionId } from "../services/userScope";
+import { legacySectionId, normaliseSectionIds, validateScopeSections } from "../services/userScope";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
@@ -118,6 +118,46 @@ function scopeCoversSection(scope: readonly number[], sectionId: number | null):
   return scope.length === 0 || (sectionId != null && scope.includes(sectionId));
 }
 
+/**
+ * Replace an account's Section scope with exactly `sectionIds`.
+ *
+ * deleteMany + createMany rather than an upsert per Section, because the set must EQUAL the
+ * decided scope: an account narrowed from two Sections to one would otherwise keep the second
+ * row and silently regain it on the next role change. An EMPTY set is written as NO rows, which
+ * is what department-wide means.
+ */
+async function writeUserScope(
+  tx: Prisma.TransactionClient,
+  userId: number,
+  sectionIds: readonly number[],
+) {
+  await tx.userScopeSection.deleteMany({ where: { userId } });
+  const wanted = normaliseSectionIds(sectionIds);
+  if (wanted.length > 0) {
+    await tx.userScopeSection.createMany({
+      data: wanted.map((sectionId) => ({ userId, sectionId })),
+    });
+  }
+}
+
+/**
+ * The named Sections themselves, loaded across EVERY Department.
+ *
+ * WHY NOT `departmentSections`: validating against only the actor's Department cannot tell a
+ * Section that does not exist from one that belongs to somebody else, so a cross-Department request
+ * was refused with "Section 1 does not exist" — a false statement about a row that plainly does,
+ * and the exact confusion `validateScopeSections` exists to remove. The actor's Department is still
+ * the constraint; it is simply applied with the truth in hand.
+ */
+function loadNamedSections(ids: readonly number[]) {
+  return ids.length === 0
+    ? Promise.resolve([] as { id: number; departmentId: number; active: boolean }[])
+    : prisma.section.findMany({
+        where: { id: { in: [...ids] } },
+        select: { id: true, departmentId: true, active: true },
+      });
+}
+
 /** The scope set for an account, falling back to the legacy scalar during the rollout. */
 function scopeIdsFor(user: { sectionId: number | null; scopeSections?: { sectionId: number }[] }): number[] {
   return user.scopeSections?.length
@@ -162,7 +202,7 @@ adminRouter.put("/users/:id/employee-link", requireRoles("ADMIN"), async (req, r
 adminRouter.get("/hods", requireRoles("PM", "ADMIN"), async (_req, res) => {
   const hods = await prisma.user.findMany({
     where: { role: "HOD", active: true },
-    select: { id: true, name: true, email: true, departmentId: true, sectionId: true, department: true, scopeSection: true, employeeId: true },
+    select: { id: true, name: true, email: true, departmentId: true, sectionId: true, department: true, scopeSection: true, employeeId: true, scopeSections: { select: { sectionId: true } } },
     orderBy: { name: "asc" },
   });
   res.json({ hods });
@@ -197,17 +237,32 @@ adminRouter.get("/hod-candidates", requireRoles("PM", "ADMIN"), async (req, res)
   res.json({ candidates });
 });
 
-/** Promote an existing active payroll Employee into an HOD scoped to one Department/Section. */
+/**
+ * Promote an existing active payroll Employee into an HOD.
+ *
+ * The scope is ONE OR MORE Sections of the Employee's Department. `sectionIds` names them
+ * (`[]` means every Section of the Department); `sectionId` is the older single-Section form,
+ * still accepted so an in-flight client keeps working. With neither, the Employee's own
+ * Section is used, exactly as before.
+ */
 adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
   const employeeId = Number(req.body?.employeeId);
   const departmentId = Number(req.body?.departmentId);
-  const sectionId = Number(req.body?.sectionId);
-  if (!employeeId || !departmentId || !sectionId) {
-    return res.status(400).json({ error: "employeeId, departmentId and sectionId are required." });
+  const namedSections = Array.isArray(req.body?.sectionIds)
+    ? (req.body.sectionIds as unknown[]).map((value) => Number(value))
+    : null;
+  const singleSectionId = req.body?.sectionId == null ? null : Number(req.body.sectionId);
+  if (!employeeId || !departmentId) {
+    return res.status(400).json({ error: "employeeId and departmentId are required." });
   }
-  const [employee, section] = await Promise.all([
+  if (namedSections == null && !singleSectionId) {
+    return res.status(400).json({ error: "Name the Sections to scope this HOD to (sectionIds), or send sectionId." });
+  }
+  const [employee, sections] = await Promise.all([
     prisma.employee.findUnique({ where: { id: employeeId }, include: { sectionAssignment: true, user: true } }),
-    prisma.section.findFirst({ where: { id: sectionId, departmentId, active: true, department: { active: true } } }),
+    // The Sections the request NAMED, loaded across every Department so a foreign one is reported
+    // as foreign rather than as missing. The Department gate still does the refusing.
+    loadNamedSections(namedSections ?? []),
   ]);
   if (!employee) return res.status(404).json({ error: "Employee not found." });
   if (!employee.active) return res.status(409).json({ error: "Employee is not active.", code: "INACTIVE_EMPLOYEE" });
@@ -216,13 +271,28 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
   if (employee.employmentType !== "PAYROLL") {
     return res.status(400).json({ error: "Only a payroll Employee can be registered as HOD.", code: "INVALID_EMPLOYEE" });
   }
-  if (!section) return res.status(400).json({ error: "Select an active Section in the Department.", code: "INVALID_SCOPE" });
   if (employee.departmentId !== departmentId) {
     return res.status(400).json({ error: "The Employee's Department must match the selected Department.", code: "WRONG_DEPARTMENT" });
   }
-  if (employee.sectionAssignment && employee.sectionAssignment.sectionId !== sectionId) {
+  // The single-Section form keeps its OLD equality guard exactly: a caller that names one
+  // Section which is not the Employee's own is still the case that guard existed to catch.
+  if (
+    namedSections == null &&
+    singleSectionId != null &&
+    employee.sectionAssignment &&
+    employee.sectionAssignment.sectionId !== singleSectionId
+  ) {
     return res.status(400).json({ error: "The Employee's Section must match the selected Section.", code: "WRONG_SECTION" });
   }
+  const wantedSections = normaliseSectionIds(
+    namedSections != null
+      ? namedSections
+      : [singleSectionId ?? employee.sectionAssignment?.sectionId].filter((value): value is number => value != null),
+  );
+  const sectionRefusal = validateScopeSections(departmentId, wantedSections, sections);
+  if (sectionRefusal) return res.status(400).json(sectionRefusal);
+  // The legacy mirror: the first Section, or null when the scope is the whole Department.
+  const sectionId = wantedSections[0] ?? null;
   if (employee.user && !["EMPLOYEE", "HOD"].includes(employee.user.role)) {
     return res.status(409).json({ error: `This Employee already has a ${employee.user.role} account.`, code: "ROLE_CONFLICT" });
   }
@@ -230,7 +300,9 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
   const ecNo = employee.ecNo;
   const credential = await initialCredentialState();
   const result = await prisma.$transaction(async (tx) => {
-    if (!employee.sectionAssignment) {
+    // Only when the scope names a Section: a department-wide HOD (an EMPTY set) has no single
+    // Section to record on the Employee, and the column is NOT NULL.
+    if (!employee.sectionAssignment && sectionId != null) {
       await tx.employeeSectionAssignment.create({ data: { employeeId, sectionId, source: "MANUAL" } });
     }
     if (employee.user) {
@@ -241,6 +313,7 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
         where: { id: employee.user.id },
         data: { role: "HOD", departmentId, sectionId, name: employee.name, active: true, ...credential, tokenVersion: { increment: 1 } },
       });
+      await writeUserScope(tx, user.id, wantedSections);
       await tx.credentialDelivery.updateMany({
         where: { userId: user.id, status: { in: ["PENDING", "PROCESSING"] } },
         data: { status: "CANCELLED", lastError: "Superseded by a new HOD credential request." },
@@ -260,12 +333,13 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
         sectionId,
       },
     });
+    await writeUserScope(tx, user.id, wantedSections);
     await tx.credentialDelivery.create({ data: { userId: user.id, recipient: user.email, purpose: "INITIAL" } });
     return { user, created: true };
   });
 
   await writeAudit(req.user!.id, "HOD_REGISTER", "user", result.user.id, {
-    employeeId, ecNo, departmentId, sectionId, credentialQueued: true,
+    employeeId, ecNo, departmentId, sectionId, sectionIds: wantedSections, credentialQueued: true,
   });
   const { passwordHash: _passwordHash, ...safeUser } = result.user;
   res.status(result.created ? 201 : 200).json({ user: safeUser, credentialQueued: true, created: result.created });
@@ -295,7 +369,11 @@ adminRouter.put("/users/:id/hod-scope", requireRoles("PM", "ADMIN"), async (req,
         update: { sectionId, source: "MANUAL" },
       });
     }
-    return tx.user.update({ where: { id: userId }, data: { departmentId, sectionId, tokenVersion: { increment: 1 } } });
+    const saved = await tx.user.update({ where: { id: userId }, data: { departmentId, sectionId, tokenVersion: { increment: 1 } } });
+    // This endpoint is still the single-Section form, so the stored set must be exactly that one
+    // Section. Without this the row and the mirror would disagree the moment it is used.
+    await writeUserScope(tx, userId, [sectionId]);
+    return saved;
   });
   await writeAudit(req.user!.id, "HOD_SCOPE_UPDATE", "user", userId, { departmentId, sectionId });
   res.json({ user: { id: updated.id, departmentId: updated.departmentId, sectionId: updated.sectionId } });
@@ -555,6 +633,10 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
           : null,
         department: user.department,
         scopeSection: user.scopeSection,
+        // The Sections this account heads. EMPTY means the whole Department, which is why the panel
+        // must be told the SET and not just the legacy mirror: `hodScope` says "SECTION" for any
+        // non-null mirror, so a two-Section Head would read as a one-Section Head without this.
+        scopeSections: user.scopeSections.map((row) => row.sectionId),
         // HOD with no Section = Department-level oversight.
         hodScope: user.role === "HOD" ? (user.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
       })),
@@ -623,6 +705,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     role: user.role,
     active: user.active,
     currentSectionId: user.sectionId,
+    currentSectionIds: scopeIdsFor(user),
     employeeId: user.employeeId,
     employee: user.employee
       ? { id: user.employee.id, active: user.employee.active, employmentType: user.employee.employmentType, departmentId: user.employee.departmentId }
@@ -664,9 +747,22 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
   ]);
   const workload: OpenWorkload = { returnedTimesheetDays, pendingApprovals: pendingApprovalCount };
 
-  const plan = planRoleChange(req.user!.id, target, requestedRole, workload, { hodScope: req.body?.hodScope });
+  // An EMPTY set is department-wide, so the candidate list is only needed when one is named.
+  const named = Array.isArray(req.body?.sectionIds) ? (req.body.sectionIds as unknown[]) : null;
+  const candidates = named ? await loadNamedSections(named.map((value) => Number(value))) : [];
+  const plan = planRoleChange(req.user!.id, target, requestedRole, workload, {
+    hodScope: req.body?.hodScope,
+    sectionIds: req.body?.sectionIds,
+    sections: candidates,
+  });
   if (!plan.ok) {
-    const status = plan.code === "INVALID_ROLE" || plan.code === "NO_CHANGE" ? 400 : 409;
+    // 409 is for a state CONFLICT (stranded work, an inactive account). A rejected request — an
+    // unknown role, a no-op, an invalid scope, a malformed section set, a foreign Section — is a
+    // bad request, and answering 409 makes "you sent something wrong" read as "the server is busy".
+    const status =
+      plan.code === "OPEN_APPROVALS" || plan.code === "OPEN_TIMESHEETS" || plan.code === "ACCOUNT_INACTIVE"
+        ? 409
+        : 400;
     return res.status(status).json({ error: plan.error, code: plan.code });
   }
 
@@ -684,6 +780,9 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
       },
       select: { id: true, name: true, email: true, role: true, departmentId: true, sectionId: true },
     });
+    // The mirror alone is not the scope: the set is the authority, and it is written here so
+    // the two can never disagree after a role change.
+    await writeUserScope(tx, userId, plan.update.sectionIds);
     return saved;
   });
 
@@ -692,6 +791,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     to: plan.update.role,
     departmentId: plan.update.departmentId,
     sectionId: plan.update.sectionId,
+    sectionIds: plan.update.sectionIds,
     hodScope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : undefined,
   });
   return res.json({
@@ -701,6 +801,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     sessionsRevoked: true,
     // Tells the panel which scope was actually stored, so the UI can confirm it.
     scope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
+    sectionIds: plan.update.sectionIds,
   });
 }
 
@@ -755,9 +856,21 @@ async function createAccountForEmployee(req: Request, res: Response, employeeId:
     ? { sectionId: section.sectionId, sectionActive: section.section.active, sectionDepartmentId: section.section.departmentId }
     : null);
   // A brand-new account has no Employee-side workload and no approval queue by definition.
-  const plan = planRoleChange(req.user!.id, target, requestedRole, { returnedTimesheetDays: 0, pendingApprovals: 0 }, { hodScope: req.body?.hodScope });
+  const named = Array.isArray(req.body?.sectionIds) ? (req.body.sectionIds as unknown[]) : null;
+  const candidates = named ? await loadNamedSections(named.map((value) => Number(value))) : [];
+  const plan = planRoleChange(req.user!.id, target, requestedRole, { returnedTimesheetDays: 0, pendingApprovals: 0 }, {
+    hodScope: req.body?.hodScope,
+    sectionIds: req.body?.sectionIds,
+    sections: candidates,
+  });
   if (!plan.ok) {
-    const status = plan.code === "INVALID_ROLE" || plan.code === "NO_CHANGE" ? 400 : 409;
+    // 409 is for a state CONFLICT (stranded work, an inactive account). A rejected request — an
+    // unknown role, a no-op, an invalid scope, a malformed section set, a foreign Section — is a
+    // bad request, and answering 409 makes "you sent something wrong" read as "the server is busy".
+    const status =
+      plan.code === "OPEN_APPROVALS" || plan.code === "OPEN_TIMESHEETS" || plan.code === "ACCOUNT_INACTIVE"
+        ? 409
+        : 400;
     return res.status(status).json({ error: plan.error, code: plan.code });
   }
 
@@ -779,6 +892,7 @@ async function createAccountForEmployee(req: Request, res: Response, employeeId:
       },
       select: { id: true, name: true, email: true, role: true, departmentId: true, sectionId: true },
     });
+    await writeUserScope(tx, user.id, plan.update.sectionIds);
     await tx.credentialDelivery.create({
       data: { userId: user.id, recipient: workforceCredentialRecipient(), purpose: "ROLE_ASSIGNMENT" },
     });
@@ -793,6 +907,7 @@ async function createAccountForEmployee(req: Request, res: Response, employeeId:
     employmentType: employee.employmentType,
     departmentId: plan.update.departmentId,
     sectionId: plan.update.sectionId,
+    sectionIds: plan.update.sectionIds,
     hodScope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : undefined,
     accountCreated: true,
     credentialQueued: true,
