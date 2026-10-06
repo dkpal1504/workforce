@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { HodSectionPicker } from "./RoleAssignmentPage";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/supervisors.css";
 import "./EmployeesPage.css";
 
 type Department = { id: number; name: string };
 type Section = { id: number; departmentId: number; code: string; name: string; costCenter: { code: string } | null };
-type Hod = { id: number; name: string; email: string; departmentId: number | null; sectionId: number | null; department: Department | null; scopeSection: Section | null; employeeId: number | null };
+type Hod = {
+  id: number; name: string; email: string; departmentId: number | null; sectionId: number | null;
+  department: Department | null; scopeSection: Section | null; employeeId: number | null;
+  /** The Sections this HOD heads. EMPTY means the whole Department. */
+  scopeSections?: { sectionId: number }[];
+};
 type HodCandidate = {
   id: number; ecNo: string; name: string; designation: string; departmentId: number;
   department: Department;
@@ -56,6 +62,10 @@ export function EmployeesPage() {
   const [newHodId, setNewHodId] = useState("");
   const [newHodDepartmentId, setNewHodDepartmentId] = useState("");
   const [newHodSectionId, setNewHodSectionId] = useState("");
+  /** The Sections to scope a NEW HOD to. The SET is the truth; `newHodSectionId` is its mirror. */
+  const [newHodSectionIds, setNewHodSectionIds] = useState<number[]>([]);
+  /** The same, for the "Map scope" modal on an existing HOD. */
+  const [hodSectionIds, setHodSectionIds] = useState<number[]>([]);
   const [newHodSectionFilter, setNewHodSectionFilter] = useState("");
 
   async function load() {
@@ -99,9 +109,32 @@ export function EmployeesPage() {
    * A head needs a Department, not a Section: his listing is department-wide. Only REGISTRATION
    * still needs a Section, because the API registers people into the HOD's own Section.
    */
+  /**
+   * What an HOD's scope reads as in the table. Naming only the mirror would show a two-Section
+   * Head as a one-Section Head, which is the understatement this change exists to remove.
+   */
+  function hodScopeLabel(hod: Hod, allSections: Section[]): string {
+    const ids = hodScopeIdsOf(hod).slice().sort((a, b) => a - b);
+    if (ids.length === 0) return "All sections of " + (hod.department?.name ?? "the Department");
+    return ids.map((id) => allSections.find((s) => s.id === id)?.name ?? `Section ${id}`).join(" · ");
+  }
+
   const headMissingDepartment = isHeadViewer && !user?.departmentId;
   const registrationMissingSection = canRegister && isHod && !user?.sectionId;
   const transferChanged = Boolean(transfer && (String(transfer.department.id) !== targetDepartmentId || String(transfer.sectionAssignment?.section.id ?? "") !== targetSectionId));
+
+  /**
+   * The Sections an HOD already heads, for pre-ticking. Same legacy fallback the API applies:
+   * no rows + a Section scope means the one Section in his mirror; a null mirror means DEPT-WIDE.
+   */
+  function hodScopeIdsOf(hod: Hod): number[] {
+    if (hod.scopeSections && hod.scopeSections.length > 0) return hod.scopeSections.map((row) => row.sectionId);
+    return hod.sectionId == null ? [] : [hod.sectionId];
+  }
+  /** The mirror the API expects for a picked set: the first Section, or null for department-wide. */
+  function mirrorOf(sectionIds: number[]): number | null {
+    return sectionIds.length === 0 ? null : [...sectionIds].sort((a, b) => a - b)[0]!;
+  }
 
   async function registerEmployee(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setNotice("");
@@ -128,27 +161,33 @@ export function EmployeesPage() {
   }
 
   function openHodMapping(hod: Hod) {
-    setHodMapping(hod); setHodDepartmentId(String(hod.departmentId ?? "")); setHodSectionId(String(hod.sectionId ?? ""));
+    setHodMapping(hod);
+    setHodDepartmentId(String(hod.departmentId ?? ""));
+    setHodSectionId(String(hod.sectionId ?? ""));
+    setHodSectionIds(hodScopeIdsOf(hod));
   }
   /** Pre-fill the HOD form from an existing payroll employee (from the candidates list). */
   function openHodRegistration(candidate: HodCandidate) {
     setNewHodId(String(candidate.id));
     setNewHodDepartmentId(String(candidate.departmentId));
-    setNewHodSectionId(String(candidate.sectionAssignment?.sectionId ?? ""));
+    const fromAssignment = candidate.sectionAssignment ? [candidate.sectionAssignment.sectionId] : [];
+    setNewHodSectionId(String(fromAssignment[0] ?? ""));
+    setNewHodSectionIds(fromAssignment);
   }
   async function registerHod() {
-    if (!newHodId || !newHodDepartmentId || !newHodSectionId) return;
+    // An EMPTY set is department-wide, which is a real scope — so it is NOT a missing Section.
+    if (!newHodId || !newHodDepartmentId) return;
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await api<{ created: boolean; user: { name: string } }>("/admin/hods", {
         method: "POST",
-        body: JSON.stringify({ employeeId: Number(newHodId), departmentId: Number(newHodDepartmentId), sectionId: Number(newHodSectionId) }),
+        body: JSON.stringify({ sectionIds: newHodSectionIds, employeeId: Number(newHodId), departmentId: Number(newHodDepartmentId) }),
       });
       setNotice(result.created
         ? `${result.user.name} registered as HOD. Sign in with the EcNo. A one-time credential was queued for delivery.`
         : // An existing EMPLOYEE account is promoted in place, so this is not "already an HOD".\
           `${result.user.name} now has this Department / Section HOD scope (the existing account was updated). Sign in with the EcNo.`);
-      setNewHodId(""); setNewHodDepartmentId(""); setNewHodSectionId("");
+      setNewHodId(""); setNewHodDepartmentId(""); setNewHodSectionId(""); setNewHodSectionIds([]);
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : "HOD registration failed."); }
     finally { setBusy(false); }
@@ -157,14 +196,16 @@ export function EmployeesPage() {
   function startHodFromEmployee(employee: Employee) {
     setNewHodId(String(employee.id));
     setNewHodDepartmentId(String(employee.department.id));
-    setNewHodSectionId(String(employee.sectionAssignment?.section.id ?? ""));
+    const fromAssignment = employee.sectionAssignment ? [employee.sectionAssignment.section.id] : [];
+    setNewHodSectionId(String(fromAssignment[0] ?? ""));
+    setNewHodSectionIds(fromAssignment);
     setNotice(`Ready to register ${employee.name} (${employee.ecNo}) as HOD — confirm the Section below.`);
   }
   async function saveHodMapping() {
-    if (!hodMapping || !hodDepartmentId || !hodSectionId) return;
+    if (!hodMapping || !hodDepartmentId) return;
     setBusy(true); setError("");
     try {
-      await api(`/admin/users/${hodMapping.id}/hod-scope`, { method: "PUT", body: JSON.stringify({ departmentId: Number(hodDepartmentId), sectionId: Number(hodSectionId) }) });
+      await api(`/admin/users/${hodMapping.id}/hod-scope`, { method: "PUT", body: JSON.stringify({ departmentId: Number(hodDepartmentId), sectionIds: hodSectionIds }) });
       setNotice(`${hodMapping.name} scope updated.`); setHodMapping(null); await load();
     } catch (err) { setError(err instanceof Error ? err.message : "HOD mapping failed."); }
     finally { setBusy(false); }
@@ -195,17 +236,31 @@ export function EmployeesPage() {
     </div>}
     {canTransfer && <div className="panel"><div className="panel__header"><span>HOD Registration &amp; Department / Section Mapping</span><span className="panel__count">{hods.length}</span></div>
       <form className="panel__body sup-form" onSubmit={(e) => { e.preventDefault(); void registerHod(); }}>
-        <p className="muted employees-hod-note">An HOD is an existing payroll Employee promoted to a Department/Section scope — register the Employee first, then create the HOD account here. HOD login uses the employee&apos;s ecNo. A one-time credential is queued; no password is shown or emailed until delivery is configured.</p>
+        <p className="muted employees-hod-note">An HOD is an existing payroll Employee promoted to a Department/Section scope — register the Employee first, then create the HOD account here. The approval scope is one or more Sections of that Department — tick several, or take the whole Department. HOD login uses the employee&apos;s ecNo. A one-time credential is queued; no password is shown or emailed until delivery is configured.</p>
         <div className="sup-form__grid">
           <div className="sup-field"><label>Department</label><select required value={newHodDepartmentId} onChange={(e) => { setNewHodDepartmentId(e.target.value); setNewHodSectionId(""); setNewHodId(""); setNewHodSectionFilter(""); }}><option value="">Select Department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div>
           <div className="sup-field"><label>Filter by Section (optional)</label><select disabled={!newHodDepartmentId} value={newHodSectionFilter} onChange={(e) => { setNewHodSectionFilter(e.target.value); setNewHodId(""); }}><option value="">All sections</option>{newHodSections.map((section) => <option key={section.id} value={section.id}>{section.code} · {section.name}</option>)}</select></div>
           <div className="sup-field"><label>Employee (payroll in this Department)</label><select required disabled={!newHodDepartmentId} value={newHodId} onChange={(e) => { const c = newHodCandidates.find((x) => String(x.id) === e.target.value); if (c) openHodRegistration(c); else setNewHodId(e.target.value); }}><option value="">{newHodDepartmentId ? (newHodCandidates.length ? "Select Employee" : "No eligible payroll employee matches this Department/Section") : "Select a Department first"}</option>{newHodCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.ecNo} · {candidate.name}{candidate.sectionAssignment ? ` · ${candidate.sectionAssignment.section.name}` : ""}{candidate.user ? ` (${candidate.user.role})` : ""}</option>)}</select></div>
-          <div className="sup-field"><label>Section (HOD scope)</label><select required disabled={!newHodDepartmentId} value={newHodSectionId} onChange={(e) => setNewHodSectionId(e.target.value)}><option value="">{newHodDepartmentId ? "Select Section" : "Select a Department first"}</option>{newHodSections.map((section) => <option key={section.id} value={section.id}>{section.code} · {section.name}</option>)}</select></div>
+          <div className="sup-field" style={{ gridColumn: "1 / -1" }}>
+            <label>Approval scope (HOD)</label>
+            <HodSectionPicker
+              sections={newHodSections.map((section) => ({ id: section.id, code: section.code, name: section.name }))}
+              picked={newHodSectionIds}
+              onToggle={(sectionId) =>
+                setNewHodSectionIds((current) =>
+                  current.includes(sectionId) ? current.filter((id) => id !== sectionId) : [...current, sectionId].sort((a, b) => a - b),
+                )
+              }
+              onAll={() => setNewHodSectionIds((current) => (current.length === 0 ? (selectedCandidate?.sectionAssignment ? [selectedCandidate.sectionAssignment.sectionId] : []) : []))}
+              disabled={!newHodDepartmentId}
+              busy={busy}
+            />
+          </div>
         </div>
         {selectedCandidate && <p className="muted employees-hod-note">{selectedCandidate.ecNo} · {selectedCandidate.name} · {selectedCandidate.department.name}{selectedCandidate.sectionAssignment ? ` · currently ${selectedCandidate.sectionAssignment.section.name}` : " · no Section assigned"}{selectedCandidate.user?.role === "EMPLOYEE" ? " · will be promoted from Employee to HOD" : selectedCandidate.user?.role === "HOD" ? " · already an HOD (scope will be updated)" : ""}</p>}
-        <button className="btn btn-primary" disabled={busy || !newHodId || !newHodDepartmentId || !newHodSectionId}>{busy ? "Saving…" : "Register HOD"}</button>
+        <button className="btn btn-primary" disabled={busy || !newHodId || !newHodDepartmentId}>{busy ? "Saving…" : "Register HOD"}</button>
       </form>
-      <table className="sup-table"><thead><tr><th>HOD</th><th>ecNo</th><th>Department</th><th>Section</th><th>Action</th></tr></thead><tbody>{hods.map((hod) => <tr key={hod.id}><td>{hod.name}</td><td>{employees.find((employee) => employee.user?.id === hod.id)?.ecNo || "—"}</td><td>{hod.department?.name || "Not mapped"}</td><td>{hod.scopeSection?.name || "Not mapped"}</td><td><button className="btn btn-secondary" onClick={() => openHodMapping(hod)}>Map scope</button></td></tr>)}</tbody></table>
+      <table className="sup-table"><thead><tr><th>HOD</th><th>ecNo</th><th>Department</th><th>Section</th><th>Action</th></tr></thead><tbody>{hods.map((hod) => <tr key={hod.id}><td>{hod.name}</td><td>{employees.find((employee) => employee.user?.id === hod.id)?.ecNo || "—"}</td><td>{hod.department?.name || "Not mapped"}</td><td>{hodScopeLabel(hod, sections)}</td><td><button className="btn btn-secondary" onClick={() => openHodMapping(hod)}>Map scope</button></td></tr>)}</tbody></table>
       <p className="muted" style={{ margin: "0 8px 8px" }}>Credential e-mail is off in this environment (CREDENTIAL_DELIVERY_ENABLED=false), so a newly registered HOD cannot log in until a password is set locally: <code>node apps/api/set-dev-password.cjs &lt;ecNo&gt;</code>.</p>
       {!hods.length && <div className="empty-state">No HOD accounts yet. Register one above.</div>}
     </div>}
@@ -218,8 +273,22 @@ export function EmployeesPage() {
     {hodMapping && <div className="modal-backdrop" onClick={() => setHodMapping(null)}><div className="modal" onClick={(e) => e.stopPropagation()}>
       <h3>Map HOD scope: {hodMapping.name}</h3><div className="sup-form__grid">
       <div className="sup-field"><label>Department</label><select value={hodDepartmentId} onChange={(e) => { setHodDepartmentId(e.target.value); setHodSectionId(""); }}><option value="">Select Department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div>
-      <div className="sup-field"><label>Section</label><select value={hodSectionId} onChange={(e) => setHodSectionId(e.target.value)}><option value="">Select Section</option>{hodSections.map((section) => <option key={section.id} value={section.id}>{section.code} · {section.name}</option>)}</select></div></div>
-      <div className="modal-actions"><button className="btn btn-ghost" onClick={() => setHodMapping(null)}>Cancel</button><button className="btn btn-primary" disabled={busy || !hodDepartmentId || !hodSectionId} onClick={() => void saveHodMapping()}>Save Mapping</button></div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <HodSectionPicker
+          sections={hodSections.map((section) => ({ id: section.id, code: section.code, name: section.name }))}
+          picked={hodSectionIds}
+          onToggle={(sectionId) =>
+            setHodSectionIds((current) =>
+              current.includes(sectionId) ? current.filter((id) => id !== sectionId) : [...current, sectionId].sort((a, b) => a - b),
+            )
+          }
+          onAll={() => setHodSectionIds((current) => (current.length === 0 ? (hodMapping?.sectionId != null ? [hodMapping.sectionId] : []) : []))}
+          disabled={!hodDepartmentId}
+          busy={busy}
+        />
+      </div>
+      <div className="modal-actions"><button className="btn btn-ghost" onClick={() => setHodMapping(null)}>Cancel</button><button className="btn btn-primary" disabled={busy || !hodDepartmentId} onClick={() => void saveHodMapping()}>Save Mapping</button></div>
     </div></div>}
     {transfer && <div className="modal-backdrop" onClick={() => setTransfer(null)}><div className="modal" onClick={(e) => e.stopPropagation()}>
       <h3>Transfer {transfer.name}</h3><p className="muted">{transfer.ecNo} · {transfer.user?.role === "SUPERVISOR" ? "Supervisor" : transfer.employmentType}</p>

@@ -345,23 +345,43 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
   res.status(result.created ? 201 : 200).json({ user: safeUser, credentialQueued: true, created: result.created });
 });
 
-/** Map an HOD to exactly one Department/Section scope. */
+/**
+ * Map an HOD to one or more Sections of a Department.
+ *
+ * `sectionIds` is the contract (`[]` = every Section of the Department). `sectionId` is the older
+ * single-Section form and is still accepted, so an in-flight client keeps working.
+ */
 adminRouter.put("/users/:id/hod-scope", requireRoles("PM", "ADMIN"), async (req, res) => {
   const userId = Number(req.params.id);
   const departmentId = Number(req.body?.departmentId);
-  const sectionId = Number(req.body?.sectionId);
-  const user = await prisma.user.findUnique({
-    where: { id: userId }, include: { employee: { include: { sectionAssignment: true } } },
-  });
+  const namedSections = Array.isArray(req.body?.sectionIds)
+    ? (req.body.sectionIds as unknown[]).map((value) => Number(value))
+    : null;
+  const singleSectionId = req.body?.sectionId == null ? null : Number(req.body.sectionId);
+  if (!departmentId) return res.status(400).json({ error: "departmentId is required." });
+  if (namedSections == null && !singleSectionId) {
+    return res.status(400).json({ error: "Name the Sections to scope this HOD to (sectionIds), or send sectionId." });
+  }
+  const [user, sections] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, include: { employee: { include: { sectionAssignment: true } } } }),
+    loadNamedSections(namedSections ?? (singleSectionId ? [singleSectionId] : [])),
+  ]);
   if (!user || user.role !== "HOD") return res.status(404).json({ error: "HOD account not found." });
-  const section = await prisma.section.findFirst({ where: { id: sectionId, departmentId, active: true, department: { active: true } } });
-  if (!section) return res.status(400).json({ error: "Select an active Section in the Department.", code: "INVALID_SCOPE" });
+  // An EMPTY set is the whole Department: a legitimate scope, so nothing is validated for it.
+  const wantedSections = normaliseSectionIds(namedSections ?? [singleSectionId].filter((v): v is number => v != null));
+  const sectionRefusal = validateScopeSections(departmentId, wantedSections, sections);
+  if (sectionRefusal) return res.status(400).json(sectionRefusal);
   if (user.employee) {
     const open = await prisma.employeeAllocationDay.count({ where: { employeeId: user.employee.id, status: { in: ["SUBMITTED", "HOD_APPROVED"] } } });
     if (open) return res.status(409).json({ error: "Resolve the HOD's submitted My Hours before changing scope.", code: "OPEN_TIMESHEETS" });
   }
+  // The legacy mirror: the first Section, or null for the whole Department.
+  const sectionId = wantedSections[0] ?? null;
   const updated = await prisma.$transaction(async (tx) => {
-    if (user.employee) {
+    // The Employee's own org mapping follows a NAMED Section only. A department-wide scope is not a
+    // Section, so moving the person's home Section to express it would be wrong: he belongs where he
+    // belongs and may still head the whole Department.
+    if (user.employee && sectionId != null) {
       await tx.employee.update({ where: { id: user.employee.id }, data: { departmentId } });
       await tx.employeeSectionAssignment.upsert({
         where: { employeeId: user.employee.id },
@@ -370,13 +390,11 @@ adminRouter.put("/users/:id/hod-scope", requireRoles("PM", "ADMIN"), async (req,
       });
     }
     const saved = await tx.user.update({ where: { id: userId }, data: { departmentId, sectionId, tokenVersion: { increment: 1 } } });
-    // This endpoint is still the single-Section form, so the stored set must be exactly that one
-    // Section. Without this the row and the mirror would disagree the moment it is used.
-    await writeUserScope(tx, userId, [sectionId]);
+    await writeUserScope(tx, userId, wantedSections);
     return saved;
   });
-  await writeAudit(req.user!.id, "HOD_SCOPE_UPDATE", "user", userId, { departmentId, sectionId });
-  res.json({ user: { id: updated.id, departmentId: updated.departmentId, sectionId: updated.sectionId } });
+  await writeAudit(req.user!.id, "HOD_SCOPE_UPDATE", "user", userId, { departmentId, sectionId, sectionIds: wantedSections });
+  res.json({ user: { id: updated.id, departmentId: updated.departmentId, sectionId: updated.sectionId }, sectionIds: wantedSections });
 });
 
 /** Atomically de-link an Employee from the current organisation path and map a new one. */
