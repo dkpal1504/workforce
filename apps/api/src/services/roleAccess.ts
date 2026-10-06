@@ -56,7 +56,7 @@ export type CapabilityMap = {
   viewPortfolioDashboard: boolean;
 };
 
-export function capabilitiesFor(role: string): CapabilityMap {
+export function capabilitiesFor(role: string, employmentType: string | null | undefined): CapabilityMap {
   const admin = role === "ADMIN";
   return {
     selectTeam: admin || role === "SUPERVISOR",
@@ -69,7 +69,8 @@ export function capabilitiesFor(role: string): CapabilityMap {
     manageEmployees: ["HOD", "PM", "ADMIN", "HR"].includes(role),
     uploadEmployees: admin || role === "HR",
     transferEmployees: admin || role === "PM",
-    allocateHours: ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "ADMIN"].includes(role),
+    // My Hours is a PAYROLL screen; see `canUseMyHours` for why the role alone cannot answer it.
+    allocateHours: canUseMyHours(role, employmentType),
     assignRoles: admin,
     viewDepartmentSummary: isDepartmentViewRole(role) || admin,
     // Master data for the Job Order hierarchy is owned by the PM team and Admin.
@@ -91,6 +92,28 @@ export function capabilitiesFor(role: string): CapabilityMap {
     // Department and nothing outside it.
     viewPortfolioDashboard: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD",
   };
+}
+
+/** The roles whose day can be built from recorded hours at all (My Hours or the Timesheet grid). */
+const ALLOCATION_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "ADMIN"] as const;
+
+/**
+ * May this account keep My Hours (self-service hour booking)?
+ *
+ * PAYROLL employees only. My Hours records a payroll person's own 2-hour slots; a contract
+ * worker's hours are tagged FOR him by his Supervisor on the Timesheet page.
+ *
+ * THE ROLE IS NOT THE TEST. A payroll employee can hold the SUPERVISOR role, so a SUPERVISOR
+ * account may legitimately be payroll (and may already hold My Hours days). The employment type
+ * decides; the role does not.
+ *
+ * AN ACCOUNT WITH NO LINKED RECORD IS REFUSED (fail closed): it has no person to record hours
+ * for, and the allocation routes require the link anyway, so admitting it would only offer a
+ * door the API closes.
+ */
+export function canUseMyHours(role: string, employmentType: string | null | undefined): boolean {
+  if (!(ALLOCATION_ROLES as readonly string[]).includes(role)) return false;
+  return employmentType === "PAYROLL";
 }
 
 export function landingPathFor(role: string): string {

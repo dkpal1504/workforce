@@ -53,7 +53,24 @@ teamsRouter.get("/pool", async (req, res) => {
     orderBy: { name: "asc" },
   });
 
-  res.json({ employees, available: employees.length, sectionId });
+  // The supervisor's OWN record is offered alongside the labour, so he can book his own overtime.
+  // It is not CLMS and carries no Section assignment, so it can never come back from the query above;
+  // it is added explicitly, and only for the acting supervisor's own Employee id.
+  const ownEmployeeId = req.user!.role === "ADMIN" ? null : req.user!.employeeId;
+  const own =
+    ownEmployeeId == null || ownEmployeeId === undefined
+      ? null
+      : await prisma.employee.findFirst({
+          where: { id: ownEmployeeId, active: true, departmentId },
+          include: { sectionAssignment: { include: { section: true } } },
+        });
+
+  const pool = [
+    ...(own ? [{ ...own, isSelf: true }] : []),
+    ...employees.map((employee) => ({ ...employee, isSelf: false })),
+  ];
+
+  res.json({ employees: pool, available: pool.length, sectionId, selfEmployeeId: own?.id ?? null });
 });
 
 teamsRouter.get("/today", async (req, res) => {

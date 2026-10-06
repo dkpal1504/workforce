@@ -481,8 +481,11 @@ export function TimesheetPage() {
     const row = rows.find((r) => r.employeeId === employeeId);
     if (!row || (row.selectedSlots.size === 0 && !row.otSelected)) return;
     if (rowEditMode(row) === "locked") return;
-    if (row.otSelected && row.employee.employmentType !== "CLMS") {
-      setError("Overtime entry is available only for contract workmen.");
+    // OT is for contract workmen, plus the supervisor's OWN row: he is the person who did the
+    // hours, and a payroll supervisor has no CLMS row to book against. The API enforces the
+    // same equality test, so this only mirrors it.
+    if (row.otSelected && row.employee.employmentType !== "CLMS" && !row.isSelf) {
+      setError("Overtime entry is available only for contract workmen, or on your own row.");
       return;
     }
 
@@ -1097,7 +1100,7 @@ export function TimesheetPage() {
                 : storedSlotJobOrderLabel(r, r.jobOrderId);
               const otRemarksRequired =
                 Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
-              const otAvailable = r.employee.employmentType === "CLMS";
+              const otAvailable = r.employee.employmentType === "CLMS" || Boolean(r.isSelf);
               const otOnly = filledCount === 0 && (r.otHours ?? 0) > 0;
               const expanded = expandedEmployees.has(r.employeeId) || r.fullShiftDone;
               return (
@@ -1381,7 +1384,7 @@ export function TimesheetPage() {
             : storedSlotJobOrderLabel(r, r.jobOrderId);
           const otRemarksRequired =
             Boolean(r.remarksRequired) || (r.otSelected && Number(r.otHoursInput) > 0);
-          const otAvailable = r.employee.employmentType === "CLMS";
+          const otAvailable = r.employee.employmentType === "CLMS" || Boolean(r.isSelf);
           const otOnly = filledCount === 0 && (r.otHours ?? 0) > 0;
           return (
             <article

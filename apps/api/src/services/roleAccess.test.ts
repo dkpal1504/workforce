@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  canUseMyHours,
   capabilitiesFor,
   canCreatePayrollEmployee,
   departmentScope,
@@ -38,7 +39,7 @@ const MUTATING_CAPABILITIES = [
 
 test("requested role capability matrix is enforced", () => {
   assert.deepEqual(
-    ["EMPLOYEE", "SUPERVISOR", "HOD", "PM", "ADMIN"].map((role) => [role, capabilitiesFor(role)]),
+    ["EMPLOYEE", "SUPERVISOR", "HOD", "PM", "ADMIN"].map((role) => [role, capabilitiesFor(role, "PAYROLL")]),
     [
       ["EMPLOYEE", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false }],
       ["SUPERVISOR", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false }],
@@ -111,13 +112,13 @@ test("a Department HOD (no Section) matches every Section of its Department", ()
 });
 
 test("the Department Head is oversight-only, and HOD keeps approval rights", () => {
-  assert.equal(capabilitiesFor("DEPT_HEAD").viewSummary, true);
-  assert.equal(capabilitiesFor("DEPT_HEAD").viewDepartmentSummary, true);
-  assert.equal(capabilitiesFor("DEPT_HEAD").approveTimesheets, false);
-  assert.equal(capabilitiesFor("DEPT_HEAD").manageEmployees, false);
-  assert.equal(capabilitiesFor("HOD").approveTimesheets, true);
-  assert.equal(capabilitiesFor("HOD").viewDepartmentSummary, true);
-  assert.equal(capabilitiesFor("SUPERVISOR").viewDepartmentSummary, false);
+  assert.equal(capabilitiesFor("DEPT_HEAD", "PAYROLL").viewSummary, true);
+  assert.equal(capabilitiesFor("DEPT_HEAD", "PAYROLL").viewDepartmentSummary, true);
+  assert.equal(capabilitiesFor("DEPT_HEAD", "PAYROLL").approveTimesheets, false);
+  assert.equal(capabilitiesFor("DEPT_HEAD", "PAYROLL").manageEmployees, false);
+  assert.equal(capabilitiesFor("HOD", "PAYROLL").approveTimesheets, true);
+  assert.equal(capabilitiesFor("HOD", "PAYROLL").viewDepartmentSummary, true);
+  assert.equal(capabilitiesFor("SUPERVISOR", "PAYROLL").viewDepartmentSummary, false);
   assert.equal(landingPathFor("DEPT_HEAD"), "/summary");
   assert.equal(landingPathFor("HOD"), "/approvals");
 });
@@ -125,12 +126,12 @@ test("the Department Head is oversight-only, and HOD keeps approval rights", () 
 test("manual organisation mapping wins over the LabourWorks source", () => {
   assert.deepEqual(effectiveOrganisation(1, 10, null), { departmentId: 1, sectionId: 10, overridden: false });
   assert.deepEqual(effectiveOrganisation(1, 10, { departmentId: 2, sectionId: 20 }), { departmentId: 2, sectionId: 20, overridden: true });
-  assert.equal(capabilitiesFor("PM").transferEmployees, true);
-  assert.equal(capabilitiesFor("HOD").transferEmployees, false);
+  assert.equal(capabilitiesFor("PM", "PAYROLL").transferEmployees, true);
+  assert.equal(capabilitiesFor("HOD", "PAYROLL").transferEmployees, false);
   // Only an Admin may assign roles.
-  assert.equal(capabilitiesFor("ADMIN").assignRoles, true);
-  assert.equal(capabilitiesFor("HR").assignRoles, false);
-  assert.equal(capabilitiesFor("SUPERVISOR").assignRoles, false);
+  assert.equal(capabilitiesFor("ADMIN", "PAYROLL").assignRoles, true);
+  assert.equal(capabilitiesFor("HR", "PAYROLL").assignRoles, false);
+  assert.equal(capabilitiesFor("SUPERVISOR", "PAYROLL").assignRoles, false);
 });
 
 /**
@@ -139,7 +140,7 @@ test("manual organisation mapping wins over the LabourWorks source", () => {
  * false — a single stray `true` would let the dashboard become an approvals screen.
  */
 test("the COO is a read-only organisation-wide role that lands on the portfolio", () => {
-  const coo = capabilitiesFor("COO");
+  const coo = capabilitiesFor("COO", "PAYROLL");
   assert.equal(coo.viewPortfolioDashboard, true, "the COO's whole reason for existing");
   assert.equal(coo.viewSummary, true);
   for (const capability of MUTATING_CAPABILITIES) {
@@ -158,10 +159,10 @@ test("the portfolio dashboard capability belongs to the oversight roles only", (
   // heads the capability is only the DOOR: the SCOPE they then read is their own Department,
   // applied server-side (`reportScopeFor`) — asserting the capability alone would miss that.
   for (const role of ["PM", "ADMIN", "COO", "HOD", "DEPT_HEAD"]) {
-    assert.equal(capabilitiesFor(role).viewPortfolioDashboard, true, `${role} sees the portfolio`);
+    assert.equal(capabilitiesFor(role, "PAYROLL").viewPortfolioDashboard, true, `${role} sees the portfolio`);
   }
   for (const role of ["EMPLOYEE", "SUPERVISOR", "HR", "FINANCE"]) {
-    assert.equal(capabilitiesFor(role).viewPortfolioDashboard, false, `${role} must not see the portfolio`);
+    assert.equal(capabilitiesFor(role, "PAYROLL").viewPortfolioDashboard, false, `${role} must not see the portfolio`);
   }
 });
 
@@ -230,4 +231,41 @@ test("intersectDepartmentFilter INTERSECTS the request with the actor's scope, n
 test("the COO signs in by e-mail, never by EC No", () => {
   assert.equal(usesEcNoLogin("COO", 5), false);
   assert.equal(usesEcNoLogin("COO", null), false);
+});
+
+/**
+ * My Hours is a PAYROLL screen, and the ROLE cannot decide it: a payroll employee can hold the
+ * SUPERVISOR role, so keying the capability off the role would strand that person's existing days.
+ */
+
+test("My Hours is payroll-only, whichever role the account holds", () => {
+  assert.equal(canUseMyHours("EMPLOYEE", "PAYROLL"), true);
+  assert.equal(canUseMyHours("SUPERVISOR", "PAYROLL"), true, "a payroll employee who supervises keeps My Hours");
+  assert.equal(canUseMyHours("HOD", "PAYROLL"), true, "an HOD books his own hours");
+
+  assert.equal(canUseMyHours("SUPERVISOR", "CLMS"), false, "a contract supervisor routes slots and OT via Timesheet");
+  assert.equal(canUseMyHours("EMPLOYEE", "CLMS"), false);
+  assert.equal(canUseMyHours("HOD", "CLMS"), false);
+});
+
+test("an unlinked or unknown account fails closed", () => {
+  assert.equal(canUseMyHours("SUPERVISOR", null), false);
+  assert.equal(canUseMyHours("SUPERVISOR", undefined), false);
+  assert.equal(canUseMyHours("SUPERVISOR", ""), false);
+  assert.equal(canUseMyHours("COO", "PAYROLL"), false, "the org-wide reader never recorded hours");
+  assert.equal(canUseMyHours("FINANCE", "PAYROLL"), false, "FINANCE never recorded hours");
+  assert.equal(canUseMyHours("NONSENSE", "PAYROLL"), false);
+});
+
+test("the capability follows the employment type, not the role", () => {
+  // The same ROLE, two answers — which is the whole reason the signature changed.
+  assert.equal(capabilitiesFor("SUPERVISOR", "PAYROLL").allocateHours, true);
+  assert.equal(capabilitiesFor("SUPERVISOR", "CLMS").allocateHours, false);
+  assert.equal(capabilitiesFor("SUPERVISOR", "CLMS").selectTeam, true, "the Timesheet page is where he works instead");
+});
+
+test("landingPathFor is unchanged, so a contract supervisor still lands on Select Team", () => {
+  assert.equal(landingPathFor("SUPERVISOR"), "/select-team");
+  assert.equal(landingPathFor("EMPLOYEE"), "/allocations");
+  assert.equal(landingPathFor("HOD"), "/approvals");
 });

@@ -34,6 +34,8 @@ const lifecycleUserSelect = {
       active: true,
       terminatedAt: true,
       departmentId: true,
+      // `allocateHours` (My Hours) depends on this, so it must be selected.
+      employmentType: true,
       sectionAssignment: {
         select: {
           section: {
@@ -87,7 +89,7 @@ function presentUser(user: any) {
       : null,
     section: assignedSection,
     requiresSectionSelection,
-    capabilities: capabilitiesFor(user.role),
+    capabilities: capabilitiesFor(user.role, user.employee?.employmentType ?? null),
     landingPath: landingPathFor(user.role),
   };
 }

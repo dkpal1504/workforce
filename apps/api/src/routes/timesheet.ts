@@ -32,6 +32,31 @@ async function supervisorDepartmentForActor(actorRole: string, actorId: number, 
   return supervisor?.departmentId ?? null;
 }
 
+/**
+ * The Employee row behind a supervisor's own login, or null when the account has none.
+ *
+ * Read from the USER, never from the request: this is what makes the self carve-out below an equality
+ * test on one specific person rather than a rule somebody could aim at a colleague.
+ */
+async function ownEmployeeIdFor(userId: number): Promise<number | null> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { employeeId: true } });
+  return user?.employeeId ?? null;
+}
+
+/**
+ * May this supervisor act on these employees' hours?
+ *
+ * THE SELF CARVE-OUT (added for supervisor self-OT): the supervisor's OWN Employee row is authorised
+ * whenever it belongs to the same Department, with NO `daily_team_selection` row and regardless of
+ * employment type. He is not "labour assigned to his team" — he is himself, and a payroll supervisor
+ * has no CLMS row at all.
+ *
+ * WHY THIS IS SAFE AND DOES NOT WIDEN ANYTHING: the authorised id must EQUAL the supervisor's own
+ * `employeeId`, read from the User row. So this can only ever admit one specific person's own record;
+ * it cannot admit a payroll colleague, and it cannot admit labour from another Department. The helper
+ * gates `PUT /day`, `PUT /entry`, `PUT /ot`, `POST /submit` and `/carry-forward`, so an accidental
+ * widening here would be a real hole — hence equality, not a rule.
+ */
 async function hasTeamAccess(
   supervisorId: number,
   departmentId: number | null,
@@ -40,12 +65,25 @@ async function hasTeamAccess(
 ): Promise<boolean> {
   const ids = [...new Set(employeeIds)];
   if (departmentId == null || ids.length === 0) return false;
+
+  const ownEmployeeId = await ownEmployeeIdFor(supervisorId);
+  const selfIds = ownEmployeeId == null ? [] : ids.filter((id) => id === ownEmployeeId);
+  const teamIds = ids.filter((id) => id !== ownEmployeeId);
+
+  if (selfIds.length) {
+    const own = await prisma.employee.count({
+      where: { id: { in: selfIds }, departmentId, active: true },
+    });
+    if (own !== selfIds.length) return false;
+  }
+  if (!teamIds.length) return true;
+
   const count = await prisma.dailyTeamSelection.count({
     where: {
       supervisorId,
       workDate,
       removedAt: null,
-      employeeId: { in: ids },
+      employeeId: { in: teamIds },
       employee: { departmentId, employmentType: "CLMS" },
     },
   });
@@ -1450,10 +1488,17 @@ timesheetRouter.put("/ot", serializeTimesheetMutation, async (req, res) => {
   });
   if (!employee?.active) return res.status(409).json(inactiveEmployeePayload());
   if (otHours != null && employee.employmentType !== "CLMS") {
-    return res.status(400).json({
-      error: "Overtime entry is available only for contract workmen.",
-      code: "OT_NOT_ALLOWED_FOR_PAYROLL",
-    });
+    // A supervisor entering HIS OWN overtime is the one payroll case that is allowed: he is the person
+    // who did the hours, and a payroll supervisor has no CLMS row to book it against. Every OTHER
+    // payroll row stays refused — this is an equality test on the actor's own Employee id, read from
+    // the User row, so it cannot be aimed at a payroll colleague.
+    const ownEmployeeId = await ownEmployeeIdFor(req.user!.id);
+    if (ownEmployeeId == null || employeeId !== ownEmployeeId) {
+      return res.status(400).json({
+        error: "Overtime entry is available only for contract workmen, or on your own row.",
+        code: "OT_NOT_ALLOWED_FOR_PAYROLL",
+      });
+    }
   }
 
   // Validate OT hours: integer 1-12 (configurable cap), or null to clear.
