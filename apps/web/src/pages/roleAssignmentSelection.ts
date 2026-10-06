@@ -37,6 +37,14 @@ export type PersonRow = {
   roleRefusals: Record<string, string>;
   hodScope: "SECTION" | "DEPARTMENT" | null;
   /**
+   * The Sections this account heads, as the server stores them. EMPTY means the whole Department.
+   *
+   * `hodScope` alone cannot express this: it reads SECTION for ANY non-null mirror, so a Head of
+   * two Sections would look like a Head of one and the panel would silently narrow him on the
+   * next save.
+   */
+  scopeSections?: number[];
+  /**
    * Work the SERVER says would block the change — computed from the same numbers its guards use.
    *
    * WHY THE PANEL NEEDS THESE
@@ -195,4 +203,55 @@ export function assignmentNotice(
     return `${row.name} is now ${roleText}, and a login was created. They sign in with EC No ${row.ecNo} and the first password ${firstPassword}, and must set their own password at that first login.`;
   }
   return `${row.name} is now ${roleText}. Their sessions were revoked, so they take the new screens on their next login.`;
+}
+
+/**
+ * The Sections the panel should PRE-TICK for an account.
+ *
+ * An account migrated before this feature has no rows, and its scope is then whatever its legacy
+ * mirror says — the exact fallback `requireAuth` applies, restated here so the panel and the API
+ * can never disagree about what a half-migrated account covers.
+ */
+export function deriveScopeSections(row: Pick<PersonRow, "hodScope" | "scopeSections" | "section">): number[] {
+  if (row.scopeSections && row.scopeSections.length > 0) return [...row.scopeSections].sort((a, b) => a - b);
+  if (row.hodScope === "DEPARTMENT") return [];
+  return row.section ? [row.section.id] : [];
+}
+
+/**
+ * The legacy scope word for a picked SET. One direction only: set -> scalar.
+ *
+ * It exists so the already-tested `changePending` / `assignmentNotice` / `targetSummary` keep
+ * working unchanged. Deriving the SET from this scalar would be the bug — the mirror is the
+ * first Section, so it cannot tell a two-Section Head from a one-Section Head.
+ */
+export function hodScopeFromPicked(sectionIds: readonly number[]): "SECTION" | "DEPARTMENT" {
+  return sectionIds.length === 0 ? "DEPARTMENT" : "SECTION";
+}
+
+/**
+ * Does this picked SET differ from what the account already has?
+ *
+ * Order-insensitive and compared as SETS, mirroring the API's own NO_CHANGE guard: re-ticking the
+ * same Sections in a different order is not a change, and dropping one from the middle IS.
+ */
+export function scopeSelectionDiffers(row: Pick<PersonRow, "hodScope" | "scopeSections" | "section">, pickedIds: readonly number[]): boolean {
+  const current = deriveScopeSections(row);
+  const next = [...new Set(pickedIds)].sort((a, b) => a - b);
+  return current.length !== next.length || current.some((id, index) => id !== next[index]);
+}
+
+/**
+ * The sentence beside the tick list: what these ticks will actually do.
+ *
+ * The operator should not have to infer it. A department-wide scope is stated in words rather
+ * than shown as an empty list, because "nothing ticked" reads as "nothing selected yet".
+ */
+export function scopeConsequence(
+  sectionIds: readonly number[],
+  names: (id: number) => string | null
+): string {
+  if (sectionIds.length === 0) return "Approves timesheets from every Section of this Department.";
+  const labels = [...sectionIds].sort((a, b) => a - b).map((id) => names(id) ?? `Section ${id}`);
+  return `Approves timesheets from ${labels.join(" and ")}.`;
 }

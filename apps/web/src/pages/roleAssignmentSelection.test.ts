@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import {
   assignmentNotice,
   changePending,
+  deriveScopeSections,
+  hodScopeFromPicked,
+  scopeConsequence,
+  scopeSelectionDiffers,
   findSelection,
   loginFor,
   parseSelection,
@@ -206,4 +210,51 @@ test("the panel says how many OTHER approvers could clear their queue instead", 
   // work that may not be this person's.
   assert.equal(unblocksByApprovingOthers(rows, 35, "EMPLOYEE"), 2);
   assert.equal(unblocksByApprovingOthers(rows, 38, "SUPERVISOR"), 0, "no queue = nothing to explain");
+});
+
+/**
+ * The multi-Section Section Head. Two facts must never be inferred from the legacy mirror: how
+ * many Sections an account heads, and whether the ticks changed anything.
+ */
+
+test("the pre-ticked Sections come from the SET, and fall back to the legacy mirror", () => {
+  // A migrated account: the set is the truth.
+  assert.deepEqual(deriveScopeSections(account({ hodScope: "SECTION", scopeSections: [210, 103], section: { id: 103, name: "Hull" } })), [103, 210]);
+  // A department-wide account: no rows, and that MEANS every Section.
+  assert.deepEqual(deriveScopeSections(account({ hodScope: "DEPARTMENT", scopeSections: [], section: { id: 103, name: "Hull" } })), []);
+  // A half-migrated account with neither: the legacy mirror is its one Section, exactly as
+  // requireAuth reads it.
+  assert.deepEqual(deriveScopeSections(account({ hodScope: "SECTION", scopeSections: [], section: { id: 103, name: "Hull" } })), [103]);
+  assert.deepEqual(deriveScopeSections(account({ hodScope: "SECTION", scopeSections: undefined, section: null })), []);
+});
+
+test("re-ticking the same Sections in another order is NOT a change", () => {
+  const hod = account({ hodScope: "SECTION", scopeSections: [103, 210], section: { id: 103, name: "Hull" } });
+  assert.equal(scopeSelectionDiffers(hod, [103, 210]), false);
+  assert.equal(scopeSelectionDiffers(hod, [210, 103]), false, "order is not a scope change");
+  assert.equal(scopeSelectionDiffers(hod, [210, 103, 103]), false, "a duplicate is not a scope change");
+  assert.equal(scopeSelectionDiffers(hod, [103, 210, 42]), true, "adding one IS");
+  assert.equal(scopeSelectionDiffers(hod, [210]), true, "dropping one IS");
+  assert.equal(scopeSelectionDiffers(hod, []), true, "widening to the whole Department IS");
+  // A department-wide account narrowed to one Section is a change, even though the legacy mirror
+  // is non-null in both readings of one Section.
+  const wide = account({ hodScope: "DEPARTMENT", scopeSections: [], section: { id: 103, name: "Hull" } });
+  assert.equal(scopeSelectionDiffers(wide, []), false);
+  assert.equal(scopeSelectionDiffers(wide, [103]), true);
+});
+
+test("the legacy scope word is DERIVED from the set, never the other way round", () => {
+  assert.equal(hodScopeFromPicked([]), "DEPARTMENT");
+  assert.equal(hodScopeFromPicked([103]), "SECTION");
+  assert.equal(hodScopeFromPicked([103, 210]), "SECTION", "two Sections are still a Section scope, not Department");
+});
+
+test("the tick list states the consequence in words, and names every Section", () => {
+  const names: Record<number, string> = { 103: "Hull", 210: "Blasting" };
+  const lookup = (id: number) => names[id] ?? null;
+  assert.equal(scopeConsequence([], lookup), "Approves timesheets from every Section of this Department.");
+  assert.equal(scopeConsequence([103], lookup), "Approves timesheets from Hull.");
+  assert.equal(scopeConsequence([210, 103], lookup), "Approves timesheets from Hull and Blasting.");
+  assert.equal(scopeConsequence([103, 210, 42], lookup), "Approves timesheets from Section 42 and Hull and Blasting.", "an unknown id is still named, never dropped");
+  assert.equal(scopeConsequence([210, 103], lookup), "Approves timesheets from Hull and Blasting.", "the order read back is deterministic, not the click order");
 });

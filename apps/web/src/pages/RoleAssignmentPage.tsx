@@ -4,6 +4,9 @@ import { useAuth } from "../auth/AuthContext";
 import {
   assignmentNotice,
   changePending,
+  deriveScopeSections,
+  hodScopeFromPicked,
+  scopeConsequence,
   findSelection,
   loginFor,
   parseSelection,
@@ -12,6 +15,7 @@ import {
   rowKey,
   targetSummary,
   unblocksByApprovingOthers,
+  scopeSelectionDiffers,
   type PersonRow,
 } from "./roleAssignmentSelection";
 import "../styles/supervisors.css";
@@ -31,6 +35,8 @@ type AccountRow = {
   department: { id: number; name: string } | null;
   scopeSection: { id: number; name: string } | null;
   hodScope: HodScope | null;
+  /** The Sections this account heads. EMPTY means the whole Department. */
+  scopeSections?: number[];
 };
 
 type EmployeeRow = {
@@ -105,6 +111,7 @@ function accountToRow(account: AccountRow): PersonRow {
     creatableRoles: [],
     roleRefusals: {},
     hodScope: account.hodScope,
+    scopeSections: account.scopeSections ?? [],
     // The server's own counts for the guards, so a blocked move is explained BEFORE the click.
     blockers: account.blockers ?? { pendingApprovals: 0, returnedTimesheetDays: 0 },
   };
@@ -139,6 +146,81 @@ function matches(row: PersonRow, term: string): boolean {
     .some((value) => String(value ?? "").toLowerCase().includes(term));
 }
 
+/**
+ * Tick the Sections a Section Head covers, or take the whole Department.
+ *
+ * WHY A CHECKBOX LIST AND NOT A SELECT: an HOD scope is now a SET, and a `<select multiple>` is
+ * the wrong control for it — it hides the options, needs a modifier key to multi-pick, and reads
+ * as a single choice to anyone who has not used one. The Department is chosen ONCE, above, so
+ * every Section offered here already belongs to it: the same-department rule is enforced by the
+ * shape of the form, not by a validation message.
+ *
+ * EXPORTED so the Employees (Payroll) screen renders the SAME control. Two paths that assign a
+ * Section Head must not drift, or one of them writes a scope the other cannot read.
+ */
+export function HodSectionPicker({
+  sections,
+  picked,
+  onToggle,
+  onAll,
+  disabled,
+  busy,
+  loadError,
+}: {
+  sections: { id: number; code: string; name: string }[];
+  picked: number[];
+  onToggle: (sectionId: number) => void;
+  onAll: () => void;
+  disabled: boolean;
+  busy: boolean;
+  /** Why `sections` is empty, when the fetch failed. Never swallowed. */
+  loadError?: string;
+}) {
+  const locked = disabled || busy;
+  const isAll = picked.length === 0;
+  return (
+    <div>
+      <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6 }}>
+        <input type="checkbox" checked={isAll} disabled={locked} onChange={() => onAll()} />
+        <span>
+          <strong>All Sections of this Department</strong>
+          <div className="muted">
+            Approves timesheets from every Section, including Sections added later. This is what a
+            Department HOD has.
+          </div>
+        </span>
+      </label>
+      <div style={{ marginLeft: 24, borderLeft: "2px solid var(--border-light)", paddingLeft: 12 }}>
+        {sections.length === 0 ? (
+          <p className={loadError ? "error-banner" : "muted"} style={{ margin: 0 }}>
+            {loadError
+              ? `The Sections for this Department could not be loaded: ${loadError}`
+              : "No Sections are available for this Department yet."}
+          </p>
+        ) : (
+          sections.map((section) => (
+            <label key={section.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+              <input
+                type="checkbox"
+                checked={!isAll && picked.includes(section.id)}
+                disabled={locked || isAll}
+                onChange={() => onToggle(section.id)}
+              />
+              <span>
+                {section.code} · {section.name}
+              </span>
+            </label>
+          ))
+        )}
+      </div>
+      {/* The consequence in plain words: the operator should not have to infer the ticks. */}
+      <p className="muted" style={{ marginTop: 6, marginBottom: 0 }}>
+        {scopeConsequence(picked, (id) => sections.find((s) => s.id === id)?.name ?? null)}
+      </p>
+    </div>
+  );
+}
+
 export function RoleAssignmentPage() {
   const { user } = useAuth();
   const [roles, setRoles] = useState<Role[]>([]);
@@ -148,7 +230,16 @@ export function RoleAssignmentPage() {
   const [truncated, setTruncated] = useState(false);
   const [selectedKey, setSelectedKey] = useState("");
   const [pickedRole, setPickedRole] = useState<Role | "">("");
-  const [hodScope, setHodScope] = useState<HodScope>("SECTION");
+  /** The Sections ticked for this account. The SET is the source of truth; the old scalar is derived below. */
+  const [pickedSectionIds, setPickedSectionIds] = useState<number[]>([]);
+  /** The chosen Department's Sections. A Department is picked ONCE, so the ticks cannot cross one. */
+  const [sectionOptions, setSectionOptions] = useState<{ id: number; code: string; name: string }[]>([]);
+  /** Why the Section list is empty, when it is. An empty list must never be silent. */
+  const [sectionLoadError, setSectionLoadError] = useState("");
+  // Derived, ONE direction only (set -> scalar). `changePending`/`assignmentNotice`/`targetSummary`
+  // are already tested in terms of this scalar, so it is computed from the set rather than the set
+  // being inferred from it — the mirror is the FIRST Section and cannot count them.
+  const hodScope: HodScope = hodScopeFromPicked(pickedSectionIds);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -216,12 +307,39 @@ export function RoleAssignmentPage() {
     setPickedRole(selected?.currentRole && SELECTABLE_ROLES.includes(selected.currentRole as Role)
       ? (selected.currentRole as Role)
       : "");
-    setHodScope(selected?.hodScope ?? "SECTION");
+    setPickedSectionIds(selected ? deriveScopeSections(selected) : []);
     setError("");
     if (selected && changePending(selected, selected.currentRole ?? "", selected.hodScope ?? "SECTION")) setNotice("");
   }, [selected]);
 
-  const pending = changePending(selected, pickedRole, hodScope);
+  /** The Department whose Sections the tick list must offer: the row's own, from the Employee mapping. */
+  const scopeDepartmentId = selected?.department?.id ?? null;
+
+  // The Section list arrives AFTER the first render, so it is fetched whenever the Department
+  // changes and cleared while it is unknown — a stale Department's Sections in the list would let
+  // an operator tick a Section the API will refuse.
+  useEffect(() => {
+    let cancelled = false;
+    if (scopeDepartmentId == null) { setSectionOptions([]); setSectionLoadError(""); return; }
+    api<{ sections: { id: number; code: string; name: string }[] }>(`/sections?department_id=${scopeDepartmentId}`)
+      .then((data) => {
+        if (cancelled) return;
+        setSectionOptions(data.sections ?? []);
+        setSectionLoadError("");
+      })
+      // A failed fetch must SAY so. Swallowing it renders "No Sections are available for this
+      // Department yet", which is a false statement about the database when the request simply
+      // failed — and an operator reading it would go and create Sections that already exist.
+      .catch((err) => {
+        if (cancelled) return;
+        setSectionOptions([]);
+        setSectionLoadError(errorText(err));
+      });
+    return () => { cancelled = true; };
+  }, [scopeDepartmentId]);
+
+  const pending = changePending(selected, pickedRole, hodScope) ||
+    (selected != null && pickedRole === "HOD" && selected.kind === "ACCOUNT" && scopeSelectionDiffers(selected, pickedSectionIds));
   /**
    * Work that will make the server refuse this move. Computed from the counts the API sends with the
    * list, so the operator is told BEFORE clicking — and, because the banner sits at the top of a long
@@ -237,7 +355,7 @@ export function RoleAssignmentPage() {
     if (!selected || !pickedRole) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      const body = JSON.stringify({ role: pickedRole, ...(pickedRole === "HOD" ? { hodScope } : {}) });
+      const body = JSON.stringify({ role: pickedRole, ...(pickedRole === "HOD" ? { sectionIds: pickedSectionIds } : {}) });
       // An Employee with no account is addressed by Employee id and has the account CREATED;
       // an existing account is re-roled by User id. Two routes, one set of rules behind them.
       const path = selected.kind === "EMPLOYEE" ? `/admin/employees/${selected.id}/role` : `/admin/users/${selected.id}/role`;
@@ -393,30 +511,25 @@ export function RoleAssignmentPage() {
 
             {pickedRole === "HOD" && (
               <div className="panel" style={{ marginTop: 12, padding: 12, border: "1px solid var(--border-light)", borderRadius: 8 }}>
-                <strong>HOD scope</strong>
+                <strong>Approval scope — which Sections may this person approve?</strong>
                 <div className="muted" style={{ marginBottom: 8 }}>
-                  Section-level approves only its own Section. Department-level sees approved hours for every
-                  Section of its Department and (as HOD) may approve in any of them.
+                  Tick one or more Sections of {selected.department?.name ?? "this person's Department"}. Only
+                  Sections of that Department can be ticked, and they are the Sections he may approve work
+                  from — not a limit on where he records his own hours.
                 </div>
-                {(["SECTION", "DEPARTMENT"] as HodScope[]).map((scope) => (
-                  <label key={scope} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-                    <input
-                      type="radio"
-                      name="hodScope"
-                      checked={hodScope === scope}
-                      disabled={busy || selected.self || !selected.active}
-                      onChange={() => setHodScope(scope)}
-                    />
-                    <span>
-                      {scope === "SECTION" ? "Section" : "Department"}
-                      <span className="muted">
-                        {scope === "SECTION"
-                          ? ` — ${selected.section?.name ?? "the Employee's Section, or department-wide if they have none"}`
-                          : ` — all Sections of ${selected.department?.name ?? "the Department"}`}
-                      </span>
-                    </span>
-                  </label>
-                ))}
+                <HodSectionPicker
+                  sections={sectionOptions}
+                  picked={pickedSectionIds}
+                  onToggle={(sectionId) =>
+                    setPickedSectionIds((current) =>
+                      current.includes(sectionId) ? current.filter((id) => id !== sectionId) : [...current, sectionId].sort((a, b) => a - b),
+                    )
+                  }
+                  onAll={() => setPickedSectionIds((current) => (current.length === 0 ? (selected.section ? [selected.section.id] : []) : []))}
+                  disabled={selected.self || !selected.active}
+                  busy={busy}
+                  loadError={sectionLoadError}
+                />
               </div>
             )}
 
@@ -446,7 +559,10 @@ export function RoleAssignmentPage() {
               <button
                 className="btn btn-ghost"
                 disabled={busy}
-                onClick={() => setPickedRole(selected.currentRole ? (selected.currentRole as Role) : "")}
+                onClick={() => {
+                  setPickedRole(selected.currentRole ? (selected.currentRole as Role) : "");
+                  setPickedSectionIds(deriveScopeSections(selected));
+                }}
               >
                 Reset
               </button>
@@ -461,7 +577,9 @@ export function RoleAssignmentPage() {
                   ? `This creates ${selected.name}'s login with the ${pickedRole || "selected"} role and the deployment's first password, which they must change at first login.`
                   : pending
                   ? `This moves ${selected.name} from ${selected.currentRole} to ${pickedRole}` +
-                    (pickedRole === "HOD" ? ` (${hodScope === "DEPARTMENT" ? "Department-wide" : "Section"})` : "") +
+                    (pickedRole === "HOD"
+                      ? ` (${pickedSectionIds.length === 0 ? "every Section of the Department" : `Sections ${pickedSectionIds.map((id) => sectionOptions.find((s) => s.id === id)?.name ?? id).join(", ")}`})`
+                      : "") +
                     " and revokes their current sessions."
                   : "Tick a different role to enable the update."}
               </span>
