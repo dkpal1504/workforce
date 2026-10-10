@@ -23,6 +23,7 @@ import {
   snapshotForBooking,
   snapshotsFromJobOrders,
 } from "../services/attributionSnapshot";
+import { teamAccessSatisfied } from "../services/teamAccess";
 
 export const timesheetRouter = Router();
 
@@ -70,24 +71,25 @@ async function hasTeamAccess(
   const selfIds = ownEmployeeId == null ? [] : ids.filter((id) => id === ownEmployeeId);
   const teamIds = ids.filter((id) => id !== ownEmployeeId);
 
-  if (selfIds.length) {
-    const own = await prisma.employee.count({
-      where: { id: { in: selfIds }, departmentId, active: true },
-    });
-    if (own !== selfIds.length) return false;
-  }
-  if (!teamIds.length) return true;
+  // The two paths are counted SEPARATELY and handed to the pure decision, which is where the
+  // comparison that used to break lives (and is now tested). A team row can never exist for the
+  // self id, so the team count must never be measured against the whole payload.
+  const ownMatched = selfIds.length
+    ? (await prisma.employee.count({ where: { id: { in: selfIds }, departmentId, active: true } })) === selfIds.length
+    : false;
+  const teamMatchedCount = teamIds.length
+    ? await prisma.dailyTeamSelection.count({
+        where: {
+          supervisorId,
+          workDate,
+          removedAt: null,
+          employeeId: { in: teamIds },
+          employee: { departmentId, employmentType: "CLMS" },
+        },
+      })
+    : 0;
 
-  const count = await prisma.dailyTeamSelection.count({
-    where: {
-      supervisorId,
-      workDate,
-      removedAt: null,
-      employeeId: { in: teamIds },
-      employee: { departmentId, employmentType: "CLMS" },
-    },
-  });
-  return count === ids.length;
+  return teamAccessSatisfied({ ownEmployeeId, employeeIds: ids, ownMatched, teamMatchedCount });
 }
 
 function teamAccessDenied(res: import("express").Response) {
