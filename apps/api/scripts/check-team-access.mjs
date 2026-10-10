@@ -122,7 +122,9 @@ const line = (m) => console.log(`  ${m}`);
         if (!e.active) reasons.push("own row is INACTIVE (the self path requires active)");
         if (e.departmentId !== departmentId) reasons.push(`own row department ${e.departmentId} != supervisor ${departmentId}`);
       } else {
-        if (e.employmentType !== "CLMS") reasons.push(`employmentType is ${e.employmentType}; the guard requires CLMS`);
+        // The LEGACY rule's conditions, reported because they explain the message the supervisor
+        // saw BEFORE this fix. They are no longer what decides the save (see the verdict below).
+        if (e.employmentType !== "CLMS") reasons.push(`employmentType is ${e.employmentType}; the OLD rule required CLMS`);
         if (e.departmentId !== departmentId) reasons.push(`employee department ${e.departmentId} != supervisor ${departmentId}`);
         if (!teamRow) reasons.push("NO team row at all for this employee for this date");
         else if (!onDate) reasons.push(`team row exists but for ${teamRow.workDate.toISOString().slice(0, 10)}, not ${dateStr}`);
@@ -134,14 +136,24 @@ const line = (m) => console.log(`  ${m}`);
     line(`type=${e.employmentType} dept=${e.departmentId} active=${e.active} section=${section ? `${section.id}:${section.name} (dept ${section.departmentId}${section.active ? "" : ", INACTIVE"})` : "NONE"}`);
     line(`team row: ${teamRow ? `${teamRow.workDate.toISOString().slice(0, 10)} source=${teamRow.source}` : "none"}${isSelf ? "  <- this is the supervisor himself" : ""}`);
     if (reasons.length) {
-      for (const r of reasons) console.log(`    >>> BREAKS THE SAVE: ${r}`);
+      for (const r of reasons) console.log(`    >>> would have refused UNDER THE OLD RULE: ${r}`);
     } else if (sent) {
-      console.log("    ok — this row authorises");
+      console.log("    ok — meets the old rule too");
     }
   }
 
-  // The guard is all-or-nothing over the payload, so ANY breaking row refuses the whole save.
-  const breaking = [];
+  // TWO RULES, reported separately, because they answer different questions.
+  //
+  //   CAN IT BE SAVED NOW?  Every row here is a TimesheetDay ON THIS SHEET, and the sheet's own
+  //     record now authorises it. So the only thing that can still refuse the save is the
+  //     supervisor's OWN row failing its own check — a row of his own that is not in this
+  //     Department or is inactive. Nothing else on the sheet can block it.
+  //
+  //   WHY WAS IT REFUSED BEFORE?  The old rule re-derived permission from TODAY's team list, so
+  //     any row whose team row was gone, whose employment type had changed, or whose date had no
+  //     team rows at all took the whole save down. That is the message being diagnosed.
+  const blocking = [];
+  const legacyBlocking = [];
   for (const d of payload) {
     const e = d.employee;
     const isSelf = supervisor.employeeId === d.employeeId;
@@ -150,30 +162,40 @@ const line = (m) => console.log(`  ${m}`);
       orderBy: { workDate: "desc" },
       select: { workDate: true },
     });
-    const ok = isSelf
+    // On this sheet, so recorded -> authorised. Only the self row carries a further check.
+    if (isSelf && !(e.active && e.departmentId === departmentId)) {
+      blocking.push(`employee ${d.employeeId} ${e.name} (own row)`);
+    }
+    const underOldRule = isSelf
       ? e.active && e.departmentId === departmentId
       : e.employmentType === "CLMS" && e.departmentId === departmentId && !!teamRow && sameDay(teamRow.workDate, workDate);
-    if (!ok) breaking.push(`employee ${d.employeeId} ${e.name}`);
+    if (!underOldRule) legacyBlocking.push(`employee ${d.employeeId} ${e.name}`);
   }
-  refused = breaking.length;
+  refused = blocking.length;
 
   console.log(
-    `\nVERDICT: ${
+    `\nVERDICT (this build): ${
       refused
-        ? `REFUSED — ${refused} of ${payload.length} sent row(s) break the guard, and the guard is all-or-nothing:\n    ${breaking.join("\n    ")}`
-        : `the save would be AUTHORISED (${payload.length} sent row(s), all reachable)`
-    }\n`
+        ? `STILL REFUSED — ${blocking.join(", ")}`
+        : `the save is AUTHORISED (${payload.length} sent row(s) recorded on this sheet)`
+    }`
   );
 
-  console.log("What to do with a BREAKS THE SAVE row:");
-  console.log("  employmentType != CLMS  -> the person has since been converted to payroll. Either remove his row");
-  console.log("                             from this sheet, or have the HOD correct it before the conversion.");
-  console.log("  department mismatch     -> an organisation transfer moved him. The transfer already ends his open");
-  console.log("                             timesheets, so this row is genuinely out of the supervisor's scope.");
-  console.log("  NO team row / wrong date-> the row was booked on a date he never had a team for (the HOD's 'Date mixup':");
-  console.log("                             he opened the wrong date, so the team rows belong to the date he really worked).");
-  console.log("                             Opening the Timesheet page for the correct date carries the previous day's");
-  console.log("                             team forward and re-creates them.");
+  if (legacyBlocking.length) {
+    console.log(
+      `\nWHY IT WAS REFUSED BEFORE THE FIX: ${legacyBlocking.length} of ${payload.length} row(s) failed the OLD rule,\n`
+      + `  and that rule was all-or-nothing, so ONE of them refused the entire day's save — including\n`
+      + `  the sheet of an unrelated employee the HOD sent back. Culprit(s):\n    ${legacyBlocking.join("\n    ")}\n`
+      + `  This is the explanation of "Labour must be assigned to your team from a Section in your\n`
+      + `  Department." Deploying the fix is the remedy — the sheet's own record now authorises these\n`
+      + `  rows, so no hand-repair is needed.`
+    );
+  } else {
+    console.log("\nNo row here failed the old rule either, so this sheet was never the cause of that message.");
+  }
+
+  console.log("\nIf a row IS still refused: it is the supervisor's own row, which must be in his Department");
+  console.log("and active. Check that account's Employee link.");
 
   await prisma.$disconnect();
   process.exit(refused ? 1 : 0);

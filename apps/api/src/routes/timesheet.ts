@@ -77,19 +77,37 @@ async function hasTeamAccess(
   const ownMatched = selfIds.length
     ? (await prisma.employee.count({ where: { id: { in: selfIds }, departmentId, active: true } })) === selfIds.length
     : false;
-  const teamMatchedCount = teamIds.length
-    ? await prisma.dailyTeamSelection.count({
-        where: {
-          supervisorId,
-          workDate,
-          removedAt: null,
-          employeeId: { in: teamIds },
-          employee: { departmentId, employmentType: "CLMS" },
-        },
-      })
-    : 0;
 
-  return teamAccessSatisfied({ ownEmployeeId, employeeIds: ids, ownMatched, teamMatchedCount });
+  // TWO SOURCES OF TEAM AUTHORISATION, UNIONED:
+  //   1. a live team row for this exact date;
+  //   2. a TimesheetDay already on THIS sheet — the record of the authorisation granted when the
+  //      sheet was first saved.
+  // (2) is what lets a Section HOD's return be corrected. Reading the sheet back widens nothing:
+  // a row can only be there because this same guard admitted it before.
+  const [teamRows, recordedDays] = teamIds.length
+    ? await Promise.all([
+        prisma.dailyTeamSelection.findMany({
+          where: {
+            supervisorId,
+            workDate,
+            removedAt: null,
+            employeeId: { in: teamIds },
+            employee: { departmentId, employmentType: "CLMS" },
+          },
+          select: { employeeId: true },
+        }),
+        prisma.timesheetDay.findMany({
+          where: { taggedById: supervisorId, workDate, employeeId: { in: teamIds } },
+          select: { employeeId: true },
+        }),
+      ])
+    : [[], []];
+
+  const authorisedTeamIds = [
+    ...new Set([...teamRows.map((row) => row.employeeId), ...recordedDays.map((day) => day.employeeId)]),
+  ];
+
+  return teamAccessSatisfied({ ownEmployeeId, employeeIds: ids, ownMatched, authorisedTeamIds });
 }
 
 function teamAccessDenied(res: import("express").Response) {
