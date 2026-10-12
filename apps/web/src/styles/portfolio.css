@@ -10,14 +10,38 @@
    badges, tabular numbers and dense tables.
    ============================================================ */
 
-/* ---- Shared filter bar (ONE bar, both screens) ------------- */
+/* ---- Shared filter bar (ONE bar, both screens) -------------
+   ONE ROW on a desktop, and that is a hard requirement rather than a nicety: an operator scanning
+   the report should never lose the Status/Budget/Band/As-of controls off the right edge or onto a
+   second line. Two levers make it true and they are the only two that matter:
+     (a) the column count is EXPLICIT (`repeat(9, ...)`) rather than `auto-fit`. `auto-fit` decides
+         how many controls fit from a MINIMUM track width, so the row wrapped as soon as the window
+         was a little narrower — which is exactly the complaint that produced this layout;
+     (b) tracks are `minmax(0, 1fr)`, so a control may shrink below its content and truncate its own
+         summary text (with a `title` tooltip) instead of forcing the row to wrap. The controls are
+         also COMPACT here (smaller type and padding, see below), which is what makes nine of them
+         legible on one line at a normal desktop width.
+   Below 1440px the row deliberately becomes two rows of five, then three, then one column: nine
+   controls cannot stay readable on a tablet, and pretending otherwise is how a filter bar ends up
+   with three-character labels. */
 .pf-filters {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
-  gap: 12px 14px;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  /* 10px rather than 12px: the gap is the only budget that can be reclaimed without shrinking a
+     control, and it is what buys the longest collapsed summary ("All departments") its last two
+     pixels at the narrow end of the desktop range. */
+  gap: 10px;
   align-items: end;
+  /* WHY THIS BAR IS POSITIONED WITH A z-index: `backdrop-filter` below CREATES A STACKING CONTEXT,
+     so the open dropdown panel (z-index 40) can never escape this element. The bar sits before the
+     hero tiles in the DOM and every tile paints its own opaque background, so without a z-index on
+     the bar itself the panel opened INVISIBLY BEHIND the tiles — the reported bug. Lifting the bar
+     above the page content is the whole fix; the panel's own z-index then only orders it against the
+     other controls inside the bar. */
+  position: relative;
+  z-index: 30;
   margin-bottom: 18px;
-  padding: 14px 16px;
+  padding: 12px 14px;
   background: var(--surface-glass);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
@@ -28,6 +52,36 @@
 /* The global .filter-field already styles the label and control; here it only
    needs to stop the fixed min-width from forcing a horizontal overflow. */
 .pf-filters .filter-field {
+  min-width: 0;
+}
+
+/* Compact controls: the same visual language as the rest of the app, one step smaller, so nine of
+   them share a line. The select/input heights are pinned to the multi-select control's height so
+   the row's baseline is flat rather than jittering by a few pixels per control. */
+.pf-filters .filter-field label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+
+.pf-filters .filter-field select,
+.pf-filters .filter-field input {
+  min-height: 34px;
+  padding: 6px 7px;
+  font-size: 12px;
+}
+
+.pf-filters .pf-ms__control {
+  min-height: 34px;
+  padding: 6px 7px;
+  font-size: 12px;
+  /* Trimmed from 8px so the longest collapsed summary ("All departments") still fits without an
+     ellipsis in the one-row desktop layout. */
+  gap: 4px;
+}
+
+/* The truncated summary must be readable somewhere: the control already carries the full text in
+   its `title`, and this keeps the ellipsis from looking like missing data. */
+.pf-filters .pf-ms__summary {
   min-width: 0;
 }
 
@@ -469,6 +523,130 @@
   border-color: var(--border-light);
 }
 
+/* ---- Section tabs ------------------------------------------
+   The screen's table of contents. Six sections, one open at a time, so a section is found by name
+   instead of by scrolling — which is the whole point of the change that introduced this strip.
+
+   WHY EVERY TAB CARRIES A COLOUR: a strip of six identically grey labels reads as static text, so
+   the operator cannot tell that clicking one changes the report. Each tone (see PORTFOLIO_TABS) is a
+   THEME TOKEN PAIR — `--x-soft` for the surface, `--x-ink` for the text — resolved per tab through
+   the `--tone*` custom properties below. That is what keeps the strip correct in all five themes:
+   nocturne's soft tokens are dark and its ink tokens light, so the same rules invert themselves. A
+   literal palette here would be the classic dark-on-dark defect.
+
+   The colour is SEMANTIC, matching the hue the app already uses for the same idea: danger for the
+   two attention sections, success for measured-and-healthy, GREY for the not-measurable gap (never
+   green — a green tab would borrow a healthy reading from missing data), primary for the register,
+   amber for load. */
+.pf-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 4px 6px;
+  margin: 0 0 14px;
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+/* The tone, as custom properties, so every rule below is written once. `neutral` is the app's own
+   NOT_MEASURABLE grey rather than a muted accent, for the reason in the note above. */
+.pf-tab--danger {
+  --tone: var(--danger);
+  --tone-soft: var(--danger-soft);
+  --tone-ink: var(--danger-ink);
+}
+
+.pf-tab--success {
+  --tone: var(--success);
+  --tone-soft: var(--success-soft);
+  --tone-ink: var(--success-ink);
+}
+
+.pf-tab--warning {
+  --tone: var(--warning);
+  --tone-soft: var(--warning-soft);
+  --tone-ink: var(--warning-ink);
+}
+
+.pf-tab--primary {
+  --tone: var(--primary);
+  --tone-soft: var(--primary-soft);
+  --tone-ink: var(--primary-ink);
+}
+
+.pf-tab--neutral {
+  --tone: var(--border);
+  --tone-soft: var(--bg-subtle);
+  /* Full-strength body text rather than the muted grey: the tone is still unmistakably grey (its
+     rule and surface are), but the label keeps a comfortable contrast ratio as a small badge in
+     every theme. */
+  --tone-ink: var(--text);
+}
+
+.pf-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  font: inherit;
+  /* One step up from the 12.5px body of the tables: the tabs carry the section names, so they are
+     the one place on these screens that is deliberately read at a glance. */
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+  /* A visible surface is what makes it read as a TAB and not as a link in a paragraph. */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 8px 8px 0 0;
+  /* The coloured rule stays visible while the tab is UNSELECTED — that is the affordance. Two pixels
+     of it keeps every tab the same height, so selecting one never shifts the strip. */
+  border-bottom: 2px solid var(--tone);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pf-tab:hover {
+  color: var(--tone-ink);
+  background: color-mix(in srgb, var(--tone-soft) 55%, var(--bg-elevated));
+}
+
+.pf-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Selected: tinted fill, toned text AND a toned rule. Never colour alone — the tint plus the rule
+   plus the heavier count badge are three cues, so a reader who cannot separate the hues (or is on
+   the dark theme where the accents sit closer together) still sees which section is open. */
+.pf-tab--on {
+  color: var(--tone-ink);
+  background: color-mix(in srgb, var(--tone-soft) 85%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--tone) 35%, var(--border-light));
+  border-bottom-color: var(--tone);
+}
+
+/* The count rides IN the tab, so how much a section holds is visible before opening it. Tabular
+   figures keep the strip from re-flowing as the counts change with the filters. */
+.pf-tab__count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--tone-soft) 70%, var(--bg-elevated));
+  color: var(--tone-ink);
+}
+
+.pf-tab--on .pf-tab__count {
+  background: var(--bg-elevated);
+}
+
+/* The panel holds exactly one section; min-width 0 so a wide table scrolls inside its own wrapper
+   rather than stretching the page. */
+.pf-tabpanel {
+  min-width: 0;
+}
+
 /* ---- Panels ------------------------------------------------ */
 /* Reuses the house .panel / .panel__header markup; the modifier only relaxes
    the fixed min-height a table panel does not need and lets the table scroll
@@ -675,6 +853,9 @@
 .pf-exception__body {
   padding: 0;
   overflow-x: auto;
+  /* The pager inside the card scrolls this element into view on a page change (same contract as
+     .pf-table-wrap), so it needs the same clearance. */
+  scroll-margin-top: 12px;
 }
 
 .pf-exception__empty {
@@ -721,6 +902,21 @@
    Responsive
    ============================================================ */
 
+/* Nine controls on one line is a DESKTOP layout, and the single-row rule above is what the operator
+   asked for; below 1440px they cannot stay legible, so the row becomes two neat rows of five, then
+   three rows of three, rather than nine unreadable slivers. */
+@media (max-width: 1439px) {
+  .pf-filters {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1099px) {
+  .pf-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1199px) {
   /* Tablet: burn and budget health share the top row, the attention figures drop
      beneath them at full width rather than being squeezed into a third column. */
@@ -745,6 +941,14 @@
      .sup-table below 1024px), so the page itself never overflows off-screen. */
   .pf-filters {
     grid-template-columns: 1fr;
+  }
+
+  /* Six tabs do not fit a phone. Let the STRIP scroll sideways rather than wrap into three rows,
+     which would push the section itself off the first screen — the opposite of the point. */
+  .pf-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .pf-hero {

@@ -71,12 +71,24 @@ test("the clamped page is the behaviour a shrunk list needs", () => {
   assert.equal(slice.hasNext, false);
 });
 
+test("PAGE_SIZE is 50 — the operator-facing rows-per-page for every operations table", () => {
+  // Pinned because it is a REQUIREMENT, not an implementation detail: the operations screens page
+  // every lengthy section at 50 rows. The whole point is that the figure is the same everywhere,
+  // so a future table cannot quietly page at a different rhythm.
+  assert.equal(PAGE_SIZE, 50);
+  // 63 rows at the default size is therefore two pages, not three.
+  const slice = paginate(rows(63), 1);
+  assert.equal(slice.rows.length, 50);
+  assert.equal(slice.pageCount, 2);
+  assert.equal(slice.to, 50);
+});
+
 test("a pageSize that is not a positive finite integer falls back to PAGE_SIZE", () => {
   for (const bad of [0, -10, Number.NaN, Number.POSITIVE_INFINITY, 7.5]) {
     const slice = paginate(rows(63), 1, bad);
-    // PAGE_SIZE rows on page 1, three pages total for 63 rows.
+    // PAGE_SIZE rows on page 1, two pages total for 63 rows.
     assert.equal(slice.rows.length, PAGE_SIZE, `pageSize ${bad} should fall back to ${PAGE_SIZE}`);
-    assert.equal(slice.pageCount, 3, `pageSize ${bad} should give 3 pages`);
+    assert.equal(slice.pageCount, 2, `pageSize ${bad} should give 2 pages`);
   }
 });
 

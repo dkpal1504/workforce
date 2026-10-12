@@ -14,7 +14,16 @@ import {
   type PortfolioStatus,
 } from "./portfolioFilters";
 // The tested, pure pagination rules — reused verbatim, never reimplemented here.
-import { paginate, pageNumbers } from "./portfolioPaging";
+import { paginate, pageNumbers, type PageSlice } from "./portfolioPaging";
+// The section tabs (order, labels, keyboard walk) — ONE definition shared by both screens.
+import {
+  DEFAULT_TAB,
+  PORTFOLIO_TABS,
+  panelDomId,
+  tabDomId,
+  tabForKey,
+  type PortfolioTabId,
+} from "./portfolioTabs";
 // The pure `% Qty` formatting rule (see the module header for why it is exported, not inline).
 import { fmtQtyCompletePct, qtyCompleteNote } from "./portfolioQty";
 import "../styles/portfolio.css";
@@ -300,6 +309,122 @@ export function TablePager({
 }
 
 /**
+ * One table's page state, kept in ONE place because every section needs the identical three parts:
+ * the clamped slice, a setter for the pager, and the scroll target the pager pulls into view.
+ *
+ * WHY THE RESET IS IN HERE AND NOT IN EACH SECTION: a page index is only meaningful for the result
+ * set it was chosen against, so changing the filters must send the reader back to page 1. Keying
+ * that on the canonical filter string (the same one the fetch and the downloads use) means one
+ * `useEffect` covers every table instead of six copies of the same effect drifting apart.
+ */
+export function useTablePager<T>(rows: readonly T[], resetKey: string) {
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    setPage(1);
+  }, [resetKey]);
+  const slice = useMemo(() => paginate(rows, page), [rows, page]);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  return { slice, setPage, anchorRef };
+}
+
+/**
+ * The pager for a slice from `useTablePager` — thin on purpose, so a section never has to restate
+ * eleven props and get one wrong (a `from` and `to` crossed over renders "Showing 50-1 of 416").
+ */
+export function SlicePager({
+  slice,
+  setPage,
+  anchorRef,
+  label,
+}: {
+  slice: PageSlice<unknown>;
+  setPage: (page: number) => void;
+  anchorRef: React.RefObject<HTMLDivElement>;
+  label?: string;
+}) {
+  return (
+    <TablePager
+      page={slice.page}
+      pageCount={slice.pageCount}
+      total={slice.total}
+      from={slice.from}
+      to={slice.to}
+      hasPrev={slice.hasPrev}
+      hasNext={slice.hasNext}
+      onChange={setPage}
+      anchorRef={anchorRef}
+      label={label}
+    />
+  );
+}
+
+/**
+ * The section tabs — the screen's table of contents, rendered ONCE for both operations screens.
+ *
+ * WHY IT REPLACES A LONG SCROLL: the report is six sections long and the Job work register alone
+ * holds hundreds of rows, so the section an operator came for was reachable only by scrolling past
+ * the five that come before it. One section at a time makes every section one click away, and the
+ * tab carries its section's row count so the size of a section is visible BEFORE opening it.
+ *
+ * WHY THE COUNTS ARE PASSED IN: the tabs must state what the screen actually holds. The counts come
+ * from the SAME response the sections render, so a badge can never disagree with the table behind
+ * it — and a tab whose section is empty shows 0 rather than nothing.
+ *
+ * KEYBOARD: the WAI-ARIA tabs pattern — arrows walk the list (wrapping), Home/End jump to the ends,
+ * and only the selected tab is in the tab order (`tabIndex -1` on the rest), so Tab moves past the
+ * strip rather than through six buttons. The walk itself is the tested pure `tabForKey`.
+ */
+export function ReportTabs({
+  active,
+  counts,
+  onChange,
+}: {
+  active: PortfolioTabId;
+  counts: Partial<Record<PortfolioTabId, number>>;
+  onChange: (tab: PortfolioTabId) => void;
+}) {
+  const buttons = useRef<Partial<Record<PortfolioTabId, HTMLButtonElement | null>>>({});
+
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const next = tabForKey(active, event.key);
+    // Only a key that actually moves the selection is claimed: every other key (Tab, Enter, a
+    // shortcut) must keep its normal behaviour.
+    if (next === active) return;
+    event.preventDefault();
+    onChange(next);
+    buttons.current[next]?.focus();
+  }
+
+  return (
+    <div className="pf-tabs" role="tablist" aria-label="Report sections" onKeyDown={onKeyDown}>
+      {PORTFOLIO_TABS.map((tab) => {
+        const selected = tab.id === active;
+        const count = counts[tab.id];
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={tabDomId(tab.id)}
+            aria-selected={selected}
+            aria-controls={panelDomId(tab.id)}
+            tabIndex={selected ? 0 : -1}
+            ref={(element) => {
+              buttons.current[tab.id] = element;
+            }}
+            className={`pf-tab pf-tab--${tab.tone}${selected ? " pf-tab--on" : ""}`}
+            onClick={() => onChange(tab.id)}
+          >
+            <span className="pf-tab__label">{tab.label}</span>
+            {count === undefined ? null : <span className="pf-tab__count">{count.toLocaleString()}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * The attention REASONS, rendered IN FULL.
  *
  * An operator must be able to read WHY a row is on the push list, so this is a list (not
@@ -475,10 +600,15 @@ export function PortfolioFilterBar({
 
   return (
     <div className="pf-filters">
-      {/* ONE ROW. Every dimension is the same checkbox-dropdown control, so a dimension with 40
-          options costs exactly as much space as one with 3. The previous layout rendered a button
-          per Project in a wrapping flex row: with 14 projects that column stacked down the page and
-          pushed the real filters out of view, which was the reported layout defect. */}
+      {/* ONE ROW on a desktop. Every dimension is the same compact checkbox-dropdown control, so a
+          dimension with 86 options costs exactly as much space as one with 3 — which is what lets
+          nine controls share a single line. Two changes made that true:
+            (a) the controls are COMPACT (smaller type and padding — see .pf-filters in
+                portfolio.css), and
+            (b) NO inline min-width is passed here any more. The columns come from the grid, and an
+                inline min-width on a grid item does not widen its track — it overflows it, which
+                left controls overlapping their neighbours rather than fitting. The grid is the one
+                lever for the row. */}
       <MultiSelectFilter
         label="Projects"
         allLabel="All projects"
@@ -487,7 +617,6 @@ export function PortfolioFilterBar({
         // Choosing a project re-scopes the WBS list, so a WBS that no longer belongs is dropped here
         // rather than left to build a filter that matches nothing.
         onChange={(next) => onChange({ ...filters, projectIds: next.map(Number), wbsIds: [] })}
-        minWidth={190}
       />
 
       <MultiSelectFilter
@@ -501,7 +630,6 @@ export function PortfolioFilterBar({
         selected={filters.wbsIds}
         onChange={(next) => onChange({ ...filters, wbsIds: next.map(Number) })}
         searchPlaceholder="Search WBS code…"
-        minWidth={168}
       />
 
       <MultiSelectFilter
@@ -511,7 +639,6 @@ export function PortfolioFilterBar({
         selected={filters.departmentIds}
         onChange={(next) => onChange({ ...filters, departmentIds: next.map(Number), sectionIds: [] })}
         searchPlaceholder="Search department…"
-        minWidth={190}
       />
 
       <MultiSelectFilter
@@ -521,7 +648,6 @@ export function PortfolioFilterBar({
         selected={filters.sectionIds}
         onChange={(next) => onChange({ ...filters, sectionIds: next.map(Number) })}
         searchPlaceholder="Search section…"
-        minWidth={180}
       />
 
       <div className="filter-field">
@@ -554,7 +680,6 @@ export function PortfolioFilterBar({
         options={BANDS.map((band) => ({ id: band, label: BAND_LABELS[band] }))}
         selected={filters.bands}
         onChange={(next) => onChange({ ...filters, bands: next as PortfolioBand[] })}
-        minWidth={170}
       />
 
       <div className="filter-field">
@@ -612,33 +737,18 @@ export function PortfolioDashboardPage() {
   const [sections, setSections] = useState<SectionOption[]>([]);
   const [downloadError, setDownloadError] = useState("");
   const [busyFormat, setBusyFormat] = useState<"xlsx" | "pdf" | null>(null);
-
-  // Client-side paging for the two long tables. The page index is kept SEPARATE per table so
-  // paging one does not jump the other.
-  const [jobWorkPage, setJobWorkPage] = useState(1);
-  const [needsPushPage, setNeedsPushPage] = useState(1);
-  // The scroll targets: clicking a page button brings the matching table back into view.
-  const jobWorkAnchor = useRef<HTMLDivElement>(null);
-  const needsPushAnchor = useRef<HTMLDivElement>(null);
+  // Which section is open. View state, deliberately NOT in the URL: the query string is the one
+  // contract shared by the fetch, the filter round-trip and both downloads (see portfolioTabs.ts).
+  const [tab, setTab] = useState<PortfolioTabId>(DEFAULT_TAB);
 
   const { report, loading, error, query, reload } = usePortfolioReport(filters);
 
-  // RESET TO PAGE 1 WHENEVER THE FILTER SET CHANGES. A page index is only meaningful for the
-  // result set it was chosen against: a reader on page 3 of 63 rows who narrows to 12 rows
-  // would otherwise be left on a clamped page with no explanation. `portfolioQuery` is the
-  // canonical, stable encoding of the filter state, so a filter change is exactly a change of
-  // that string. The downloads are UNAFFECTED — they never carry a page parameter.
+  // The canonical, stable encoding of the filter state. It is BOTH what the fetch and the downloads
+  // carry AND the key each section's pager resets on: a page index only means something for the
+  // result set it was chosen against, so a filter change must send the reader back to page 1.
+  // Paging itself is CLIENT-SIDE over the rows the API already returned and is never encoded into
+  // the query string, so the export always carries every row while the screen shows one page.
   const filterKey = useMemo(() => portfolioQuery(filters), [filters]);
-  useEffect(() => {
-    setJobWorkPage(1);
-    setNeedsPushPage(1);
-  }, [filterKey]);
-
-  // Paging is CLIENT-SIDE over the rows the API already returned: the query string sent to
-  // /reports/portfolio (and to the .xlsx/.pdf downloads) is untouched, so the export always
-  // carries every row while the screen shows one page.
-  const jobWorkSlice = useMemo(() => paginate(report?.jobWork ?? [], jobWorkPage), [report, jobWorkPage]);
-  const needsPushSlice = useMemo(() => paginate(report?.needsPush ?? [], needsPushPage), [report, needsPushPage]);
 
   // A filtered view is a shareable link: the initial scope came from the URL, and every
   // change is mirrored back to the address bar (defaults omitted by the encoder).
@@ -757,326 +867,41 @@ export function PortfolioDashboardPage() {
             </span>
           </p>
 
-          {/* ---- Needs push (the primary answer) ---- */}
-          <Panel
-            title="Needs push"
-            count={`${report.needsPush.length} of ${report.needsPushTotal}`}
-            hint={
-              <>
-                Ranked by attention score, highest first, exactly as the API returns it. The REASONS column is the
-                whole explanation for a row — it is never abbreviated. The weights are printed at the bottom of this
-                screen from the API{"'"}s own definitions.
-              </>
-            }
-          >
-            {report.needsPush.length === 0 ? (
-              <div className="empty-state">Nothing needs a push: no job order in scope carries an attention signal.</div>
-            ) : (
-              <div className="pf-table-wrap" ref={needsPushAnchor}>
-                <table className="pf-table">
-                  <thead>
-                    <tr>
-                      <th>Job order</th>
-                      <th>Department</th>
-                      <th>Band</th>
-                      <th className="pf-num">% Qty</th>
-                      <th className="pf-num">Burn</th>
-                      <th>Forecast</th>
-                      <th className="pf-num">Attention</th>
-                      <th>Reasons</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {needsPushSlice.rows.map((row) => (
-                      <tr key={row.id}>
-                        <JobIdentityCell row={row} />
-                        <td>
-                          {row.department.name}
-                          <span className="pf-cell-sub">{row.section ? `${row.section.name}` : "No section"}</span>
-                        </td>
-                        <td>
-                          <BandBadge band={row.hoursBand} />
-                        </td>
-                        <PctQtyCell row={row} />
-                        <td className="pf-num">{fmtPct(row.burnPct)}</td>
-                        <td className="pf-nowrap">{fmtDate(row.forecastExhaustedOn)}</td>
-                        <td className="pf-num pf-attention">{row.attentionScore}</td>
-                        <ReasonsCell reasons={row.reasons} />
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {report.needsPushTotal > report.needsPush.length && (
-                  <p className="pf-panel__hint" style={{ padding: "10px 14px 0", margin: 0 }}>
-                    Showing the top {report.needsPush.length} of {report.needsPushTotal} ranked job orders; the rest are
-                    in the Job work table and the export.
-                  </p>
-                )}
-                <TablePager
-                  page={needsPushSlice.page}
-                  pageCount={needsPushSlice.pageCount}
-                  total={needsPushSlice.total}
-                  from={needsPushSlice.from}
-                  to={needsPushSlice.to}
-                  hasPrev={needsPushSlice.hasPrev}
-                  hasNext={needsPushSlice.hasNext}
-                  onChange={setNeedsPushPage}
-                  anchorRef={needsPushAnchor}
-                />
-              </div>
-            )}
-          </Panel>
+          {/* ---- The section tabs ------------------------------------------------
+              ONE section at a time. Before this, the screen was a single six-section scroll: the
+              section an operator came for took scrolling past five others to reach, and the Job
+              work register alone pushed everything below it off the page. The tabs carry each
+              section's row count, so how much a section holds is visible without opening it. */}
+          <ReportTabs
+            active={tab}
+            counts={{
+              "needs-push": report.needsPush.length,
+              "on-track": report.onTrack.length,
+              "on-track-not-measurable": report.onTrackNotMeasurable.length,
+              "job-work": report.jobWork.length,
+              "department-load": report.departmentLoad.length,
+              exceptions:
+                report.exceptions.noBudgetHours.count +
+                report.exceptions.budgetWithNoBookings.count +
+                report.exceptions.noProgress.count +
+                report.exceptions.unapproved.count,
+            }}
+            onChange={setTab}
+          />
 
-          {/* ---- On track ---- */}
-          <Panel
-            title="On track"
-            count={report.onTrack.length}
-            hint="Measurable on hours and under 75% burn. This is a claim about work we CAN measure."
-          >
-            {report.onTrack.length === 0 ? (
-              <div className="empty-state">No measurable job order is currently under 75% burn.</div>
-            ) : (
-              <div className="pf-table-wrap">
-                <table className="pf-table pf-table--compact">
-                  <thead>
-                    <tr>
-                      <th>Job order</th>
-                      <th>Department</th>
-                      <th>Band</th>
-                      <th className="pf-num">Budget</th>
-                      <th className="pf-num">Actual</th>
-                      <th className="pf-num">Burn</th>
-                      <th>Last bk</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.onTrack.map((row) => (
-                      <tr key={row.id}>
-                        <JobIdentityCell row={row} />
-                        <td>{row.department.name}</td>
-                        <td>
-                          <BandBadge band={row.hoursBand} />
-                        </td>
-                        <td className="pf-num">{fmtHours(row.budgetHours)}</td>
-                        <td className="pf-num">{fmtHours(row.actualHours)}</td>
-                        <td className="pf-num">{fmtPct(row.burnPct)}</td>
-                        <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Panel>
-
-          {/* ---- On track, not yet measurable (SEPARATE and labelled) ---- */}
-          <Panel
-            title="On track — not yet measurable"
-            count={report.onTrackNotMeasurable.length}
-            hint={
-              <>
-                Shown SEPARATELY and never folded into the GREEN tile: these job orders are not measurable on hours
-                (no budget in force), so a green figure above must never be borrowed from this missing data.
-              </>
-            }
-          >
-            {report.onTrackNotMeasurable.length === 0 ? (
-              <div className="empty-state">Every job order in scope has a budget to measure against.</div>
-            ) : (
-              <div className="pf-table-wrap">
-                <table className="pf-table pf-table--compact">
-                  <thead>
-                    <tr>
-                      <th>Job order</th>
-                      <th>Department</th>
-                      <th>Band</th>
-                      <th className="pf-num">QTY BDG</th>
-                      <th className="pf-num">QTY Prgsd</th>
-                      <th className="pf-num">% Qty</th>
-                      <th>Last bk</th>
-                      <th>Why unmeasurable</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.onTrackNotMeasurable.map((row) => (
-                      <tr key={row.id}>
-                        <JobIdentityCell row={row} />
-                        <td>{row.department.name}</td>
-                        <td>
-                          <BandBadge band={row.hoursBand} />
-                        </td>
-                        <td className="pf-num">{fmtNumber(row.targetQty, 2)}</td>
-                        <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
-                        <PctQtyCell row={row} />
-                        <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
-                        <td>
-                          {row.measurableOnQuantity ? "Quantity measurable" : "No budgeted hours in force"}
-                          {!row.measurableOnQuantity && <span className="pf-cell-sub">No approved progress to judge yet</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Panel>
-
-          {/* ---- Job work (every job order) ---- */}
-          <Panel
-            title="Job work"
-            count={report.jobWork.length}
-            hint="Every job order in scope — the register behind the tiles. Hours and quantity are separate measures and are never added together."
-          >
-            {report.jobWork.length === 0 ? (
-              <div className="empty-state">No job order matches the current filters. Widen the filters or clear the band.</div>
-            ) : (
-              <div className="pf-table-wrap" ref={jobWorkAnchor}>
-                <table className="pf-table">
-                  <thead>
-                    <tr>
-                      <th>Job order</th>
-                      <th>Department</th>
-                      <th>Status</th>
-                      <th>Band</th>
-                      <th className="pf-num">Budget h</th>
-                      <th className="pf-num">Actual h</th>
-                      <th className="pf-num">Burn</th>
-                      <th className="pf-num">h/day</th>
-                      <th>Forecast</th>
-                      <th className="pf-num">QTY BDG</th>
-                      <th className="pf-num">QTY Prgsd</th>
-                      <th className="pf-num">% Qty</th>
-                      <th>Last bk</th>
-                      <th className="pf-num">Unappr h</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {jobWorkSlice.rows.map((row) => (
-                      <tr key={row.id}>
-                        <JobIdentityCell row={row} />
-                        <td>{row.department.name}</td>
-                        <td>
-                          <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
-                            {row.status === "active" ? "Active" : "In-active"}
-                          </span>
-                        </td>
-                        <td>
-                          <BandBadge band={row.hoursBand} />
-                        </td>
-                        <td className="pf-num">{fmtHours(row.budgetHours)}</td>
-                        <td className="pf-num">{fmtHours(row.actualHours)}</td>
-                        <td className="pf-num">{fmtPct(row.burnPct)}</td>
-                        <td className="pf-num">{row.hoursPerDay === null ? "—" : fmtNumber(row.hoursPerDay, 1)}</td>
-                        <td className="pf-nowrap">{fmtDate(row.forecastExhaustedOn)}</td>
-                        <td className="pf-num">
-                          {fmtNumber(row.targetQty, 2)}
-                          {row.uom ? <span className="pf-cell-sub">{row.uom}</span> : null}
-                        </td>
-                        <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
-                        <PctQtyCell row={row} />
-                        <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
-                        <td className="pf-num">{fmtHours(row.unapprovedHours)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <TablePager
-                  page={jobWorkSlice.page}
-                  pageCount={jobWorkSlice.pageCount}
-                  total={jobWorkSlice.total}
-                  from={jobWorkSlice.from}
-                  to={jobWorkSlice.to}
-                  hasPrev={jobWorkSlice.hasPrev}
-                  hasNext={jobWorkSlice.hasNext}
-                  onChange={setJobWorkPage}
-                  anchorRef={jobWorkAnchor}
-                />
-              </div>
-            )}
-          </Panel>
-
-          {/* ---- Department load ---- */}
-          <Panel
-            title="Department load"
-            count={report.departmentLoad.length}
-            hint="Worst individual band wins the headline colour; burn band answers how burnt the group is overall. Both are shown, because a fire is not diluted by the green job orders beside it."
-          >
-            {report.departmentLoad.length === 0 ? (
-              <div className="empty-state">No department has a job order in scope.</div>
-            ) : (
-              <div className="pf-table-wrap">
-                <table className="pf-table pf-table--compact">
-                  <thead>
-                    <tr>
-                      <th>Department</th>
-                      <th className="pf-num">Job orders</th>
-                      <th className="pf-num">Sections</th>
-                      <th>Worst band</th>
-                      <th>Burn band</th>
-                      <th className="pf-num">Budget</th>
-                      <th className="pf-num">Actual</th>
-                      <th className="pf-num">Burn</th>
-                      <th className="pf-num">RED / AMBER / GREEN / N/M</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.departmentLoad.map((row) => (
-                      <tr key={row.department.id}>
-                        <td className="pf-cell-strong">{row.department.name}</td>
-                        <td className="pf-num">{row.jobOrderCount}</td>
-                        <td className="pf-num">{row.sectionCount}</td>
-                        <td>
-                          <BandBadge band={row.hoursBand} />
-                        </td>
-                        <td>
-                          <BandBadge band={row.burnBand} />
-                        </td>
-                        <td className="pf-num">{fmtHours(row.budgetHours)}</td>
-                        <td className="pf-num">{fmtHours(row.actualHours)}</td>
-                        <td className="pf-num">{fmtPct(row.burnPct)}</td>
-                        <td className="pf-num">
-                          {row.redCount} / {row.amberCount} / {row.greenCount} / {row.notMeasurableCount}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Panel>
-
-          {/* ---- Exceptions / readiness ---- */}
-          <Panel
-            title="Exceptions & readiness"
-            count={`${report.exceptions.noBudgetHours.count + report.exceptions.budgetWithNoBookings.count + report.exceptions.noProgress.count + report.exceptions.unapproved.count} flagged`}
-          >
-            <div className="pf-exceptions">
-              <ExceptionCard
-                title="No budget hours"
-                bucket={report.exceptions.noBudgetHours}
-                emptyText="Every job order in scope has a positive budget."
-                columns={(row) => [row.displayName, row.department.name]}
-              />
-              <ExceptionCard
-                title="Budget with no bookings"
-                bucket={report.exceptions.budgetWithNoBookings}
-                emptyText="Every budgeted job order has at least one booking."
-                columns={(row) => [row.displayName, fmtHours(row.budgetHours)]}
-              />
-              <ExceptionCard
-                title="No progress reported"
-                bucket={report.exceptions.noProgress}
-                emptyText="Approved quantity progress exists for every job order."
-                columns={(row) => [row.displayName, row.department.name]}
-              />
-              <ExceptionCard
-                title="Unapproved hours"
-                bucket={report.exceptions.unapproved}
-                emptyText="No hours are waiting for approval."
-                columns={(row) => [row.displayName, `${fmtHours(row.unapprovedHours)}${row.oldestUnapprovedAt ? ` since ${fmtDate(row.oldestUnapprovedAt)}` : ""}`]}
-              />
-            </div>
-          </Panel>
+          {/* The ACTIVE section, and only it. One panel is mounted at a time, so a table's pager
+              position cannot outlive the section it belonged to, and nothing below the fold of one
+              section can lengthen another. */}
+          <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
+            {tab === "needs-push" ? <NeedsPushSection report={report} resetKey={filterKey} /> : null}
+            {tab === "on-track" ? <OnTrackSection report={report} resetKey={filterKey} /> : null}
+            {tab === "on-track-not-measurable" ? (
+              <OnTrackNotMeasurableSection report={report} resetKey={filterKey} />
+            ) : null}
+            {tab === "job-work" ? <JobWorkSection report={report} resetKey={filterKey} /> : null}
+            {tab === "department-load" ? <DepartmentLoadSection report={report} resetKey={filterKey} /> : null}
+            {tab === "exceptions" ? <ExceptionsSection report={report} resetKey={filterKey} /> : null}
+          </div>
 
           {/* ---- How to read this screen (provenance + the rules as DATA) ---- */}
           <Panel
@@ -1149,6 +974,367 @@ export function PortfolioDashboardPage() {
         <div className="empty-state">The report could not be loaded. Adjust or reset the filters and try again.</div>
       )}
     </>
+  );
+}
+
+/* --------------------------------------------------------------------------- *
+ * The six sections, one per tab. Each owns its own paging (see `useTablePager`),
+ * so a page index can never leak from one section into another.
+ * ------------------------------------------------------------------------- */
+
+/** Every section is rendered from the ONE response, so a tab and its table cannot disagree. */
+type SectionProps = { report: PortfolioReport; resetKey: string };
+
+/**
+ * Needs push — the primary answer: the job orders with an attention signal, ranked.
+ *
+ * `needsPush` is CAPPED by the API (the top N by score), so this list is usually a single page and
+ * the pager stays hidden; the panel header still prints "N of TOTAL" and the note below the table
+ * says where the remainder lives. That is deliberate: the cap is a property of the report, and
+ * hiding it would let a 50-row sample read as the whole push list.
+ */
+function NeedsPushSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.needsPush, resetKey);
+  return (
+    <Panel
+      title="Needs push"
+      count={`${report.needsPush.length} of ${report.needsPushTotal}`}
+      hint={
+        <>
+          Ranked by attention score, highest first, exactly as the API returns it. The REASONS column is the whole
+          explanation for a row — it is never abbreviated. The weights are printed at the bottom of this screen from
+          the API{"'"}s own definitions.
+        </>
+      }
+    >
+      {report.needsPush.length === 0 ? (
+        <div className="empty-state">Nothing needs a push: no job order in scope carries an attention signal.</div>
+      ) : (
+        <div className="pf-table-wrap" ref={pager.anchorRef}>
+          <table className="pf-table">
+            <thead>
+              <tr>
+                <th>Job order</th>
+                <th>Department</th>
+                <th>Band</th>
+                <th className="pf-num">% Qty</th>
+                <th className="pf-num">Burn</th>
+                <th>Forecast</th>
+                <th className="pf-num">Attention</th>
+                <th>Reasons</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pager.slice.rows.map((row) => (
+                <tr key={row.id}>
+                  <JobIdentityCell row={row} />
+                  <td>
+                    {row.department.name}
+                    <span className="pf-cell-sub">{row.section ? `${row.section.name}` : "No section"}</span>
+                  </td>
+                  <td>
+                    <BandBadge band={row.hoursBand} />
+                  </td>
+                  <PctQtyCell row={row} />
+                  <td className="pf-num">{fmtPct(row.burnPct)}</td>
+                  <td className="pf-nowrap">{fmtDate(row.forecastExhaustedOn)}</td>
+                  <td className="pf-num pf-attention">{row.attentionScore}</td>
+                  <ReasonsCell reasons={row.reasons} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {report.needsPushTotal > report.needsPush.length && (
+            <p className="pf-panel__hint" style={{ padding: "10px 14px 0", margin: 0 }}>
+              Showing the top {report.needsPush.length} of {report.needsPushTotal} ranked job orders; the rest are in
+              the Job work table and the export.
+            </p>
+          )}
+          <SlicePager {...pager} label="ranked job orders" />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/** On track — measurable on hours and under 75% burn. Paged: this list can run to hundreds of rows. */
+function OnTrackSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.onTrack, resetKey);
+  return (
+    <Panel
+      title="On track"
+      count={report.onTrack.length}
+      hint="Measurable on hours and under 75% burn. This is a claim about work we CAN measure."
+    >
+      {report.onTrack.length === 0 ? (
+        <div className="empty-state">No measurable job order is currently under 75% burn.</div>
+      ) : (
+        <div className="pf-table-wrap" ref={pager.anchorRef}>
+          <table className="pf-table pf-table--compact">
+            <thead>
+              <tr>
+                <th>Job order</th>
+                <th>Department</th>
+                <th>Band</th>
+                <th className="pf-num">Budget</th>
+                <th className="pf-num">Actual</th>
+                <th className="pf-num">Burn</th>
+                <th>Last bk</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pager.slice.rows.map((row) => (
+                <tr key={row.id}>
+                  <JobIdentityCell row={row} />
+                  <td>{row.department.name}</td>
+                  <td>
+                    <BandBadge band={row.hoursBand} />
+                  </td>
+                  <td className="pf-num">{fmtHours(row.budgetHours)}</td>
+                  <td className="pf-num">{fmtHours(row.actualHours)}</td>
+                  <td className="pf-num">{fmtPct(row.burnPct)}</td>
+                  <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <SlicePager {...pager} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/** On track, not yet measurable — kept SEPARATE so a green figure is never borrowed from missing data. */
+function OnTrackNotMeasurableSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.onTrackNotMeasurable, resetKey);
+  return (
+    <Panel
+      title="On track — not yet measurable"
+      count={report.onTrackNotMeasurable.length}
+      hint={
+        <>
+          Shown SEPARATELY and never folded into the GREEN tile: these job orders are not measurable on hours (no
+          budget in force), so a green figure above must never be borrowed from this missing data.
+        </>
+      }
+    >
+      {report.onTrackNotMeasurable.length === 0 ? (
+        <div className="empty-state">Every job order in scope has a budget to measure against.</div>
+      ) : (
+        <div className="pf-table-wrap" ref={pager.anchorRef}>
+          <table className="pf-table pf-table--compact">
+            <thead>
+              <tr>
+                <th>Job order</th>
+                <th>Department</th>
+                <th>Band</th>
+                <th className="pf-num">QTY BDG</th>
+                <th className="pf-num">QTY Prgsd</th>
+                <th className="pf-num">% Qty</th>
+                <th>Last bk</th>
+                <th>Why unmeasurable</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pager.slice.rows.map((row) => (
+                <tr key={row.id}>
+                  <JobIdentityCell row={row} />
+                  <td>{row.department.name}</td>
+                  <td>
+                    <BandBadge band={row.hoursBand} />
+                  </td>
+                  <td className="pf-num">{fmtNumber(row.targetQty, 2)}</td>
+                  <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
+                  <PctQtyCell row={row} />
+                  <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
+                  <td>
+                    {row.measurableOnQuantity ? "Quantity measurable" : "No budgeted hours in force"}
+                    {!row.measurableOnQuantity && <span className="pf-cell-sub">No approved progress to judge yet</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <SlicePager {...pager} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/** Job work — every job order in scope: the register behind the tiles, paged at 50 rows. */
+function JobWorkSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.jobWork, resetKey);
+  return (
+    <Panel
+      title="Job work"
+      count={report.jobWork.length}
+      hint="Every job order in scope — the register behind the tiles. Hours and quantity are separate measures and are never added together."
+    >
+      {report.jobWork.length === 0 ? (
+        <div className="empty-state">No job order matches the current filters. Widen the filters or clear the band.</div>
+      ) : (
+        <div className="pf-table-wrap" ref={pager.anchorRef}>
+          <table className="pf-table">
+            <thead>
+              <tr>
+                <th>Job order</th>
+                <th>Department</th>
+                <th>Status</th>
+                <th>Band</th>
+                <th className="pf-num">Budget h</th>
+                <th className="pf-num">Actual h</th>
+                <th className="pf-num">Burn</th>
+                <th className="pf-num">h/day</th>
+                <th>Forecast</th>
+                <th className="pf-num">QTY BDG</th>
+                <th className="pf-num">QTY Prgsd</th>
+                <th className="pf-num">% Qty</th>
+                <th>Last bk</th>
+                <th className="pf-num">Unappr h</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pager.slice.rows.map((row) => (
+                <tr key={row.id}>
+                  <JobIdentityCell row={row} />
+                  <td>{row.department.name}</td>
+                  <td>
+                    <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
+                      {row.status === "active" ? "Active" : "In-active"}
+                    </span>
+                  </td>
+                  <td>
+                    <BandBadge band={row.hoursBand} />
+                  </td>
+                  <td className="pf-num">{fmtHours(row.budgetHours)}</td>
+                  <td className="pf-num">{fmtHours(row.actualHours)}</td>
+                  <td className="pf-num">{fmtPct(row.burnPct)}</td>
+                  <td className="pf-num">{row.hoursPerDay === null ? "—" : fmtNumber(row.hoursPerDay, 1)}</td>
+                  <td className="pf-nowrap">{fmtDate(row.forecastExhaustedOn)}</td>
+                  <td className="pf-num">
+                    {fmtNumber(row.targetQty, 2)}
+                    {row.uom ? <span className="pf-cell-sub">{row.uom}</span> : null}
+                  </td>
+                  <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
+                  <PctQtyCell row={row} />
+                  <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
+                  <td className="pf-num">{fmtHours(row.unapprovedHours)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <SlicePager {...pager} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/** Department load — one row per department, paged like every other section (one page today). */
+function DepartmentLoadSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.departmentLoad, resetKey);
+  return (
+    <Panel
+      title="Department load"
+      count={report.departmentLoad.length}
+      hint="Worst individual band wins the headline colour; burn band answers how burnt the group is overall. Both are shown, because a fire is not diluted by the green job orders beside it."
+    >
+      {report.departmentLoad.length === 0 ? (
+        <div className="empty-state">No department has a job order in scope.</div>
+      ) : (
+        <div className="pf-table-wrap" ref={pager.anchorRef}>
+          <table className="pf-table pf-table--compact">
+            <thead>
+              <tr>
+                <th>Department</th>
+                <th className="pf-num">Job orders</th>
+                <th className="pf-num">Sections</th>
+                <th>Worst band</th>
+                <th>Burn band</th>
+                <th className="pf-num">Budget</th>
+                <th className="pf-num">Actual</th>
+                <th className="pf-num">Burn</th>
+                <th className="pf-num">RED / AMBER / GREEN / N/M</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pager.slice.rows.map((row) => (
+                <tr key={row.department.id}>
+                  <td className="pf-cell-strong">{row.department.name}</td>
+                  <td className="pf-num">{row.jobOrderCount}</td>
+                  <td className="pf-num">{row.sectionCount}</td>
+                  <td>
+                    <BandBadge band={row.hoursBand} />
+                  </td>
+                  <td>
+                    <BandBadge band={row.burnBand} />
+                  </td>
+                  <td className="pf-num">{fmtHours(row.budgetHours)}</td>
+                  <td className="pf-num">{fmtHours(row.actualHours)}</td>
+                  <td className="pf-num">{fmtPct(row.burnPct)}</td>
+                  <td className="pf-num">
+                    {row.redCount} / {row.amberCount} / {row.greenCount} / {row.notMeasurableCount}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <SlicePager {...pager} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * Exceptions & readiness — the four buckets the API flags.
+ *
+ * Each bucket is CAPPED by the API (a bounded sample) while its header prints the FULL count, so a
+ * bucket can hold up to the cap. `resetKey` is handed to every card so a filter change sends each
+ * card's own page index back to 1 — the four cards page independently.
+ */
+function ExceptionsSection({ report, resetKey }: SectionProps) {
+  return (
+    <Panel
+      title="Exceptions & readiness"
+      count={`${report.exceptions.noBudgetHours.count + report.exceptions.budgetWithNoBookings.count + report.exceptions.noProgress.count + report.exceptions.unapproved.count} flagged`}
+    >
+      <div className="pf-exceptions">
+        <ExceptionCard
+          title="No budget hours"
+          bucket={report.exceptions.noBudgetHours}
+          emptyText="Every job order in scope has a positive budget."
+          columns={(row) => [row.displayName, row.department.name]}
+          resetKey={resetKey}
+        />
+        <ExceptionCard
+          title="Budget with no bookings"
+          bucket={report.exceptions.budgetWithNoBookings}
+          emptyText="Every budgeted job order has at least one booking."
+          columns={(row) => [row.displayName, fmtHours(row.budgetHours)]}
+          resetKey={resetKey}
+        />
+        <ExceptionCard
+          title="No progress reported"
+          bucket={report.exceptions.noProgress}
+          emptyText="Approved quantity progress exists for every job order."
+          columns={(row) => [row.displayName, row.department.name]}
+          resetKey={resetKey}
+        />
+        <ExceptionCard
+          title="Unapproved hours"
+          bucket={report.exceptions.unapproved}
+          emptyText="No hours are waiting for approval."
+          columns={(row) => [
+            row.displayName,
+            `${fmtHours(row.unapprovedHours)}${row.oldestUnapprovedAt ? ` since ${fmtDate(row.oldestUnapprovedAt)}` : ""}`,
+          ]}
+          resetKey={resetKey}
+        />
+      </div>
+    </Panel>
   );
 }
 
@@ -1344,21 +1530,32 @@ export function AttentionFigures({
 }
 
 /**
- * One exception bucket: the whole truth in the count, a bounded sample in the table.
- * The API caps the sample (and says so), so the header always states the FULL count.
+ * One exception bucket: the whole truth in the count, a bounded sample in the table — and the
+ * sample is PAGED at the same 50 rows as every other table, because the API's cap is 100 and a
+ * hundred rows inside a card in a four-card grid is the longest scroll on the screen.
+ *
+ * TWO STATEMENTS, TWO DIFFERENT FACTS, and both are needed:
+ *   - the note under the table says how much the API SAMPLE holds ("Showing 100 of 412"), which is a
+ *     property of the report — that is the reader's warning that rows exist beyond what is listed;
+ *   - the pager says which SLICE of that sample is on screen ("Showing 51-100 of 100 job orders").
+ * Collapsing them into one sentence would misstate one of the two.
  */
 export function ExceptionCard({
   title,
   bucket,
   emptyText,
   columns,
+  resetKey = "",
 }: {
   title: string;
   bucket: ExceptionBucket;
   emptyText: string;
   /** Maps a row to the [primary, secondary] cell pair this bucket cares about. */
   columns: (row: PortfolioJobRow) => [string, string];
+  /** Changes whenever the filter set changes, so the card's own page index resets with the data. */
+  resetKey?: string;
 }) {
+  const pager = useTablePager(bucket.rows, resetKey);
   return (
     <div className="pf-exception">
       <div className="pf-exception__head">
@@ -1368,10 +1565,10 @@ export function ExceptionCard({
       {bucket.count === 0 ? (
         <div className="pf-exception__empty">{emptyText}</div>
       ) : (
-        <div className="pf-exception__body">
+        <div className="pf-exception__body" ref={pager.anchorRef}>
           <table className="pf-table pf-table--compact">
             <tbody>
-              {bucket.rows.map((row) => {
+              {pager.slice.rows.map((row) => {
                 const [primary, secondary] = columns(row);
                 return (
                   <tr key={row.id}>
@@ -1387,6 +1584,7 @@ export function ExceptionCard({
               Showing {bucket.rows.length} of {bucket.count}; the export carries the full list.
             </p>
           )}
+          <SlicePager {...pager} />
         </div>
       )}
     </div>

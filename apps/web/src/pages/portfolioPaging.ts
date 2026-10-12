@@ -1,9 +1,9 @@
 /**
  * Pure pagination rules for the operations dashboard tables.
  *
- * Lives here (not in the page component) because the job-order table can show up to 63 rows
- * in one unbroken scroll, and every decision below is one a page would otherwise re-derive —
- * and get subtly wrong — on each render. The three that matter:
+ * Lives here (not in the page component) because a single section can hold 416 job orders in one
+ * unbroken scroll, and every decision below is one a page would otherwise re-derive — and get
+ * subtly wrong — on each render. The three that matter:
  *
  *  - EMPTY IS NOT AN ERROR. An empty list still reports pageCount 1 / page 1, so the pager
  *    never renders "page 0 of 0" and the caller never has to special-case "there are no rows".
@@ -12,15 +12,20 @@
  *    behaviour is to show the nearest valid page — never crash, and never leave an empty table
  *    with a live Next button.
  *  - from/to ARE FOR THE READER: 1-based, inclusive, so the pager can say
- *    "Showing 26-50 of 63" verbatim. With no rows they are 0, so the sentence can never read
+ *    "Showing 51-100 of 416" verbatim. With no rows they are 0, so the sentence can never read
  *    the misleading "Showing 1-0 of 0".
  *
  * Strictly pure: no React, no DOM, no I/O. It takes a readonly array and returns a plain
  * value, so it can be unit-tested without a browser and reused by any table on the dashboard.
  */
 
-/** The default rows-per-page for the dashboard tables; a caller may pass its own. */
-export const PAGE_SIZE = 25;
+/**
+ * The default rows-per-page for the operations tables. 50 is the operator-facing figure (the
+ * sections hold hundreds of job orders each; 50 rows is a screenful that keeps the header, the
+ * filters and the pager within one view), and it is deliberately the SAME for every table so
+ * two sections never page at two different rhythms. A caller may still pass its own.
+ */
+export const PAGE_SIZE = 50;
 
 export type PageSlice<T> = {
   /** The rows on this page: a contiguous, in-order slice of the original array. */

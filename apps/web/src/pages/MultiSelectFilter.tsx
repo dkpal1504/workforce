@@ -52,7 +52,13 @@ type Props = {
   searchThreshold?: number;
   /** Placeholder for the search box. */
   searchPlaceholder?: string;
-  /** Minimum width of the control, in px. Keeps the single row from collapsing to slivers. */
+  /**
+   * Minimum width of the control, in px — and ONLY set it when the caller's layout cannot
+   * guarantee a sane track (a flex row, say). Leave it off inside the portfolio filter bar: there
+   * the columns come from a CSS grid, and an inline `min-width` on a grid item does not widen the
+   * track — the item simply overflows it and the controls overlap. The grid is the single lever
+   * for the one-row layout.
+   */
   minWidth?: number;
 };
 
@@ -64,7 +70,7 @@ export function MultiSelectFilter({
   onChange,
   searchThreshold = 12,
   searchPlaceholder = "Search…",
-  minWidth = 168,
+  minWidth,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [term, setTerm] = useState("");
@@ -121,7 +127,7 @@ export function MultiSelectFilter({
   }
 
   return (
-    <div className="filter-field pf-ms" ref={wrapRef} style={{ minWidth }}>
+    <div className="filter-field pf-ms" ref={wrapRef} style={minWidth === undefined ? undefined : { minWidth }}>
       <label>{label}</label>
       <button
         type="button"
