@@ -19,10 +19,12 @@ import { paginate, pageNumbers, type PageSlice } from "./portfolioPaging";
 import {
   DEFAULT_TAB,
   PORTFOLIO_TABS,
+  isPortfolioTabId,
   panelDomId,
   tabDomId,
   tabForKey,
   type PortfolioTabId,
+  type ReportTab,
 } from "./portfolioTabs";
 // The pure `% Qty` formatting rule (see the module header for why it is exported, not inline).
 import { fmtQtyCompletePct, qtyCompleteNote } from "./portfolioQty";
@@ -378,15 +380,19 @@ export function ReportTabs({
   active,
   counts,
   onChange,
+  tabs = PORTFOLIO_TABS,
 }: {
-  active: PortfolioTabId;
-  counts: Partial<Record<PortfolioTabId, number>>;
-  onChange: (tab: PortfolioTabId) => void;
+  active: string;
+  counts: Partial<Record<string, number>>;
+  onChange: (tab: string) => void;
+  /** The strip to render. Defaults to the portfolio sections; Reports passes a longer list. */
+  tabs?: readonly ReportTab[];
 }) {
-  const buttons = useRef<Partial<Record<PortfolioTabId, HTMLButtonElement | null>>>({});
+  const buttons = useRef<Record<string, HTMLButtonElement | null>>({});
+  const ids = tabs.map((tab) => tab.id);
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    const next = tabForKey(active, event.key);
+    const next = tabForKey(active, event.key, ids);
     // Only a key that actually moves the selection is claimed: every other key (Tab, Enter, a
     // shortcut) must keep its normal behaviour.
     if (next === active) return;
@@ -397,7 +403,7 @@ export function ReportTabs({
 
   return (
     <div className="pf-tabs" role="tablist" aria-label="Report sections" onKeyDown={onKeyDown}>
-      {PORTFOLIO_TABS.map((tab) => {
+      {tabs.map((tab) => {
         const selected = tab.id === active;
         const count = counts[tab.id];
         return (
@@ -886,7 +892,11 @@ export function PortfolioDashboardPage() {
                 report.exceptions.noProgress.count +
                 report.exceptions.unapproved.count,
             }}
-            onChange={setTab}
+            onChange={(id) => {
+              // The default strip IS the portfolio sections, so an unknown id cannot arrive; the
+              // predicate keeps it type-safe rather than casting.
+              if (isPortfolioTabId(id)) setTab(id);
+            }}
           />
 
           {/* The ACTIVE section, and only it. One panel is mounted at a time, so a table's pager

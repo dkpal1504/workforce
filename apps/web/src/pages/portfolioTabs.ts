@@ -28,6 +28,9 @@
 export const TAB_TONES = ["danger", "success", "warning", "primary", "neutral"] as const;
 export type PortfolioTabTone = (typeof TAB_TONES)[number];
 
+/** The shape every tab shares, so a screen can extend the strip with its own report. */
+export type ReportTab = { id: string; label: string; tone: PortfolioTabTone };
+
 /**
  * The sections, in screen order, each with the tone it wears.
  *
@@ -52,6 +55,22 @@ export type PortfolioTabId = (typeof PORTFOLIO_TABS)[number]["id"];
 /** The tab ids in screen order — the walk order for keyboard selection. */
 export const PORTFOLIO_TAB_IDS: readonly PortfolioTabId[] = PORTFOLIO_TABS.map((tab) => tab.id);
 
+/**
+ * The ONE tab that is not a portfolio section: the timesheet-coverage report.
+ *
+ * WHY IT IS NOT IN `PORTFOLIO_TABS`: that list IS the portfolio report's table of contents, and both
+ * its screens render it. This report reads an entirely different dataset (timesheets, not job
+ * orders) and belongs on Reports only, so adding it to the shared list would put a tab on the
+ * dashboard that its own filters cannot produce. Reports composes the two lists instead — see
+ * `REPORTS_TABS`.
+ */
+export const COVERAGE_TAB = { id: "timesheet-coverage", label: "Timesheet coverage", tone: "primary" } as const;
+
+/** The tab strip the REPORTS screen renders: the six portfolio sections, plus coverage. */
+export const REPORTS_TABS = [...PORTFOLIO_TABS, COVERAGE_TAB] as const;
+export type ReportsTabId = (typeof REPORTS_TABS)[number]["id"];
+export const REPORTS_TAB_IDS: readonly ReportsTabId[] = REPORTS_TABS.map((tab) => tab.id);
+
 /** The section the screen opens on: the primary answer ("what needs a push"). */
 export const DEFAULT_TAB: PortfolioTabId = "needs-push";
 
@@ -60,8 +79,17 @@ export function isPortfolioTabId(value: unknown): value is PortfolioTabId {
   return typeof value === "string" && (PORTFOLIO_TAB_IDS as readonly string[]).includes(value);
 }
 
+/** Is this string a tab of the REPORTS strip (the six, plus coverage)? */
+export function isReportsTabId(value: unknown): value is ReportsTabId {
+  return typeof value === "string" && (REPORTS_TAB_IDS as readonly string[]).includes(value);
+}
+
 /**
- * The tab a keypress selects, per the WAI-ARIA tabs pattern.
+ * The tab a keypress selects, per the WAI-ARIA tabs pattern, walking the list it is GIVEN.
+ *
+ * The list is a parameter rather than a constant because the two screens carry different strips
+ * (Reports adds coverage). Walking the wrong list would land the keyboard on a tab that screen does
+ * not render — which is why the walk and the rendering must be driven by the same array.
  *
  * ArrowRight/ArrowDown and ArrowLeft/ArrowUp move one tab along and WRAP at the ends (that is the
  * pattern's behaviour, and wrapping is what makes the tab list reachable in both directions with
@@ -70,23 +98,27 @@ export function isPortfolioTabId(value: unknown): value is PortfolioTabId {
  *
  * Pure and total: it never throws and never returns an id outside the list.
  */
-export function tabForKey(current: PortfolioTabId, key: string): PortfolioTabId {
-  const count = PORTFOLIO_TAB_IDS.length;
-  const index = PORTFOLIO_TAB_IDS.indexOf(current);
+export function tabForKey<T extends string>(
+  current: T,
+  key: string,
+  ids: readonly T[] = PORTFOLIO_TAB_IDS as readonly T[]
+): T {
+  const count = ids.length;
+  const index = ids.indexOf(current);
   // A current id that is not in the list (a stale selection) has no neighbours to walk from; the
-  // honest answer is the default tab rather than a throw in a keydown handler.
-  if (index === -1) return DEFAULT_TAB;
+  // honest answer is the strip's own default rather than a throw in a keydown handler.
+  if (index === -1) return (ids.includes(DEFAULT_TAB as T) ? DEFAULT_TAB : ids[0]) as T;
   switch (key) {
     case "ArrowRight":
     case "ArrowDown":
-      return PORTFOLIO_TAB_IDS[(index + 1) % count];
+      return ids[(index + 1) % count];
     case "ArrowLeft":
     case "ArrowUp":
-      return PORTFOLIO_TAB_IDS[(index - 1 + count) % count];
+      return ids[(index - 1 + count) % count];
     case "Home":
-      return PORTFOLIO_TAB_IDS[0];
+      return ids[0];
     case "End":
-      return PORTFOLIO_TAB_IDS[count - 1];
+      return ids[count - 1];
     default:
       return current;
   }
@@ -94,10 +126,10 @@ export function tabForKey(current: PortfolioTabId, key: string): PortfolioTabId 
 
 /** The DOM id of a tab button, and of the panel it controls. Built in ONE place so `aria-controls`
  *  can never point at a panel that does not exist. */
-export function tabDomId(id: PortfolioTabId): string {
+export function tabDomId(id: string): string {
   return `pf-tab-${id}`;
 }
 
-export function panelDomId(id: PortfolioTabId): string {
+export function panelDomId(id: string): string {
   return `pf-panel-${id}`;
 }

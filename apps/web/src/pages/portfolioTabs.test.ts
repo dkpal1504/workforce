@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  COVERAGE_TAB,
   DEFAULT_TAB,
   PORTFOLIO_TABS,
   PORTFOLIO_TAB_IDS,
+  REPORTS_TAB_IDS,
   TAB_TONES,
   isPortfolioTabId,
+  isReportsTabId,
   panelDomId,
   tabDomId,
   tabForKey,
@@ -83,6 +86,34 @@ test("every tab wears a tone from the closed set, so no tab can render colourles
   );
   // The strip must not be a single colour: at least four distinct tones across the six tabs.
   assert.ok(new Set(PORTFOLIO_TABS.map((tab) => tab.tone)).size >= 4);
+});
+
+test("the REPORTS strip is the six portfolio sections PLUS the coverage report, on Reports only", () => {
+  // The dashboard renders PORTFOLIO_TABS (its own filters cannot produce a timesheet report), and
+  // Reports renders REPORTS_TABS. Pinning the difference stops the coverage tab leaking onto the
+  // dashboard, where its dataset does not exist.
+  assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage"]);
+  assert.equal(REPORTS_TAB_IDS.length, 7);
+  assert.equal(COVERAGE_TAB.label, "Timesheet coverage");
+  assert.ok((TAB_TONES as readonly string[]).includes(COVERAGE_TAB.tone));
+  assert.equal(PORTFOLIO_TAB_IDS.includes("timesheet-coverage" as never), false, "not a portfolio section");
+  assert.ok(isReportsTabId("timesheet-coverage"));
+  assert.ok(isReportsTabId("job-work"));
+  assert.equal(isReportsTabId("page"), false);
+});
+
+test("the keyboard walk follows the STRIP IT IS GIVEN, so Reports reaches coverage and the dashboard stops at the six", () => {
+  // Reports: End lands on coverage, and walking right off coverage wraps back to the first section.
+  assert.equal(tabForKey("exceptions", "ArrowRight", REPORTS_TAB_IDS), "timesheet-coverage");
+  assert.equal(tabForKey("timesheet-coverage", "ArrowRight", REPORTS_TAB_IDS), "needs-push");
+  assert.equal(tabForKey("needs-push", "ArrowLeft", REPORTS_TAB_IDS), "timesheet-coverage");
+  assert.equal(tabForKey("job-work", "End", REPORTS_TAB_IDS), "timesheet-coverage");
+  // The dashboard walk must NOT land on the coverage tab, which it does not render.
+  for (const current of PORTFOLIO_TAB_IDS) {
+    const next = tabForKey(current, "ArrowRight", PORTFOLIO_TAB_IDS);
+    assert.notEqual(next, "timesheet-coverage");
+    assert.ok(PORTFOLIO_TAB_IDS.includes(next));
+  }
 });
 
 test("arrow keys move one tab along and wrap at both ends", () => {

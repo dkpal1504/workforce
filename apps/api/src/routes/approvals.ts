@@ -3,7 +3,7 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
-import { contractOverheadHours } from "../services/contractWorkHours";
+import { contractOverheadHours, projectHoursFromEntries } from "../services/contractWorkHours";
 import { hodEmployeeScopeSet, hodScopeMatchesSet, isDepartmentViewRole } from "../services/roleAccess";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
@@ -104,34 +104,6 @@ function roleLabel(role: string): string {
 function daysPending(updatedAt: Date): number {
   const ms = Date.now() - updatedAt.getTime();
   return Math.max(0, Math.floor(ms / (24 * 60 * 60 * 1000)));
-}
-
-function projectHoursFromEntries(entries: EntryLike[], maxDailyHours: number) {
-  // Keep regular and overtime hours under the project they are charged to.
-  const projectHours: Record<string, number> = {};
-  const projectOtHours: Record<string, number> = {};
-  for (const e of entries) {
-    if (e.projectWbsId == null && e.jobOrderId == null) continue;
-    // The Project of a booking row is the frozen attribution snapshot; the Job
-    // Order path is only the fallback for rows booked before the snapshot existed.
-    const colorKey = e.project?.colorKey ?? e.jobOrder?.project.colorKey ?? null;
-    if (!colorKey) continue;
-    const key = String(colorKey).toUpperCase();
-    if (e.otHours != null) {
-      projectOtHours[key] = (projectOtHours[key] || 0) + e.otHours;
-      continue;
-    }
-    // A shift slot is 2h; a legacy hour slot is 1h.
-    const hours = e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
-    projectHours[key] = (projectHours[key] || 0) + hours;
-  }
-  const regularTotalAlloc = Object.values(projectHours).reduce((a, b) => a + b, 0);
-  const totalOtHours = Object.values(projectOtHours).reduce((a, b) => a + b, 0);
-  // OT is normally additive. For an OT-only holiday booking, it represents
-  // the whole attendance and must not create artificial regular overhead.
-  const overhead = contractOverheadHours(maxDailyHours, regularTotalAlloc, totalOtHours);
-  const totalAlloc = regularTotalAlloc + totalOtHours;
-  return { projectHours, projectOtHours, overhead, totalAlloc, regularTotalAlloc, totalOtHours };
 }
 
 /** Entries pending this approver's action (amendments keep prior approvals on other entries). */

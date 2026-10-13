@@ -26,7 +26,15 @@ import {
   type WbsOption,
 } from "./PortfolioDashboardPage";
 import { defaultFilters, decodeFilters, portfolioQuery, type PortfolioFilterState } from "./portfolioFilters";
-import { DEFAULT_TAB, panelDomId, tabDomId, type PortfolioTabId } from "./portfolioTabs";
+import {
+  DEFAULT_TAB,
+  REPORTS_TABS,
+  isPortfolioTabId,
+  panelDomId,
+  tabDomId,
+  type ReportsTabId,
+} from "./portfolioTabs";
+import { TimesheetCoveragePanel } from "./TimesheetCoveragePanel";
 import "../styles/portfolio.css";
 
 /**
@@ -55,8 +63,9 @@ export function ReportsPage() {
   const [downloadError, setDownloadError] = useState("");
   const [downloadNotice, setDownloadNotice] = useState("");
   const [busyFormat, setBusyFormat] = useState<"xlsx" | "pdf" | null>(null);
-  // Which section is open. View state, not in the URL (see portfolioTabs.ts).
-  const [tab, setTab] = useState<PortfolioTabId>(DEFAULT_TAB);
+  // Which section is open. View state, not in the URL (see portfolioTabs.ts). Type is the REPORTS
+  // strip's, which is the portfolio sections PLUS the coverage report.
+  const [tab, setTab] = useState<ReportsTabId>(DEFAULT_TAB);
 
   const { report, loading, error, query } = usePortfolioReport(filters);
 
@@ -102,6 +111,26 @@ export function ReportsPage() {
     }
   }
 
+  /**
+   * The counts the tabs carry. The six portfolio sections show their row counts; the coverage report
+   * carries NONE, because its size is a function of the period and the roster and would be a number
+   * nobody had asked for yet (the report states it the moment it is generated).
+   */
+  const tabCounts: Partial<Record<string, number>> = report
+    ? {
+        "needs-push": report.needsPush.length,
+        "on-track": report.onTrack.length,
+        "on-track-not-measurable": report.onTrackNotMeasurable.length,
+        "job-work": report.jobWork.length,
+        "department-load": report.departmentLoad.length,
+        exceptions:
+          report.exceptions.noBudgetHours.count +
+          report.exceptions.budgetWithNoBookings.count +
+          report.exceptions.noProgress.count +
+          report.exceptions.unapproved.count,
+      }
+    : {};
+
   const downloads = (
     <span className="pf-downloads">
       <button
@@ -123,24 +152,49 @@ export function ReportsPage() {
     </span>
   );
 
+  /** Which strip is on screen: the six portfolio sections, or the coverage report. */
+  const coverageTab = tab === "timesheet-coverage";
+
   return (
     <>
-      <PortfolioFilterBar
-        filters={filters}
-        onChange={setFilters}
-        projects={projects}
-        wbs={wbs}
-        departments={departments}
-        sections={sections}
-        onReset={() => setFilters(defaultFilters())}
-        extra={downloads}
-      />
+      {/* The FILTER BAR belongs to the report on screen. The portfolio bar's dimensions (projects
+          and WBS of the job-order register, band, budget, activity window, as-of) mean nothing to a
+          timesheet-coverage report, and drawing it above that report would invite the reader to
+          believe it filtered it. So the coverage report carries its own controls — a period plus the
+          organisation scope — and the portfolio bar returns with the portfolio sections. */}
+      {coverageTab ? null : (
+        <PortfolioFilterBar
+          filters={filters}
+          onChange={setFilters}
+          projects={projects}
+          wbs={wbs}
+          departments={departments}
+          sections={sections}
+          onReset={() => setFilters(defaultFilters())}
+          extra={downloads}
+        />
+      )}
 
-      {error && <div className="error-banner">{error}</div>}
-      {downloadError && <div className="error-banner">{downloadError}</div>}
-      {downloadNotice && <div className="alloc-note">{downloadNotice}</div>}
+      {coverageTab ? null : error && <div className="error-banner">{error}</div>}
+      {coverageTab ? null : downloadError && <div className="error-banner">{downloadError}</div>}
+      {coverageTab ? null : downloadNotice && <div className="alloc-note">{downloadNotice}</div>}
 
-      {loading && !report ? (
+      {coverageTab ? (
+        <>
+          <ReportTabs
+            tabs={REPORTS_TABS}
+            active={tab}
+            counts={tabCounts}
+            onChange={(id) => {
+              if (isPortfolioTabId(id)) setTab(id);
+              else if (id === "timesheet-coverage") setTab("timesheet-coverage");
+            }}
+          />
+          <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
+            <TimesheetCoveragePanel />
+          </div>
+        </>
+      ) : loading && !report ? (
         <div className="loading-state">Building the report…</div>
       ) : report ? (
         <>
@@ -192,20 +246,12 @@ export function ReportsPage() {
 
           {/* ---- The section tabs: one dataset at a time, each with its row count ---- */}
           <ReportTabs
+            tabs={REPORTS_TABS}
             active={tab}
-            counts={{
-              "needs-push": report.needsPush.length,
-              "on-track": report.onTrack.length,
-              "on-track-not-measurable": report.onTrackNotMeasurable.length,
-              "job-work": report.jobWork.length,
-              "department-load": report.departmentLoad.length,
-              exceptions:
-                report.exceptions.noBudgetHours.count +
-                report.exceptions.budgetWithNoBookings.count +
-                report.exceptions.noProgress.count +
-                report.exceptions.unapproved.count,
+            counts={tabCounts}
+            onChange={(id) => {
+              if (isPortfolioTabId(id) || id === "timesheet-coverage") setTab(id);
             }}
-            onChange={setTab}
           />
 
           <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>

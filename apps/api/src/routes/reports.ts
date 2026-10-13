@@ -12,6 +12,14 @@ import {
   portfolioExportFilename,
   type PortfolioExportFormat,
 } from "../services/portfolioExport";
+import {
+  CoverageRequestError,
+  buildTimesheetCoverageReport,
+  type CoverageActor,
+  type CoverageFilters,
+} from "../services/timesheetCoverageReport";
+import { buildTimesheetCoverageXlsx, timesheetCoverageFilename } from "../services/timesheetCoverageExport";
+import { parseCoverageStatuses } from "../services/timesheetCoverage";
 import { writeAudit } from "../audit";
 
 export const reportsRouter = Router();
@@ -160,3 +168,117 @@ function downloadHandler(format: PortfolioExportFormat) {
 reportsRouter.get("/portfolio.xlsx", downloadHandler("xlsx"));
 // GET /api/reports/portfolio.pdf — same gate, same parameters, same assembled numbers.
 reportsRouter.get("/portfolio.pdf", downloadHandler("pdf"));
+
+/* --------------------------------------------------------------------------- *
+ * Timesheet coverage by date — a DIFFERENT report on the same screen
+ *
+ * Gated by the same `requireRoles` above (PM, ADMIN, COO, HOD, DEPT_HEAD), because it is the same
+ * audience and the same scope rule; the loader narrows a head to his own Department exactly as the
+ * portfolio report does.
+ * ------------------------------------------------------------------------- */
+
+/** The coverage filters, parsed from the query string. Junk is refused, never silently widened. */
+function parseCoverageFilters(query: Record<string, unknown>): CoverageFilters | { error: ParseError } {
+  const list = (key: string): number[] => {
+    const raw = query[key];
+    if (raw == null || raw === "") return [];
+    const text = Array.isArray(raw) ? raw.join(",") : String(raw);
+    const ids = new Set<number>();
+    for (const token of text.split(",")) {
+      const trimmed = token.trim();
+      if (!/^\d+$/.test(trimmed)) continue;
+      const id = Number(trimmed);
+      if (Number.isSafeInteger(id) && id > 0) ids.add(id);
+    }
+    return [...ids].sort((a, b) => a - b);
+  };
+  return {
+    from: String(query.from ?? "").trim(),
+    to: String(query.to ?? "").trim(),
+    departmentIds: list("departmentIds"),
+    sectionIds: list("sectionIds"),
+    projectIds: list("projectIds"),
+    // The Approval Status filter: unknown words are dropped by the parser, never a zero-row report.
+    statuses: parseCoverageStatuses(query.statuses),
+    page: query.page == null || query.page === "" ? 1 : Number(query.page),
+    pageSize: query.pageSize == null || query.pageSize === "" ? undefined : Number(query.pageSize),
+  };
+}
+
+function coverageActor(req: Request): CoverageActor {
+  return {
+    id: req.user!.id,
+    name: req.user!.name,
+    role: req.user!.role,
+    departmentId: req.user!.departmentId ?? null,
+  };
+}
+
+/**
+ * GET /api/reports/timesheet-coverage — the report as JSON.
+ *
+ * PAGED server-side, unlike the portfolio tables. Those page on the client because a section holds
+ * ~60 rows; THIS report's row count is `employees x days` (500 x 31 = 15,500), so sending every row
+ * to the browser to page there would push megabytes for one screenful. The coverage figures are
+ * computed over ALL rows before the page is cut, so the summary never changes with the page.
+ */
+reportsRouter.get("/timesheet-coverage", async (req, res) => {
+  const filters = parseCoverageFilters(req.query as Record<string, unknown>);
+  if ("error" in filters) return res.status(400).json(filters.error);
+  try {
+    const report = await buildTimesheetCoverageReport(filters, coverageActor(req));
+    return res.json(report);
+  } catch (error) {
+    if (error instanceof CoverageRequestError) {
+      return res.status(400).json({ error: error.message, code: error.code });
+    }
+    const message = error instanceof Error ? error.message : "Failed to build the coverage report.";
+    console.error("[reports] timesheet coverage failed:", error);
+    return res.status(500).json({ error: message, code: "COVERAGE_REPORT_FAILED" });
+  }
+});
+
+/**
+ * GET /api/reports/timesheet-coverage.xlsx — the same report as a workbook.
+ *
+ * `includeAllRows: true` and NO page parameter is read from the request: a download is always the
+ * whole period, so a hostile `?page=3` cannot turn the file into one page of the screen.
+ */
+reportsRouter.get("/timesheet-coverage.xlsx", async (req, res) => {
+  const filters = parseCoverageFilters(req.query as Record<string, unknown>);
+  if ("error" in filters) return res.status(400).json(filters.error);
+  const actor = coverageActor(req);
+  try {
+    const report = await buildTimesheetCoverageReport(
+      { ...filters, page: 1, pageSize: undefined },
+      actor,
+      { includeAllRows: true }
+    );
+    const buffer = await buildTimesheetCoverageXlsx(report);
+    const filename = timesheetCoverageFilename(report);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", String(buffer.length));
+    res.send(buffer);
+
+    await writeAudit(actor.id, "TIMESHEET_COVERAGE_EXPORT", "timesheet_coverage", `${report.from}..${report.to}`, {
+      format: "xlsx",
+      filterDescription: report.provenance.filters.map((entry) => `${entry.label}: ${entry.value}`).join("; "),
+      scope: report.provenance.scope,
+      employees: report.totals.employees,
+      employeeDays: report.totals.employeeDays,
+      filledDays: report.totals.filledDays,
+      notFilledDays: report.totals.notFilledDays,
+      generatedAt: report.generatedAt,
+      generatedBy: actor,
+      bytes: buffer.length,
+    });
+  } catch (error) {
+    if (error instanceof CoverageRequestError) {
+      return res.status(400).json({ error: error.message, code: error.code });
+    }
+    const message = error instanceof Error ? error.message : "Failed to build the coverage export.";
+    console.error("[reports] timesheet coverage export failed:", error);
+    return res.status(500).json({ error: message, code: "COVERAGE_EXPORT_FAILED" });
+  }
+});

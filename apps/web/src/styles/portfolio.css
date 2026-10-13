@@ -977,3 +977,154 @@
     flex: 1 1 auto;
   }
 }
+
+/* ============================================================================================
+   COLOURED TABLE HEADERS (Reports → Timesheet coverage)
+   --------------------------------------------------------------------------------------------
+   The header of a wide report is the only part a reader consults on every scroll, so it carries
+   meaning instead of decoration:
+
+     · the identity group (Date … Employee) is neutral — it says what the row IS;
+     · each PROJECT group wears that project's own colour (`--project-<key>`, the same token the
+       allocations grid paints the project with), so MV AINA reads the same here as there;
+     · the quantity groups are tinted by DIRECTION: green for hours booked to work, amber for
+       overheads (capacity not booked), primary for the totals that are neither good nor bad.
+
+   Every colour is mixed from the theme's own tokens, never hardcoded, so all five themes stay
+   coherent and the contrast stays the theme's business. Tints stay light (~18%) with ink mixed
+   toward `--text`: a saturated header would shout, and shouting headers get ignored.
+   ============================================================================================ */
+
+/* The coverage filter row has SIX fields, not the portfolio bar's nine. Its own count keeps every
+   one of them in a single row on a desktop instead of squeezing six into nine narrow tracks. */
+.pf-filters--coverage {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+/* The buttons and the reading note take their own full-width row: they act on the whole filter set. */
+.pf-filters--coverage .pf-filters__actions {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+
+/* ---- Detail table: grouped header -------------------------------------------------------- */
+.pf-table--grouped thead th {
+  /* A grouped header is a header ROW, not a label: the tint has to be strong enough to read as a
+     band across both of its rows. */
+  border-bottom: 1px solid var(--border);
+}
+.pf-table--grouped thead tr:first-child th {
+  border-top: 3px solid transparent;
+  border-top-color: color-mix(in srgb, var(--border) 55%, var(--text));
+}
+
+.pf-table thead .pf-th--id {
+  background: color-mix(in srgb, var(--bg-subtle) 78%, var(--bg-elevated));
+  color: var(--text);
+}
+
+/* A PROJECT column group: the accent rule and the label both wear the project's colour. */
+.pf-table thead .pf-th--project {
+  background: color-mix(in srgb, var(--col-tone, var(--border)) 20%, var(--bg-elevated));
+  color: color-mix(in srgb, var(--col-tone, var(--text)) 60%, var(--text));
+  border-top-color: var(--col-tone, var(--border));
+  border-bottom: 1px solid color-mix(in srgb, var(--col-tone, var(--border)) 45%, var(--bg-elevated));
+}
+/* The Regular/OT row under a project is a lighter tint of the same colour, so the group still reads
+   as one block when the two rows are compared. */
+.pf-table thead .pf-th--project.pf-th--sub {
+  background: color-mix(in srgb, var(--col-tone, var(--border)) 11%, var(--bg-elevated));
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.pf-table thead .pf-th--total {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  border-top-color: var(--primary);
+  border-bottom-color: color-mix(in srgb, var(--primary) 35%, var(--bg-elevated));
+}
+.pf-table thead .pf-th--total.pf-th--sub {
+  background: color-mix(in srgb, var(--primary-soft) 60%, var(--bg-elevated));
+}
+
+/* Overheads mean capacity that was NOT booked — the amber says "look here" without crying danger
+   (a quiet day is not a failure, it is a question). */
+.pf-table thead .pf-th--overheads {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+  border-top-color: var(--warning);
+  border-bottom-color: color-mix(in srgb, var(--warning) 35%, var(--bg-elevated));
+}
+.pf-table thead .pf-th--combined {
+  background: color-mix(in srgb, var(--primary-soft) 55%, var(--warning-soft));
+  color: var(--primary-ink);
+  border-top-color: var(--primary);
+  border-bottom-color: color-mix(in srgb, var(--primary) 30%, var(--bg-elevated));
+}
+.pf-table thead .pf-th--status {
+  background: color-mix(in srgb, var(--bg-subtle) 60%, var(--bg-elevated));
+  color: var(--text);
+}
+/* The empty cells that continue the Overheads / Combined / status tints into the second header row. */
+.pf-table thead .pf-th--overheads.pf-th--sub,
+.pf-table thead .pf-th--combined.pf-th--sub {
+  border-bottom-width: 1px;
+}
+
+/* Rounded ends: the band starts and stops with the table, not with the window. */
+.pf-table--grouped thead tr:first-child th:first-child {
+  border-top-left-radius: 8px;
+}
+.pf-table--grouped thead tr:first-child th:last-child {
+  border-top-right-radius: 8px;
+}
+
+/* ---- Coverage table: the header says which DIRECTION each count is ----------------------- */
+.pf-table--coverage thead .pf-th--roster {
+  background: color-mix(in srgb, var(--bg-subtle) 78%, var(--bg-elevated));
+  color: var(--text);
+}
+.pf-table--coverage thead .pf-th--filled {
+  background: var(--success-soft);
+  color: var(--success-ink);
+  border-top: 3px solid var(--success);
+}
+.pf-table--coverage thead .pf-th--gap {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+  border-top: 3px solid var(--danger);
+}
+.pf-table--coverage thead th:first-child {
+  border-top-left-radius: 8px;
+}
+.pf-table--coverage thead th:last-child {
+  border-top-right-radius: 8px;
+}
+
+/* The count that carries an active filter says so, in words, next to the number. */
+.pf-count-note {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--primary-ink);
+}
+.pf-panel__hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- Narrow screens ---------------------------------------------------------------------- */
+@media (max-width: 1439px) {
+  .pf-filters--coverage {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1099px) {
+  .pf-filters--coverage {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 767px) {
+  .pf-filters--coverage {
+    grid-template-columns: 1fr;
+  }
+}
