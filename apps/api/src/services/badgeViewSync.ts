@@ -6,6 +6,7 @@ import { prisma } from "../db";
 import { writeAudit } from "../audit";
 import { effectiveOrganisation } from "./roleAccess";
 import { supervisorAccountTransition } from "./supervisorAccountLifecycle";
+import { cardTypeFilter } from "./labourWorksCardTypes";
 
 /** One row from the LabourWorks BadgeView source. */
 export type BadgeViewRow = {
@@ -263,7 +264,13 @@ async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
     }
     const safeView = view.split(".").map((part) => `[${part}]`).join(".");
     const request = pool.request();
-    request.input("cardType", sql.NVarChar(32), "ASSOCIATES");
+    // The card types are DATA (services/labourWorksCardTypes.ts), not a literal: the same list feeds
+    // the operator's triage script, so a population this sync skips can never be reported by that
+    // script as "not in the source". One bound parameter per type, in the filter's own order.
+    const cardTypes = cardTypeFilter();
+    cardTypes.values.forEach((value, index) => {
+      request.input(`cardType${index}`, sql.NVarChar(32), value);
+    });
     const response = await request.query(`
       SELECT
         IDCardNo AS EcNo,
@@ -276,7 +283,7 @@ async function fetchBadgeViewRows(): Promise<BadgeViewRow[]> {
         mobile,
         IsTerminated
       FROM ${safeView}
-      WHERE [Card Type] = @cardType
+      WHERE ${cardTypes.where}
     `);
     return (response.recordset as BadgeViewRow[]) || [];
   } finally {

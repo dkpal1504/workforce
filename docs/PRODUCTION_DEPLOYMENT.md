@@ -310,6 +310,22 @@ that file in the same change.
 
 ### 0.5 LabourWorks from inside the container (badge sync + clocked hours)
 
+**WHO THE SYNC IMPORTS.** Only the contract (`CLMS`) card types named in
+`apps/api/src/services/labourWorksCardTypes.ts` — currently `ASSOCIATES` and `ASSOCIATE SEZ`. That
+one list builds the snapshot query's `WHERE [Card Type] IN (...)`, and the same list is imported by
+the "is the source terminated?" probe behind the Activate lever and by the
+`diagnose-supervisor-source.mjs` triage script, so all three always ask about the same people: a
+population the sync skips can never be reported by the tooling as "not in the source".
+
+The view holds other card types this app deliberately does not import — `EOU`, `CLIENT EOU`, `SEZ`,
+`CLIENT SEZ`, `-- Not Defined --` — which are permanent staff and client employees rather than
+contract associates. Widening the list changes WHO EXISTS in the application (Employee rows,
+logins, pickers, approval queues, reports), so make that change deliberately and then read
+`GET /api/admin/sync/exceptions` after the first run: an association whose ecNo already belongs to a
+manually registered (non-CLMS) Employee is refused with `ECNO_SOURCE_COLLISION` and left for an
+operator to resolve, never silently overwritten. The completeness guard (`BADGEVIEW_SYNC_MIN_RATIO`)
+only catches a list that has become too NARROW — it says nothing about one that is too wide.
+
 The containers reach `10.5.1.106:1433` through the Windows host's network stack. Two
 things to arrange:
 

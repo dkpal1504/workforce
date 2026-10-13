@@ -40,6 +40,10 @@
  */
 import sql from "mssql";
 import { PrismaClient } from "@prisma/client";
+// The sync's OWN card-type list, imported from the built service rather than copied: a triage tool
+// that asks a different question than the sync asked reports "not in the source" for a person the
+// sync never looked for. `dist/` is what the api image ships (sync-labourworks.mjs does the same).
+import { cardTypeFilter, cardTypesLabel } from "../dist/services/labourWorksCardTypes.js";
 
 const prisma = new PrismaClient();
 const args = process.argv.slice(2);
@@ -78,13 +82,17 @@ async function fetchRows(ecNos) {
     }
     const safeView = view.split(".").map((p) => `[${p}]`).join(".");
     const request = pool.request();
-    request.input("cardType", sql.NVarChar(32), "ASSOCIATES");
+    // The sync's own predicate, built from the sync's own list.
+    const cardTypes = cardTypeFilter();
+    cardTypes.values.forEach((value, index) => {
+      request.input(`cardType${index}`, sql.NVarChar(32), value);
+    });
     // The sync's exact projection, plus the raw flag for reporting.
     const result = await request.query(`
       SELECT IDCardNo AS EcNo, [Workmen Name] AS Name, [Workmen Division] AS Division,
              [Workmen Section] AS Section, [Nature Of Work] AS NatureOfWork, IsTerminated
       FROM ${safeView}
-      WHERE [Card Type] = @cardType
+      WHERE ${cardTypes.where}
     `);
     const rows = result.recordset ?? [];
     if (!ecNos || ecNos.length === 0) return { rows, matched: rows };
@@ -120,7 +128,7 @@ async function main() {
 
   const ecNos = disabled.map((u) => u.employee?.ecNo).filter(Boolean);
   const { rows, matched } = await fetchRows(ecNos);
-  console.log(`LabourWorks returned ${rows.length} ASSOCIATES row(s); matched ${matched.length} of the ${ecNos.length} queried.\n`);
+  console.log(`LabourWorks returned ${rows.length} row(s) for Card Type ${cardTypesLabel()}; matched ${matched.length} of the ${ecNos.length} queried.\n`);
 
   const byEc = new Map(matched.map((r) => [String(r.EcNo ?? "").trim().toUpperCase(), r]));
 
