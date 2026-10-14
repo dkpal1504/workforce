@@ -4,7 +4,8 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours, projectHoursFromEntries } from "../services/contractWorkHours";
-import { hodEmployeeScopeSet, hodScopeMatchesSet, isDepartmentViewRole } from "../services/roleAccess";
+import { isDepartmentViewRole } from "../services/roleAccess";
+import { hodRoutingScope } from "../services/approvalRouting";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
 import { rejectionStatusForEmployee } from "../services/employeeEligibility";
@@ -28,10 +29,14 @@ const APPROVER_ROLES = ["HOD", "PM", "ADMIN"] as const;
 const DECIDER_ROLES = ["HOD", "PM"] as const;
 
 /*
- * The labour an approver may act on now lives in `hodEmployeeScopeSet`
- * (services/roleAccess.ts), which takes the SET of Sections a multi-Section Section Head
- * covers rather than one scalar. An EMPTY set means the whole Department, exactly as a
- * null `sectionId` did before, so today's accounts behave identically.
+ * Whose labour an approver may act on now lives in `services/approvalRouting.ts`, which takes the SET
+ * of Sections a multi-Section Section Head covers rather than one scalar. An EMPTY set means the whole
+ * Department, exactly as a null `sectionId` did before, so today's accounts behave identically.
+ *
+ * The scope is keyed on the SECTION OF THE SUPERVISOR WHO TAGGED THE SHEET — not on the Section of the
+ * person whose hours are on it — so a Supervisor's whole team submits to HIS Section Head however many
+ * Sections of the Department he drew the team from. See that module for the rule, its one fallback
+ * (a tagger with no Section of his own), and why the fragment must not be re-implemented by hand here.
  */
 
 /** Legacy WBS link on a booking row. The WBS carries no colour of its own. */
@@ -362,7 +367,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     where: {
       status: { in: statusFilter },
       ...(isDepartmentViewRole(role)
-        ? { employee: hodEmployeeScopeSet(req.user!.departmentId, req.user!.sectionScope) }
+        ? hodRoutingScope(req.user!.departmentId, req.user!.sectionScope)
         : {}),
       // Only days that have at least one project-tagged hour (legacy WBS OR new JobOrder).
       entries: {
@@ -395,7 +400,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
       where: {
         status: "PLANNING_RETURNED",
         ...(isDepartmentViewRole(role)
-          ? { employee: hodEmployeeScopeSet(req.user!.departmentId, req.user!.sectionScope) }
+          ? hodRoutingScope(req.user!.departmentId, req.user!.sectionScope)
           : {}),
         entries: {
           some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
@@ -467,7 +472,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
       ...(role === "PM" || role === "ADMIN"
         ? {}
         : isDepartmentViewRole(role)
-          ? { timesheetDay: { employee: hodEmployeeScopeSet(req.user!.departmentId, req.user!.sectionScope) } }
+          ? { timesheetDay: hodRoutingScope(req.user!.departmentId, req.user!.sectionScope) }
           : { approverId: req.user!.id }),
     },
     include: {
@@ -532,11 +537,11 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
   const departmentId = req.user!.departmentId;
   const sectionScope = req.user!.sectionScope;
 
-  // Scope: only entries in this approver's department (via supervisor OR employee),
-  // matching the pending view. If the approver has no department (e.g. PM), no
+  // Scope: only entries whose sheet is ROUTED to this approver (by the Section of the Supervisor who
+  // submitted it), matching the pending view. If the approver has no department (e.g. PM), no
   // department filter is applied — consistent with the existing pending view.
   const deptWhere = role === "HOD"
-    ? { employee: hodEmployeeScopeSet(departmentId, sectionScope) }
+    ? { timesheetDay: hodRoutingScope(departmentId, sectionScope) }
     : {};
 
   const entries = await prisma.timesheetEntry.findMany({
@@ -628,6 +633,28 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
   res.json({ rows, role });
 });
 
+/**
+ * Is this sheet routed to the acting HOD's Section?
+ *
+ * THE SCOPE IS THE ROUTING SCOPE (services/approvalRouting.ts): a sheet belongs to the Section Head of
+ * the SECTION OF THE SUPERVISOR WHO SUBMITTED IT, which is not necessarily the Section of the person
+ * whose hours are on it. The check is the SAME filter the queue is built from, asked about one id — the
+ * queue and the decision can therefore never disagree about who may act. PM/Admin are not department
+ * scoped here and pass.
+ */
+async function routedToHod(
+  dayId: number,
+  role: string,
+  departmentId: number | null,
+  sectionScope: readonly number[]
+): Promise<boolean> {
+  if (role !== "HOD") return true;
+  const reachable = await prisma.timesheetDay.count({
+    where: { id: dayId, ...hodRoutingScope(departmentId, sectionScope) },
+  });
+  return reachable > 0;
+}
+
 async function applyApprove(ids: number[], userId: number, role: string, departmentId: number | null, sectionScope: readonly number[], comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
@@ -646,8 +673,8 @@ async function applyApprove(ids: number[], userId: number, role: string, departm
       errors.push({ id, error: "Not found" });
       continue;
     }
-    if (role === "HOD" && (!hodScopeMatchesSet(departmentId, sectionScope, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
-      errors.push({ id, error: "Timesheet belongs to another Department or the HOD has no Department." });
+    if (!(await routedToHod(id, role, departmentId, sectionScope))) {
+      errors.push({ id, error: "Timesheet is routed to another Section Head (the Section of the Supervisor who submitted it)." });
       continue;
     }
     const next = nextStatusOnApprove(role, day.status);
@@ -707,8 +734,8 @@ async function applyReject(ids: number[], userId: number, role: string, departme
       errors.push({ id, error: "Not found" });
       continue;
     }
-    if (role === "HOD" && (!hodScopeMatchesSet(departmentId, sectionScope, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
-      errors.push({ id, error: "Timesheet belongs to another Department or the HOD has no Department." });
+    if (!(await routedToHod(id, role, departmentId, sectionScope))) {
+      errors.push({ id, error: "Timesheet is routed to another Section Head (the Section of the Supervisor who submitted it)." });
       continue;
     }
 
@@ -799,8 +826,8 @@ approvalsRouter.post("/:id/send-back", requireRoles("HOD"), async (req, res) => 
   const id = Number(req.params.id);
   const day = await prisma.timesheetDay.findUnique({ where: { id }, include: { employee: { select: { active: true, departmentId: true, sectionAssignment: { select: { sectionId: true } } } } } });
   if (!day) return res.status(404).json({ error: "Not found" });
-  if (req.user!.role === "HOD" && (!hodScopeMatchesSet(req.user!.departmentId, req.user!.sectionScope, day.employee.departmentId, day.employee.sectionAssignment?.sectionId ?? null))) {
-    return res.status(403).json({ error: "Timesheet belongs to another Department or the HOD has no Department.", code: "FORBIDDEN" });
+  if (!(await routedToHod(id, req.user!.role, req.user!.departmentId, req.user!.sectionScope))) {
+    return res.status(403).json({ error: "Timesheet is routed to another Section Head (the Section of the Supervisor who submitted it).", code: "FORBIDDEN" });
   }
   if (day.status !== "PLANNING_RETURNED") {
     return res.status(400).json({ error: "Only Planning-returned sheets can be sent back to supervisor" });

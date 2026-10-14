@@ -10,8 +10,8 @@ control which links are shown in the browser.
 | Select contract labour by Department Section | — | Any Section in own Department | — | — | Any Supervisor | — |
 | Fill assigned-labour timesheet | — | Own daily team | — | — | Any Supervisor | — |
 | Timesheet decision Summary | Own approved | Own HOD decisions | Own decisions and PM returns for mapped Department/Section | Own decisions, all Departments | All | — |
-| Approval queue | — | — | Submitted, mapped Department/Section | HOD-approved, all Departments | Both stages, **read only** | — |
-| Can decide (approve / reject / send back) | — | — | Submitted, own Department+Section | HOD-approved, all Departments | **No** - Admin observes only; the API refuses with 403 | — |
+| Approval queue | — | — | Submitted sheets **routed to his Sections** (see below) | HOD-approved, all Departments | Both stages, **read only** | — |
+| Can decide (approve / reject / send back) | — | — | Submitted sheets routed to his Sections | HOD-approved, all Departments | **No** - Admin observes only; the API refuses with 403 | — |
 | Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section | — |
 | Organisation and supervisor administration | — | — | — | — | Yes | — (the API refuses: 403) |
 | Operations dashboard (`viewPortfolioDashboard`) | — | — | Own Department (whole, every Section) | Own Department (whole) | Yes | Yes (whole organisation, read only) |
@@ -20,6 +20,19 @@ Each HOD must have an explicit `User.departmentId + User.sectionId` scope. HOD
 approval and creation permissions fail closed when either mapping is absent. HOD and
 PM accounts must be linked to their canonical payroll `Employee` record to use My Hours. Admin user creation accepts `employeeId` for this purpose. Linked
 HOD/PM users may log in with their ecNo or administrative email.
+
+**A submitted timesheet is routed by the SECTION OF THE SUPERVISOR WHO TAGGED IT**, not by
+the Section of the person whose hours are on it. A Supervisor may build his team from any
+Section of his own Department, so his whole team's sheets go to **his** Section Head: a
+Supervisor tagged to `Steel` who draws labour from `Hull and Outfitting` submits to the
+Steel Section Head. The Supervisor's Section is his Employee mapping (the Section the app
+shows him as his own, and the one the team picker defaults to). A sheet tagged by an
+account with no Section of its own — an Admin editing a sheet — keeps the previous
+behaviour and follows the EMPLOYEE's Section, so no sheet can fall out of every queue.
+The rule has ONE implementation, `services/approvalRouting.ts`, and it is the same filter
+behind the approval queue, the Planning-returned list, the approve/reject/send-back
+checks, the Job Order consumption lens and the Admin panel's `pendingApprovals` blocker.
+Sheets already submitted re-route on read, so nothing has to be migrated.
 
 Payroll My Hours and contract-labour timesheets use separate data structures but
 appear together in Approvals and Summary. Approval decisions are immutable. This
@@ -60,7 +73,8 @@ HOD scope is therefore two different things and both are correct:
 
 | Context | HOD visibility |
 |---|---|
-| Approvals, My Hours, timesheet decisions | Own Department **+ Section** (a Section Head) or the whole Department (a Department HOD) |
+| Approvals and timesheet decisions | Sheets **routed to his Sections** — the Section of the Supervisor who submitted the sheet decides |
+| My Hours approvals | Own Department **+ Section** (a Section Head) or the whole Department (a Department HOD) — a My Hours day is the employee's own booking, so its Section decides |
 | Employee listing and the operations report | Whole **Department**, for every HOD shape |
 
 

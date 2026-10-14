@@ -10,6 +10,7 @@ import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
 import { initialCredentialState, initialCredentialStateLabel } from "../services/defaultLoginCredentials";
 import { canCreatePayrollEmployee } from "../services/roleAccess";
+import { routingSectionScope } from "../services/approvalRouting";
 import { jobOrderSectionError, jobOrderWbsMoveError } from "../services/masterDataRules";
 import { SYNC_RUN_ACTIONS, runTriggerLabel, syncCadence, syncFreshness } from "../services/syncFreshness";
 import {
@@ -599,18 +600,19 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
    */
   const [pendingApprovalCounts, returnedTimesheetCounts] = await Promise.all([
     // Mirrors `pendingStatusesForRole` + the queue scope in routes/approvals.ts: an HOD's queue is
-    // SUBMITTED days inside HIS Department/Section, a PM's is HOD_APPROVED across all departments.
+    // SUBMITTED days ROUTED to his Sections — the Section of the SUPERVISOR who submitted the sheet
+    // decides (services/approvalRouting.ts) — and a PM's is HOD_APPROVED across all departments.
     Promise.all(users.map(async (user) => {
       const statuses = user.role === "HOD" ? ["SUBMITTED"] : user.role === "PM" ? ["HOD_APPROVED"] : null;
       if (!statuses || !["HOD", "PM", "ADMIN"].includes(user.role)) return [user.id, 0] as const;
       // A Department HOD (no Section) covers every Section of its Department; a Section HOD covers
-      // exactly its Section. An approver with no Department at all matches nothing (fails closed).
+      // exactly its Sections. An approver with no Department at all matches nothing (fails closed).
       const scopeIds = scopeIdsFor(user);
       const scope = user.role !== "HOD"
         ? {}
         : user.departmentId == null || scopeIds.length === 0
           ? { employee: { id: -1 } }
-          : { employee: { departmentId: user.departmentId, sectionAssignment: { sectionId: { in: scopeIds } } } };
+          : routingSectionScope(scopeIds);
       const count = await prisma.timesheetDay.count({ where: { status: { in: statuses }, ...scope } });
       return [user.id, count] as const;
     })),
@@ -734,8 +736,8 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
   };
 
   // Outstanding work blocks the move, so nothing is orphaned mid-workflow.
-  // The approval queue is derived from the day's status + the role's scope
-  // (mirrors pendingStatusesForRole/hodEmployeeScope in routes/approvals.ts), so a
+  // The approval queue is derived from the day's status + the role's routing scope
+  // (mirrors pendingStatusesForRole/approvalRouting in routes/approvals.ts), so a
   // day waiting on this account is counted here even though no Approval row exists
   // until an action is taken.
   const queueStatuses = user.role === "HOD" ? ["SUBMITTED"] : user.role === "PM" ? ["HOD_APPROVED"] : ["SUBMITTED", "HOD_APPROVED"];
@@ -748,12 +750,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
           ...(user.role === "HOD"
             ? user.departmentId == null || scopeIdsFor(user).length === 0
               ? { employee: { id: -1 } }
-              : {
-                  employee: {
-                    departmentId: user.departmentId,
-                    sectionAssignment: { sectionId: { in: scopeIdsFor(user) } },
-                  },
-                }
+              : routingSectionScope(scopeIdsFor(user))
             : {}),
         },
       });
