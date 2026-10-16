@@ -757,6 +757,58 @@ Only a `SUBMITTED` entry can be decided. The status shows in the list as `Submit
 - The amendment is a **new revision** (`revision_no + 1`): **the refused row stays visible as history**, and the list shows `History (N revisions)` with the figure, status, who decided it and the remark of each revision.
 - The corrected figure is held to the same floor: it may not fall below the last approved figure.
 
+## 16b. Planned window and Schedule & delays (PM / Admin)
+
+### Setting the planned window
+
+A Job Order may carry an OPTIONAL planned window — **Start date** and **End date** — which is the promise
+a delay is measured against. It comes from two columns appended to the Job Order upload template
+(`Start_Date`, `End_Date`), or can be set and corrected by hand.
+
+- **Most Job Orders have no window, and that is normal.** Continual / standing work is stored with no
+  plan, and every report shows it as **Not scheduled** — never as on time.
+- **Either date may stand alone.** A start with no end reads as *open-ended*; an end with no start as
+  *deadline*. Both are judged on what they have.
+- **Who may change it.** A Project Manager or an Admin, from **Master Data → Job Order → Planned
+  window**. The HOD cannot: he punches the progress a delay claim is built from. Every change is
+  audited with the previous window.
+- **In the upload**, the two columns are optional; a file that stops at `Job_Order_Status` still
+  imports. Dates are written as `yyyy-mm-dd` (2026-10-16) or `dd/mm/yyyy` (16/10/2026). A two-digit year,
+  a day that does not exist (31/02/2026) or any ambiguous value is **refused with the row and column** —
+  the upload never guesses a date. A window that ends before it starts is refused.
+
+### Reading the schedule
+
+The schedule is a SEPARATE judgement from the hours band, and deliberately so: a Job Order can be GREEN
+on burn and past its end date, and that pair is the most dangerous row in the portfolio. The bands are:
+
+| Band | Meaning |
+|---|---|
+| **Delayed** | the planned end date has passed and quantity is outstanding — a fact, not a projection |
+| **At risk** | the projected finish, from the approved progress, lands **more than 7 days** beyond the planned end |
+| **Due soon** | the planned end is within **7 days** and quantity is outstanding |
+| **On plan** | inside the window, or an open-ended start with nothing to breach |
+| **Not scheduled** | no planned window at all (continual work) — never on time, never late |
+
+Where it appears:
+
+- **Portfolio dashboard / Reports → Schedule & delays tab** — every breached or about-to-be-breached
+  window, worst first, with the planned window, the days late or left, the calendar plan %, % quantity,
+  the rate the remainder needs against the rate achieved, the projected finish and the reasons.
+- **Job work tab** — the window and the schedule band on every Job Order, so the register can be read
+  for schedule as well as for burn.
+- **Scope line** (above the tabs) and the report's definitions — the COVERAGE: how many Job Orders in
+  scope carry a window at all. Without it, a portfolio whose rows have no dates would look punctual.
+- **Exceptions & readiness** — *End date passed* (the delay list), *Scheduled, no approved progress*
+  (a plan nobody can judge: unknown, not late) and *Incomplete planned window* (only one date set — a
+  data-quality bucket, never read as a plan).
+- **Exports** — the workbook carries the schedule columns and a *Schedule & delays* sheet, and both
+  exports print the bands, the weights and the coverage statement.
+
+**Honesty rule:** when the approved progress cannot support a projection — fewer than two approved
+entries, no advance between them, or no quantity budget — the projection is left blank and the row is NOT
+flagged. A Job Order nobody has punched is *unknown*, not delayed.
+
 # Part II — Developer / Admin Reference
 
 ## 17. Architecture & stack

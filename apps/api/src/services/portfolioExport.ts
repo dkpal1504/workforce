@@ -71,6 +71,22 @@ function textOrDash(value: string | null): string {
   return value === null || value === "" ? "-" : value;
 }
 /** The attention reasons are the audit trail of a score; joined they are one readable cell. */
+/**
+ * The days a planned window has left, or how late it is — the same phrase the screens print.
+ *
+ * Kept here as well as on the web because the export must not need a browser to say "6 d late"; the
+ * wording is identical so a reader cannot reconcile two vocabularies for one number.
+ */
+function scheduleDays(row: ReportJobRow): string {
+  if (row.daysToEnd !== null) {
+    if (row.daysToEnd < 0) return `${Math.abs(row.daysToEnd)} d late`;
+    if (row.daysToEnd === 0) return "due today";
+    return `${row.daysToEnd} d left`;
+  }
+  if (row.projectedSlipDays !== null && row.projectedSlipDays > 0) return `${row.projectedSlipDays} d beyond plan`;
+  return "—";
+}
+
 function reasonsText(row: ReportJobRow): string {
   return row.reasons.length ? row.reasons.join("; ") : "";
 }
@@ -193,6 +209,15 @@ const JOB_DETAIL_COLUMNS: SheetColumn<ReportJobRow>[] = [
   // the same thing, which reads as a discrepancy to anyone scanning the sheet.
   // The first two stay numeric with "0.00"; the third prints `qtyCompletePct`, the ALWAYS
   // finite fraction (0, never blank/NaN) so a divide-by-zero is a real 0% in the cell.
+  // The SCHEDULE axis, beside the hours forecast rather than mixed into it: the hours forecast says
+  // when the BUDGET runs out, the projected finish says when the WORK does, and a reader needs both.
+  // "Schedule" states the judgement, "Days" is the number that judgement rests on, and the three dates
+  // are stored as real dates so the sheet can be sorted and subtracted in Excel.
+  { header: "Schedule", width: 15, value: (row) => row.scheduleBand },
+  { header: "Days", width: 10, value: (row) => scheduleDays(row) },
+  { header: "Plan start", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.plannedStartDate) },
+  { header: "Plan end", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.plannedEndDate) },
+  { header: "Proj finish", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.projectedFinish) },
   { header: "QTY_BDG", width: 12, numFmt: "0.00", value: (row) => row.targetQty },
   { header: "QTY_Prgsd", width: 12, numFmt: "0.00", value: (row) => row.achievedQty },
   { header: "%Qty", width: 10, numFmt: "0.0%", value: (row) => row.qtyCompletePct },
@@ -219,6 +244,11 @@ function exceptionSheets(report: PortfolioReport): Array<{ label: string; count:
     { label: "Budget with no bookings", count: exceptions.budgetWithNoBookings.count, rows: exceptions.budgetWithNoBookings.rows },
     { label: "No approved progress", count: exceptions.noProgress.count, rows: exceptions.noProgress.rows },
     { label: "Hours awaiting approval", count: exceptions.unapproved.count, rows: exceptions.unapproved.rows },
+    // The schedule buckets, in the report's own order. A downloaded report that omitted these would
+    // hide the delays it is most likely to be forwarded for.
+    { label: "End date passed", count: exceptions.endDatePassed.count, rows: exceptions.endDatePassed.rows },
+    { label: "Scheduled, no approved progress", count: exceptions.scheduledNoProgress.count, rows: exceptions.scheduledNoProgress.rows },
+    { label: "Incomplete planned window", count: exceptions.scheduleIncomplete.count, rows: exceptions.scheduleIncomplete.rows },
   ];
 }
 
@@ -261,6 +291,12 @@ export async function buildPortfolioXlsx(
     // needsPush is capped at 50 while the total is whole; the screen says "showing 50 of 63"
     // and the workbook must say the same thing rather than silently showing a short list.
     { label: "Needs push (shown of total)", value: `${report.needsPush.length} of ${report.needsPushTotal}` },
+    // The schedule coverage, stated before any schedule figure is read.
+    { label: "Scheduled job orders", value: report.pulse.schedule.scheduled, numFmt: "0" },
+    { label: "Not scheduled (continual work)", value: report.pulse.schedule.notScheduled, numFmt: "0" },
+    { label: "Delayed", value: report.pulse.schedule.delayed, numFmt: "0" },
+    { label: "At risk", value: report.pulse.schedule.atRisk, numFmt: "0" },
+    { label: "Due within 7 days", value: report.pulse.schedule.dueSoon, numFmt: "0" },
   ];
   addLabelValueSheet(workbook, "Summary", pulse);
 
@@ -268,6 +304,8 @@ export async function buildPortfolioXlsx(
   // "Needs push", "Job work" and "On track" share the detail columns; each is the report's own
   // already-ordered list, so the sheet order IS the ranking.
   addDataSheet(workbook, "Needs push", JOB_DETAIL_COLUMNS, report.needsPush);
+  // The schedule section, exported like every other section (worst window first, as assembled).
+  addDataSheet(workbook, "Schedule & delays", JOB_DETAIL_COLUMNS, report.scheduleDelays);
   // The parity sheet: exactly one row per jobWork entry, no subtotals, no filtering.
   addDataSheet(workbook, "Job work", JOB_DETAIL_COLUMNS, report.jobWork);
   // On track carries BOTH halves of the split; the Band column tells GREEN (measurable and
@@ -601,6 +639,18 @@ export async function buildPortfolioPdf(
         `    approval ageing 3d +${w.unapprovedAging3d};  quantity behind +${w.quantityBehind};  no budget +${w.noBudget}`,
         left, doc.y, { width }
       );
+      doc.moveDown(0.2);
+      doc.font("Helvetica-Bold").fontSize(9).text("Schedule bands (the planned window, judged separately from the hours band):", left, doc.y, { width });
+      doc.font("Helvetica").fontSize(9);
+      for (const band of ["DELAYED", "AT_RISK", "DUE_SOON", "ON_PLAN", "NOT_SCHEDULED"] as const) {
+        doc.text(`    ${band.padEnd(16, " ")} ${report.definitions.schedule.bands[band].label}`, left, doc.y, { width });
+      }
+      const sw = report.definitions.schedule.weights;
+      doc.text(
+        `    schedule weights:  delayed +${sw.delayedNotComplete};  at risk +${sw.atRisk};  due soon +${sw.dueSoon}`,
+        left, doc.y, { width }
+      );
+      doc.text(`    ${report.definitions.schedule.coverageNote}`, left, doc.y, { width });
       doc.text(`    ${report.definitions.activityWindowDaysNote}`, left, doc.y, { width });
       // The definitions NOTES are printed here as well as on the workbook's Filters sheet, so the
       // PDF inherits them from the SAME data block the screen and the XLSX render. In particular
@@ -622,6 +672,10 @@ export async function buildPortfolioPdf(
         { label: "Hours awaiting approval", value: pdfHours(report.pulse.hoursAwaitingApproval) },
         { label: "Oldest unapproved", value: textOrDash(report.pulse.oldestUnapprovedAt) },
         { label: "Needs push (shown of total)", value: `${report.needsPush.length} of ${report.needsPushTotal}` },
+        // The schedule coverage travels with every schedule figure, printed before they are read.
+        { label: "Scheduled job orders", value: `${report.pulse.schedule.scheduled} of ${report.pulse.jobOrders}` },
+        { label: "Not scheduled (continual work)", value: String(report.pulse.schedule.notScheduled) },
+        { label: "Schedule: delayed / at risk / due soon", value: `${report.pulse.schedule.delayed} / ${report.pulse.schedule.atRisk} / ${report.pulse.schedule.dueSoon}` },
       ];
       drawTable(doc, "Summary", [
         { header: "Metric", width: 34, value: (row: { label: string }) => row.label },
@@ -643,6 +697,10 @@ export async function buildPortfolioPdf(
 
       /* ---- Needs push / Job work / On track ----------------------------- */
       drawTable(doc, `Needs push (top ${report.needsPush.length} of ${report.needsPushTotal} by attention)`, PDF_JOB_COLUMNS, report.needsPush);
+      // The schedule section prints with the SAME measured column set as the other tables, so the
+      // column balance the PDF's width test pins is not disturbed: the schedule's own columns are in
+      // the workbook, and a printed reader gets the section that names the delays.
+      drawTable(doc, `Schedule & delays (breached or about-to-be-breached windows, top ${Math.min(report.scheduleDelays.length, 200)})`, PDF_JOB_COLUMNS, report.scheduleDelays);
       drawTable(doc, "Job work (every job order in scope)", PDF_JOB_COLUMNS, report.jobWork);
       drawTable(doc, "On track", PDF_JOB_COLUMNS, [...report.onTrack, ...report.onTrackNotMeasurable]);
 

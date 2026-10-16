@@ -161,7 +161,9 @@ function fixtureReport(): PortfolioReport {
  * ------------------------------------------------------------------ */
 
 /** The exact sheet names the workbook must contain, in order, one per report section. */
-const EXPECTED_SHEETS = ["Summary", "Needs push", "Job work", "On track", "Dept load", "Exceptions", "Filters"];
+// One sheet per report section, in the report's own order. "Schedule & delays" is the seventh
+// section: a workbook that omitted it would hide exactly the delays a forwarded report is read for.
+const EXPECTED_SHEETS = ["Summary", "Needs push", "Schedule & delays", "Job work", "On track", "Dept load", "Exceptions", "Filters"];
 
 /** Every string/number/date a sheet contains, flattened for substring assertions. */
 function sheetText(sheet: ExcelJS.Worksheet): string {
@@ -192,7 +194,7 @@ function sheetRows(sheet: ExcelJS.Worksheet): unknown[][] {
  * XLSX
  * ------------------------------------------------------------------ */
 
-test("buildPortfolioXlsx: opens with exceljs and contains exactly the seven expected sheets", async () => {
+test("buildPortfolioXlsx: opens with exceljs and contains exactly the eight expected sheets", async () => {
   const report = fixtureReport();
   const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
 
@@ -575,4 +577,41 @@ test("buildPortfolioXlsx: the Band column can hold NOT_MEASURABLE without wrappi
     bandWidth > WIDEST_BAND_LABEL.length,
     `Excel Band width ${bandWidth} must exceed the ${WIDEST_BAND_LABEL.length}-character value "${WIDEST_BAND_LABEL}"`
   );
+});
+
+test("buildPortfolioXlsx: the schedule section, its columns and its coverage ship with the workbook", async () => {
+  // The shared fixture is about the hours/quantity rules, so its windows are empty. Give THIS test a
+  // breached window by handing the export the same two facts the section and the bucket would carry —
+  // the point is the wiring, not the rules (those are pinned by the schedule's own tests).
+  const report = fixtureReport();
+  const delayed = report.jobWork[0];
+  report.scheduleDelays = [delayed];
+  report.exceptions.endDatePassed = { count: 1, rows: [delayed] };
+  report.pulse.schedule = { scheduled: 1, notScheduled: report.jobWork.length - 1, onPlan: 0, dueSoon: 0, atRisk: 0, delayed: 1 };
+  const buffer = await buildPortfolioXlsx(report, fixtureFilters(), undefined);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+
+  // The section itself: one row per breached window, in the report's own order.
+  const schedule = workbook.getWorksheet("Schedule & delays");
+  assert.ok(schedule, "the Schedule & delays sheet exists");
+  assert.equal(schedule.rowCount - 1, report.scheduleDelays.length, "one row per section entry");
+
+  // The columns a reader needs to act on it, in EVERY job-order sheet.
+  const header = workbook.getWorksheet("Job work")!.getRow(1).values as unknown as string[];
+  for (const column of ["Schedule", "Days", "Plan start", "Plan end", "Proj finish"]) {
+    assert.ok(header.includes(column), `the Job work header carries '${column}'`);
+  }
+
+  // The coverage, stated on the summary before any schedule figure is read.
+  const summary = sheetText(workbook.getWorksheet("Summary")!);
+  assert.ok(summary.includes("Not scheduled (continual work)"), "the coverage line ships");
+  assert.ok(summary.includes("Schedule: delayed / at risk / due soon") || summary.includes("At risk"), "the schedule counts ship");
+
+  // The new exception bucket travels too, under its printed name, tagged with its whole count. (A
+  // bucket with no rows prints no row at all — that is the existing design, so the label can only be
+  // asserted once the bucket holds something.)
+  const exceptions = sheetText(workbook.getWorksheet("Exceptions")!);
+  assert.ok(exceptions.includes("End date passed"), "the schedule bucket ships");
+  assert.ok(summary.includes("Delayed"), "the delayed count ships on the summary");
 });
