@@ -535,7 +535,25 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
         });
         const effectiveSupervisor = naturalSupervisor || Boolean(override && override.revokedAt == null);
 
-        if (effectiveSectionId != null && (organisationOverride || !effectiveSupervisor)) {
+        /*
+         * A SUPERVISOR'S OWN SECTION IS WRITTEN TOO.
+         *
+         * The write used to be skipped for an "effective supervisor" (`&& (organisationOverride ||
+         * !effectiveSupervisor)`), because the app treats a supervisor as authorised at DEPARTMENT
+         * level and lets him choose a Section per team. That exception made the supervisor's own
+         * Section unrepresentable in the data, and it showed up in two places:
+         *   - the Timesheet Coverage report had nothing to print for him (26 people — every one of
+         *     them a supervisor — appeared under a "No section" bucket), even though LabourWorks
+         *     returns a Section for all of them; and
+         *   - the Supervisor-Section approval routing falls back to the EMPLOYEE's Section when the
+         *     tagging supervisor has no Section of his own, so a supervisor's whole team did not route
+         *     by his Section at all.
+         * The source value wins here for everyone; an explicit organisation override still takes
+         * precedence and is stamped MANUAL. The `else if` branch below is unchanged and still catches
+         * the one case this cannot: a blank source Section (none in the current feed) leaving a stale
+         * assignment from ANOTHER department behind.
+         */
+        if (effectiveSectionId != null) {
           await tx.employeeSectionAssignment.upsert({
             where: { employeeId: employee.id },
             create: { employeeId: employee.id, sectionId: effectiveSectionId, source: organisationOverride ? "MANUAL" : "SYNC" },

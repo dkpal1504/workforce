@@ -41,22 +41,29 @@ teamsRouter.get("/pool", async (req, res) => {
     })
   ).map((r) => r.employeeId);
 
+  /** The acting supervisor's own Employee id (excluded from the labour query below — see the note
+   *  on the `own` record: a supervisor who now HAS a Section would otherwise appear twice). */
+  const ownEmployeeId = req.user!.role === "ADMIN" ? null : req.user!.employeeId;
+
   const employees = await prisma.employee.findMany({
     where: {
       departmentId,
       employmentType: "CLMS",
       active: true,
       sectionAssignment: { sectionId },
-      id: { notIn: teamIds.length ? teamIds : [-1] },
+      id: { notIn: [...(teamIds.length ? teamIds : [-1]), ownEmployeeId ?? -1] },
     },
     include: { sectionAssignment: { include: { section: true } } },
     orderBy: { name: "asc" },
   });
 
   // The supervisor's OWN record is offered alongside the labour, so he can book his own overtime.
-  // It is not CLMS and carries no Section assignment, so it can never come back from the query above;
-  // it is added explicitly, and only for the acting supervisor's own Employee id.
-  const ownEmployeeId = req.user!.role === "ADMIN" ? null : req.user!.employeeId;
+  // It is appended explicitly for the acting supervisor's own Employee id, and its id is EXCLUDED
+  // from the query above: a SYNC-provisioned supervisor has an `EmployeeSectionAssignment` like
+  // anyone else now, so once the Section he is browsing matches his own Section he would otherwise
+  // be listed TWICE (once as `isSelf`, once as labour). A payroll supervisor is not CLMS and still
+  // never comes back from the query above — the exclusion covers the CLMS case, which is the one
+  // that can collide.
   const own =
     ownEmployeeId == null || ownEmployeeId === undefined
       ? null
