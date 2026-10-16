@@ -6,11 +6,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   JOB_ORDER_CSV_HEADERS,
+  JOB_ORDER_CSV_REQUIRED_HEADERS,
   PENDING_MASTER_ID,
   checkJobOrderHeader,
   normalizeDepartmentKey,
   parseJobOrderStatus,
   parseNonNegativeNumber,
+  parsePlanDate,
+  planDateToUtc,
   planJobOrderImport,
   projectScopedKey,
   resolveNetworkForRow,
@@ -45,6 +48,10 @@ const VALID_ROW: Record<JobOrderCsvHeader, string> = {
   Department: "BuName - Workmen Division",
   Section: "Hull Production",
   Job_Order_Status: "Active",
+  // The planned window is OPTIONAL: a blank cell means "no plan" (continual / standing work), which
+  // is the case for most rows in the yard. Tests that care about it override these two.
+  Start_Date: "",
+  End_Date: "",
 };
 
 const MASTERS: JobOrderImportMasters = {
@@ -121,7 +128,12 @@ test("the header must match the contract order exactly", () => {
     true,
     "case and surrounding whitespace are tolerated"
   );
-  assert.equal(JOB_ORDER_CSV_HEADERS.join(","), "Project_ID,Project_Name,WBS_NO,Network_ID,Job_Order,Job_Description,UoM,Qty,Budgeted_hours,Department,Section,Job_Order_Status");
+  assert.equal(JOB_ORDER_CSV_HEADERS.join(","), "Project_ID,Project_Name,WBS_NO,Network_ID,Job_Order,Job_Description,UoM,Qty,Budgeted_hours,Department,Section,Job_Order_Status,Start_Date,End_Date");
+  assert.equal(
+    JOB_ORDER_CSV_REQUIRED_HEADERS.length,
+    12,
+    "the twelve contract columns are the ones a file must carry; the planned window is optional"
+  );
 });
 
 test("a reordered, renamed, missing or extra header column is rejected with the expected list", () => {
@@ -131,7 +143,7 @@ test("a reordered, renamed, missing or extra header column is rejected with the 
   assert.equal(renamed.ok, false);
   if (renamed.ok) return;
   assert.match(renamed.error, /column 3 is 'WBS'; 'WBS_NO' was expected/);
-  assert.match(renamed.error, /Expected, in this order: Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty, Budgeted_hours, Department, Section, Job_Order_Status\./);
+  assert.match(renamed.error, /Expected, in this order: Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty, Budgeted_hours, Department, Section, Job_Order_Status, Start_Date, End_Date \(the last two optional\)\./);
 
   const reordered = checkJobOrderHeader(["Project_Name", ...JOB_ORDER_CSV_HEADERS.filter((header) => header !== "Project_Name")]);
   assert.equal(reordered.ok, false, "Project_Name first is a different order, not a different column set");
@@ -142,7 +154,116 @@ test("a reordered, renamed, missing or extra header column is rejected with the 
 
   const extra = checkJobOrderHeader([...JOB_ORDER_CSV_HEADERS, "Remarks"]);
   assert.equal(extra.ok, false);
-  if (!extra.ok) assert.match(extra.error, /1 extra column\(s\) after 'Job_Order_Status'\./);
+  if (!extra.ok) assert.match(extra.error, /1 extra column\(s\) after 'End_Date'\./);
+});
+
+// ---------------------------------------------- planned window (Start_Date / End_Date)
+
+test("the planned window is optional: the twelve contract columns alone still import", () => {
+  const twelve = JOB_ORDER_CSV_HEADERS.slice(0, JOB_ORDER_CSV_REQUIRED_HEADERS.length);
+  assert.equal(checkJobOrderHeader([...twelve]).ok, true, "a file the team already has keeps importing");
+
+  // A twelve-column file has no window columns at all: every row is planned and every Job Order is
+  // stored WITHOUT a plan, which is a first-class state and not an error.
+  const plan = planJobOrderImport(
+    [[...twelve], twelve.map((header) => ({ ...VALID_ROW, Job_Order: "1900000600" }[header]))],
+    MASTERS
+  );
+  assert.deepEqual({ created: plan.created, rejected: plan.rejected }, { created: 1, rejected: 0 });
+  assert.equal(plan.create[0].plannedStartDate, null);
+  assert.equal(plan.create[0].plannedEndDate, null);
+});
+
+test("the window columns are appended and all-or-nothing: a half-included or renamed one is refused", () => {
+  const twelve = JOB_ORDER_CSV_HEADERS.slice(0, JOB_ORDER_CSV_REQUIRED_HEADERS.length);
+
+  const half = checkJobOrderHeader([...twelve, "Start_Date"]);
+  assert.equal(half.ok, false, "End_Date without Start_Date is a half-included window");
+  if (!half.ok) {
+    assert.match(half.error, /the header carries 13 column\(s\)/);
+    assert.match(half.error, /Start_Date, End_Date/);
+  }
+
+  const renamed = checkJobOrderHeader([...twelve, "StartDate", "End_Date"]);
+  assert.equal(renamed.ok, false, "a renamed date column must never be dropped in silence");
+  if (!renamed.ok) assert.match(renamed.error, /column 13 is 'StartDate'; 'Start_Date' was expected/);
+
+  const reordered = checkJobOrderHeader([...twelve, "End_Date", "Start_Date"]);
+  assert.equal(reordered.ok, false, "the window keeps the contract order");
+});
+
+test("a planned window is carried into the plan, and either side may stand alone", () => {
+  const plan = planJobOrderImport(file(
+    rowCells({ Job_Order: "1900000501", Start_Date: "2026-10-01", End_Date: "2026-12-31" }),
+    rowCells({ Job_Order: "1900000502", Start_Date: "2026-10-01", End_Date: "" }),
+    rowCells({ Job_Order: "1900000503", Start_Date: "", End_Date: "2026-11-30" }),
+    rowCells({ Job_Order: "1900000504" })
+  ), MASTERS);
+
+  assert.equal(plan.rejected, 0);
+  assert.deepEqual(
+    plan.create.map((row) => [row.plannedStartDate, row.plannedEndDate]),
+    [
+      ["2026-10-01", "2026-12-31"],
+      ["2026-10-01", null],
+      [null, "2026-11-30"],
+      [null, null],
+    ]
+  );
+});
+
+test("a window that ends before it starts is refused on End_Date", () => {
+  const plan = planJobOrderImport(file(rowCells({ Start_Date: "2026-12-31", End_Date: "2026-10-01" })), MASTERS);
+  assert.equal(plan.created, 0);
+  assert.equal(plan.rejected, 1);
+  const issues = rowOf(plan.errors, 2);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].column, "End_Date");
+  assert.match(issues[0].message, /End_Date 2026-10-01 is before Start_Date 2026-12-31/);
+});
+
+test("a date the parser cannot read is refused, never guessed", () => {
+  const refused: Array<[string, RegExp]> = [
+    ["16/10/26", /carries a two-digit year/],
+    ["31/02/2026", /not a day that exists in that month/],
+    ["next week", /not a date this upload understands/],
+    ["16/10/2026 00:00", /not a date this upload understands/],
+    ["2026-13-01", /does not name a month of the year/],
+    ["1899-01-01", /outside 1900-2100/],
+    ["16-Foo-2026", /does not name a month/],
+  ];
+  for (const [cell, why] of refused) {
+    const plan = planJobOrderImport(file(rowCells({ Start_Date: cell })), MASTERS);
+    assert.equal(plan.rejected, 1, `'${cell}' must be refused`);
+    const issues = rowOf(plan.errors, 2);
+    assert.equal(issues[0].column, "Start_Date", `'${cell}' is reported on Start_Date`);
+    assert.match(issues[0].message, why, `'${cell}' explains itself`);
+    assert.match(issues[0].message, /Leave the cell empty for continual work/);
+  }
+});
+
+test("parsePlanDate reads the formats the PM team's sheets produce, and blanks mean no plan", () => {
+  const cases: Array<[string, string | null]> = [
+    ["2026-10-16", "2026-10-16"],
+    [" 2026-10-16 ", "2026-10-16"],
+    ["16/10/2026", "2026-10-16"],
+    ["16-10-2026", "2026-10-16"],
+    ["16.10.2026", "2026-10-16"],
+    ["16-Oct-2026", "2026-10-16"],
+    ["16-oct-2026", "2026-10-16"],
+    ["1/2/2026", "2026-02-01"],
+    ["", null],
+    ["   ", null],
+  ];
+  for (const [cell, iso] of cases) {
+    const parsed = parsePlanDate(cell);
+    assert.equal(parsed.ok, true, `'${cell}' should parse`);
+    if (parsed.ok) assert.equal(parsed.iso, iso, `'${cell}' -> ${iso}`);
+  }
+});
+
+test("planDateToUtc stores UTC midnight: one kind of date value, no time-of-day noise", () => {
+  assert.equal(planDateToUtc("2026-10-16").toISOString(), "2026-10-16T00:00:00.000Z");
 });
 
 // ------------------------------------------------------- master resolution
@@ -158,6 +279,8 @@ test("a fully valid multi-row file is planned completely", () => {
   assert.deepEqual(plan.errors, []);
   assert.deepEqual(plan.skippedRows, []);
   assert.deepEqual(plan.create[0], {
+    plannedStartDate: null,
+    plannedEndDate: null,
     row: 2,
     projectId: 1,
     projectCode: "PRJ-A",

@@ -867,6 +867,10 @@ function makeFacts(over: Partial<JobOrderFacts> = {}): JobOrderFacts {
     attentionScore: 0,
     reasons: [],
     ...over,
+    // Always a definite value, never undefined: the report row prints these as days, and the
+    // fixtures here are about hours and quantity, so the window is absent unless a test asks for it.
+    plannedStartDate: over.plannedStartDate ?? null,
+    plannedEndDate: over.plannedEndDate ?? null,
   };
 }
 

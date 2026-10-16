@@ -50,7 +50,7 @@ projects (1) ──► project_wbs (many) ──► job_orders (many)
 | `project_wbs` | `project_id`, `wbs_code`, `name`, `sort_order`, `active` | `wbs_code` is unique per project. Deleting a Project cascades to its WBS rows. |
 | `networks` | `project_id`, **`wbs_id`**, `code`, `name`, `source`, `active` | `wbs_id` is required and names one WBS element; one Network number never spans two WBS rows. The **same-project** rule is enforced by the application, not by the database: the foreign key only requires an existing `project_wbs` row, so a `wbs_id` belonging to another project is accepted by PostgreSQL alone. `code` is unique per project (`(project_id, code)`), so the WBS does not loosen the duplicate rule. `source` is `MANUAL` until the SAP sync lands, and the phase-2 sync fills the WBS link. |
 | `uom` | `code` unique, `name`, `example`, `active` | `example` is the on-screen help text. |
-| `job_orders` | `project_id`, `project_wbs_id`, `network_id`, `code`, `name`, `uom_id`, `budgeted_quantity`, `budgeted_hours`, `department_id`, `section_id`, `status` | `code` is unique per project. `status` is `active` or `inactive` only. `section_id` is required for a project Job Order and null only for a standing one. `network_id` must be a Network of the Job Order's own `project_wbs_id`; that rule is enforced by the upload, the mapping route and the Job Order Mapping screen, not by a foreign key. |
+| `job_orders` | `project_id`, `project_wbs_id`, `network_id`, `code`, `name`, `uom_id`, `budgeted_quantity`, `budgeted_hours`, `department_id`, `section_id`, `status`, **`planned_start_date`**, **`planned_end_date`** | `code` is unique per project. `status` is `active` or `inactive` only. `section_id` is required for a project Job Order and null only for a standing one. `network_id` must be a Network of the Job Order's own `project_wbs_id`; that rule is enforced by the upload, the mapping route and the Job Order Mapping screen, not by a foreign key. |
 | `job_order_budget_revisions` | `job_order_id`, `revision_no`, `budgeted_hours`, `budgeted_quantity`, `uom_id`, `effective_from`, `reason` | One row per revision, unique on (job order, revision). Revision 1 is the opening budget. |
 | `job_order_progress` | `job_order_id`, `progress_date`, `cumulative_quantity`, `revision_no`, `section_id`, `status`, `punched_by`, `approved_by`, `approved_at`, `remarks` | Unique on (job order, date, revision). `status` is `SUBMITTED`, `APPROVED`, `REJECTED` or `SENT_BACK`. `remarks` holds the **latest** message only. |
 | `job_order_progress_remarks` | `progress_id`, `kind`, `remark`, `author_id`, `author_role`, `created_at` | **Every** remark is a separate row and is never overwritten, so any report can show the whole exchange. `kind` is `PUNCH`, `AMEND`, `APPROVE`, `REJECT` or `SEND_BACK`. A superseded revision keeps its own rows, so an amendment never loses what was said about the revision it replaced. |
@@ -97,6 +97,18 @@ accepted, and the drift check stays clean.
    included. The WBS number is returned by the API but hidden in the UI. There is no Section
    control on this screen: the section of the work is read from the chosen Job Order and
    stored on the booking, and the My Hours picker keeps its own Section control.
+2b. **The planned window is OPTIONAL and is a state, not a gap.** `planned_start_date` and
+   `planned_end_date` come from the template's `Start_Date` / `End_Date` columns (appended to the
+   contract, and only ever there: a file that stops at `Job_Order_Status` is still a valid file) or are
+   set by a PM/Admin on the Master Data screen. `NULL` means "no plan" — continual / standing work — and
+   every report shows it as **NOT SCHEDULED**, never as on-time. Either side may stand alone: a start
+   with no end is open-ended, an end with no start is a deadline. The dates are stored at UTC midnight
+   on the day named, the same kind of value every other date here carries. A window that ends before it
+   starts is refused by the upload, by the edit route AND by a CHECK constraint on the table. The upload
+   never updates an existing row, so a date that moves is corrected on the Master Data screen (audited;
+   ADMIN and PM only — deliberately not the HOD, who punches the progress a delay claim is built from).
+   The plan is the CURRENT plan: a moved date is not versioned against a baseline.
+
 3. **Quantity progress.** The HOD punches the **cumulative** quantity achieved to date,
    never a daily increment. The figure may never fall below the last approved figure. One
    entry per Job Order per day. The PM approves, rejects or sends back. The HOD may amend

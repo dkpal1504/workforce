@@ -3,6 +3,8 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { planDateToUtc } from "../services/jobOrderCsv";
+import { plannedDayKey } from "../services/jobOrderSchedule";
 import {
   colorKeyConflictMessage,
   findColorKeyConflict,
@@ -26,8 +28,10 @@ import {
   jobOrderNetworkWbsError,
   jobOrderWbsMoveError,
   validateJobOrderBudgetInput,
+  validateJobOrderScheduleInput,
   nextBudgetRevisionNo,
   isUnchangedBudget,
+  isUnchangedSchedule,
   resolveNetworkWbs,
   wbsCodeConflictMessage,
   type FieldError,
@@ -640,6 +644,8 @@ masterDataRouter.get("/job-orders", async (req, res) => {
     orderBy: [{ projectId: "asc" }, { code: "asc" }],
     select: {
       id: true, code: true, name: true, status: true, budgetedHours: true, budgetedQuantity: true, sectionId: true,
+      // The planned window, so the Job Order form can show what the plan is before it is edited.
+      plannedStartDate: true, plannedEndDate: true,
       project: {
         select: {
           id: true, code: true, name: true, colorKey: true,
@@ -848,6 +854,78 @@ masterDataRouter.put("/job-orders/:id/mapping", writeOnly, async (req, res) => {
     return failed(res, "The Job Order mapping", error, "job_order");
   }
 });
+/**
+ * Set a Job Order's PLANNED WINDOW: the two dates a delay is measured against.
+ *
+ * NOT a budget revision. The plan is the CURRENT plan (the operator's v1 decision), so a date that
+ * moves overwrites the previous one and the audit row records what it moved from. Either date may be
+ * cleared, which is how continual work is recorded honestly: a Job Order with no window is NOT
+ * SCHEDULED and is never shown as on-time.
+ *
+ * ADMIN and PM only, the roles that already curate master data. Deliberately NOT the HOD: he punches
+ * the progress that a delay claim is built from, so the dates are not his to move. The validation, the
+ * unchanged-window guard and the audit row all live here, so a date can only ever move with a record
+ * of who moved it and from what.
+ */
+masterDataRouter.put("/job-orders/:id/schedule", writeOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return notFound(res, "Job Order not found.", "JOB_ORDER_NOT_FOUND");
+
+  const jobOrder = await prisma.jobOrder.findUnique({
+    where: { id },
+    select: {
+      id: true, code: true, name: true,
+      plannedStartDate: true, plannedEndDate: true,
+      project: { select: { code: true } },
+    },
+  });
+  if (!jobOrder) return notFound(res, "Job Order not found.", "JOB_ORDER_NOT_FOUND");
+
+  const parsed = validateJobOrderScheduleInput(req.body ?? {});
+  if (!parsed.ok) return validationError(res, parsed.errors);
+
+  if (isUnchangedSchedule(jobOrder, parsed.data)) {
+    return res.status(400).json({
+      error: "The planned window is unchanged, so there is nothing to save.",
+      code: "SCHEDULE_UNCHANGED",
+    });
+  }
+
+  try {
+    const updated = await prisma.jobOrder.update({
+      where: { id },
+      data: {
+        // Stored at UTC midnight on the day named, the same kind of value every other date in this
+        // schema carries. An empty field clears the side it belongs to.
+        plannedStartDate: parsed.data.plannedStartDate ? planDateToUtc(parsed.data.plannedStartDate) : null,
+        plannedEndDate: parsed.data.plannedEndDate ? planDateToUtc(parsed.data.plannedEndDate) : null,
+      },
+      select: { id: true, code: true, name: true, plannedStartDate: true, plannedEndDate: true },
+    });
+    await writeAudit(req.user!.id, "ADMIN_UPDATE_JOB_ORDER_SCHEDULE", "job_order", id, {
+      by: req.user!.role,
+      code: jobOrder.code,
+      projectCode: jobOrder.project.code,
+      previous: {
+        plannedStartDate: plannedDayKey(jobOrder.plannedStartDate),
+        plannedEndDate: plannedDayKey(jobOrder.plannedEndDate),
+      },
+      next: { plannedStartDate: parsed.data.plannedStartDate, plannedEndDate: parsed.data.plannedEndDate },
+    });
+    return res.json({
+      jobOrder: {
+        id: updated.id,
+        code: updated.code,
+        name: updated.name,
+        plannedStartDate: plannedDayKey(updated.plannedStartDate),
+        plannedEndDate: plannedDayKey(updated.plannedEndDate),
+      },
+    });
+  } catch (error) {
+    return failed(res, "The Job Order planned window", error, "job_order");
+  }
+});
+
 /**
  * Revise a Job Order's budget: Budget hours and Budget quantity, nothing else.
  *

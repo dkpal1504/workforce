@@ -130,11 +130,14 @@ export type ReportActor = {
 /** A `JobOrderFacts` row with its dates already reduced to `YYYY-MM-DD` (or null). */
 export type ReportJobRow = Omit<
   JobOrderFacts,
-  "lastBooking" | "oldestUnapprovedAt" | "forecastExhaustedOn"
+  "lastBooking" | "oldestUnapprovedAt" | "forecastExhaustedOn" | "plannedStartDate" | "plannedEndDate"
 > & {
   lastBooking: string | null;
   oldestUnapprovedAt: string | null;
   forecastExhaustedOn: string | null;
+  /** The planned window as `YYYY-MM-DD`, or null for continual / standing work. */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
 };
 
 /** One capped exception group: the whole truth in `count`, a bounded sample in `rows`. */
@@ -304,6 +307,8 @@ function toRow(fact: JobOrderFacts): ReportJobRow {
     lastBooking: dateKeyOrNull(fact.lastBooking),
     oldestUnapprovedAt: dateKeyOrNull(fact.oldestUnapprovedAt),
     forecastExhaustedOn: dateKeyOrNull(fact.forecastExhaustedOn),
+    plannedStartDate: dateKeyOrNull(fact.plannedStartDate),
+    plannedEndDate: dateKeyOrNull(fact.plannedEndDate),
   };
 }
 
@@ -843,6 +848,8 @@ export async function buildPortfolioReport(
         },
         department: jobOrder.department,
         section: jobOrder.section,
+        plannedStartDate: jobOrder.plannedStartDate,
+        plannedEndDate: jobOrder.plannedEndDate,
       },
       budgetRevisions: revisionsByJobOrder.get(jobOrder.id) ?? [],
       actualHours: bookedByJobOrder.get(jobOrder.id) ?? 0,

@@ -28,8 +28,11 @@
 
 import { findCsvInjectionIndex } from "./csvParser";
 
-/** Header order is fixed by the contract. The file must match it exactly. */
-export const JOB_ORDER_CSV_HEADERS = [
+/**
+ * The columns every file MUST carry, in this order. This is the contract as it stood before the
+ * planned window was added; a file that stops here is a valid file.
+ */
+export const JOB_ORDER_CSV_REQUIRED_HEADERS = [
   "Project_ID",
   "Project_Name",
   "WBS_NO",
@@ -42,6 +45,25 @@ export const JOB_ORDER_CSV_HEADERS = [
   "Department",
   "Section",
   "Job_Order_Status",
+] as const;
+
+/**
+ * The OPTIONAL planned window, APPENDED to the contract.
+ *
+ * Optional because most of the work in the yard is continual: a Job Order with no window is
+ * `NULL`, which every report shows as NOT SCHEDULED and never as on-time. All-or-nothing once the
+ * columns appear, so a half-included or renamed date column is refused rather than ignored — a
+ * silently dropped schedule is the one failure this feature cannot afford.
+ *
+ * `Start_Date` alone means "started, open-ended". `End_Date` alone means "deadline only". Both are
+ * reported as such; neither is an error.
+ */
+export const JOB_ORDER_CSV_DATE_HEADERS = ["Start_Date", "End_Date"] as const;
+
+/** The full template header: the twelve contract columns, then the planned window. */
+export const JOB_ORDER_CSV_HEADERS = [
+  ...JOB_ORDER_CSV_REQUIRED_HEADERS,
+  ...JOB_ORDER_CSV_DATE_HEADERS,
 ] as const;
 
 export type JobOrderCsvHeader = (typeof JOB_ORDER_CSV_HEADERS)[number];
@@ -63,6 +85,8 @@ const COLUMN = {
   department: 9,
   section: 10,
   status: 11,
+  plannedStart: JOB_ORDER_CSV_REQUIRED_HEADERS.length,
+  plannedEnd: JOB_ORDER_CSV_REQUIRED_HEADERS.length + 1,
 } as const;
 
 export type JobOrderStatus = "active" | "inactive";
@@ -122,6 +146,13 @@ export type PlannedJobOrder = {
   sectionId: number | null;
   sectionName: string | null;
   status: JobOrderStatus;
+  /**
+   * The planned window as a day (`YYYY-MM-DD`), or NULL for continual / standing work that has no
+   * plan. Either side may be NULL on its own: a start with no end is "open-ended", an end with no
+   * start is "deadline only".
+   */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
 };
 
 /**
@@ -256,17 +287,108 @@ export function parseNonNegativeNumber(cell: string): NumberParse {
   return { ok: true, value };
 }
 
+/** Three-letter month codes Excel itself renders (`16-Oct-2026`). Keys are lower case. */
+const MONTH_CODES: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/**
+ * A parsed planned-window cell: `iso` is the day as `YYYY-MM-DD`, or null for an empty cell.
+ *
+ * ACCEPTED: `2026-10-16` (ISO, what every export in this app prints), `16/10/2026`, `16-10-2026`
+ * and `16-Oct-2026` (Excel's own renderings, which the PM team's sheets produce).
+ *
+ * REFUSED, with a message naming the cell: anything else, including a two-digit year
+ * (`16/10/26` — 2026 and 1926 are both read from it) and a day that does not exist
+ * (`31/02/2026`). A date that is GUESSED is worse than a date that is missing: the guess ends up
+ * in a delay claim. A blank cell is not an error — it means "no plan", the continual-work case.
+ */
+export type PlanDateParse = { ok: true; iso: string | null } | { ok: false; message: string };
+
+export function parsePlanDate(cell: string): PlanDateParse {
+  const text = cell.trim();
+  if (!text) return { ok: true, iso: null };
+
+  const refuse = (why: string): PlanDateParse => ({
+    ok: false,
+    message: `'${text}' ${why} Write the date as yyyy-mm-dd (2026-10-16) or dd/mm/yyyy (16/10/2026). `
+      + "Leave the cell empty for continual work with no planned window.",
+  });
+
+  // 2026-10-16
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+  if (iso) return buildPlanDate(Number(iso[1]), Number(iso[2]), Number(iso[3]), refuse);
+
+  // 16/10/2026, 16-10-2026, 16.10.2026 and 16-Oct-2026
+  const dayFirst = /^(\d{1,2})[/\-.](\d{1,2}|[A-Za-z]{3})[/\-.](\d{4})$/.exec(text);
+  if (dayFirst) {
+    const month = /^\d+$/.test(dayFirst[2]) ? Number(dayFirst[2]) : MONTH_CODES[dayFirst[2].toLowerCase()];
+    if (month === undefined) return refuse("does not name a month.");
+    return buildPlanDate(Number(dayFirst[3]), month, Number(dayFirst[1]), refuse);
+  }
+
+  if (/^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2}$/.test(text)) {
+    return refuse("carries a two-digit year, which is ambiguous.");
+  }
+  return refuse("is not a date this upload understands.");
+}
+
+/** Validate the calendar day and return the ISO form. A real date only: 31/02 is refused. */
+function buildPlanDate(year: number, month: number, day: number, refuse: (why: string) => PlanDateParse): PlanDateParse {
+  if (year < 1900 || year > 2100) return refuse("is outside 1900-2100.");
+  if (month < 1 || month > 12) return refuse("does not name a month of the year.");
+  if (day < 1 || day > 31) return refuse("does not name a day of the month.");
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+    return refuse("is not a day that exists in that month.");
+  }
+  return { ok: true, iso: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` };
+}
+
+/**
+ * The ONE conversion from a parsed window day to the stored value: UTC midnight. Every date the
+ * app prints is rendered from such a value, so a planned window and a booking date are the same
+ * kind of value and one column can never mix a date with an instant.
+ */
+export function planDateToUtc(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`);
+}
+
 export type HeaderCheck = { ok: true } | { ok: false; error: string };
 
 /**
- * The file header must be the contract header, in order. Case and surrounding
- * whitespace are ignored; a missing, extra, duplicated or reordered column is not.
- * The error names the expected columns so the operator can fix the file.
+ * The file header must be the contract header, in order, with the two planned-window columns
+ * OPTIONAL and only ever APPENDED. Case and surrounding whitespace are ignored; a missing, extra,
+ * duplicated or reordered column is not, and neither is a window that is half present or renamed.
+ *
+ * Why optional: a file the team already has (the twelve contract columns) must keep importing, so
+ * adding a window to the template can never break a saved sheet. Why all-or-nothing and in order:
+ * a date column that is silently dropped leaves the schedule missing while the upload reports
+ * success, which is the one outcome this feature cannot afford. The error names the expected
+ * columns so the operator can fix the file.
  */
 export function checkJobOrderHeader(header: string[]): HeaderCheck {
   const received = header.map((name) => name.trim());
-  const expected = JOB_ORDER_CSV_HEADERS as readonly string[];
+  const required = JOB_ORDER_CSV_REQUIRED_HEADERS as readonly string[];
+  const withWindow = JOB_ORDER_CSV_HEADERS as readonly string[];
   const detail: string[] = [];
+
+  // A header longer than the contract is compared against the FULL list, so a typo in the window
+  // columns is reported as a name mismatch rather than as a missing column.
+  const expected = received.length > required.length ? withWindow : required;
+  if (received.length !== required.length && received.length !== withWindow.length) {
+    if (received.length > withWindow.length) {
+      detail.push(`${received.length - withWindow.length} extra column(s) after '${withWindow[withWindow.length - 1]}'.`);
+    } else if (received.length > required.length) {
+      detail.push(
+        `the header carries ${received.length} column(s): the planned window is optional, but when it is present it `
+        + `must carry both ${withWindow.slice(required.length).join(" and ")} in that order.`,
+      );
+    } else {
+      detail.push(`column(s) missing at the end: ${required.slice(received.length).join(", ")}.`);
+    }
+  }
   const shared = Math.min(received.length, expected.length);
   for (let i = 0; i < shared; i++) {
     if (received[i].toLowerCase() !== expected[i].toLowerCase()) {
@@ -274,18 +396,11 @@ export function checkJobOrderHeader(header: string[]): HeaderCheck {
       break;
     }
   }
-  if (!detail.length && received.length > expected.length) {
-    detail.push(`${received.length - expected.length} extra column(s) after '${expected[expected.length - 1]}'.`);
-  }
-  if (!detail.length && received.length < expected.length) {
-    const missing = expected.slice(received.length).join(", ");
-    detail.push(`column(s) missing at the end: ${missing}.`);
-  }
   if (detail.length) {
     return {
       ok: false,
       error: `CSV header does not match the Job Order template: ${detail.join(" ")} `
-        + `Expected, in this order: ${expected.join(", ")}.`,
+        + `Expected, in this order: ${withWindow.join(", ")} (the last two optional).`,
     };
   }
   return { ok: true };
@@ -710,6 +825,17 @@ export function planJobOrderImport(
     const budgetedHours = parseNonNegativeNumber(cell(COLUMN.budgetedHours));
     if (!budgetedHours.ok) reject("Budgeted_hours", budgetedHours.message);
 
+    // --- Start_Date / End_Date: the OPTIONAL planned window ---
+    // A blank cell is "no plan" (continual work), never an error. A window that ENDS BEFORE IT
+    // STARTS is refused here and by the database, so no report can be handed an impossible plan.
+    const planStart = parsePlanDate(cell(COLUMN.plannedStart));
+    if (!planStart.ok) reject("Start_Date", planStart.message);
+    const planEnd = parsePlanDate(cell(COLUMN.plannedEnd));
+    if (!planEnd.ok) reject("End_Date", planEnd.message);
+    if (planStart.ok && planEnd.ok && planStart.iso && planEnd.iso && planEnd.iso < planStart.iso) {
+      reject("End_Date", `End_Date ${planEnd.iso} is before Start_Date ${planStart.iso}; a window that ends before it starts is not a plan.`);
+    }
+
     if (!project || !wbs || !network || !uom || !department || !status || !qty.ok || !budgetedHours.ok) {
       // Every unresolvable value above already pushed an issue; the fallback keeps the
       // promise that a rejected row is always reported.
@@ -808,6 +934,8 @@ export function planJobOrderImport(
       sectionId: storedSection?.id ?? null,
       sectionName: storedSection?.name ?? null,
       status,
+      plannedStartDate: planStart.ok ? planStart.iso : null,
+      plannedEndDate: planEnd.ok ? planEnd.iso : null,
     });
     plan.created += 1;
     seenInFile.set(duplicateKey, rowNumber);

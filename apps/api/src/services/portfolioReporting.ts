@@ -511,6 +511,13 @@ export type JobOrderIdentity = {
   wbs: { id: number; wbsCode: string; name: string };
   department: { id: number; name: string };
   section: { id: number; name: string } | null;
+  /**
+   * The OPTIONAL planned window (the upload template's `Start_Date` / `End_Date`), at UTC midnight on
+   * the day named. Both null is the ordinary case: continual / standing work has no plan, and that is
+   * reported as NOT SCHEDULED — never as on-time.
+   */
+  plannedStartDate?: Date | null;
+  plannedEndDate?: Date | null;
 };
 
 export type BudgetRevisionFact = {
@@ -582,6 +589,9 @@ export type JobOrderFacts = {
   oldestUnapprovedAt: Date | null;
   measurableOnHours: boolean;
   measurableOnQuantity: boolean;
+  /** The planned window as stored (UTC midnight), or null for no plan. */
+  plannedStartDate: Date | null;
+  plannedEndDate: Date | null;
   attentionScore: number;
   reasons: string[];
 };
@@ -707,6 +717,10 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
     oldestUnapprovedAt: input.oldestUnapprovedAt,
     measurableOnHours,
     measurableOnQuantity,
+    // The window travels with the row exactly as stored: one kind of value (UTC midnight), so the
+    // form, the table, the exports and the (later) schedule judgement all read the same day.
+    plannedStartDate: jobOrder.plannedStartDate ?? null,
+    plannedEndDate: jobOrder.plannedEndDate ?? null,
     attentionScore: attention.score,
     reasons: attention.reasons,
   };

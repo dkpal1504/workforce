@@ -34,7 +34,13 @@ type UploadResult = {
  *
  * One row is one Job Order. The template columns are fixed by the API:
  * Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM,
- * Qty, Budgeted_hours, Department, Section, Job_Order_Status.
+ * Qty, Budgeted_hours, Department, Section, Job_Order_Status, and — OPTIONALLY, appended —
+ * Start_Date, End_Date, the planned window a delay is measured against.
+ *
+ * The window is optional because most of the yard's work is continual: a file that stops at
+ * Job_Order_Status is a valid file and every row is stored with no plan. When the two columns are
+ * present they must BOTH be present, in that order, and a blank cell means "no plan" — never a
+ * guessed date. A file the team already has therefore keeps importing unchanged.
  *
  * A row is rejected when Project_ID + WBS_NO + Job_Order already exists: the Job
  * Order number repeats across projects, so it is unique inside one project only.
@@ -51,9 +57,19 @@ type UploadResult = {
  * reported back; the file is never partially accepted in silence.
  */
 const TEMPLATE_COLUMNS =
-  "Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty, Budgeted_hours, Department, Section, Job_Order_Status";
+  "Project_ID, Project_Name, WBS_NO, Network_ID, Job_Order, Job_Description, UoM, Qty, Budgeted_hours, Department, Section, Job_Order_Status  (then the optional Start_Date, End_Date)";
 
 const MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The planned window, spelled out where the uploader reads it. Kept beside the column list above so
+ * the two cannot drift: the accepted formats are the ones `parsePlanDate` in the API accepts, and a
+ * date that cannot be read unambiguously is refused with its row and column rather than guessed.
+ */
+const PLAN_WINDOW_HELP =
+  "Start_Date and End_Date are OPTIONAL and stay empty for continual work. Write a date as yyyy-mm-dd "
+  + "(2026-10-16) or dd/mm/yyyy (16/10/2026). A two-digit year is refused, not guessed. Either date may "
+  + "be given on its own: a start with no end reads as open-ended, an end with no start as a deadline.";
 
 type JobOrderRow = {
   id: number;
@@ -295,6 +311,8 @@ export function JobOrderUploadPage() {
               before.
             </div>
           )}
+          {/* The planned window, where the uploader reads the column list. */}
+          <div className="muted" style={{ marginTop: 10 }}>{PLAN_WINDOW_HELP}</div>
           <div className="footer-actions" style={{ marginTop: 14 }}>
             <button type="button" className="btn btn-primary" disabled={!csvText || busy} onClick={upload}>
               {busy ? "Uploading…" : "Upload & Validate"}

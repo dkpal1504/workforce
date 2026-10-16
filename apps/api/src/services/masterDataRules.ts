@@ -1,3 +1,6 @@
+import { plannedDayKey } from "./jobOrderSchedule";
+import { parsePlanDate } from "./jobOrderCsv";
+
 /**
  * Pure validation and duplicate rules for the Project / WBS / UoM / Network
  * masters. Nothing in this module touches the database: the route layer supplies
@@ -593,4 +596,67 @@ export function isUnchangedBudget(
   const round = (value: number | null | undefined) => Math.round(Number(value ?? 0) * 100) / 100;
   return round(current.budgetedHours) === round(next.budgetedHours)
     && round(current.budgetedQuantity) === round(next.budgetedQuantity);
+}
+
+
+/* ---------------------------------------------------------------------------
+   Job Order planned window (the dates a delay is measured against).
+   --------------------------------------------------------------------------- */
+
+export type JobOrderScheduleInput = {
+  /** ISO days (`YYYY-MM-DD`), or null for "no plan" — the continual / standing case. */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
+};
+
+/**
+ * Validate the planned window of a Job Order.
+ *
+ * The date grammar is the UPLOAD's grammar, imported rather than restated, so a date the CSV import
+ * accepts is a date this screen accepts and the reverse: one grammar for the whole app.
+ *
+ * Either side may be empty — a start with no end is open-ended, an end with no start is a deadline —
+ * and an empty field CLEARS that side: this is the one place a plan is corrected by hand, so what the
+ * form shows is what gets stored. A window that ends before it starts is refused here, as it is by the
+ * upload and by the database constraint on job_orders.
+ */
+export function validateJobOrderScheduleInput(payload: Record<string, unknown>): Validation<JobOrderScheduleInput> {
+  const errors: FieldError[] = [];
+  const readDay = (field: "plannedStartDate" | "plannedEndDate", label: string): string | null => {
+    const raw = payload[field];
+    if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+    const parsed = parsePlanDate(String(raw));
+    if (!parsed.ok) {
+      errors.push({ field, message: parsed.message });
+      return null;
+    }
+    return parsed.iso;
+  };
+
+  const plannedStartDate = readDay("plannedStartDate", "Start date");
+  const plannedEndDate = readDay("plannedEndDate", "End date");
+  if (plannedStartDate && plannedEndDate && plannedEndDate < plannedStartDate) {
+    errors.push({
+      field: "plannedEndDate",
+      message: `End date ${plannedEndDate} is before Start date ${plannedStartDate}: `
+        + "a window that ends before it starts is not a plan.",
+    });
+  }
+
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, data: { plannedStartDate, plannedEndDate } };
+}
+
+/**
+ * True when a planned window is identical to the current one, so no audit row is worth writing.
+ *
+ * Compared as DAYS: the column stores UTC midnight and the form sends a day, so a difference of hours
+ * is not a change of plan.
+ */
+export function isUnchangedSchedule(
+  current: { plannedStartDate: Date | null; plannedEndDate: Date | null },
+  next: JobOrderScheduleInput
+): boolean {
+  return plannedDayKey(current.plannedStartDate) === next.plannedStartDate
+    && plannedDayKey(current.plannedEndDate) === next.plannedEndDate;
 }

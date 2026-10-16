@@ -63,6 +63,9 @@ type JobOrderRow = {
   status: string;
   budgetedHours: number | null;
   budgetedQuantity: number | null;
+  /** The planned window as `YYYY-MM-DD`, or null for continual / standing work with no plan. */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
   /** The last few effective-dated budget revisions, newest first. */
   budgetRevisions?: {
     revisionNo: number;
@@ -113,7 +116,8 @@ type EditorState =
   | { type: "wbs"; item?: WbsRow }
   | { type: "uom"; item?: UomRow }
   | { type: "network"; item?: NetworkRow }
-  | { type: "joborder"; item: JobOrderRow };
+  | { type: "joborder"; item: JobOrderRow }
+  | { type: "schedule"; item: JobOrderRow };
 
 /** Literal placeholder examples for the fields the UoM master cannot speak for. */
 const PROJECT_CODE_EXAMPLE = "PRJ-A";
@@ -381,7 +385,7 @@ export function MasterDataPage() {
           {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "uom" && <tr><th>Code</th><th>Name</th><th>Example (on-screen help)</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "network" && <tr><th>Network code</th><th>Project</th><th>WBS</th><th>Source</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
-          {tab === "joborder" && <tr><th>Job Order</th><th>Project</th><th>WBS</th><th>Network</th><th>Booked hours</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
+          {tab === "joborder" && <tr><th>Job Order</th><th>Project</th><th>WBS</th><th>Network</th><th>Planned window</th><th>Booked hours</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
         </thead>
         <tbody>
           {tab === "project" && visibleProjects.map((row) => (
@@ -430,12 +434,20 @@ export function MasterDataPage() {
                   )}
                 </td>
                 <td>{row.network?.code ?? "—"}</td>
+                <td>
+                  {/* Both days as entered, or the honest "not scheduled": most of the yard's work is
+                      continual, and a blank here is a state, not missing data. */}
+                  <PlannedWindow start={row.plannedStartDate} end={row.plannedEndDate} />
+                </td>
                 <td>{booked === 0 ? <span className="muted">None</span> : booked}</td>
                 <td><span className={`badge badge--${row.status === "active" ? "manual" : "sync"}`}>{row.status === "active" ? "Active" : "In-Active"}</span></td>
                 <td>
                   <div className="sup-table__actions">
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "joborder", item: row })}>
                       <MdIcon name="pencil" />Edit Job Order
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditor({ type: "schedule", item: row })}>
+                      Planned window
                     </button>
                   </div>
                 </td>
@@ -618,6 +630,7 @@ function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClos
   if (editor.type === "project") return <ProjectForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
   if (editor.type === "uom") return <UomForm item={editor.item} uom={uom} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
   if (editor.type === "joborder") return <JobOrderForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
+  if (editor.type === "schedule") return <JobOrderScheduleForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
 
   const parent = editor.item ? projects.find((project) => project.id === editor.item!.projectId) : projects.find((project) => String(project.id) === projectFilter);
   if (!parent) {
@@ -768,6 +781,75 @@ function JobOrderForm({ item, busy, error, onClose, onSave }: { item: JobOrderRo
           </ul>
         )}
       </div>
+    </Modal>
+  );
+}
+
+/**
+ * A planned window, rendered the one way: two days when they are known, "Not scheduled" when the
+ * work is continual. Never a fabricated span, never a dash that could be read as "on time".
+ */
+function PlannedWindow({ start, end }: { start: string | null; end: string | null }) {
+  if (!start && !end) return <span className="muted">Not scheduled</span>;
+  if (start && end) return <span>{start} → {end}</span>;
+  if (start) return <span>{start} → <span className="muted">open-ended</span></span>;
+  return <span><span className="muted">deadline</span> → {end}</span>;
+}
+
+/**
+ * Set a Job Order's planned window: the two dates a delay is measured against.
+ *
+ * Deliberately a SEPARATE form from the budget editor, so one save is one change and one audit row —
+ * a moved date is not a budget revision, and the budget revision list stays about money and hours.
+ * Either day may be cleared: that is how continual work is recorded honestly. A window that ends
+ * before it starts is refused by the server, as is an unchanged one.
+ */
+function JobOrderScheduleForm({ item, busy, error, onClose, onSave }: { item: JobOrderRow; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
+  const [start, setStart] = useState(item.plannedStartDate ?? "");
+  const [end, setEnd] = useState(item.plannedEndDate ?? "");
+  const changed = start !== (item.plannedStartDate ?? "") || end !== (item.plannedEndDate ?? "");
+  const impossible = Boolean(start && end && end < start);
+  const submitDisabled = !changed || impossible;
+  const submitTitle = !changed
+    ? "Change one of the two dates first: an unchanged window is refused."
+    : impossible
+      ? "The end date is before the start date, and a window that ends before it starts is not a plan."
+      : undefined;
+
+  return (
+    <Modal
+      title={`Planned window · ${item.code}`}
+      busy={busy}
+      error={error}
+      onClose={onClose}
+      submitDisabled={submitDisabled}
+      submitTitle={submitTitle}
+      onSubmit={() => onSave(`/master-data/job-orders/${item.id}/schedule`, "PUT", {
+        plannedStartDate: start,
+        plannedEndDate: end,
+      })}
+    >
+      <div className="sup-field">
+        <p className="md-readonly">{item.code} · {item.name}</p>
+        <p className="md-help">
+          The dates this Job Order is measured against: a window that has closed with quantity still
+          outstanding is reported as delayed, and a projection more than seven days beyond the end date
+          as at risk. Leave BOTH empty for continual / standing work — the reports show it as not
+          scheduled and never as on time. Either date may be set on its own.
+        </p>
+      </div>
+      <div className="sup-form__grid">
+        <Field label="Start date" help="Optional. The day the work was planned to start.">
+          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+        </Field>
+        <Field label="End date" help="Optional. The day the work was planned to finish.">
+          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+        </Field>
+      </div>
+      <p className="md-help">
+        A blank date CLEARS that side of the window. Only a Project Manager or an Admin may change these
+        dates, and every change is audited with the previous window.
+      </p>
     </Modal>
   );
 }

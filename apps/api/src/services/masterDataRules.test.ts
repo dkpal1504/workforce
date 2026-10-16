@@ -12,6 +12,7 @@ import {
   findProjectCodeConflict,
   findUomCodeConflict,
   findWbsCodeConflict,
+  isUnchangedSchedule,
   isUniqueConstraintError,
   isValidColorKey,
   jobOrderNetworkWbsError,
@@ -34,6 +35,7 @@ import {
   wbsCodeConflictMessage,
   NETWORK_SOURCE,
   validateJobOrderBudgetInput,
+  validateJobOrderScheduleInput,
   nextBudgetRevisionNo,
   isUnchangedBudget,
 } from "./masterDataRules";
@@ -430,4 +432,57 @@ test("a long list is capped and summarised", () => {
   assert.match(refusal.message, /, and 3 more\./);
   const listed = (refusal.message.match(/19000001\d\d/g) ?? []).length;
   assert.equal(listed, PROJECT_DEACTIVATION_MAX_CODES);
+});
+
+// -------------------------------------------- the Job Order planned window
+
+test("a planned window is validated with the upload's own date grammar", () => {
+  const ok = validateJobOrderScheduleInput({ plannedStartDate: "2026-10-01", plannedEndDate: "16/12/2026" });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.deepEqual(ok.data, { plannedStartDate: "2026-10-01", plannedEndDate: "2026-12-16" });
+
+  for (const bad of ["16/10/26", "31/02/2026", "next week", "2026-13-01"]) {
+    const refused = validateJobOrderScheduleInput({ plannedStartDate: bad, plannedEndDate: "" });
+    assert.equal(refused.ok, false, `'${bad}' must be refused`);
+    if (!refused.ok) {
+      assert.equal(refused.errors[0].field, "plannedStartDate");
+      assert.match(refused.errors[0].message, /Write the date as yyyy-mm-dd/);
+    }
+  }
+});
+
+test("either side of the window may be empty, and an empty field CLEARS that side", () => {
+  const startOnly = validateJobOrderScheduleInput({ plannedStartDate: "2026-10-01", plannedEndDate: "" });
+  assert.equal(startOnly.ok, true);
+  if (startOnly.ok) assert.deepEqual(startOnly.data, { plannedStartDate: "2026-10-01", plannedEndDate: null });
+
+  const endOnly = validateJobOrderScheduleInput({ plannedStartDate: null, plannedEndDate: "2026-12-31" });
+  assert.equal(endOnly.ok, true);
+  if (endOnly.ok) assert.deepEqual(endOnly.data, { plannedStartDate: null, plannedEndDate: "2026-12-31" });
+
+  const cleared = validateJobOrderScheduleInput({ plannedStartDate: "  ", plannedEndDate: undefined });
+  assert.equal(cleared.ok, true);
+  if (cleared.ok) assert.deepEqual(cleared.data, { plannedStartDate: null, plannedEndDate: null });
+});
+
+test("a window that ends before it starts is refused on the end date", () => {
+  const refused = validateJobOrderScheduleInput({ plannedStartDate: "2026-12-31", plannedEndDate: "2026-10-01" });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) {
+    assert.equal(refused.errors.length, 1);
+    assert.equal(refused.errors[0].field, "plannedEndDate");
+    assert.match(refused.errors[0].message, /End date 2026-10-01 is before Start date 2026-12-31/);
+  }
+});
+
+test("an unchanged window writes nothing: the comparison is by DAY, not by instant", () => {
+  const stored = { plannedStartDate: new Date("2026-10-01T00:00:00.000Z"), plannedEndDate: null };
+  assert.equal(isUnchangedSchedule(stored, { plannedStartDate: "2026-10-01", plannedEndDate: null }), true);
+  assert.equal(isUnchangedSchedule(stored, { plannedStartDate: "2026-10-02", plannedEndDate: null }), false);
+  assert.equal(isUnchangedSchedule(stored, { plannedStartDate: null, plannedEndDate: null }), false, "clearing is a change");
+  assert.equal(
+    isUnchangedSchedule({ plannedStartDate: null, plannedEndDate: null }, { plannedStartDate: null, plannedEndDate: null }),
+    true,
+    "no plan on either side is no change"
+  );
 });

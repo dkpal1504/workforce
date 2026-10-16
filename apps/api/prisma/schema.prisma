@@ -464,6 +464,12 @@ model JobOrder {
   section          Section?    @relation(fields: [sectionId], references: [id])
   /// active | inactive
   status           String      @default("active")
+  /// OPTIONAL planned window, from the template's Start_Date / End_Date columns. NULL means
+  /// "no plan" - continual / standing work - which every report shows as NOT SCHEDULED and never
+  /// as on-time. Always UTC midnight on the day named: one kind of value, no time-of-day noise.
+  /// The CURRENT plan only (v1): a date that moves is not versioned against a baseline.
+  plannedStartDate DateTime? @map("planned_start_date")
+  plannedEndDate   DateTime? @map("planned_end_date")
   createdAt        DateTime    @default(now()) @map("created_at")
   updatedAt        DateTime    @updatedAt @map("updated_at")
 

@@ -4,6 +4,7 @@ import {
   BandBadge,
   ExceptionCard,
   JobIdentityCell,
+  PlannedWindowCell,
   Panel,
   PortfolioFilterBar,
   PctQtyCell,
@@ -458,6 +459,7 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
               <tr>
                 <th>Job order</th>
                 <th>Department</th>
+                <th>Planned window</th>
                 <th>Status</th>
                 <th>Band</th>
                 <th className="pf-num">Budget h</th>
@@ -479,6 +481,7 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
                   <td>
                     <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
                   </td>
+                  <PlannedWindowCell start={row.plannedStartDate} end={row.plannedEndDate} />
                   <td>
                     <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
                       {row.status === "active" ? "Active" : "In-active"}

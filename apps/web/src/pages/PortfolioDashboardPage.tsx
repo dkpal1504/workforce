@@ -64,6 +64,13 @@ export type PortfolioJobRow = {
   burnPct: number | null;
   hoursBand: PortfolioBand;
   hoursPerDay: number | null;
+  /**
+   * The OPTIONAL planned window, as `YYYY-MM-DD` days, or null for continual / standing work.
+   * Rendered through `PlannedWindowCell`, which says "Not scheduled" rather than a dash: a Job Order
+   * with no plan is never counted as on time.
+   */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
   forecastExhaustedOn: string | null;
   targetQty: number;
   achievedQty: number;
@@ -446,6 +453,21 @@ export function ReasonsCell({ reasons }: { reasons: string[] }) {
       ))}
     </ul>
   );
+}
+
+/**
+ * The planned window of a Job Order — ONE definition for the dashboard and the Reports screen.
+ *
+ * Both days when they are known; "Not scheduled" when the work is continual / standing, which the
+ * report NEVER counts as on time; a labelled one-sided window when only one day is known (a start with
+ * no end is open-ended, an end with no start is a deadline). A blank is never rendered as a dash that
+ * could be mistaken for a date.
+ */
+export function PlannedWindowCell({ start, end }: { start: string | null; end: string | null }) {
+  if (!start && !end) return <td><span className="pf-cell-sub">Not scheduled</span></td>;
+  if (start && !end) return <td><span className="pf-cell-sub">{start} → open-ended</span></td>;
+  if (!start && end) return <td><span className="pf-cell-sub">deadline → {end}</span></td>;
+  return <td><span className="pf-cell-sub">{start} → {end}</span></td>;
 }
 
 /**
@@ -1207,6 +1229,7 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
               <tr>
                 <th>Job order</th>
                 <th>Department</th>
+                <th>Planned window</th>
                 <th>Status</th>
                 <th>Band</th>
                 <th className="pf-num">Budget h</th>
@@ -1228,6 +1251,7 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
                   <td>
                     <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
                   </td>
+                  <PlannedWindowCell start={row.plannedStartDate} end={row.plannedEndDate} />
                   <td>
                     <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
                       {row.status === "active" ? "Active" : "In-active"}

@@ -5,6 +5,7 @@ import { writeAudit } from "../audit";
 import { buildCsvText, readCsvFile } from "../services/csvParser";
 import {
   JOB_ORDER_CSV_HEADERS,
+  planDateToUtc,
   PENDING_MASTER_ID,
   checkJobOrderHeader,
   codeKey,
@@ -64,6 +65,8 @@ jobOrderCsvRouter.get("/template", async (_req, res) => {
       uom: { select: { code: true } },
       department: { select: { name: true } },
       section: { select: { name: true } },
+      plannedStartDate: true,
+      plannedEndDate: true,
     },
   });
   const rows: string[][] = [[...JOB_ORDER_CSV_HEADERS]];
@@ -81,6 +84,11 @@ jobOrderCsvRouter.get("/template", async (_req, res) => {
       sample.department.name,
       sample.section?.name ?? "",
       sample.status === "inactive" ? "In-Active" : "Active",
+      // The planned window in the ISO form the upload accepts. Blank when the sample Job Order has
+      // no plan, which is the honest example for continual work; the header comment above the
+      // template names the formats this column accepts.
+      sample.plannedStartDate ? sample.plannedStartDate.toISOString().slice(0, 10) : "",
+      sample.plannedEndDate ? sample.plannedEndDate.toISOString().slice(0, 10) : "",
     ]);
   }
   res.setHeader("Content-Type", "text/csv");
@@ -140,6 +148,9 @@ export type CreatedJobOrderRow = {
   projectId: number;
   projectWbsId: number;
   status: string;
+  /** The planned window as stored, as `YYYY-MM-DD`, or null for continual / standing work. */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
 };
 
 /** A WBS master an upload created, with the file row that introduced it. */
@@ -288,6 +299,10 @@ jobOrderCsvRouter.post("/", async (req, res) => {
             departmentId: item.departmentId,
             sectionId: item.sectionId,
             status: item.status,
+            // A planned window is stored as UTC midnight on the day named, the same kind of value
+            // every other date in this schema carries. Absent stays absent: never a fabricated day.
+            plannedStartDate: item.plannedStartDate ? planDateToUtc(item.plannedStartDate) : null,
+            plannedEndDate: item.plannedEndDate ? planDateToUtc(item.plannedEndDate) : null,
           },
         });
         // Revision 1 is the budget set when the Job Order is created, so consumption
@@ -311,6 +326,8 @@ jobOrderCsvRouter.post("/", async (req, res) => {
           projectId: created.projectId,
           projectWbsId: created.projectWbsId,
           status: created.status,
+          plannedStartDate: item.plannedStartDate,
+          plannedEndDate: item.plannedEndDate,
         });
       }
     }, { timeout: 60_000, maxWait: 10_000 });
