@@ -448,15 +448,25 @@ export function ReasonsCell({ reasons }: { reasons: string[] }) {
   );
 }
 
-/** The job-order identity cell: project / WBS / code-name / department, stacked. */
+/**
+ * The job-order identity cell: project / WBS / code-name / department, stacked.
+ *
+ * The description is CAPPED at 75 characters and wraps onto further lines (`.pf-cell-cap`).
+ * Uncapped, the auto layout hands this column as much width as its longest description wants,
+ * which pushes band, quantities, forecast, attention and reasons off to the right of the table.
+ * The cap sits on a BLOCK inside the cell because `max-width` on a table cell is only a
+ * suggestion to the auto layout, while a block-level child's width is genuinely respected.
+ */
 export function JobIdentityCell({ row, showProject = true }: { row: PortfolioJobRow; showProject?: boolean }) {
   return (
     <td>
-      <span className="pf-cell-strong">{row.displayName || `${row.code}-${row.name}`}</span>
-      <span className="pf-cell-sub">
-        {showProject ? `${row.project.code} · ${row.project.name} · ` : ""}
-        WBS {row.wbs.wbsCode}
-      </span>
+      <div className="pf-cell-cap">
+        <span className="pf-cell-strong">{row.displayName || `${row.code}-${row.name}`}</span>
+        <span className="pf-cell-sub">
+          {showProject ? `${row.project.code} · ${row.project.name} · ` : ""}
+          WBS {row.wbs.wbsCode}
+        </span>
+      </div>
     </td>
   );
 }
@@ -1039,8 +1049,10 @@ function NeedsPushSection({ report, resetKey }: SectionProps) {
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
                   <td>
-                    {row.department.name}
-                    <span className="pf-cell-sub">{row.section ? `${row.section.name}` : "No section"}</span>
+                    <div className="pf-cell-cap pf-cell-cap--department">
+                      {row.department.name}
+                      <span className="pf-cell-sub">{row.section ? `${row.section.name}` : "No section"}</span>
+                    </div>
                   </td>
                   <td>
                     <BandBadge band={row.hoursBand} />
@@ -1096,7 +1108,9 @@ function OnTrackSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <BandBadge band={row.hoursBand} />
                   </td>
@@ -1150,7 +1164,9 @@ function OnTrackNotMeasurableSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <BandBadge band={row.hoursBand} />
                   </td>
@@ -1209,7 +1225,9 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
                       {row.status === "active" ? "Active" : "In-active"}

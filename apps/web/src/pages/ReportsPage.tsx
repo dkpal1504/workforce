@@ -311,7 +311,9 @@ function NeedsPushSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <BandBadge band={row.hoursBand} />
                   </td>
@@ -364,7 +366,9 @@ function OnTrackSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <BandBadge band={row.hoursBand} />
                   </td>
@@ -412,7 +416,9 @@ function OnTrackNotMeasurableSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <BandBadge band={row.hoursBand} />
                   </td>
@@ -470,7 +476,9 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
               {pager.slice.rows.map((row) => (
                 <tr key={row.id}>
                   <JobIdentityCell row={row} />
-                  <td>{row.department.name}</td>
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
                   <td>
                     <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
                       {row.status === "active" ? "Active" : "In-active"}

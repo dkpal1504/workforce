@@ -738,6 +738,44 @@
   font-weight: 500;
 }
 
+/* ---- The two identity columns of every portfolio table -----------------------------
+ * JOB ORDER is capped at 75 characters and WRAPS onto further lines. Uncapped, the auto
+ * layout gives the column as much width as its longest description wants, and everything to
+ * its right (band, quantities, forecast, attention, reasons) is pushed off the screen.
+ *
+ * The cap sits on a BLOCK inside the cell on purpose: `max-width` on a table CELL is only a
+ * suggestion to the auto layout, while a block-level child's width is genuinely respected.
+ * `overflow-wrap: anywhere` is what makes an unbroken code-name wrap inside the cap instead
+ * of widening the table.
+ *
+ * DEPARTMENT is a fixed 25 characters with a matching `min-width`, so it can no longer be
+ * squeezed by its neighbour and no longer breaks mid-word. A name longer than that (four of
+ * the live departments are 27-34 characters: "Supply Chain Management - EOU/SEZ",
+ * "Information and Technology - EOU", "Project and Planning Management - EOU") continues on
+ * the next line AT A SPACE — never mid-word, never truncated, never pushing the numbers.
+ */
+.pf-cell-cap {
+  /* A CEILING of 75 characters, never more — and never a floor. With only a `max-width` the
+     table fills the page: the auto layout keeps every other column at its natural width, hands
+     the LEFTOVER space to this column up to the cap, and the panel never scrolls sideways.
+     Setting a `min-width` here would look tempting and is exactly wrong: it forces the table
+     wider than the page (measured: 1599px against a 1234px panel, 365px of horizontal scroll),
+     which is the complaint this cap exists to fix. On a page wide enough for 75 characters the
+     column reaches the cap on its own; on a narrower one it takes whatever room is left and
+     wraps, and the numbers stay where they belong. */
+  max-width: 75ch;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pf-cell-cap--department {
+  min-width: 25ch;
+  max-width: 25ch;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .pf-nowrap {
   white-space: nowrap;
 }
