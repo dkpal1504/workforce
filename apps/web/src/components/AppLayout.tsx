@@ -123,7 +123,9 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
 
 /** The desktop page head. The title itself comes from `titleForPath`, so the
  *  desktop and the phone can never show two different names for one screen. */
-const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string; to: string; icon: RailIconName } }> = [
+/* `wide` marks a screen that is a TABLE, not a reading column: it takes the width the data needs
+   instead of the 1280px reference column. See `.page--wide` in global.css. */
+const PAGE_META: Array<{ prefix: string; lede: string; wide?: true; action?: { label: string; to: string; icon: RailIconName } }> = [
   {
     prefix: "/master-data",
     lede: "Set up the projects, work breakdown structures, units, networks and job orders that hours are booked against.",
@@ -144,11 +146,13 @@ const PAGE_META: Array<{ prefix: string; lede: string; action?: { label: string;
   {
     prefix: "/portfolio",
     lede: "The organisation-wide operations view: portfolio burn, the job orders that need a push and why, on-track work, department load and readiness exceptions.",
+    wide: true,
   },
   {
     prefix: "/reports",
     lede: "The same six datasets, table-first, for taking away — download the identical scope as Excel or PDF.",
     action: { label: "Open dashboard", to: "/portfolio", icon: "portfolio" },
+    wide: true,
   },
   { prefix: "/csv-upload", lede: "Load the employee roster from a CSV file." },
   { prefix: "/account/password", lede: "Change the password you sign in with." },
@@ -460,7 +464,7 @@ export function AppLayout() {
           </div>
         </nav>
       </header>
-      <main className="page">
+      <main className={meta?.wide ? "page page--wide" : "page"}>
         {/* Desktop page head: the top bar (which carries the title below 1200px) is
             hidden at >=1200px, so exactly one <h1> is visible at every width. */}
         <div className="page-head">

@@ -1036,6 +1036,21 @@ a {
     max-width: 1600px;
   }
 
+  /* The portfolio dashboard and the Reports screen are ten-column tables, not reading columns: at
+     the 1280px reference width the widest of them (Job work, 14 columns) had to be scrolled
+     sideways, and the JOB ORDER column could never reach its 75 characters. These two screens take
+     the width the data needs — a ceiling only binds when the window has the room, so a smaller
+     window is unaffected. 1780px is the width at which Job work stops scrolling.
+     The second selector is NOT redundant: `.app-shell:not(.rail-open) .page` above is three
+     classes, so the one-class rule cannot override it while the rail is auto-hidden. */
+  .page--wide {
+    max-width: 1780px;
+  }
+
+  .app-shell:not(.rail-open) .page--wide {
+    max-width: 1780px;
+  }
+
   .page-head {
     display: flex;
     flex-wrap: wrap;
