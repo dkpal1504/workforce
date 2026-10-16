@@ -645,7 +645,8 @@ function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClos
     : <NetworkForm item={editor.item} project={parent} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
 }
 
-type SaveFn = (path: string, method: "POST" | "PUT", body: Record<string, unknown>) => void;
+/** Shared with the Job Order Upload page's planned-window editor: one form, one save shape. */
+export type SaveFn = (path: string, method: "POST" | "PUT", body: Record<string, unknown>) => void;
 
 /**
  * Correct an existing Job Order's WBS row and Network.
@@ -786,14 +787,30 @@ function JobOrderForm({ item, busy, error, onClose, onSave }: { item: JobOrderRo
 }
 
 /**
+ * A planned date as the DAY it names, from either shape the API sends.
+ *
+ * The report's rows carry `YYYY-MM-DD` (its own assembler reduces instants to days), while the
+ * master-data list carries the stored Prisma DateTime as a full ISO instant
+ * (`2026-09-01T00:00:00.000Z`). Both are the same day: this is the ONE place that reduces them, so a
+ * cell can never print an instant and a form can never be handed a value its date input would reject.
+ */
+export function toPlanDay(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const day = String(value).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
+}
+
+/**
  * A planned window, rendered the one way: two days when they are known, "Not scheduled" when the
  * work is continual. Never a fabricated span, never a dash that could be read as "on time".
  */
-function PlannedWindow({ start, end }: { start: string | null; end: string | null }) {
-  if (!start && !end) return <span className="muted">Not scheduled</span>;
-  if (start && end) return <span>{start} → {end}</span>;
-  if (start) return <span>{start} → <span className="muted">open-ended</span></span>;
-  return <span><span className="muted">deadline</span> → {end}</span>;
+export function PlannedWindow({ start, end }: { start: string | null; end: string | null }) {
+  const from = toPlanDay(start);
+  const to = toPlanDay(end);
+  if (!from && !to) return <span className="muted">Not scheduled</span>;
+  if (from && to) return <span>{from} → {to}</span>;
+  if (from) return <span>{from} → <span className="muted">open-ended</span></span>;
+  return <span><span className="muted">deadline</span> → {to}</span>;
 }
 
 /**
@@ -804,10 +821,27 @@ function PlannedWindow({ start, end }: { start: string | null; end: string | nul
  * Either day may be cleared: that is how continual work is recorded honestly. A window that ends
  * before it starts is refused by the server, as is an unchanged one.
  */
-function JobOrderScheduleForm({ item, busy, error, onClose, onSave }: { item: JobOrderRow; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
-  const [start, setStart] = useState(item.plannedStartDate ?? "");
-  const [end, setEnd] = useState(item.plannedEndDate ?? "");
-  const changed = start !== (item.plannedStartDate ?? "") || end !== (item.plannedEndDate ?? "");
+/**
+ * What the planned-window editor needs of a Job Order: its identity and its current window.
+ *
+ * A STRUCTURAL type rather than the Master Data row, because the Job Order Upload page lists the same
+ * Job Orders with its own (narrower) row shape and imports this form: the editor must not force either
+ * screen to carry fields it does not use.
+ */
+export type JobOrderScheduleTarget = {
+  id: number;
+  code: string;
+  name: string;
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
+};
+
+export function JobOrderScheduleForm({ item, busy, error, onClose, onSave }: { item: JobOrderScheduleTarget; busy: boolean; error: string; onClose: () => void; onSave: SaveFn }) {
+  // Seeded on the DAY, never on the raw instant: a date input rejects an ISO timestamp, which would
+  // show a blank field and let a save clear a window the operator never touched.
+  const [start, setStart] = useState(toPlanDay(item.plannedStartDate) ?? "");
+  const [end, setEnd] = useState(toPlanDay(item.plannedEndDate) ?? "");
+  const changed = start !== (toPlanDay(item.plannedStartDate) ?? "") || end !== (toPlanDay(item.plannedEndDate) ?? "");
   const impossible = Boolean(start && end && end < start);
   const submitDisabled = !changed || impossible;
   const submitTitle = !changed

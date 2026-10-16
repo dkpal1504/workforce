@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, getToken } from "../api/client";
+// The planned-window editor lives on the Master Data screen and is imported rather than copied: one
+// form, one save, one wording, so the two places an Admin can set a window cannot drift apart.
+import { JobOrderScheduleForm, PlannedWindow, type SaveFn } from "./MasterDataPage";
 import "../styles/supervisors.css";
 
 type RowError = { row: number; column?: string; error?: string; message?: string };
@@ -81,6 +84,9 @@ type JobOrderRow = {
   department: { id: number; name: string } | null;
   section: { id: number; name: string } | null;
   uom: { id: number; code: string } | null;
+  /** The planned window as `YYYY-MM-DD`, or null for continual / standing work with no plan. */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
 };
 
 type ProjectOption = { id: number; code: string; name: string; colorKey: string };
@@ -104,6 +110,14 @@ export function JobOrderUploadPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [projectFilter, setProjectFilter] = useState<number | "">("");
   const [statusBusy, setStatusBusy] = useState<number | null>(null);
+  /**
+   * The Job Order whose planned window is being edited, and the modal's own busy/error state.
+   * Kept apart from the page's `error`, so a refused window (an impossible date, an unchanged one)
+   * stays in the dialog that caused it instead of appearing above the upload form.
+   */
+  const [scheduleTarget, setScheduleTarget] = useState<JobOrderRow | null>(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
 
   const loadJobOrders = useCallback(async () => {
     const qs = new URLSearchParams();
@@ -139,6 +153,23 @@ export function JobOrderUploadPage() {
       setStatusBusy(null);
     }
   }
+
+  /**
+   * Save a planned window. ADMIN and PM only (the API enforces it): the window is the promise a delay
+   * is measured against, and the HOD who punches the progress may not move it. A successful save closes
+   * the dialog and reloads the list; a refusal keeps the dialog open with the server's own message.
+   */
+  const saveSchedule: SaveFn = (path, method, body) => {
+    setScheduleBusy(true);
+    setScheduleError("");
+    api(path, { method, body: JSON.stringify(body) })
+      .then(async () => {
+        setScheduleTarget(null);
+        await loadJobOrders();
+      })
+      .catch((e) => setScheduleError(e instanceof Error ? e.message : "The planned window could not be saved."))
+      .finally(() => setScheduleBusy(false));
+  };
 
   const parseCount = useCallback((text: string) => {
     const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
@@ -431,6 +462,7 @@ export function JobOrderUploadPage() {
                 <th>WBS</th>
                 <th>Department / Section</th>
                 <th>UoM</th>
+                <th>Planned window</th>
                 <th>Status</th>
                 <th style={{ textAlign: "right" }}>Action</th>
               </tr>
@@ -453,33 +485,61 @@ export function JobOrderUploadPage() {
                   </td>
                   <td>{jo.uom?.code ?? "—"}</td>
                   <td>
+                    <PlannedWindow start={jo.plannedStartDate} end={jo.plannedEndDate} />
+                  </td>
+                  <td>
                     <span className={`badge badge--${jo.status === "active" ? "manual" : "sync"}`}>
                       {jo.status === "active" ? "ACTIVE" : "IN-ACTIVE"}
                     </span>
                   </td>
                   <td style={{ textAlign: "right" }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      disabled={statusBusy === jo.id}
-                      onClick={() => changeStatus(jo.id, jo.status === "active" ? "inactive" : "active")}
-                    >
-                      {jo.status === "active" ? "Set In-Active" : "Set Active"}
-                    </button>
+                    <div className="sup-table__actions">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => { setScheduleError(""); setScheduleTarget(jo); }}
+                      >
+                        Planned window
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={statusBusy === jo.id}
+                        onClick={() => changeStatus(jo.id, jo.status === "active" ? "inactive" : "active")}
+                      >
+                        {jo.status === "active" ? "Set In-Active" : "Set Active"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
               {jobOrders.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="muted">
+                  <td colSpan={8} className="muted">
                     No Job Order matches this filter.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+          <p className="muted" style={{ marginTop: 10 }}>
+            A planned window is optional: most of the yard's work is continual, and a Job Order with no
+            window is reported as <strong>not scheduled</strong> — never as on time. Set an end date and the
+            reports can say a window has closed with quantity outstanding (delayed) or that the approved
+            progress projects a finish beyond it (at risk). Either date may be set on its own.
+          </p>
         </div>
       </div>
+
+      {scheduleTarget && (
+        <JobOrderScheduleForm
+          item={scheduleTarget}
+          busy={scheduleBusy}
+          error={scheduleError}
+          onClose={() => { setScheduleTarget(null); setScheduleError(""); }}
+          onSave={saveSchedule}
+        />
+      )}
     </>
   );
 }
