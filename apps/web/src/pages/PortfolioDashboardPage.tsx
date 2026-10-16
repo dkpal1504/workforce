@@ -1184,13 +1184,13 @@ function ScheduleDelaysSection({ report, resetKey }: SectionProps) {
 }
 
 /** A 0..1 fraction as a percentage, or an em dash when it cannot be computed. */
-function fmtPercent(value: number | null): string {
+export function fmtPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—";
   return `${Math.round(value * 100)}%`;
 }
 
 /** A per-day rate at two decimals, or an em dash: a rate that cannot be measured is never a 0.00. */
-function fmtRate(value: number | null): string {
+export function fmtRate(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—";
   return value.toFixed(2);
 }

@@ -19,6 +19,8 @@ import {
   fmtHours,
   fmtNumber,
   fmtPct,
+  fmtPercent,
+  fmtRate,
   useFilterUrlSync,
   usePortfolioReport,
   useTablePager,
@@ -264,6 +266,7 @@ export function ReportsPage() {
             {tab === "on-track-not-measurable" ? (
               <OnTrackNotMeasurableSection report={report} resetKey={filterKey} />
             ) : null}
+            {tab === "schedule-delays" ? <ScheduleDelaysSection report={report} resetKey={filterKey} /> : null}
             {tab === "job-work" ? <JobWorkSection report={report} resetKey={filterKey} /> : null}
             {tab === "department-load" ? <DepartmentLoadSection report={report} resetKey={filterKey} /> : null}
             {tab === "exceptions" ? <ExceptionsSection report={report} resetKey={filterKey} /> : null}
@@ -433,6 +436,78 @@ function OnTrackNotMeasurableSection({ report, resetKey }: SectionProps) {
                   <td className="pf-num">{fmtNumber(row.achievedQty, 2)}</td>
                   <PctQtyCell row={row} />
                   <td className="pf-nowrap">{fmtDate(row.lastBooking)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <SlicePager {...pager} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * Schedule & delays — the seventh section, mirroring the dashboard's own.
+ *
+ * Both screens render it because both are the same report; the columns are deliberately identical so a
+ * reader moving between the dashboard and the print-out is reading the same table. It is a section of
+ * its own because "on track" is a claim about HOURS: a job order can be GREEN on burn and past its
+ * planned end, and that pair must stay visible as exactly that.
+ */
+function ScheduleDelaysSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.scheduleDelays, resetKey);
+  const pulse = report.pulse.schedule;
+  return (
+    <Panel
+      title="Schedule & delays"
+      count={`${report.scheduleDelays.length} of ${pulse.scheduled} scheduled`}
+      hint="Every planned window that has closed with quantity outstanding, or that the approved progress projects will run beyond it, worst first. A job order with no window is not late and is not listed: it is unscheduled, and it is never counted as on time."
+    >
+      {report.scheduleDelays.length === 0 ? (
+        <div className="empty-state">
+          No planned window is breached or about to be, across {fmtNumber(pulse.scheduled)} scheduled job order
+          {pulse.scheduled === 1 ? "" : "s"}. {fmtNumber(pulse.notScheduled)} job order
+          {pulse.notScheduled === 1 ? "" : "s"} in scope carry no window at all and are not judged here.
+        </div>
+      ) : (
+        <div className="pf-table-wrap" ref={pager.anchorRef}>
+          <table className="pf-table">
+            <thead>
+              <tr>
+                <th>Job order</th>
+                <th>Department</th>
+                <th>Schedule</th>
+                <th>Planned window</th>
+                <th>Days</th>
+                <th className="pf-num">Plan %</th>
+                <th className="pf-num">% Qty</th>
+                <th className="pf-num">Need / day</th>
+                <th className="pf-num">Achieved / day</th>
+                <th>Projected finish</th>
+                <th className="pf-num">Attention</th>
+                <th>Reasons</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pager.slice.rows.map((row) => (
+                <tr key={row.id}>
+                  <JobIdentityCell row={row} />
+                  <td>
+                    <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                  </td>
+                  <td>
+                    <ScheduleBadge band={row.scheduleBand} />
+                  </td>
+                  <PlannedWindowCell start={row.plannedStartDate} end={row.plannedEndDate} />
+                  <td>{scheduleDaysText(row)}</td>
+                  <td className="pf-num">{fmtPercent(row.planElapsedPct)}</td>
+                  <PctQtyCell row={row} />
+                  <td className="pf-num">{fmtRate(row.requiredRate)}</td>
+                  <td className="pf-num">{fmtRate(row.actualRate)}</td>
+                  <td>{fmtDate(row.projectedFinish)}</td>
+                  <td className="pf-num">{row.attentionScore}</td>
+                  <td className="pf-reasons">{row.reasons.length ? row.reasons.join("; ") : "—"}</td>
                 </tr>
               ))}
             </tbody>
