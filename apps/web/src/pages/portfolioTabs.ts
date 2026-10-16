@@ -45,6 +45,10 @@ export const PORTFOLIO_TABS = [
   { id: "needs-push", label: "Needs push", tone: "danger" },
   { id: "on-track", label: "On track", tone: "success" },
   { id: "on-track-not-measurable", label: "On track — not yet measurable", tone: "neutral" },
+  // The schedule axis, beside the hours sections rather than inside them: "on track" is a claim about
+  // HOURS, and a Job Order can be GREEN on burn and past its planned end. That pair is the most
+  // dangerous row in the portfolio, so it gets a tab of its own instead of silently redefining one.
+  { id: "schedule-delays", label: "Schedule & delays", tone: "danger" },
   { id: "job-work", label: "Job work", tone: "primary" },
   { id: "department-load", label: "Department load", tone: "warning" },
   { id: "exceptions", label: "Exceptions & readiness", tone: "danger" },

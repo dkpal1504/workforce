@@ -44,6 +44,7 @@ import {
 // the very drift this module is being fixed for. portfolioFilters is pure (node:crypto only)
 // and imports nothing from this file, so there is no cycle.
 import { DEFAULT_ACTIVITY_DAYS } from "./portfolioFilters";
+import { scheduleAttention, scheduleFor, type ScheduleBand } from "./jobOrderSchedule";
 
 /* --------------------------------------------------------------------------- *
  * The booked-hours definition (deliberately DISTINCT from the Summary's)
@@ -592,6 +593,27 @@ export type JobOrderFacts = {
   /** The planned window as stored (UTC midnight), or null for no plan. */
   plannedStartDate: Date | null;
   plannedEndDate: Date | null;
+  /**
+   * The SCHEDULE judgement, an axis of its own. It is never folded into `hoursBand`: a Job Order that
+   * is GREEN on hours and past its planned end is the most dangerous row in the portfolio, and it must
+   * stay visible as exactly that. See `jobOrderSchedule.ts` for the published rules and the reasons.
+   *
+   * `NOT_SCHEDULED` means no window at all (continual / standing work) — never "on time".
+   */
+  scheduleBand: ScheduleBand;
+  /** Whole days to the planned end (negative once it has passed). Null without an end date. */
+  daysToEnd: number | null;
+  /** Calendar elapsed as a fraction of the window; the mirror of the hours burn. Null as above. */
+  planElapsedPct: number | null;
+  /** `planElapsedPct - qtyCompletePct`. Positive means the calendar has run ahead of the work. */
+  scheduleGapPct: number | null;
+  /** Quantity per day the remaining window needs, and the rate achieved across the APPROVED series. */
+  requiredRate: number | null;
+  actualRate: number | null;
+  /** The projected finish day, or null when it cannot honestly be projected from the data. */
+  projectedFinish: Date | null;
+  /** Days the projection lands beyond the planned end (negative = early). Null as above. */
+  projectedSlipDays: number | null;
   attentionScore: number;
   reasons: string[];
 };
@@ -656,6 +678,24 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
   // target" while showing GREEN. See the function's docstring for why not to simplify.
   const qtyBand = measurableOnQuantity ? quantityBand(targetQty, achievedQty) : "NOT_MEASURABLE";
 
+  // ── The schedule axis ────────────────────────────────────────────────────────────────────────────
+  // Judged from the SAME stored window the form shows, and from the APPROVED progress only: a figure
+  // that is not approved is not evidence. `scheduleFor` refuses to project from too little data and
+  // returns no reasons at all when there is no window, so a continual Job Order costs nothing here.
+  const approvedProgress = input.progressRows
+    .filter((row) => row.status === "APPROVED")
+    .map((row) => ({ date: row.progressDate, quantity: row.cumulativeQuantity }))
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+  const schedule = scheduleFor({
+    plannedStart: jobOrder.plannedStartDate ?? null,
+    plannedEnd: jobOrder.plannedEndDate ?? null,
+    targetQty,
+    achievedQty,
+    qtyCompletePct: qtyComplete,
+    progress: approvedProgress,
+    now: input.now,
+  });
+
   const rate = hoursPerDay({
     actualHours: input.actualHours,
     firstBooking: input.firstBooking,
@@ -686,6 +726,11 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
     },
     input.now
   );
+  // The schedule weight and its reason strings are added AFTER the hours/quantity ones, so a delayed
+  // Job Order outranks merely stalled work and both remain visible on the same row. The weight comes
+  // from the schedule module, where the band that produced it is defined: they cannot drift.
+  const attentionScore = attention.score + scheduleAttention(schedule.reasons, schedule.scheduleBand);
+  const reasons = [...attention.reasons, ...schedule.reasons];
 
   return {
     id: jobOrder.id,
@@ -721,8 +766,16 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
     // form, the table, the exports and the (later) schedule judgement all read the same day.
     plannedStartDate: jobOrder.plannedStartDate ?? null,
     plannedEndDate: jobOrder.plannedEndDate ?? null,
-    attentionScore: attention.score,
-    reasons: attention.reasons,
+    scheduleBand: schedule.scheduleBand,
+    daysToEnd: schedule.daysToEnd,
+    planElapsedPct: schedule.planElapsedPct,
+    scheduleGapPct: schedule.scheduleGapPct,
+    requiredRate: schedule.requiredRate,
+    actualRate: schedule.actualRate,
+    projectedFinish: schedule.projectedFinish,
+    projectedSlipDays: schedule.projectedSlipDays,
+    attentionScore,
+    reasons,
   };
 }
 

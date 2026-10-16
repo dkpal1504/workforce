@@ -81,6 +81,12 @@ function makeFact(params: {
   hasApprovedProgress?: boolean;
   /** The operator's activity window; defaults to 7 to match `filters()`'s default. */
   activityDays?: number;
+  /** The planned window, as stored (UTC midnight). Null means "no plan" (continual work). */
+  plannedStartDate?: Date | null;
+  plannedEndDate?: Date | null;
+  /** The approved quantity series a projection is derived from, oldest first. */
+  progress?: { daysAgo: number; quantity: number }[];
+  achievedQty?: number;
 }): JobOrderFacts {
   return buildJobOrderFacts({
     jobOrder: {
@@ -100,6 +106,8 @@ function makeFact(params: {
       department: { id: params.departmentId ?? 1, name: `Dept ${params.departmentId ?? 1}` },
       section:
         params.sectionId == null ? null : { id: params.sectionId, name: `Section ${params.sectionId}` },
+      plannedStartDate: params.plannedStartDate ?? null,
+      plannedEndDate: params.plannedEndDate ?? null,
     },
     // A revision in force so the budget is effective-dated exactly as production is.
     budgetRevisions:
@@ -118,9 +126,13 @@ function makeFact(params: {
     oldestUnapprovedAt: params.oldestUnapprovedAt ?? null,
     firstBooking: params.firstBooking ?? null,
     lastBooking: params.lastBooking ?? null,
-    progressRows: params.hasApprovedProgress
-      ? [{ status: "APPROVED", cumulativeQuantity: 10, progressDate: daysAgo(3), revisionNo: 1 }]
-      : [],
+    progressRows: (params.progress ?? (params.hasApprovedProgress ? [{ daysAgo: 3, quantity: 10 }] : []))
+      .map((point) => ({
+        status: "APPROVED",
+        cumulativeQuantity: point.quantity,
+        progressDate: daysAgo(point.daysAgo),
+        revisionNo: 1,
+      })),
     asOf: NOW,
     now: NOW,
     activityDays: params.activityDays ?? 7,
@@ -1189,5 +1201,107 @@ test("export parity: the HOD's XLSX Job work row count EQUALS his scoped JSON ro
   // rowCount includes the header row; no subtotal rows are appended, so this is a true parity check.
   assert.equal(jobWorkSheet!.rowCount - 1, jsonBody.jobWork.length, "the download cannot drop or ADD a job order");
   assert.ok(!sheetTextAll(jobWorkSheet!).includes("SCOPE-B1-"), "no foreign-department job order appears anywhere in the workbook");
+});
+
+/* ------------------------------------------------------------------ *
+ * Assembly — the schedule axis
+ * ------------------------------------------------------------------ */
+
+/**
+ * The schedule rules, proven through the SAME builder the loader uses, so the band, the reasons, the
+ * attention score, the section and the pulse are checked as ONE chain rather than as separate stubs.
+ */
+test("a breached planned window is DELAYED, ranks first, and carries its numbers with it", () => {
+  const facts = [
+    // A window that closed 6 days ago at 30% of quantity: the delay-list case.
+    makeFact({
+      id: 1, budgetHours: 1000, actualHours: 100, budgetQuantity: 100, achievedQty: 30,
+      plannedStartDate: new Date("2026-08-01T00:00:00.000Z"),
+      plannedEndDate: new Date("2026-09-26T00:00:00.000Z"),
+      progress: [{ daysAgo: 60, quantity: 10 }, { daysAgo: 20, quantity: 30 }],
+    }),
+    // No window at all: continual work. Never late, never on time.
+    makeFact({ id: 2, budgetHours: 1000, actualHours: 100, lastBooking: daysAgo(1) }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: filters(), actor: ACTOR, asOf: NOW, now: NOW });
+
+  assert.equal(facts[0].scheduleBand, "DELAYED");
+  assert.equal(facts[0].daysToEnd, -6);
+  assert.ok(
+    facts[0].reasons.some((reason) => /^planned end 2026-09-26 passed 6 day\(s\) ago at 30% of quantity$/.test(reason)),
+    "the reason carries the date, the days and the achievement"
+  );
+  // The score is ADDITIVE, and this fixture fires three of the weights — which is the point of the
+  // axis being separate: the row is late (35) AND shows booked hours with no booking date (30) AND is
+  // 70% short on quantity (15). The schedule weight is one of them, not a replacement for the others.
+  assert.equal(facts[0].attentionScore, 35 + 30 + 15);
+  assert.ok(facts[0].reasons.includes("activity recorded but no booking date"));
+  assert.ok(facts[0].reasons.includes("quantity behind target"));
+  assert.equal(facts[1].scheduleBand, "NOT_SCHEDULED");
+  assert.equal(facts[1].attentionScore, 0);
+
+  assert.equal(report.scheduleDelays.length, 1, "only the breached window is in the section");
+  assert.equal(report.scheduleDelays[0].id, 1);
+  assert.equal(report.exceptions.endDatePassed.count, 1);
+  assert.equal(report.pulse.schedule.delayed, 1);
+  assert.deepEqual(report.pulse.schedule, { scheduled: 1, notScheduled: 1, onPlan: 0, dueSoon: 0, atRisk: 0, delayed: 1 });
+});
+
+test("a projection beyond the tolerance is AT RISK, and the coverage sentence states what is unscheduled", () => {
+  const facts = [
+    makeFact({
+      id: 1, budgetHours: 1000, actualHours: 100, budgetQuantity: 100, achievedQty: 30,
+      plannedStartDate: new Date("2026-08-01T00:00:00.000Z"),
+      plannedEndDate: new Date("2026-12-31T00:00:00.000Z"),
+      progress: [{ daysAgo: 45, quantity: 10 }, { daysAgo: 15, quantity: 30 }],
+    }),
+    makeFact({ id: 2, budgetHours: 10, actualHours: 1 }),
+    makeFact({ id: 3, budgetHours: 10, actualHours: 1 }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: filters(), actor: ACTOR, asOf: NOW, now: NOW });
+
+  assert.equal(facts[0].scheduleBand, "AT_RISK");
+  assert.ok(facts[0].projectedSlipDays !== null && facts[0].projectedSlipDays > 7);
+  // Likewise additive: at risk (15) plus the same two hours/quantity facts as above (30 + 15).
+  assert.equal(facts[0].attentionScore, 15 + 30 + 15);
+  assert.deepEqual(report.pulse.schedule, { scheduled: 1, notScheduled: 2, onPlan: 0, dueSoon: 0, atRisk: 1, delayed: 0 });
+  assert.match(
+    report.definitions.schedule.coverageNote,
+    /^1 of 3 job order\(s\) in scope carry a planned window; the remaining 2 are NOT SCHEDULED/
+  );
+  assert.equal(report.definitions.schedule.rules.atRiskProjectedSlipDays, 7);
+  assert.equal(report.definitions.schedule.weights.delayedNotComplete, 35);
+});
+
+test("a half-set window is a data-quality bucket, never read as a plan", () => {
+  const facts = [
+    // A lone DEADLINE four days out (the report's NOW is 2026-10-02): judged on its date alone.
+    makeFact({ id: 1, budgetHours: 100, actualHours: 10, plannedEndDate: new Date("2026-10-06T00:00:00.000Z") }),
+    makeFact({ id: 2, budgetHours: 100, actualHours: 10, plannedStartDate: new Date("2026-08-01T00:00:00.000Z") }),
+    makeFact({ id: 3, budgetHours: 100, actualHours: 10 }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: filters(), actor: ACTOR, asOf: NOW, now: NOW });
+
+  assert.equal(report.exceptions.scheduleIncomplete.count, 2, "one-sided windows are reported for correction");
+  assert.equal(facts[0].scheduleBand, "DUE_SOON", "a lone deadline is still judged on its date");
+  assert.equal(facts[1].scheduleBand, "ON_PLAN", "an open-ended start has nothing to breach");
+  assert.equal(report.pulse.schedule.scheduled, 2);
+});
+
+test("a scheduled job order nobody has punched is its own bucket: unknown, not late", () => {
+  const facts = [
+    makeFact({
+      id: 1, budgetHours: 500, actualHours: 0, budgetQuantity: 100, achievedQty: 0,
+      plannedStartDate: new Date("2026-08-01T00:00:00.000Z"),
+      plannedEndDate: new Date("2026-12-31T00:00:00.000Z"),
+    }),
+    makeFact({ id: 2, budgetHours: 500, actualHours: 10 }),
+  ];
+  const report = assemblePortfolioReport({ facts, filters: filters(), actor: ACTOR, asOf: NOW, now: NOW });
+
+  assert.equal(report.exceptions.scheduledNoProgress.count, 1, "a window without approved progress cannot be judged");
+  assert.equal(facts[0].projectedFinish, null, "no projection is invented from no data");
+  assert.equal(facts[0].scheduleBand, "ON_PLAN", "unknown is not a flag");
+  assert.equal(report.scheduleDelays.length, 0);
 });
 

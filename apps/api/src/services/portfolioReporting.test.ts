@@ -871,6 +871,16 @@ function makeFacts(over: Partial<JobOrderFacts> = {}): JobOrderFacts {
     // fixtures here are about hours and quantity, so the window is absent unless a test asks for it.
     plannedStartDate: over.plannedStartDate ?? null,
     plannedEndDate: over.plannedEndDate ?? null,
+    // The schedule axis defaults to NOT SCHEDULED (no window) for the hours/quantity fixtures: a
+    // schedule test sets the band and the figures it is about.
+    scheduleBand: "NOT_SCHEDULED",
+    daysToEnd: null,
+    planElapsedPct: null,
+    scheduleGapPct: null,
+    requiredRate: null,
+    actualRate: null,
+    projectedFinish: null,
+    projectedSlipDays: null,
   };
 }
 

@@ -59,6 +59,7 @@ import {
   reportScopeFor,
   type ReportScope,
 } from "./roleAccess";
+import { SCHEDULE_ATTENTION_WEIGHTS, SCHEDULE_BAND_DEFINITIONS, SCHEDULE_RULES, type ScheduleBand } from "./jobOrderSchedule";
 
 /* --------------------------------------------------------------------------- *
  * Prisma call counting — the no-N+1 guard
@@ -130,7 +131,7 @@ export type ReportActor = {
 /** A `JobOrderFacts` row with its dates already reduced to `YYYY-MM-DD` (or null). */
 export type ReportJobRow = Omit<
   JobOrderFacts,
-  "lastBooking" | "oldestUnapprovedAt" | "forecastExhaustedOn" | "plannedStartDate" | "plannedEndDate"
+  "lastBooking" | "oldestUnapprovedAt" | "forecastExhaustedOn" | "plannedStartDate" | "plannedEndDate" | "projectedFinish"
 > & {
   lastBooking: string | null;
   oldestUnapprovedAt: string | null;
@@ -138,6 +139,8 @@ export type ReportJobRow = Omit<
   /** The planned window as `YYYY-MM-DD`, or null for continual / standing work. */
   plannedStartDate: string | null;
   plannedEndDate: string | null;
+  /** The projected finish as `YYYY-MM-DD`, or null when it cannot honestly be projected. */
+  projectedFinish: string | null;
 };
 
 /** One capped exception group: the whole truth in `count`, a bounded sample in `rows`. */
@@ -152,6 +155,19 @@ export type PortfolioPulse = {
   /** `actualHours / budgetHours`, or null when the total budget is zero (never a fake 0). */
   portfolioBurnPct: number | null;
   bands: Record<Band, number>;
+  /**
+   * The SCHEDULE coverage and bands. `notScheduled` is the honest counterpart of every schedule
+   * figure on this report: without it, a portfolio where most Job Orders carry no window would look
+   * perfectly on time.
+   */
+  schedule: {
+    scheduled: number;
+    notScheduled: number;
+    onPlan: number;
+    dueSoon: number;
+    atRisk: number;
+    delayed: number;
+  };
   /** Measurable-on-hours job orders with no booking inside the activity window. */
   noActivity: number;
   hoursAwaitingApproval: number;
@@ -179,6 +195,18 @@ export type PortfolioDefinitions = {
   };
   measurable: { onHours: string; onQuantity: string };
   activityWindowDaysNote: string;
+  /**
+   * The SCHEDULE rules, as data, beside the hours bands and the attention weights: the bands, the
+   * thresholds that produce them, the weight each one adds, and the COVERAGE — how many Job Orders
+   * carry a window at all. The coverage sentence is not decoration: a portfolio whose rows have no
+   * dates must never read as a portfolio that is punctual.
+   */
+  schedule: {
+    bands: Record<ScheduleBand, { label: string }>;
+    weights: typeof SCHEDULE_ATTENTION_WEIGHTS;
+    rules: typeof SCHEDULE_RULES;
+    coverageNote: string;
+  };
   notes: string[];
 };
 
@@ -211,6 +239,13 @@ export type PortfolioReport = {
   needsPushTotal: number;
   onTrack: ReportJobRow[];
   onTrackNotMeasurable: ReportJobRow[];
+  /**
+   * The schedule section: every Job Order whose planned window is breached or about to be, worst
+   * first. Its own tab, because "on track" is a claim about HOURS and must not be quietly redefined
+   * by a date — a row can be on track on hours and delayed on schedule, and that pair is the whole
+   * reason this section exists.
+   */
+  scheduleDelays: ReportJobRow[];
   jobWork: ReportJobRow[];
   departmentLoad: DepartmentRollUp[];
   exceptions: {
@@ -218,6 +253,13 @@ export type PortfolioReport = {
     budgetWithNoBookings: ExceptionBucket;
     noProgress: ExceptionBucket;
     unapproved: ExceptionBucket;
+    /**
+     * The schedule buckets. The last one is a DATA-QUALITY bucket, not a work signal: half a window
+     * cannot be judged, so it is reported for correction instead of being read as a plan.
+     */
+    endDatePassed: ExceptionBucket;
+    scheduledNoProgress: ExceptionBucket;
+    scheduleIncomplete: ExceptionBucket;
   };
 };
 
@@ -309,6 +351,7 @@ function toRow(fact: JobOrderFacts): ReportJobRow {
     forecastExhaustedOn: dateKeyOrNull(fact.forecastExhaustedOn),
     plannedStartDate: dateKeyOrNull(fact.plannedStartDate),
     plannedEndDate: dateKeyOrNull(fact.plannedEndDate),
+    projectedFinish: dateKeyOrNull(fact.projectedFinish),
   };
 }
 
@@ -508,9 +551,35 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
     )
     .map(toRow);
 
+  // The schedule section: breached windows first (most days late first), then the projections that
+  // are running beyond the plan, then the ones closing within the week. A Job Order with no window is
+  // NOT in here — it is not late, it is unscheduled, and the coverage line says how many those are.
+  const scheduleOrder: Record<string, number> = { DELAYED: 0, AT_RISK: 1, DUE_SOON: 2 };
+  const scheduleDelays = facts
+    .filter((fact) => fact.scheduleBand === "DELAYED" || fact.scheduleBand === "AT_RISK" || fact.scheduleBand === "DUE_SOON")
+    .slice()
+    .sort((a, b) => {
+      const rank = scheduleOrder[a.scheduleBand] - scheduleOrder[b.scheduleBand];
+      if (rank !== 0) return rank;
+      // Worst first inside a band: days late (most negative) or the biggest projected slip.
+      return (a.daysToEnd ?? 0) - (b.daysToEnd ?? 0) || (b.projectedSlipDays ?? 0) - (a.projectedSlipDays ?? 0);
+    })
+    .map(toRow);
+
   const capped = (predicate: (fact: JobOrderFacts) => boolean): ExceptionBucket => {
     const matched = facts.filter(predicate);
     return { count: matched.length, rows: matched.slice(0, EXCEPTION_ROW_CAP).map(toRow) };
+  };
+
+  // The schedule pulse, counted from the SAME band each row prints, so the tile and the table can
+  // never disagree. `scheduled` is the denominator the coverage sentence needs.
+  const schedulePulse = {
+    scheduled: facts.filter((fact) => fact.plannedStartDate !== null || fact.plannedEndDate !== null).length,
+    notScheduled: facts.filter((fact) => fact.plannedStartDate === null && fact.plannedEndDate === null).length,
+    onPlan: facts.filter((fact) => fact.scheduleBand === "ON_PLAN").length,
+    dueSoon: facts.filter((fact) => fact.scheduleBand === "DUE_SOON").length,
+    atRisk: facts.filter((fact) => fact.scheduleBand === "AT_RISK").length,
+    delayed: facts.filter((fact) => fact.scheduleBand === "DELAYED").length,
   };
 
   const definitions: PortfolioDefinitions = {
@@ -521,6 +590,18 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
       onQuantity: "a quantity target exists AND at least one APPROVED progress row exists",
     },
     activityWindowDaysNote: `A job order is "no activity" when it is measurable on hours and its last booking is more than ${filters.activityDays} day(s) old.`,
+    schedule: {
+      bands: SCHEDULE_BAND_DEFINITIONS,
+      weights: SCHEDULE_ATTENTION_WEIGHTS,
+      rules: SCHEDULE_RULES,
+      // Printed on every report, in the DATA block, so a forwarded copy cannot imply that a portfolio
+      // is on time when most of its rows carry no dates at all.
+      coverageNote: `${schedulePulse.scheduled} of ${facts.length} job order(s) in scope carry a planned window; `
+        + `the remaining ${schedulePulse.notScheduled} are NOT SCHEDULED (continual / standing work) and are never counted as on-time. `
+        + `A window closing with quantity outstanding is DELAYED; a projection more than ${SCHEDULE_RULES.atRiskProjectedSlipDays} days `
+        + `beyond the planned end is AT RISK; a window closing within ${SCHEDULE_RULES.dueSoonDays} days with quantity outstanding is DUE SOON. `
+        + "The schedule is a separate axis: it never moves the hours band.",
+    },
     notes: [
       // FIRST, because a forwarded report must lead with its own limits: the scope actually
       // applied, not the scope that was requested. This travels into the XLSX and the PDF through
@@ -540,6 +621,9 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
       "The budget used is the revision in force on the as-of date, exactly as budgetInForce() defines it.",
       // Stated once, in the DATA block, so the screen, the XLSX and the PDF all inherit it and a
       // reader who sees a GREEN row on both On track and Needs push knows it is not a contradiction.
+      // The schedule note sits beside the burn/activity one for the same reason: a reader who sees a
+      // GREEN row under Needs push must not think the schedule was consulted to put it there.
+      "Schedule is judged separately from hours: a job order can be GREEN on hours and DELAYED on its planned window, and the Schedule & delays section lists exactly those rows.",
       "Burn and activity are separate measures: a GREEN (well-burnt) job order may still appear under Needs push when it has stalled — no booking inside the activity window — because that is an independent fact about the work.",
     ],
   };
@@ -573,6 +657,7 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
         GREEN: greenCount,
         NOT_MEASURABLE: notMeasurableCount,
       },
+      schedule: schedulePulse,
       noActivity,
       hoursAwaitingApproval,
       oldestUnapprovedAt: dateKeyOrNull(oldestUnapprovedAt),
@@ -582,6 +667,7 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
     needsPushTotal: facts.length,
     onTrack,
     onTrackNotMeasurable,
+    scheduleDelays,
     jobWork,
     departmentLoad: rollUpDepartments(facts),
     exceptions: {
@@ -594,6 +680,17 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
       noProgress: capped((fact) => !fact.measurableOnQuantity),
       // Punched but unapproved hours, which every approved-hours report is blind to.
       unapproved: capped((fact) => fact.unapprovedHours > 0),
+      // ── The schedule buckets ─────────────────────────────────────────────────────────────────────
+      // A window that has closed with quantity outstanding: the delay list, and the one flag on this
+      // report that a client is likely to see quoted. It is a fact, not a projection.
+      endDatePassed: capped((fact) => fact.scheduleBand === "DELAYED"),
+      // A window was set but no APPROVED progress exists, so nobody can say whether it is on plan:
+      // either the work has not started or the HOD is not punching. Both need a person, not a number.
+      scheduledNoProgress: capped((fact) =>
+        (fact.plannedStartDate !== null || fact.plannedEndDate !== null) && !fact.measurableOnQuantity),
+      // Half a window cannot be judged. Reported for correction, never read as a plan.
+      scheduleIncomplete: capped((fact) =>
+        (fact.plannedStartDate === null) !== (fact.plannedEndDate === null)),
     },
   };
 }

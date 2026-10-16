@@ -27,17 +27,20 @@ import {
  *      return an id outside the list (a throw inside a keydown handler kills the tab strip).
  */
 
-test("the six sections are present, in the required order, with unique ids and non-empty labels", () => {
+test("the seven sections are present, in the required order, with unique ids and non-empty labels", () => {
   // The order is the operator-facing table of contents: attention first, the register last.
   assert.deepEqual(PORTFOLIO_TAB_IDS, [
     "needs-push",
     "on-track",
     "on-track-not-measurable",
+    // The schedule axis sits with the two hours sections it must not be confused with, and BEFORE the
+    // register: a breached window is an answer; the whole register is a reference.
+    "schedule-delays",
     "job-work",
     "department-load",
     "exceptions",
   ]);
-  assert.equal(PORTFOLIO_TABS.length, 6);
+  assert.equal(PORTFOLIO_TABS.length, 7);
   for (const tab of PORTFOLIO_TABS) {
     assert.ok(tab.label.trim().length > 0, `tab ${tab.id} has no label`);
     assert.ok(tab.id.trim().length > 0, "every tab needs an id");
@@ -79,6 +82,9 @@ test("every tab wears a tone from the closed set, so no tab can render colourles
       ["on-track", "success"],
       // A data gap is deliberately NOT green — the app paints NOT_MEASURABLE grey everywhere.
       ["on-track-not-measurable", "neutral"],
+      // A breach is this section's whole purpose, so it wears the alert tone like Needs push: the two
+      // are the only sections that name work going wrong today.
+      ["schedule-delays", "danger"],
       ["job-work", "primary"],
       ["department-load", "warning"],
       ["exceptions", "danger"],
@@ -93,7 +99,7 @@ test("the REPORTS strip is the six portfolio sections PLUS the coverage report, 
   // Reports renders REPORTS_TABS. Pinning the difference stops the coverage tab leaking onto the
   // dashboard, where its dataset does not exist.
   assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage"]);
-  assert.equal(REPORTS_TAB_IDS.length, 7);
+  assert.equal(REPORTS_TAB_IDS.length, 8);
   assert.equal(COVERAGE_TAB.label, "Timesheet coverage");
   assert.ok((TAB_TONES as readonly string[]).includes(COVERAGE_TAB.tone));
   assert.equal(PORTFOLIO_TAB_IDS.includes("timesheet-coverage" as never), false, "not a portfolio section");

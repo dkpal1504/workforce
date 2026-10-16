@@ -5,6 +5,8 @@ import {
   ExceptionCard,
   JobIdentityCell,
   PlannedWindowCell,
+  ScheduleBadge,
+  scheduleDaysText,
   Panel,
   PortfolioFilterBar,
   PctQtyCell,
@@ -122,6 +124,7 @@ export function ReportsPage() {
         "needs-push": report.needsPush.length,
         "on-track": report.onTrack.length,
         "on-track-not-measurable": report.onTrackNotMeasurable.length,
+        "schedule-delays": report.scheduleDelays.length,
         "job-work": report.jobWork.length,
         "department-load": report.departmentLoad.length,
         exceptions:
@@ -460,6 +463,7 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
                 <th>Job order</th>
                 <th>Department</th>
                 <th>Planned window</th>
+                <th>Schedule</th>
                 <th>Status</th>
                 <th>Band</th>
                 <th className="pf-num">Budget h</th>
@@ -482,6 +486,10 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
                     <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
                   </td>
                   <PlannedWindowCell start={row.plannedStartDate} end={row.plannedEndDate} />
+                  <td>
+                    <ScheduleBadge band={row.scheduleBand} />
+                    <span className="pf-cell-sub">{scheduleDaysText(row)}</span>
+                  </td>
                   <td>
                     <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
                       {row.status === "active" ? "Active" : "In-active"}

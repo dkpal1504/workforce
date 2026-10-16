@@ -82,6 +82,19 @@ export type PortfolioJobRow = {
    */
   qtyCompletePct: number;
   qtyBand: PortfolioBand;
+  /**
+   * The SCHEDULE axis, judged separately from the hours band (see the API's `jobOrderSchedule`).
+   * `NOT_SCHEDULED` means there is no planned window at all — continual work — and it is never
+   * rendered as "on time".
+   */
+  scheduleBand: PortfolioScheduleBand;
+  daysToEnd: number | null;
+  planElapsedPct: number | null;
+  scheduleGapPct: number | null;
+  requiredRate: number | null;
+  actualRate: number | null;
+  projectedFinish: string | null;
+  projectedSlipDays: number | null;
   balanceQty: number;
   lastBooking: string | null;
   daysSinceActivity: number | null;
@@ -123,6 +136,15 @@ export type PortfolioPulse = {
   actualHours: number;
   portfolioBurnPct: number | null;
   bands: Record<PortfolioBand, number>;
+  /** Schedule coverage and bands: `notScheduled` is what stops an undated portfolio reading as punctual. */
+  schedule: {
+    scheduled: number;
+    notScheduled: number;
+    onPlan: number;
+    dueSoon: number;
+    atRisk: number;
+    delayed: number;
+  };
   noActivity: number;
   hoursAwaitingApproval: number;
   oldestUnapprovedAt: string | null;
@@ -140,6 +162,13 @@ export type PortfolioDefinitions = {
   };
   measurable: { onHours: string; onQuantity: string };
   activityWindowDaysNote: string;
+  /** The schedule rules as printed data: the bands, the thresholds and the coverage statement. */
+  schedule: {
+    bands: Record<PortfolioScheduleBand, { label: string }>;
+    weights: { delayedNotComplete: number; atRisk: number; dueSoon: number };
+    rules: { atRiskProjectedSlipDays: number; dueSoonDays: number };
+    coverageNote: string;
+  };
   notes: string[];
 };
 
@@ -158,6 +187,8 @@ export type PortfolioReport = {
   needsPushTotal: number;
   onTrack: PortfolioJobRow[];
   onTrackNotMeasurable: PortfolioJobRow[];
+  /** The schedule section: breached or about-to-be-breached windows, worst first. */
+  scheduleDelays: PortfolioJobRow[];
   jobWork: PortfolioJobRow[];
   departmentLoad: DepartmentRollUp[];
   exceptions: {
@@ -165,6 +196,9 @@ export type PortfolioReport = {
     budgetWithNoBookings: ExceptionBucket;
     noProgress: ExceptionBucket;
     unapproved: ExceptionBucket;
+    endDatePassed: ExceptionBucket;
+    scheduledNoProgress: ExceptionBucket;
+    scheduleIncomplete: ExceptionBucket;
   };
 };
 
@@ -222,6 +256,38 @@ export const BAND_LABELS: Record<PortfolioBand, string> = {
 /** The RAG badge — one badge class per band, using the app's own soft colours. */
 export function BandBadge({ band }: { band: PortfolioBand }) {
   return <span className={`pf-badge pf-badge--${band}`}>{BAND_LABELS[band]}</span>;
+}
+
+/** The schedule bands, in the operator's words. The label IS the value, so it is not abbreviated. */
+export type PortfolioScheduleBand = "DELAYED" | "AT_RISK" | "DUE_SOON" | "ON_PLAN" | "NOT_SCHEDULED";
+
+export const SCHEDULE_LABELS: Record<PortfolioScheduleBand, string> = {
+  DELAYED: "Delayed",
+  AT_RISK: "At risk",
+  DUE_SOON: "Due soon",
+  ON_PLAN: "On plan",
+  NOT_SCHEDULED: "Not scheduled",
+};
+
+/**
+ * The schedule judgement as a chip, reusing the bands' own tones: a breach is RED, a projection
+ * running beyond the plan is AMBER, an unplanned row is the same grey the app paints NOT_MEASURABLE.
+ * Grey is the point — a Job Order with no window is NOT on time, it is simply not planned.
+ */
+export function ScheduleBadge({ band }: { band: PortfolioScheduleBand }) {
+  const tone = band === "DELAYED" ? "RED" : band === "AT_RISK" || band === "DUE_SOON" ? "AMBER" : band === "ON_PLAN" ? "GREEN" : "NOT_MEASURABLE";
+  return <span className={`pf-badge pf-badge--${tone}`} title={SCHEDULE_LABELS[band]}>{SCHEDULE_LABELS[band]}</span>;
+}
+
+/** The days a window has left, or how late it is: one number, never a bare date to subtract by eye. */
+export function scheduleDaysText(row: { daysToEnd: number | null; projectedSlipDays: number | null }): string {
+  if (row.daysToEnd !== null) {
+    if (row.daysToEnd < 0) return `${Math.abs(row.daysToEnd)} d late`;
+    if (row.daysToEnd === 0) return "due today";
+    return `${row.daysToEnd} d left`;
+  }
+  if (row.projectedSlipDays !== null && row.projectedSlipDays > 0) return `${row.projectedSlipDays} d beyond plan`;
+  return "—";
 }
 
 /**
@@ -903,6 +969,20 @@ export function PortfolioDashboardPage() {
             <span>
               <b>{fmtHours(pulse?.actualHours)}</b> booked
             </span>
+            {/* The schedule coverage, stated where the other coverage is stated. Without it, a
+                portfolio whose rows carry no dates reads as a portfolio that is punctual. */}
+            <span>
+              <b>{fmtNumber(pulse?.schedule.scheduled)}</b> with a planned window
+            </span>
+            <span>
+              <b>{fmtNumber(pulse?.schedule.delayed)}</b> delayed
+            </span>
+            <span>
+              <b>{fmtNumber(pulse?.schedule.atRisk)}</b> at risk
+            </span>
+            <span>
+              <b>{fmtNumber(pulse?.schedule.dueSoon)}</b> due within 7 days
+            </span>
           </p>
 
           {/* ---- The section tabs ------------------------------------------------
@@ -916,6 +996,7 @@ export function PortfolioDashboardPage() {
               "needs-push": report.needsPush.length,
               "on-track": report.onTrack.length,
               "on-track-not-measurable": report.onTrackNotMeasurable.length,
+              "schedule-delays": report.scheduleDelays.length,
               "job-work": report.jobWork.length,
               "department-load": report.departmentLoad.length,
               exceptions:
@@ -940,6 +1021,7 @@ export function PortfolioDashboardPage() {
             {tab === "on-track-not-measurable" ? (
               <OnTrackNotMeasurableSection report={report} resetKey={filterKey} />
             ) : null}
+            {tab === "schedule-delays" ? <ScheduleDelaysSection report={report} resetKey={filterKey} /> : null}
             {tab === "job-work" ? <JobWorkSection report={report} resetKey={filterKey} /> : null}
             {tab === "department-load" ? <DepartmentLoadSection report={report} resetKey={filterKey} /> : null}
             {tab === "exceptions" ? <ExceptionsSection report={report} resetKey={filterKey} /> : null}
@@ -1026,6 +1108,92 @@ export function PortfolioDashboardPage() {
 
 /** Every section is rendered from the ONE response, so a tab and its table cannot disagree. */
 type SectionProps = { report: PortfolioReport; resetKey: string };
+
+/**
+ * Schedule & delays — the seventh section, and the reason it is its own tab.
+ *
+ * "On track" is a claim about HOURS, and it must not be quietly redefined by a date: a Job Order can be
+ * GREEN on burn and past its planned end, and that pair is the most dangerous row in the portfolio. So
+ * the schedule gets its own section, listing every window that is breached or about to be, worst first,
+ * with the numbers that produced each flag beside it.
+ */
+function ScheduleDelaysSection({ report, resetKey }: SectionProps) {
+  const pager = useTablePager(report.scheduleDelays, resetKey);
+  const pulse = report.pulse.schedule;
+  return (
+    <Panel
+      title="Schedule & delays"
+      count={`${report.scheduleDelays.length} of ${pulse.scheduled} scheduled`}
+      hint="Every planned window that has closed with quantity outstanding, or that the approved progress projects will run beyond it. Worst first. A job order with no window is not late and is not listed: it is unscheduled, and it is never counted as on time."
+    >
+      {report.scheduleDelays.length === 0 ? (
+        <p className="pf-empty">
+          No planned window is breached or about to be, across {fmtNumber(pulse.scheduled)} scheduled job order
+          {pulse.scheduled === 1 ? "" : "s"}. {fmtNumber(pulse.notScheduled)} job order
+          {pulse.notScheduled === 1 ? "" : "s"} in scope carry no window at all and are not judged here.
+        </p>
+      ) : (
+        <>
+          <div className="pf-table-wrap">
+            <table className="pf-table">
+              <thead>
+                <tr>
+                  <th>Job order</th>
+                  <th>Department</th>
+                  <th>Schedule</th>
+                  <th>Planned window</th>
+                  <th>Days</th>
+                  <th className="pf-num">Plan %</th>
+                  <th className="pf-num">% Qty</th>
+                  <th className="pf-num">Need / day</th>
+                  <th className="pf-num">Achieved / day</th>
+                  <th>Projected finish</th>
+                  <th>Attention</th>
+                  <th>Reasons</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pager.slice.rows.map((row) => (
+                  <tr key={row.id}>
+                    <JobIdentityCell row={row} />
+                    <td>
+                      <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
+                    </td>
+                    <td>
+                      <ScheduleBadge band={row.scheduleBand} />
+                    </td>
+                    <PlannedWindowCell start={row.plannedStartDate} end={row.plannedEndDate} />
+                    <td>{scheduleDaysText(row)}</td>
+                    <td className="pf-num">{fmtPercent(row.planElapsedPct)}</td>
+                    <td className="pf-num">{fmtQtyCompletePct(row.qtyCompletePct)}</td>
+                    <td className="pf-num">{fmtRate(row.requiredRate)}</td>
+                    <td className="pf-num">{fmtRate(row.actualRate)}</td>
+                    <td>{fmtDate(row.projectedFinish)}</td>
+                    <td className="pf-num">{row.attentionScore}</td>
+                    <td className="pf-reasons">{row.reasons.length ? row.reasons.join("; ") : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <SlicePager slice={pager.slice} setPage={pager.setPage} anchorRef={pager.anchorRef} />
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/** A 0..1 fraction as a percentage, or an em dash when it cannot be computed. */
+function fmtPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+/** A per-day rate at two decimals, or an em dash: a rate that cannot be measured is never a 0.00. */
+function fmtRate(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return value.toFixed(2);
+}
 
 /**
  * Needs push — the primary answer: the job orders with an attention signal, ranked.
@@ -1230,6 +1398,7 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
                 <th>Job order</th>
                 <th>Department</th>
                 <th>Planned window</th>
+                <th>Schedule</th>
                 <th>Status</th>
                 <th>Band</th>
                 <th className="pf-num">Budget h</th>
@@ -1252,6 +1421,10 @@ function JobWorkSection({ report, resetKey }: SectionProps) {
                     <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
                   </td>
                   <PlannedWindowCell start={row.plannedStartDate} end={row.plannedEndDate} />
+                  <td>
+                    <ScheduleBadge band={row.scheduleBand} />
+                    <span className="pf-cell-sub">{scheduleDaysText(row)}</span>
+                  </td>
                   <td>
                     <span className={`pf-badge ${row.status === "active" ? "pf-badge--GREEN" : "pf-badge--NOT_MEASURABLE"}`}>
                       {row.status === "active" ? "Active" : "In-active"}
