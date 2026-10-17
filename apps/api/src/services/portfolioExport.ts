@@ -95,7 +95,7 @@ function sectionName(row: ReportJobRow): string {
 }
 /**
  * The row projection carries dates as `YYYY-MM-DD` strings. Turn one back into a real `Date` so
- * Excel holds a DATE, not text: the `yyyy-mm-dd` number format then applies, the column sorts
+ * Excel holds a DATE, not text: the `dd-mm-yyyy` number format then applies, the column sorts
  * chronologically and a date can never be read as a raw serial number.
  */
 function dateCell(key: string | null): Date | null {
@@ -200,8 +200,8 @@ const JOB_DETAIL_COLUMNS: SheetColumn<ReportJobRow>[] = [
   { header: "Hrs/day", width: 10, numFmt: "0.00", value: (row) => row.hoursPerDay },
   // "Forecast exhausted" -> "Forecast": the date format below already says it is a date, so the
   // second word was costing every row height in the sheet. The width is trimmed to 11 because
-  // that still holds the header on one line AND a `yyyy-mm-dd` value (10 visible characters).
-  { header: "Forecast", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.forecastExhaustedOn) },
+  // that still holds the header on one line AND a `dd-mm-yyyy` value (10 visible characters).
+  { header: "Forecast", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.forecastExhaustedOn) },
   // The three quantity columns, in the order the operator named them. The header strings are
   // EXACT (QTY_BDG / QTY_Prgsd / %Qty) because this sheet is read in Excel alongside the
   // operator's own trackers, which key off those literal names. They replace the old
@@ -215,9 +215,9 @@ const JOB_DETAIL_COLUMNS: SheetColumn<ReportJobRow>[] = [
   // are stored as real dates so the sheet can be sorted and subtracted in Excel.
   { header: "Schedule", width: 15, value: (row) => row.scheduleBand },
   { header: "Days", width: 10, value: (row) => scheduleDays(row) },
-  { header: "Plan start", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.plannedStartDate) },
-  { header: "Plan end", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.plannedEndDate) },
-  { header: "Proj finish", width: 11, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.projectedFinish) },
+  { header: "Plan start", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.plannedStartDate) },
+  { header: "Plan end", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.plannedEndDate) },
+  { header: "Proj finish", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.projectedFinish) },
   { header: "QTY_BDG", width: 12, numFmt: "0.00", value: (row) => row.targetQty },
   { header: "QTY_Prgsd", width: 12, numFmt: "0.00", value: (row) => row.achievedQty },
   { header: "%Qty", width: 10, numFmt: "0.0%", value: (row) => row.qtyCompletePct },
@@ -227,11 +227,11 @@ const JOB_DETAIL_COLUMNS: SheetColumn<ReportJobRow>[] = [
   { header: "Balance qty", width: 12, numFmt: "0.00", value: (row) => row.balanceQty },
   // "Last booking" -> "Last bk" and 13 -> 10: "bk" still reads as booking in context, and a date
   // needs only 10 characters. "Days since activity" -> "Days idle": shorter AND clearer.
-  { header: "Last bk", width: 10, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.lastBooking) },
+  { header: "Last bk", width: 10, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.lastBooking) },
   { header: "Days idle", width: 9, numFmt: "0", value: (row) => row.daysSinceActivity },
   { header: "Unappr h", width: 10, numFmt: "0.00", value: (row) => row.unapprovedHours },
   // "Oldest unapproved" -> "Oldest unappr": still unambiguous next to "Unappr h".
-  { header: "Oldest unappr", width: 12, numFmt: "yyyy-mm-dd", value: (row) => dateCell(row.oldestUnapprovedAt) },
+  { header: "Oldest unappr", width: 12, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.oldestUnapprovedAt) },
   { header: "Attention", width: 10, numFmt: "0", value: (row) => row.attentionScore },
   { header: "Reasons", width: 46, value: (row) => reasonsText(row) },
 ];
@@ -332,7 +332,7 @@ export async function buildPortfolioXlsx(
     { header: "GREEN", width: 8, numFmt: "0", value: (row) => row.greenCount },
     { header: "NOT_MEASURABLE", width: 16, numFmt: "0", value: (row) => row.notMeasurableCount },
     { header: "Attention", width: 10, numFmt: "0", value: (row) => row.attentionScore },
-    { header: "Last booking", width: 13, numFmt: "yyyy-mm-dd", value: (row) => dateCellFromDate(row.lastBooking) },
+    { header: "Last booking", width: 13, numFmt: "dd-mm-yyyy", value: (row) => dateCellFromDate(row.lastBooking) },
   ];
   addDataSheet(workbook, "Dept load", deptColumns, report.departmentLoad);
 
@@ -560,7 +560,7 @@ export const PDF_JOB_COLUMNS: PdfColumn<ReportJobRow>[] = [
   { header: "QTY_BDG", width: 11, value: (row) => pdfHours(row.targetQty) },
   { header: "QTY_Prgsd", width: 12, value: (row) => pdfHours(row.achievedQty) },
   { header: "%Qty", width: 9, value: (row) => `${(row.qtyCompletePct * 100).toFixed(1)}%` },
-  // "Last booking" -> "Last bk", 12 units so a `yyyy-mm-dd` value ("2026-09-27") fits on ONE
+  // "Last booking" -> "Last bk", 12 units so a `dd-mm-yyyy` value ("27-09-2026") fits on ONE
   // line: at 10 units it wrapped to "2026-09-2 / 7", doubling the height of every row.
   { header: "Last bk", width: 12, value: (row) => textOrDash(row.lastBooking) },
   // The reason strings are the audit trail: a reader can see WHY a row is in "Needs push".

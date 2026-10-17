@@ -278,7 +278,9 @@ test("buildPortfolioXlsx: dates are real Date cells with a date format, and perc
   assert.ok(redIndex >= 0, "the RED row exists");
   const lastBookingCell = sheet.getRow(redIndex + 2).getCell(column("Last bk"));
   assert.ok(lastBookingCell.value instanceof Date, `a date cell holds a Date, not text (got ${typeof lastBookingCell.value})`);
-  assert.equal(lastBookingCell.numFmt, "yyyy-mm-dd", "and carries a date number format");
+  // The DAY-FIRST format the operator reads on screen, so the sheet and the screen agree: the cell
+  // still holds a real Date (the assertion above), only its printed form changed.
+  assert.equal(lastBookingCell.numFmt, "dd-mm-yyyy", "and carries the day-first date number format");
 
   // A percentage is stored as a FRACTION with a percent format, so Excel does the maths.
   const burnCell = sheet.getRow(redIndex + 2).getCell(column("Burn %"));

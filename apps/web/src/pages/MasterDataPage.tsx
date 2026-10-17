@@ -1,5 +1,6 @@
 import { cloneElement, isValidElement, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { formatDay } from "./formatDate";
 import "../styles/supervisors.css";
 import "./MasterDataPage.css";
 
@@ -805,12 +806,13 @@ export function toPlanDay(value: string | null | undefined): string | null {
  * work is continual. Never a fabricated span, never a dash that could be read as "on time".
  */
 export function PlannedWindow({ start, end }: { start: string | null; end: string | null }) {
+  // Reduced to a day first (the list sends an instant), then printed by the shared formatter.
   const from = toPlanDay(start);
   const to = toPlanDay(end);
   if (!from && !to) return <span className="muted">Not scheduled</span>;
-  if (from && to) return <span>{from} → {to}</span>;
-  if (from) return <span>{from} → <span className="muted">open-ended</span></span>;
-  return <span><span className="muted">deadline</span> → {to}</span>;
+  if (from && to) return <span>{formatDay(from)} → {formatDay(to)}</span>;
+  if (from) return <span>{formatDay(from)} → <span className="muted">open-ended</span></span>;
+  return <span><span className="muted">deadline</span> → {formatDay(to)}</span>;
 }
 
 /**

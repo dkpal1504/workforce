@@ -13,6 +13,7 @@ import {
   type PortfolioFilterState,
   type PortfolioStatus,
 } from "./portfolioFilters";
+import { formatDay } from "./formatDate";
 // The tested, pure pagination rules — reused verbatim, never reimplemented here.
 import { paginate, pageNumbers, type PageSlice } from "./portfolioPaging";
 // The section tabs (order, labels, keyboard walk) — ONE definition shared by both screens.
@@ -228,11 +229,14 @@ export function fmtNumber(value: number | null | undefined, digits = 0): string 
 }
 
 /** A `YYYY-MM-DD` wire date rendered as a local day, or "—". Never invents a date. */
+/**
+ * A day, printed `dd-mm-yyyy` by the ONE formatter that defines the format (`formatDate.ts`).
+ *
+ * Kept as a named export here because both screens and the coverage panel import it from this module;
+ * the format itself lives in one place so the screen, the workbook and the print cannot disagree.
+ */
 export function fmtDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString();
+  return formatDay(value);
 }
 
 export function fmtDateTime(value: string | null | undefined): string {
@@ -530,10 +534,13 @@ export function ReasonsCell({ reasons }: { reasons: string[] }) {
  * could be mistaken for a date.
  */
 export function PlannedWindowCell({ start, end }: { start: string | null; end: string | null }) {
+  // Through the shared formatter, so a window reads in the same `dd-mm-yyyy` as every other date column.
+  const from = formatDay(start);
+  const to = formatDay(end);
   if (!start && !end) return <td><span className="pf-cell-sub">Not scheduled</span></td>;
-  if (start && !end) return <td><span className="pf-cell-sub">{start} → open-ended</span></td>;
-  if (!start && end) return <td><span className="pf-cell-sub">deadline → {end}</span></td>;
-  return <td><span className="pf-cell-sub">{start} → {end}</span></td>;
+  if (start && !end) return <td><span className="pf-cell-sub">{from} → open-ended</span></td>;
+  if (!start && end) return <td><span className="pf-cell-sub">deadline → {to}</span></td>;
+  return <td><span className="pf-cell-sub">{from} → {to}</span></td>;
 }
 
 /**
