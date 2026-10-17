@@ -836,6 +836,7 @@ export function TimesheetPage() {
         unsupportedLegacyEntries: number;
         conflictedSlots: number;
         lockedEmployeeIds: number[];
+        skippedEmployees?: { employeeId: number; name: string; reason: string }[];
       }>("/timesheet/carry-forward", {
         method: "POST",
         body: JSON.stringify({
@@ -857,9 +858,15 @@ export function TimesheetPage() {
           ? `${carried.lockedEmployeeIds.length} locked current-day sheet(s) were not changed`
           : "",
       ].filter(Boolean);
+      // Whoever the copy could NOT bring over is NAMED here. Before, the loop skipped them with a
+      // bare `continue` and said nothing, so the sheet looked complete and the save failed later.
+      const skipped = (carried.skippedEmployees ?? [])
+        .map((person) => `${person.name} (${person.reason})`)
+        .join(", ");
       setCarryBanner(
         `Copied ${carried.regularSlotsCopied} regular slot(s) from ${carried.sourceDate} as Draft. ` +
-          `OT was left unassigned for manual entry.${warnings.length ? ` ${warnings.join("; ")}.` : ""}`
+          `OT was left unassigned for manual entry.${warnings.length ? ` ${warnings.join("; ")}.` : ""}` +
+          (skipped ? ` NOT copied: ${skipped}. Add them in Select Team if they did work.` : "")
       );
       await load();
     } catch (e) {

@@ -23,7 +23,12 @@ import {
   snapshotForBooking,
   snapshotsFromJobOrders,
 } from "../services/attributionSnapshot";
-import { teamAccessSatisfied } from "../services/teamAccess";
+import {
+  ROSTER_REFUSAL_TEXT,
+  rosterEmployeeWhere,
+  rosterRefusal,
+  teamAccessSatisfied,
+} from "../services/teamAccess";
 
 export const timesheetRouter = Router();
 
@@ -78,13 +83,20 @@ async function hasTeamAccess(
     ? (await prisma.employee.count({ where: { id: { in: selfIds }, departmentId, active: true } })) === selfIds.length
     : false;
 
-  // TWO SOURCES OF TEAM AUTHORISATION, UNIONED:
+  // THREE SOURCES OF TEAM AUTHORISATION, UNIONED:
   //   1. a live team row for this exact date;
   //   2. a TimesheetDay already on THIS sheet — the record of the authorisation granted when the
-  //      sheet was first saved.
+  //      sheet was first saved;
+  //   3. the same two records for the PREVIOUS working day.
   // (2) is what lets a Section HOD's return be corrected. Reading the sheet back widens nothing:
   // a row can only be there because this same guard admitted it before.
-  const [teamRows, recordedDays] = teamIds.length
+  // (3) is THE CREW THAT STAYS ON ONE JOB ORDER FOR DAYS: whoever this supervisor held yesterday
+  // he keeps working today, so the Daily Timesheet no longer refuses a save for labour it offered
+  // in its own picker. It widens nothing either, for the same reason (2) does not: the record is
+  // his own, made yesterday — and taking a man OFF the roster (removedAt) ends it, because only
+  // live rows are read.
+  const sourceDate = previousWorkDate(workDate);
+  const [teamRows, recordedDays, priorTeamRows, priorRecordedDays] = teamIds.length
     ? await Promise.all([
         prisma.dailyTeamSelection.findMany({
           where: {
@@ -100,19 +112,44 @@ async function hasTeamAccess(
           where: { taggedById: supervisorId, workDate, employeeId: { in: teamIds } },
           select: { employeeId: true },
         }),
+        prisma.dailyTeamSelection.findMany({
+          where: {
+            supervisorId,
+            workDate: sourceDate,
+            removedAt: null,
+            employeeId: { in: teamIds },
+            employee: { departmentId, employmentType: "CLMS" },
+          },
+          select: { employeeId: true },
+        }),
+        prisma.timesheetDay.findMany({
+          where: { taggedById: supervisorId, workDate: sourceDate, employeeId: { in: teamIds } },
+          select: { employeeId: true },
+        }),
       ])
-    : [[], []];
+    : [[], [], [], []];
 
   const authorisedTeamIds = [
-    ...new Set([...teamRows.map((row) => row.employeeId), ...recordedDays.map((day) => day.employeeId)]),
+    ...new Set([
+      ...teamRows.map((row) => row.employeeId),
+      ...recordedDays.map((day) => day.employeeId),
+      ...priorTeamRows.map((row) => row.employeeId),
+      ...priorRecordedDays.map((day) => day.employeeId),
+    ]),
   ];
 
   return teamAccessSatisfied({ ownEmployeeId, employeeIds: ids, ownMatched, authorisedTeamIds });
 }
 
 function teamAccessDenied(res: import("express").Response) {
+  // The old text ("Labour must be assigned to your team from a Section in your Department")
+  // sent operators hunting for a Section-mapping problem that does not exist: the guard never
+  // looked at Sections. It now names the real precondition and the action that satisfies it.
   return res.status(403).json({
-    error: "Labour must be assigned to your team from a Section in your Department.",
+    error:
+      "These employees are not on your team for this date. Add them in Select Team for this date " +
+      "(or use \"Select from Previous Day\"), then save again. A person must be active contract " +
+      "labour in your own Department.",
     code: "LABOUR_NOT_ASSIGNED",
   });
 }
@@ -417,30 +454,53 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
   const sourceDays = await prisma.timesheetDay.findMany({
     where: { taggedById: supervisorId, workDate: sourceDate },
     include: {
-      employee: { select: { id: true, active: true } },
+      employee: { select: { id: true, name: true, active: true, departmentId: true, employmentType: true } },
       entries: { include: { jobOrder: { select: { id: true, status: true, projectId: true, projectWbsId: true, departmentId: true, sectionId: true, project: { select: { active: true } }, department: { select: { active: true } } } } } },
     },
   });
-  const sourceTeam = await prisma.dailyTeamSelection.findMany({
-    where: {
-      supervisorId, workDate: sourceDate, removedAt: null,
-      employee: {
-        departmentId: supervisorDepartmentId, employmentType: "CLMS",
-        sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
-      },
+  // EVERY live roster row of the previous working day is read unfiltered, and each man is then
+  // classified by THE ONE ROSTER RULE (`rosterRefusal`). Reading them unfiltered is what makes the
+  // report below possible: a man the rule refuses is NAMED in the response instead of vanishing
+  // into a bare `continue`, which is how this button used to hand back a half-copied sheet and a
+  // save that failed later with a message about Sections.
+  //
+  // The candidates are the UNION of yesterday's live roster and yesterday's own sheet, matching
+  // the sources the save guard reads: in day-to-day use a crew is held through the SHEET (a sheet
+  // can be saved for men whose roster row is missing), and copying only the roster would carry
+  // nobody for them — the very case this button exists for.
+  const sourceRoster = await prisma.dailyTeamSelection.findMany({
+    where: { supervisorId, workDate: sourceDate, removedAt: null },
+    select: {
+      employeeId: true,
+      employee: { select: { id: true, name: true, active: true, departmentId: true, employmentType: true } },
     },
-    select: { employeeId: true },
   });
 
-  if (!sourceDays.length && !sourceTeam.length) {
+  if (!sourceDays.length && !sourceRoster.length) {
     return res.status(404).json({
       error: `No roster or assignments found on ${formatDateOnly(sourceDate)}.`,
       code: "NO_PREVIOUS_DAY_DATA",
     });
   }
 
+  const candidates = new Map<number, { name: string; active: boolean; departmentId: number | null; employmentType: string }>();
+  for (const row of sourceRoster) candidates.set(row.employeeId, row.employee);
+  for (const day of sourceDays) {
+    if (!candidates.has(day.employeeId)) candidates.set(day.employeeId, day.employee);
+  }
+  const carriedEmployeeIds = [...candidates.entries()]
+    .filter(([, employee]) => rosterRefusal(employee, supervisorDepartmentId) == null)
+    .map(([employeeId]) => employeeId);
+  const skippedEmployees = [...candidates.entries()]
+    .filter(([, employee]) => rosterRefusal(employee, supervisorDepartmentId) != null)
+    .map(([employeeId, employee]) => ({
+      employeeId,
+      name: employee.name,
+      reason: ROSTER_REFUSAL_TEXT[rosterRefusal(employee, supervisorDepartmentId)!],
+    }));
+
   // Only the prior contract-labour roster is eligible; personal hours stay in My Hours.
-  const visibleEmployeeIds = new Set(sourceTeam.map((row) => row.employeeId));
+  const visibleEmployeeIds = new Set(carriedEmployeeIds);
   const activeSourceDays = sourceDays.filter(
     (day) => day.employee.active && visibleEmployeeIds.has(day.employeeId)
   );
@@ -475,12 +535,12 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     let conflictedSlots = 0;
     const lockedEmployeeIds: number[] = [];
 
-    for (const employeeId of new Set(sourceTeam.map((row) => row.employeeId))) {
+    for (const employeeId of carriedEmployeeIds) {
+      // Re-checked against the SAME rule the read used (`rosterEmployeeWhere`), so a man
+      // deactivated or moved between the read and the write is still left out.
       const employee = await tx.employee.findFirst({
-        where: {
-          id: employeeId, active: true, departmentId: supervisorDepartmentId, employmentType: "CLMS",
-          sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
-        }, select: { active: true },
+        where: { id: employeeId, ...rosterEmployeeWhere(supervisorDepartmentId) },
+        select: { active: true },
       });
       if (!employee) continue;
       const existing = await tx.dailyTeamSelection.findFirst({
@@ -613,10 +673,11 @@ timesheetRouter.post("/carry-forward", serializeTimesheetMutation, async (req, r
     supervisorId,
     sourceDate: formatDateOnly(sourceDate),
     targetDate: dateStr,
+    skippedEmployees,
     ...result,
   });
 
-  res.json({ ok: true, sourceDate: formatDateOnly(sourceDate), ...result });
+  res.json({ ok: true, sourceDate: formatDateOnly(sourceDate), skippedEmployees, ...result });
 });
 
 /**

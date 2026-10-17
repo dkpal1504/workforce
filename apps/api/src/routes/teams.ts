@@ -6,6 +6,7 @@ import { writeAudit } from "../audit";
 import { parseDateOnly, previousWorkDate } from "../utils/date";
 import { isApprovedStatus, isProtectedEntryStatus, resolveEditLock } from "../services/timesheetEditLock";
 import { inactiveEmployeePayload } from "../services/employeeEligibility";
+import { rosterEmployeeWhere } from "../services/teamAccess";
 
 export const teamsRouter = Router();
 
@@ -94,13 +95,7 @@ teamsRouter.get("/today", async (req, res) => {
   if (supervisorDepartmentId == null) return res.status(403).json({ error: "Supervisor has no Department.", code: "FORBIDDEN" });
 
   let rows = await prisma.dailyTeamSelection.findMany({
-    where: {
-      supervisorId, workDate, removedAt: null,
-      employee: {
-        departmentId: supervisorDepartmentId, employmentType: "CLMS",
-        sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
-      },
-    },
+    where: { supervisorId, workDate, removedAt: null, employee: rosterEmployeeWhere(supervisorDepartmentId) },
     include: {
       employee: { include: { department: true, sectionAssignment: { include: { section: true } } } },
     },
@@ -114,10 +109,7 @@ teamsRouter.get("/today", async (req, res) => {
     const prior = await prisma.dailyTeamSelection.findMany({
       where: {
         supervisorId, workDate: prev, removedAt: null,
-        employee: {
-          active: true, departmentId: supervisorDepartmentId, employmentType: "CLMS",
-          sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
-        },
+        employee: rosterEmployeeWhere(supervisorDepartmentId),
       },
     });
     if (prior.length > 0) {
@@ -135,13 +127,7 @@ teamsRouter.get("/today", async (req, res) => {
       );
       carriedOver = true;
       rows = await prisma.dailyTeamSelection.findMany({
-        where: {
-          supervisorId, workDate, removedAt: null,
-          employee: {
-            departmentId: supervisorDepartmentId, employmentType: "CLMS",
-            sectionAssignment: { section: { departmentId: supervisorDepartmentId, active: true } },
-          },
-        },
+        where: { supervisorId, workDate, removedAt: null, employee: rosterEmployeeWhere(supervisorDepartmentId) },
         include: {
           employee: { include: { department: true, sectionAssignment: { include: { section: true } } } },
         },

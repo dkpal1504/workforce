@@ -60,3 +60,47 @@ export function teamAccessSatisfied(input: {
   const authorised = new Set(input.authorisedTeamIds);
   return teamIds.every((id) => authorised.has(id));
 }
+
+/**
+ * WHO MAY BE PUT ON A SUPERVISOR'S DAY ROSTER — the one rule, in one place.
+ *
+ * It is deliberately the same set the team path above accepts for a team row: ACTIVE
+ * contract labour (CLMS) in the supervisor's OWN Department. A Section mapping is NOT
+ * part of it. A Section is how the sheet is later ROUTED to an HOD; it is not what makes
+ * a man bookable, and the guard never looked at it.
+ *
+ * The roster/pool queries used to add `sectionAssignment: { section: { departmentId,
+ * active: true } }` on top, which made the roster STRICTER than the guard. The failure mode
+ * was invisible: a man whose Section was missing, foreign or switched off never appeared in
+ * Select Team and was silently dropped by "Select from Previous Day" (a bare `continue` in
+ * the copy loop), while the Daily Timesheet's own picker kept offering him — so a supervisor
+ * could fill a whole sheet from the picker and only discover the disagreement when the save
+ * was refused with a message about Sections.
+ *
+ * Callers must use this fragment (or `rosterRefusal` for reporting) rather than hand-writing
+ * the condition, so the roster, the pool, the carry-over and the guard cannot drift apart
+ * again.
+ */
+export function rosterEmployeeWhere(departmentId: number): import("@prisma/client").Prisma.EmployeeWhereInput {
+  return { active: true, departmentId, employmentType: "CLMS" };
+}
+
+/** Why a person cannot be put on this supervisor's roster. Null = he can. */
+export type RosterRefusal = "INACTIVE" | "OTHER_DEPARTMENT" | "NOT_CLMS";
+
+export function rosterRefusal(
+  employee: { active: boolean; departmentId: number | null; employmentType: string },
+  departmentId: number
+): RosterRefusal | null {
+  if (!employee.active) return "INACTIVE";
+  if (employee.departmentId !== departmentId) return "OTHER_DEPARTMENT";
+  if (employee.employmentType !== "CLMS") return "NOT_CLMS";
+  return null;
+}
+
+/** Operator-facing wording. Says what to DO, not what the rule is called. */
+export const ROSTER_REFUSAL_TEXT: Record<RosterRefusal, string> = {
+  INACTIVE: "no longer active",
+  OTHER_DEPARTMENT: "in another Department",
+  NOT_CLMS: "not contract labour (CLMS)",
+};
