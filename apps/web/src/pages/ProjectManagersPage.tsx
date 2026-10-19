@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
+import { formatDay } from "./formatDate";
 import "../styles/supervisors.css";
 
 /**
@@ -68,11 +69,7 @@ function errorText(error: unknown): string {
     : error instanceof Error ? error.message : "Request failed";
 }
 
-const dateText = (value: string | null): string => {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("en-GB");
-};
+const dateText = (value: string | null): string => formatDay(value);
 
 export function ProjectManagersPage() {
   const [data, setData] = useState<Payload | null>(null);

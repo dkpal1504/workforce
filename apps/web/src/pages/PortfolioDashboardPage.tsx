@@ -14,7 +14,7 @@ import {
   type PortfolioFilterState,
   type PortfolioStatus,
 } from "./portfolioFilters";
-import { formatDay } from "./formatDate";
+import { formatDay, formatStamp } from "./formatDate";
 // The tested, pure pagination rules — reused verbatim, never reimplemented here.
 import { paginate, pageNumbers, type PageSlice } from "./portfolioPaging";
 // The section tabs (order, labels, keyboard walk) — ONE definition shared by both screens.
@@ -278,10 +278,9 @@ export function fmtDate(value: string | null | undefined): string {
 }
 
 export function fmtDateTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString();
+  // dd-mm-yyyy HH:mm, from the ONE instant formatter — `toLocaleString()` reordered the date per
+  // machine, which is the defect this app already removed everywhere else.
+  return formatStamp(value);
 }
 
 export const BAND_LABELS: Record<PortfolioBand, string> = {

@@ -1,6 +1,6 @@
 import { cloneElement, isValidElement, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
-import { formatDay } from "./formatDate";
+import { formatDay, formatStamp } from "./formatDate";
 import "../styles/supervisors.css";
 import "./MasterDataPage.css";
 
@@ -774,7 +774,7 @@ function JobOrderForm({ item, busy, error, onClose, onSave }: { item: JobOrderRo
           <ul className="md-help" style={{ margin: 0, paddingLeft: 18 }}>
             {revisions.map((revision) => (
               <li key={revision.revisionNo}>
-                Revision {revision.revisionNo} · {new Date(revision.effectiveFrom).toLocaleString()} ·{" "}
+                Revision {revision.revisionNo} · {formatStamp(revision.effectiveFrom)} ·{" "}
                 {revision.budgetedHours ?? 0} hrs · {revision.budgetedQuantity ?? 0} qty
                 {revision.createdBy ? ` · ${revision.createdBy.name}` : ""}
                 {revision.reason ? ` · ${revision.reason}` : ""}

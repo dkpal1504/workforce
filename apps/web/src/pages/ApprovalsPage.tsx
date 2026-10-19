@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { formatDay, formatStamp } from "./formatDate";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/approvals.css";
@@ -117,7 +118,7 @@ type JobOrderConsumptionRow = {
   jobOrderId: number;
   code: string;
   name: string;
-  workDate: string; // ISO date (yyyy-mm-dd) for the Date column
+  workDate: string; // the API's yyyy-mm-dd key; printed dd-mm-yyyy by fmtDate()
   projectColorKey: string;
   projectName: string;
   budgetedHours: number | null;
@@ -131,9 +132,9 @@ type JobOrderConsumptionRow = {
 };
 
 function fmtDate(iso: string) {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  // Delegates to the ONE formatter: dd-mm-yyyy, UTC, machine-independent. The local copy printed
+  // "16 Oct 2026", a second date style on a screen that already used another.
+  return formatDay(iso);
 }
 
 function fmtHours(n: number) {
@@ -289,7 +290,7 @@ export function ApprovalsPage() {
       setExpanded((prev) => {
         const next = { ...prev };
         for (const g of data.received) {
-          const key = `${g.supervisorId}|${g.workDate}`;
+          const key = `${g.supervisorId}|${fmtDate(g.workDate)}`;
           if (next[key] === undefined) next[key] = g.hasConflict || data.received.length <= 3;
         }
         return next;
@@ -489,7 +490,7 @@ export function ApprovalsPage() {
                 <tbody>
                   {payrollPending.map((day) => <tr key={day.id}>
                     <td>{day.employee.name} <span className="muted">({day.employee.ecNo})</span></td>
-                    <td>{day.employee.department.name}</td><td>{day.workDate.slice(0, 10)}</td><td>{day.allocations.length * 2}</td>
+                    <td>{day.employee.department.name}</td><td>{fmtDate(day.workDate)}</td><td>{day.allocations.length * 2}</td>
                     <td>{day.allocations.map((slot) => `${slot.project.name}${slot.jobOrder ? ` / ${slot.jobOrder.code}` : ""}`).join(", ")}</td>
                     <td><button className="btn btn-approve" onClick={() => void actPayroll(day.id, "approve")}>Approve</button>{" "}<button className="btn btn-reject" onClick={() => void actPayroll(day.id, "reject")}>Reject</button></td>
                   </tr>)}
@@ -594,7 +595,7 @@ export function ApprovalsPage() {
                 <tbody>
                   {viewMode === "supervisor" &&
                     received.map((g) => {
-                      const key = `${g.supervisorId}|${g.workDate}`;
+                      const key = `${g.supervisorId}|${fmtDate(g.workDate)}`;
                       const isOpen = !!expanded[key];
                       const badge = statusBadge(g);
                       const groupSelected = g.employees.every((e) => selected.has(e.id));
@@ -621,7 +622,7 @@ export function ApprovalsPage() {
                                 <span className={badge.className}>{badge.text}</span>
                               </button>
                             </td>
-                            <td>{g.workDate}</td>
+                            <td>{fmtDate(g.workDate)}</td>
                             {pendingProjectKeys.map((k) => (
                               <Fragment key={k}>
                                 <td>{fmtHours(g.projectHours[k])}</td>
@@ -709,7 +710,7 @@ export function ApprovalsPage() {
                                     <div className="muted tiny">{emp.remarks}</div>
                                   )}
                                 </td>
-                                <td>{emp.workDate}</td>
+                                <td>{fmtDate(emp.workDate)}</td>
                                 {pendingProjectKeys.map((k) => (
                                   <Fragment key={k}>
                                     <td>{fmtHours(emp.projectHours[k])}</td>
@@ -788,7 +789,7 @@ export function ApprovalsPage() {
                             <div className="muted tiny">{emp.remarks}</div>
                           )}
                         </td>
-                        <td>{emp.workDate}</td>
+                        <td>{fmtDate(emp.workDate)}</td>
                         {pendingProjectKeys.map((k) => (
                           <Fragment key={k}>
                             <td>{fmtHours(emp.projectHours[k])}</td>
@@ -868,7 +869,7 @@ export function ApprovalsPage() {
                           const colorClass =
                             pct < 85 ? "jo-bar--green" : pct < 100 ? "jo-bar--amber" : "jo-bar--red";
                           return (
-                            <tr key={`${jo.jobOrderId}-${jo.workDate}`} className="hod-row jo-row">
+                            <tr key={`${jo.jobOrderId}-${fmtDate(jo.workDate)}`} className="hod-row jo-row">
                               <td className="muted tiny">{i + 1}</td>
                               <td>
                                 <div className="jo-name">
@@ -921,7 +922,7 @@ export function ApprovalsPage() {
             <div className="hod-cards hod-mobile-only">
               {viewMode === "supervisor" &&
                 received.map((g) => {
-                  const key = `${g.supervisorId}|${g.workDate}`;
+                  const key = `${g.supervisorId}|${fmtDate(g.workDate)}`;
                   const isOpen = !!expanded[key];
                   const badge = statusBadge(g);
                   const groupSelected = g.employees.every((e) => selected.has(e.id));
@@ -947,7 +948,7 @@ export function ApprovalsPage() {
                           <span className={`chevron ${isOpen ? "open" : ""}`}>▸</span>
                           <div>
                             <strong>{g.supervisorName}</strong>
-                            <div className="muted tiny">{g.workDate}</div>
+                            <div className="muted tiny">{fmtDate(g.workDate)}</div>
                           </div>
                           <span className={badge.className}>{badge.text}</span>
                         </button>
@@ -993,7 +994,7 @@ export function ApprovalsPage() {
                                 </label>
                                 <div>
                                   <strong>{emp.employee.name}</strong>
-                                  <div className="muted tiny">{emp.workDate}</div>
+                                  <div className="muted tiny">{fmtDate(emp.workDate)}</div>
                                   {emp.hasConflict && emp.conflictSupervisors && (
                                     <div className="muted tiny conflict-reason">
                                       ⚠ Tagged by {emp.conflictSupervisors.join(" & ")}
@@ -1072,7 +1073,7 @@ export function ApprovalsPage() {
                       <div>
                         <strong>{emp.employee.name}</strong>
                         <div className="muted tiny">
-                          {emp.supervisor.name} · {emp.workDate}
+                          {emp.supervisor.name} · {fmtDate(emp.workDate)}
                         </div>
                         {emp.hasConflict && emp.conflictSupervisors && (
                           <div className="muted tiny conflict-reason">
@@ -1146,7 +1147,7 @@ export function ApprovalsPage() {
                       const colorClass =
                         pct < 85 ? "jo-bar--green" : pct < 100 ? "jo-bar--amber" : "jo-bar--red";
                       return (
-                        <article key={`${jo.jobOrderId}-${jo.workDate}`} className="jo-card">
+                        <article key={`${jo.jobOrderId}-${fmtDate(jo.workDate)}`} className="jo-card">
                           <header className="jo-card__head">
                             <span
                               className="jo-color-dot"
@@ -1275,7 +1276,7 @@ export function ApprovalsPage() {
                         <td>{idx + 1}</td>
                         <td>{row.supervisor.name}</td>
                         <td>{row.employee.name}</td>
-                        <td>{row.workDate}</td>
+                        <td>{fmtDate(row.workDate)}</td>
                         {returnedProjectKeys.map((k) => (
                           <Fragment key={k}>
                             <td>{fmtHours(row.projectHours[k])}</td>
@@ -1328,7 +1329,7 @@ export function ApprovalsPage() {
                       <div>
                         <strong>{row.employee.name}</strong>
                         <div className="muted tiny">
-                          {row.supervisor.name} · {row.workDate}
+                          {row.supervisor.name} · {fmtDate(row.workDate)}
                         </div>
                       </div>
                     </header>
@@ -1377,7 +1378,7 @@ export function ApprovalsPage() {
             <table className="hod-table">
               <thead><tr><th>When</th><th>Action</th><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Status</th><th>Comment</th></tr></thead>
               <tbody>
-                {payrollHistory.map((item) => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleString()}</td><td>{item.action}</td><td>{item.allocationDay.employee.name}</td><td>{item.allocationDay.employee.department.name}</td><td>{item.allocationDay.workDate.slice(0,10)}</td><td>{item.allocationDay.allocations.length * 2}</td><td>{item.resultingStatus}</td><td>{item.comment || "—"}</td></tr>)}
+                {payrollHistory.map((item) => <tr key={item.id}><td>{formatStamp(item.createdAt)}</td><td>{item.action}</td><td>{item.allocationDay.employee.name}</td><td>{item.allocationDay.employee.department.name}</td><td>{fmtDate(item.allocationDay.workDate)}</td><td>{item.allocationDay.allocations.length * 2}</td><td>{item.resultingStatus}</td><td>{item.comment || "—"}</td></tr>)}
                 {!loading && payrollHistory.length === 0 && <tr><td colSpan={8} className="empty-cell">No payroll My Hours decisions recorded.</td></tr>}
               </tbody>
             </table>
@@ -1412,7 +1413,7 @@ export function ApprovalsPage() {
               <tbody>
                 {history.map((h) => (
                   <tr key={h.approvalId} className="hod-row">
-                    <td>{new Date(h.approvedAt).toLocaleString()}</td>
+                    <td>{formatStamp(h.approvedAt)}</td>
                     <td>
                       <span className={`badge ${h.action === "APPROVE" ? "badge-ok" : "badge-pending"}`}>
                         {h.action}
@@ -1423,7 +1424,7 @@ export function ApprovalsPage() {
                     </td>
                     <td>{h.employee.name}</td>
                     <td>{h.supervisor.name}</td>
-                    <td>{h.workDate}</td>
+                    <td>{fmtDate(h.workDate)}</td>
                     {historyProjectKeys.map((k) => (
                       <Fragment key={k}>
                         <td>{fmtHours(h.projectHours[k])}</td>
@@ -1460,7 +1461,7 @@ export function ApprovalsPage() {
                   <div>
                     <strong>{h.employee.name}</strong>
                     <div className="muted tiny">
-                      {h.supervisor.name} · {h.workDate}
+                      {h.supervisor.name} · {fmtDate(h.workDate)}
                     </div>
                   </div>
                   <span className={`badge ${h.action === "APPROVE" ? "badge-ok" : "badge-pending"}`}>
@@ -1474,7 +1475,7 @@ export function ApprovalsPage() {
                   totalAlloc={h.totalAlloc}
                 />
                 <div className="muted tiny">
-                  {new Date(h.approvedAt).toLocaleString()} · Now: {h.resultingStatus}
+                  {formatStamp(h.approvedAt)} · Now: {h.resultingStatus}
                 </div>
                 {h.comment && <p className="planning-comment">{h.comment}</p>}
               </article>

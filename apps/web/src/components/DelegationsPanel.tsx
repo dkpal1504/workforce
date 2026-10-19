@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatDay } from "../pages/formatDate";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/supervisors.css";
@@ -95,7 +96,7 @@ export function DelegationsPanel() {
   return <div className="panel" style={{ marginTop: 16 }}>
     <div className="panel__header"><span>HOD Approval Cover (delegation)</span><span className="panel__count">{rows.filter(isActive).length} active</span></div>
     {coverage && (coverage.isDeputyToday || coverage.coveringMe.length > 0) && <div className="alloc-note" style={{ margin: "0 8px 8px" }}>
-      {coverage.isDeputyToday && <div><strong>You are acting as deputy HOD</strong> for {coverage.iAmCovering.map((d) => d.section.name).join(", ")} until {coverage.iAmCovering[0]?.toDate.slice(0, 10)}.</div>}
+      {coverage.isDeputyToday && <div><strong>You are acting as deputy HOD</strong> for {coverage.iAmCovering.map((d) => d.section.name).join(", ")} until {formatDay(coverage.iAmCovering[0]?.toDate)}.</div>}
       {coverage.coveringMe.length > 0 && <div>Approval cover today: {coverage.coveringMe.map((d) => `${d.delegateUser.name} (${d.section.name})`).join(", ")}. You retain your own approval rights.</div>}
     </div>}
     <form className="panel__body sup-form" onSubmit={(e) => { e.preventDefault(); void create(); }}>
@@ -121,7 +122,7 @@ export function DelegationsPanel() {
         <td>{d.department?.name} · {d.section?.name}</td>
         <td>{d.delegator?.name}</td>
         <td>{d.delegateUser?.name}</td>
-        <td>{d.fromDate.slice(0, 10)} → {d.toDate.slice(0, 10)}</td>
+        <td>{formatDay(d.fromDate)} → {formatDay(d.toDate)}</td>
         <td>{d.reason}</td>
         <td>{d.revokedAt ? "Revoked" : isActive(d) ? "Active" : "Scheduled / expired"}</td>
         <td>{!d.revokedAt && <button className="btn btn-secondary" disabled={busy} onClick={() => void revoke(d.id)}>Revoke</button>}</td>

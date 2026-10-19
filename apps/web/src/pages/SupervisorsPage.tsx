@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { availabilityNeedsServerCheck, resetActionLabel, resetAvailability, signInNote } from "./payrollResetAvailability";
+import { formatDay } from "./formatDate";
 import "../styles/supervisors.css";
 
 type Department = { id: number; name: string; code?: string };
@@ -120,7 +121,7 @@ function SupervisorTable({rows,busy,onEdit,onReset,onActivate,onDisable}:{rows:S
         re-opening is recorded — an audited override for a LabourWorks-managed account, a direct
         activation for one this app owns — so the button never has to guess, and a refusal
         (e.g. the source reports the person terminated) comes back as a readable sentence. */}{s.active===false&&<button disabled={busy} className="btn btn-primary btn-sm" onClick={()=>onActivate(s)}>Activate</button>}<button disabled={busy||s.active===false} className="btn btn-secondary btn-sm" onClick={()=>onReset(s)}>Reset password</button>{s.source!=="SYNC"&&s.employee?.employmentType!=="CLMS"&&<button disabled={busy||s.active===false} className="btn btn-danger btn-sm" onClick={()=>onDisable(s)}>Disable</button>}</div></td></tr>})}</tbody></table>; }
-function OverrideTable({rows,busy,onRevoke}:{rows:Override[];busy:boolean;onRevoke:(o:Override)=>void}) { if(!rows.length)return <div className="empty-state">No CLMS supervisor overrides found.</div>; return <table className="sup-table"><thead><tr><th>Employee</th><th>Department</th><th>Reason</th><th>Created</th><th>Status</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>{rows.map(o=><tr key={o.id}><td><strong>{o.employee.name}</strong><div className="muted">ecNo {o.employee.ecNo}</div></td><td>{o.employee.department?.name??"—"}</td><td>{o.reason}</td><td>{new Date(o.createdAt).toLocaleDateString()}<div className="muted">{o.createdBy?.name}</div></td><td>{o.revokedAt?<span className="badge badge--sync">Revoked</span>:<span className="badge badge--manual">Active override</span>}</td><td><div className="sup-table__actions">{!o.revokedAt&&<button disabled={busy} className="btn btn-danger btn-sm" onClick={()=>onRevoke(o)}>Revoke</button>}</div></td></tr>)}</tbody></table>; }
+function OverrideTable({rows,busy,onRevoke}:{rows:Override[];busy:boolean;onRevoke:(o:Override)=>void}) { if(!rows.length)return <div className="empty-state">No CLMS supervisor overrides found.</div>; return <table className="sup-table"><thead><tr><th>Employee</th><th>Department</th><th>Reason</th><th>Created</th><th>Status</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>{rows.map(o=><tr key={o.id}><td><strong>{o.employee.name}</strong><div className="muted">ecNo {o.employee.ecNo}</div></td><td>{o.employee.department?.name??"—"}</td><td>{o.reason}</td><td>{formatDay(o.createdAt)}<div className="muted">{o.createdBy?.name}</div></td><td>{o.revokedAt?<span className="badge badge--sync">Revoked</span>:<span className="badge badge--manual">Active override</span>}</td><td><div className="sup-table__actions">{!o.revokedAt&&<button disabled={busy} className="btn btn-danger btn-sm" onClick={()=>onRevoke(o)}>Revoke</button>}</div></td></tr>)}</tbody></table>; }
 
 /**
  * Payroll (white-collar) Employees and the password reset for their own login.

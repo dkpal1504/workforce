@@ -4,6 +4,7 @@ import { SHIFT_LABELS, SHIFT_SLOTS, type ShiftSlot } from "@workforce/shared";
 import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { FilterBar, useWorkContext } from "../hooks/useWorkContext";
+import { formatDay } from "./formatDate";
 import { limitJobOrderOptionText } from "../utils/jobOrderLabel";
 import "../styles/timesheet.css";
 import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
@@ -864,7 +865,7 @@ export function TimesheetPage() {
         .map((person) => `${person.name} (${person.reason})`)
         .join(", ");
       setCarryBanner(
-        `Copied ${carried.regularSlotsCopied} regular slot(s) from ${carried.sourceDate} as Draft. ` +
+        `Copied ${carried.regularSlotsCopied} regular slot(s) from ${formatDay(carried.sourceDate)} as Draft. ` +
           `OT was left unassigned for manual entry.${warnings.length ? ` ${warnings.join("; ")}.` : ""}` +
           (skipped ? ` NOT copied: ${skipped}. Add them in Select Team if they did work.` : "")
       );
@@ -932,7 +933,7 @@ export function TimesheetPage() {
                   className="returns-panel__link"
                   onClick={() => ctx.setDate(item.workDate)}
                 >
-                  {item.workDate}
+                  {formatDay(item.workDate)}
                 </button>
                 <strong>{item.employee.name}</strong>
                 <span className="muted">

@@ -2,6 +2,7 @@ import { FormEvent, Fragment, useCallback, useEffect, useMemo, useState } from "
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { formatDay, formatStamp } from "./formatDate";
 import "../styles/supervisors.css";
 import "./JobOrderProgressPage.css";
 
@@ -152,12 +153,12 @@ function fmtQty(value: number | null | undefined): string {
 
 function fmtDate(iso: string): string {
   const date = new Date(iso.length <= 10 ? iso + "T00:00:00" : iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  return Number.isNaN(date.getTime()) ? iso : formatDay(iso);
 }
 
 function fmtDateTime(iso: string): string {
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(date.getTime()) ? iso : formatStamp(iso);
 }
 
 function todayIso(): string {

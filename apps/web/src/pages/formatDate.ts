@@ -22,3 +22,27 @@ export function formatDay(value: string | null | undefined): string {
   const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
   return `${day}-${month}-${parsed.getUTCFullYear()}`;
 }
+
+/**
+ * A stored INSTANT (an approval, a revision, a check timestamp) as `dd-mm-yyyy HH:mm`.
+ *
+ * WHY THIS EXISTS BESIDE `formatDay`: a day and an instant are different facts. A booking/progress
+ * day is stored at UTC midnight, so `formatDay` reads it in UTC and never shifts. An instant is a
+ * moment in time, so it is read in the operator's own zone — printing 07:30 UTC as "13:00" is
+ * correct for a yard in IST, and printing it as "07:30" beside a local date would be a lie about
+ * which day it happened on.
+ *
+ * It replaces `toLocaleString()`, which reordered the date per machine (US `10/16/2026`, GB
+ * `16/10/2026`) — the exact defect `formatDay` was created to remove, still present in every
+ * timestamp.
+ */
+export function formatStamp(value: string | null | undefined): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  return `${day}-${month}-${parsed.getFullYear()} ${hours}:${minutes}`;
+}

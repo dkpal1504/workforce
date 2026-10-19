@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
+import { formatDay } from "./formatDate";
 import "../styles/summary.css";
 import { applyProjectColorVars } from "../theme/projectColors";
 
@@ -265,9 +266,9 @@ export function SummaryPage() {
   function budgetBasisTitle(r: JoRow) {
     const basis =
       r.budgetSource === "revision"
-        ? `Budget revision ${r.budgetRevisionNo} effective ${r.budgetEffectiveFrom}`
+        ? `Budget revision ${r.budgetRevisionNo} effective ${formatDay(r.budgetEffectiveFrom)}`
         : "Job Order's own budget (no revision in force)";
-    return `${basis} · work date ${r.budgetWorkDate}`;
+    return `${basis} · work date ${formatDay(r.budgetWorkDate)}`;
   }
 
   function consumptionColorClass(pct: number) {

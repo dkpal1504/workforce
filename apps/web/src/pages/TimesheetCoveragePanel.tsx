@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { api, getToken } from "../api/client";
+import { formatDay } from "./formatDate";
 import { MultiSelectFilter } from "./MultiSelectFilter";
 import type { DepartmentOption, ProjectOption, SectionOption } from "./PortfolioDashboardPage";
 import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
@@ -493,7 +494,7 @@ export function TimesheetCoveragePanel() {
                   <tbody>
                     {report.rows.map((row) => (
                       <tr key={`${row.employee.id}-${row.date}`}>
-                        <td className="pf-nowrap">{row.date}</td>
+                        <td className="pf-nowrap">{formatDay(row.date)}</td>
                         <td>{row.department.name}</td>
                         <td>{row.section?.name ?? "No section"}</td>
                         <td>{row.supervisors.length ? row.supervisors.join(", ") : "—"}</td>

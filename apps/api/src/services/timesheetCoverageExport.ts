@@ -174,7 +174,7 @@ function detailColumns(report: TimesheetCoverageReport): SheetColumn<CoverageRow
   ]);
 
   return [
-    { header: "Date", width: 12, numFmt: "yyyy-mm-dd", tone: "id", value: (row) => dateCell(row.date) },
+    { header: "Date", width: 12, numFmt: "dd-mm-yyyy", tone: "id", value: (row) => dateCell(row.date) },
     { header: "Department", width: 22, tone: "id", value: (row) => row.department.name },
     { header: "Section", width: 20, tone: "id", value: (row) => row.section?.name ?? "No section" },
     { header: "Supervisor", width: 22, tone: "id", value: (row) => (row.supervisors.length ? row.supervisors.join(", ") : "-") },
