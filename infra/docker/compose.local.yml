@@ -1,0 +1,94 @@
+# Local FULL-STACK run: postgres + migrate + api + web, all with ONE command.
+#
+#   docker compose -f infra/docker/compose.local.yml --env-file infra/docker/.env.local up -d --build
+#
+# WHY THIS EXISTS: to start and stop the whole app as a unit instead of running the api and the web
+# dev servers side by side in two terminals. It is the PRODUCTION shape -- built images, no hot
+# reload -- so while you are EDITING code use `npm run dev:all` (also one command, instant reload);
+# a built image only sees a change after `up -d --build` again.
+#
+# Differences from compose.production.yml, both deliberate:
+#   * a `postgres:18-alpine` service is included, so the stack is self-contained and needs no
+#     external database. It is published on HOST port 5434 (5433 is this machine's own PostgreSQL 18
+#     cluster, which holds the restored production copy) so the host can administer it.
+#   * images are tagged `local` -- no IMAGE_TAG bookkeeping, nothing to confuse with a release.
+#
+# The API and the web are NOT on separate networks here (production separates them so the web cannot
+# reach the database, and the containers run read-only). Simplicity wins for a local stack.
+name: workforce-local
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: workforce_app
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:?set LOCAL_DB_PASSWORD in infra/docker/.env.local}
+      POSTGRES_DB: workforce
+    ports:
+      - "${LOCAL_DB_HOST_PORT:-5434}:5432"
+    volumes:
+      # PostgreSQL 18 images REFUSE a mount at the pre-18 path (/var/lib/postgresql/data) with
+      # "unused mount/volume" and exit 1. 18+ wants ONE mount at /var/lib/postgresql and keeps the
+      # data in a major-versioned subdirectory of it (18/docker).
+      - workforce_local_pg18:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workforce_app -d workforce"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: migrate
+    image: workforce-migrate:local
+    env_file: .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: api
+    image: workforce-api:local
+    env_file: .env.local
+    init: true
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: web
+    image: workforce-web:local
+    init: true
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8099}:8080"
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  workforce_local_pg18:

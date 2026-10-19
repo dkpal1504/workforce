@@ -214,3 +214,83 @@ A pre-change copy of the dev database is at
 - `npm run build` passes (api, web, shared).
 - Guard: `NODE_ENV=production` + `file:` URL exits with
   "SQLite is not permitted in production."
+
+## Running against a restored copy of production (PostgreSQL 18)
+
+This machine keeps a **restored copy of the production database** so changes can be
+exercised against real data without touching production.
+
+| Fact | Value |
+|---|---|
+| Cluster | `18 main`, port **5433** (`pg_lsclusters`), from the PGDG apt repo |
+| Existing dev cluster | `16 main`, port 5432 — untouched, unrelated |
+| Role / database | `workforce_app` / `workforce` (the database is OWNED by the role, so every restored object is the app's) |
+| Restored from | `C:\data\comp\dbbackup\postgresql-backups\db-prod-01\workforce\workforce_<ts>_<job>.dump` (the backup manager's `pg_dump -Fc`) |
+| Data at restore time | 85 users, 651 employees, 42 sections, 924 timesheet days, 3316 entries, 779 approvals, 416 job orders |
+
+**A dump can only be read by a pg_dump/pg_restore of the same major or newer.** The
+dumps are produced by **PostgreSQL 18.6** (archive version 1.16), so the 16 client
+refuses them with `unsupported version (1.16) in file header` — no file in that folder
+is readable by 16. That is why 18 was installed here rather than reusing the 16 cluster.
+
+Restore (re-runnable, installs nothing if 18 is already present):
+
+```bash
+sudo bash ~/workforce-restore-backup.sh   # install PG18 + client, create the
+                                                          # cluster on 5433, role + database,
+                                                          # sha256-check and pg_restore, then
+                                                          # print counts to verify
+```
+
+Three things must all point at the restored copy, and all three are already set here:
+
+1. `DATABASE_URL` in **both** `.env` (root — this one WINS, dotenv loads it first) and
+   `apps/api/.env`:
+   `postgresql://workforce_app:<dev password>@127.0.0.1:5433/workforce?schema=public`
+2. `apps/api/prisma/schema.prisma` = the **PostgreSQL** variant
+   (`Copy-Item apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma -Force`),
+   then `npm run db:generate -w @workforce/api`.
+3. `CREDENTIAL_DELIVERY_ENABLED=false` — see the warning below.
+
+Back to the SQLite dev database (which is unchanged and still holds its own data):
+
+```bash
+git checkout -- apps/api/prisma/schema.prisma          # the committed SQLite variant
+# both .env files: DATABASE_URL="file:./dev.db"
+npm run db:generate -w @workforce/api
+```
+
+**Safety, because the restored copy is real people's data:**
+
+- `CREDENTIAL_DELIVERY_ENABLED` **must stay `false`**. The restored copy carries 83
+  `PENDING` rows in `credential_deliveries`, and the `*/5` worker runs inside the API
+  process: with it enabled, starting the API on this machine e-mails 83 real staff
+  (with `SMTP_*` pointed at the live mail server).
+- `BADGEVIEW_SYNC_ENABLED` and `ATTENDANCE_HOURS_ENABLED` must stay `false` too — they
+  read the live LabourWorks sources.
+- Probe accounts rather than typing passwords: mint a dev JWT
+  (`jwt.sign({id, tokenVersion}, JWT_SECRET)`) and seed `workforce_token` /
+  `workforce_user` into `sessionStorage` from the app origin. A restored account may
+  carry `mustChangePassword = true` in the database (prod HODs do), which makes every
+  endpoint answer `403 PASSWORD_CHANGE_REQUIRED` — filter or clear that flag for the
+  probe account rather than reading the failure as a broken feature.
+
+Migrations: the restored copy already contains `_prisma_migrations` at production's
+state, so `npm run db:migrate` (`prisma migrate deploy`) applies nothing. To author a
+change, stop the API and run `npx prisma migrate dev --name <name>` from `apps/api`
+against this copy; the generated `migrations/*/migration.sql` is PostgreSQL dialect and
+is what production will apply.
+
+## An added column on SQLite needs the migrate step (no reset)
+
+`npm run db:migrate -w @workforce/api` is provider-aware: on a `file:` URL it runs `prisma db push
+--skip-generate`, so an existing SQLite file picks up an ADDED column in place. The Job Order planned
+window (`planned_start_date`, `planned_end_date`, migration `20261016000000_job_order_planned_dates`)
+is such an addition. After pulling a release that adds columns:
+
+```
+npm run db:migrate -w @workforce/api      # SQLite: db push, additive
+npm run db:generate -w @workforce/api     # then regenerate the client
+```
+
+Never `prisma migrate reset` and never `db:seed`: both destroy local data.

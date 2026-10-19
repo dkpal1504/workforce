@@ -2,13 +2,8 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// LOCAL DEVELOPMENT TESTING ONLY: this branch runs against SQLite so the app can
-// be exercised locally without PostgreSQL. Production stays on PostgreSQL — see
-// apps/api/prisma/schema.postgresql.prisma for the production schema that the
-// migrations under prisma/migrations were generated from. Switch back with:
-//   cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -170,10 +165,10 @@ model Section {
 
 /// The Sections a user may act within. ONE ROW PER SECTION.
 ///
-/// This replaces the authority role of the single `User.sectionId` scalar. That scalar is kept as a
+/// This replaces the authority role of the single `User.sectionId` scalar, which is kept as a
 /// legacy mirror (first section, or null for department-wide — see `legacySectionId` in
-/// services/userScope.ts) so un-converted call sites keep working during the batched conversion, and
-/// so an API-only rollback still functions.
+/// services/userScope.ts) so un-converted call sites keep working during the batched conversion,
+/// and so an API-only rollback still functions.
 ///
 /// EMPTY SET is meaningful: a user with a Department and NO rows here is DEPARTMENT-WIDE (every
 /// Section of that Department) — exactly what `User.sectionId = null` means today. That is how
