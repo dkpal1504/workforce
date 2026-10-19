@@ -659,7 +659,14 @@ export function usePortfolioReport(filters: PortfolioFilterState) {
     setError("");
     try {
       const data = await api<PortfolioReport>(`/reports/portfolio${query}`);
-      setReport(data);
+      // NORMALISE THE ENVELOPE, once, here.
+      //
+      // A section the server did not send used to throw from `report.<section>.length` DURING
+      // render, which unmounts the whole screen and leaves a blank page. That is a real state: an
+      // older API process (this repo's `tsx watch` does not reload on /mnt/c) or a cached bundle
+      // can answer without newer fields. Defaulting additive sections to `[]` means the screen
+      // renders with that section empty — honest about what it received — instead of dying.
+      setReport({ ...data, projectStructure: data.projectStructure ?? [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load the portfolio report.");
     } finally {

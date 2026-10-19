@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { useAuth } from "../auth/AuthContext";
 import type { AuthCapabilities, AuthUser } from "../api/client";
 import { useTheme } from "../theme/ThemeContext";
@@ -507,7 +508,11 @@ export function AppLayout() {
             )}
           </div>
         </div>
-        <Outlet />
+        {/* A render error in ONE screen must not leave a white page. The `key` is the path, so
+            navigating away clears a failed boundary instead of poisoning the rest of the app. */}
+        <ErrorBoundary key={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
       <ThemePanel />
     </div>
