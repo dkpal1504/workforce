@@ -543,7 +543,19 @@ test("portfoliosReport loader: Prisma call count is constant when the job orders
   // The observed numbers are printed so a reader can see the real counts, not just the claim.
   console.log(`[no-N+1] small(4 job orders)=${smallCalls} prisma calls, doubled(8 job orders)=${bigCalls} prisma calls`);
   assert.equal(bigCalls, smallCalls, "the query count must not grow with the number of job orders");
-  assert.equal(smallCalls, 7, "exactly 7 bounded queries: JOs, revisions, progress, booked, unapproved, oldest-unapproved, span");
+  // NINE now, still a fixed number: the seven above plus the two master reads the Project structure
+  // register needs (the WBS rows and the Network rows, both carrying their own `_count` so telling an
+  // empty node from an out-of-scope one costs nothing). A project-scoped actor makes one more (its
+  // assigned projects, which may include a project with no job orders at all). The assertion that
+  // matters is the one above: doubling the scope must not move the count.
+  assert.equal(
+    smallCalls,
+    10,
+    "a fixed count: JOs, revisions, progress, booked, unapproved, oldest-unapproved, span, WBS rows, "
+      + "Network rows, plus one for the master project rows because this fixture applies an explicit "
+      + "project filter (an unfiltered report reads 9). Nothing here scans per job order — that is what "
+      + "the invariance assertion above actually guards."
+  );
 });
 
 /* ------------------------------------------------------------------ *
@@ -798,7 +810,7 @@ test("report scope LEAK TEST: an HOD sees ONLY his own department, and requestin
   assert.ok(!own.jobWork.some((row) => row.id === fx.jobOrderIds.b1), "and never the other department's job order");
   assert.deepEqual(
     own.provenance.scope,
-    { kind: "DEPARTMENT", departmentId: fx.deptA, description: `Department ${fx.deptA} (whole department)` },
+    { kind: "DEPARTMENT", departmentId: fx.deptA, projectIds: null, description: `Department ${fx.deptA} (whole department)` },
     "the report states the scope actually applied"
   );
 
@@ -1019,7 +1031,7 @@ test("a head with NO department mapping reads ZERO rows, while PM reads every ro
   assert.equal(hodReport.jobWork.length, 0, "an unmapped HOD must read NOTHING, never the whole portfolio");
   assert.deepEqual(
     hodReport.provenance.scope,
-    { kind: "NONE", departmentId: null, description: "No department mapping — nothing in scope" },
+    { kind: "NONE", departmentId: null, projectIds: null, description: "No usable scope for this account — nothing in scope" },
     "the empty report states WHY it is empty"
   );
   assert.equal((await buildPortfolioReport(filters(), unmappedDeptHead, NOW)).jobWork.length, 0, "an unmapped DEPT_HEAD likewise");
@@ -1144,7 +1156,7 @@ test("GET /api/reports/portfolio, .xlsx and .pdf: HOD/DEPT_HEAD/PM/ADMIN/COO are
   const scopedJson = scoped.json as { jobWork: Array<{ id: number }>; provenance: { scope: unknown } };
   assert.deepEqual(
     scopedJson.provenance.scope,
-    { kind: "DEPARTMENT", departmentId: fx.deptA, description: `Department ${fx.deptA} (whole department)` },
+    { kind: "DEPARTMENT", departmentId: fx.deptA, projectIds: null, description: `Department ${fx.deptA} (whole department)` },
     "the HOD's report names its own department as the applied scope"
   );
   assert.deepEqual(sortedIds(scopedJson.jobWork), [fx.jobOrderIds.a1, fx.jobOrderIds.a2].sort((a, b) => a - b), "the HOD's screen is his department only");
@@ -1305,3 +1317,107 @@ test("a scheduled job order nobody has punched is its own bucket: unknown, not l
   assert.equal(report.scheduleDelays.length, 0);
 });
 
+
+/* ================================================================== *
+ * (g) THE PROJECT MANAGER — scoped by ASSIGNMENT, cross-department
+ *
+ * The property under test: a manager's rows are decided by the projects he manages, not by any
+ * Department. joA1 and joB1 live in DIFFERENT departments but under the SAME project, so a
+ * project-scoped reader must see BOTH and neither of another project's rows.
+ * ================================================================== */
+
+async function createProjectManagerAccount(tag: string): Promise<{ id: number; cleanup: () => Promise<void> }> {
+  const stamp = `${tag}${Date.now().toString(36)}`.replace(/[^a-z0-9]/gi, "");
+  const user = await prisma.user.create({
+    data: {
+      email: `pm-${stamp}@scope.test`,
+      // The suite never authenticates this account; the hash only has to exist to satisfy the row.
+      passwordHash: "not-a-real-hash",
+      name: `Scoped PM ${stamp}`,
+      role: "PROJECT_MANAGER",
+      source: "MANUAL",
+    },
+    select: { id: true },
+  });
+  return {
+    id: user.id,
+    cleanup: async () => {
+      await prisma.projectManagerAssignment.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    },
+  };
+}
+
+test("a PROJECT_MANAGER reads exactly his assigned projects, across Departments", async (t) => {
+  const fx = await createScopeFixture("pmscope");
+  const account = await createProjectManagerAccount("pmscope");
+  t.after(async () => {
+    await account.cleanup();
+    await fx.cleanup();
+  });
+
+  const manager: ReportActor = { id: account.id, name: "Scoped PM", role: "PROJECT_MANAGER", departmentId: null };
+  await prisma.projectManagerAssignment.create({
+    data: { projectId: fx.projectIds[0], userId: account.id, status: "active" },
+  });
+
+  const report = await buildPortfolioReport(filters(), manager, NOW);
+
+  // P1 holds joA1 (Department A) AND joB1 (Department B). Both, because the PROJECT is the scope.
+  assert.deepEqual(
+    sortedIds(report.jobWork),
+    [fx.jobOrderIds.a1, fx.jobOrderIds.b1].sort((a, b) => a - b),
+    "a project crosses departments, so its rows do; P2's row is not his"
+  );
+  assert.ok(!report.jobWork.some((row) => row.id === fx.jobOrderIds.a2), "another project is never in scope");
+  assert.deepEqual(report.provenance.scope, {
+    kind: "PROJECTS",
+    departmentId: null,
+    projectIds: [fx.projectIds[0]],
+    description: "Assigned projects only (1)",
+  });
+  // The register lists his project (and no other), and its nodes roll up the SAME scoped facts.
+  assert.deepEqual(report.projectStructure.map((row) => row.project.id), [fx.projectIds[0]]);
+  assert.equal(report.projectStructure[0].totals.jobOrderCount, 2, "the register counts both departments' rows");
+
+  // (2) THE REQUEST CANNOT WIDEN. Asking for the other project yields ZERO rows, never that project.
+  const foreign = await buildPortfolioReport(filters({ projectIds: [fx.projectIds[1]] }), manager, NOW);
+  assert.equal(foreign.jobWork.length, 0, "a project outside the assignment is an EMPTY intersection");
+  assert.equal(foreign.projectStructure.length, 0, "and the register is empty with it");
+  assert.equal(foreign.provenance.scope.kind, "PROJECTS", "the scope is still his assignment");
+  assert.ok(
+    foreign.definitions.notes.some((note) => note.startsWith("Requested Project filter:")),
+    "the export states that the request was intersected away"
+  );
+
+  // (3) Asking for HIS OWN project is the same report, not an empty one.
+  const own = await buildPortfolioReport(filters({ projectIds: [fx.projectIds[0]] }), manager, NOW);
+  assert.deepEqual(sortedIds(own.jobWork), sortedIds(report.jobWork));
+});
+
+test("an UNASSIGNED PROJECT_MANAGER reads ZERO rows and says why", async (t) => {
+  const fx = await createScopeFixture("pmnone");
+  const account = await createProjectManagerAccount("pmnone");
+  t.after(async () => {
+    await account.cleanup();
+    await fx.cleanup();
+  });
+
+  const manager: ReportActor = { id: account.id, name: "Unassigned PM", role: "PROJECT_MANAGER", departmentId: null };
+  const report = await buildPortfolioReport(filters(), manager, NOW);
+
+  assert.equal(report.jobWork.length, 0, "no assignment is the fail-closed NONE scope, never the portfolio");
+  assert.deepEqual(report.provenance.scope, {
+    kind: "NONE",
+    departmentId: null,
+    projectIds: null,
+    description: "No usable scope for this account — nothing in scope",
+  });
+  assert.equal(report.projectStructure.length, 0, "and no structure either");
+
+  // (2) An assignment row attached to a DIFFERENT account must not narrow anyone else: a PM actor
+  // with no row of his own still reads the whole organisation in the same fixture.
+  const pm: ReportActor = { id: 1, name: "PM", role: "PM", departmentId: null };
+  const orgReport = await buildPortfolioReport(filters(), pm, NOW);
+  assert.ok(orgReport.jobWork.some((row) => row.id === fx.jobOrderIds.a2), "PM keeps the organisation-wide report");
+});

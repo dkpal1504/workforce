@@ -20,6 +20,7 @@ function titleForPath(pathname: string, role?: string) {
   if (pathname.startsWith("/employees")) return "Employee Registration";
   if (pathname.startsWith("/departments")) return "Organisation Masters";
   if (pathname.startsWith("/role-assignment")) return "Role Assignment";
+  if (pathname.startsWith("/project-managers")) return "Project Managers";
   if (pathname.startsWith("/account/password")) return "Change Password";
   if (pathname.startsWith("/csv-upload")) return "Employee CSV Upload";
   if (pathname.startsWith("/master-data")) return "Project Master Data";
@@ -101,6 +102,7 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
     items: [
       { to: "/departments", label: "Organisation", cap: "manageMasterData", icon: "building" },
       { to: "/role-assignment", label: "Role assignment", cap: "assignRoles", icon: "star" },
+      { to: "/project-managers", label: "Project managers", cap: "manageProjectManagers", icon: "people" },
     ],
   },
   {
@@ -140,6 +142,10 @@ const PAGE_META: Array<{ prefix: string; lede: string; wide?: true; action?: { l
   { prefix: "/employees", lede: "See the employees in your department, and register payroll employees." },
   { prefix: "/departments", lede: "Maintain departments, sections and cost centres." },
   { prefix: "/role-assignment", lede: "Search an account and set the role and scope it may act within." },
+  {
+    prefix: "/project-managers",
+    lede: "Assign an account that already holds the Project Manager role to the Projects it may read — the dashboard then shows only those projects, across every Department.",
+  },
   { prefix: "/job-order-upload", lede: "Upload the job order list from the CSV the commercial team exports." },
   { prefix: "/job-order-progress", lede: "Punch the quantity achieved per job order, then approve the entries." },
   { prefix: "/attendance-hours", lede: "Fill the clocked in/out hours from LabourWorks next to the hours the supervisors booked." },
@@ -409,6 +415,11 @@ export function AppLayout() {
           {capabilities?.assignRoles && (
             <NavLink to="/role-assignment" className={({ isActive }) => (isActive ? "active" : "")}>
               Role Assignment
+            </NavLink>
+          )}
+          {capabilities?.manageProjectManagers && (
+            <NavLink to="/project-managers" className={({ isActive }) => (isActive ? "active" : "")}>
+              Project Managers
             </NavLink>
           )}
           {capabilities?.viewPortfolioDashboard && (

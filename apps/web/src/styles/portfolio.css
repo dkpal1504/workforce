@@ -1166,3 +1166,24 @@
     grid-template-columns: 1fr;
   }
 }
+
+
+/* --------------------------------------------------------------------------- *
+ * Project structure register
+ *
+ * A WBS row opens a block; its Networks are indented beneath it and marked with a
+ * left rule, so the three levels are visible without a second table. Colours are
+ * deliberately inherited (only a border and indentation), because the app themes
+ * every surface through tokens and a literal here would fight the dark theme.
+ * --------------------------------------------------------------------------- */
+.pf-structure__wbs > td {
+  border-top: 1px solid rgba(120, 132, 148, 0.35);
+  font-weight: 600;
+}
+.pf-structure__network > td:first-child {
+  padding-left: 26px;
+  border-left: 3px solid rgba(120, 132, 148, 0.35);
+}
+.pf-structure__network > td {
+  font-weight: 400;
+}

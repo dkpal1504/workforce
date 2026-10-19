@@ -54,6 +54,21 @@ export type CapabilityMap = {
    * in the report loader, not here.
    */
   viewPortfolioDashboard: boolean;
+  /**
+   * Assign accounts to Projects (the Project Managers panel). ADMIN only: an assignment IS a
+   * read scope over work, so granting it is an administrative act, not an operational one.
+   */
+  manageProjectManagers: boolean;
+  /**
+   * Read the Timesheet coverage report (Reports → "Timesheet coverage").
+   *
+   * A capability of its own because that report's row set is the EMPLOYEE ROSTER — employees x
+   * dates — which a project scope cannot define. A PROJECT_MANAGER therefore holds the portfolio
+   * dashboard and NOT this: the Reports tab strip hides the tab, and
+   * `routes/reports.ts` gates the two coverage endpoints separately so the wider portfolio gate
+   * cannot admit it by accident.
+   */
+  viewTimesheetCoverage: boolean;
 };
 
 export function capabilitiesFor(role: string, employmentType: string | null | undefined): CapabilityMap {
@@ -90,12 +105,19 @@ export function capabilitiesFor(role: string, employmentType: string | null | un
     // admits the role to the router; the Department narrowing is applied server-side by
     // `reportScopeFor` in the report loader, so a Section Head still sees every Section of the
     // Department and nothing outside it.
-    viewPortfolioDashboard: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD",
+    // PROJECT_MANAGER is admitted here and NARROWED to its assigned projects by `reportScopeFor`;
+    // the flag is only the door (see the `viewPortfolioDashboard` note above).
+    viewPortfolioDashboard: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD" || role === "PROJECT_MANAGER",
+    // Assigning a person to a Project is an administrative act; the panel is Admin-only.
+    manageProjectManagers: admin,
+    // Every existing reader of the Reports screen keeps the coverage report; a project scope does
+    // not (see the CapabilityMap note). This list MUST match the coverage routes' own role list.
+    viewTimesheetCoverage: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD",
   };
 }
 
 /** The roles whose day can be built from recorded hours at all (My Hours or the Timesheet grid). */
-const ALLOCATION_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "HR", "ADMIN"] as const;
+const ALLOCATION_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER", "HR", "ADMIN"] as const;
 
 /**
  * May this account keep My Hours (self-service hour booking)?
@@ -120,6 +142,8 @@ export function landingPathFor(role: string): string {
   // The COO's whole job is the operations dashboard, so that is where the role lands. This must
   // be checked before the `/summary` default below, or a COO would never see its own screen.
   if (role === "COO") return "/portfolio";
+  // A Project Manager's whole job is his own projects, so the portfolio IS his landing page.
+  if (role === "PROJECT_MANAGER") return "/portfolio";
   if (role === "DEPT_HEAD") return "/summary";
   if (["HOD", "PM", "ADMIN"].includes(role)) return "/approvals";
   if (role === "SUPERVISOR") return "/select-team";
@@ -154,9 +178,15 @@ export function departmentScope(role: string, departmentId: number | null): numb
  *   DEPARTMENT   — exactly `departmentId`, every Section of it (an HOD of either shape, and
  *                  DEPT_HEAD). A Section Head is deliberately NOT narrowed to his Section here:
  *                  the agreed rule for this report is the whole Department.
- *   NONE         — matches no row. Reached when an HOD/DEPT_HEAD has NO Department mapping: a
- *                  report that silently widened to the whole portfolio for an unmapped head would
- *                  be the exact leak this type exists to prevent.
+ *   PROJECTS     — exactly the projects this account MANAGES (PROJECT_MANAGER). A Project spans
+ *                  Departments, so this scope is legitimately CROSS-department: it is the only
+ *                  kind that is not expressed as a Department at all. `projectIds` is NEVER empty —
+ *                  an account assigned to nothing is NONE, so an empty array can never be read as
+ *                  "all projects".
+ *   NONE         — matches no row. Reached when an HOD/DEPT_HEAD has NO Department mapping, or a
+ *                  PROJECT_MANAGER has no active assignment: a report that silently widened to the
+ *                  whole portfolio for an unmapped account would be the exact leak this type exists
+ *                  to prevent.
  *
  * A non-account role (SUPERVISOR/EMPLOYEE/unknown) resolves to NONE. Those roles are refused at
  * the router, so this is the second, independent lock: even a caller that reached the loader
@@ -165,12 +195,35 @@ export function departmentScope(role: string, departmentId: number | null): numb
 export type ReportScope =
   | { kind: "ORGANISATION" }
   | { kind: "DEPARTMENT"; departmentId: number }
+  | { kind: "PROJECTS"; projectIds: readonly number[] }
   | { kind: "NONE" };
 
-export function reportScopeFor(role: string, departmentId: number | null): ReportScope {
+/**
+ * The scope an actor's report is ACTUALLY limited to.
+ *
+ * `assignedProjectIds` is read from `project_manager_assignments` by the caller and is consulted
+ * ONLY for PROJECT_MANAGER. That role-gating is deliberate: an assignment row accidentally attached
+ * to another account must be inert, so it can neither narrow nor widen that role's report.
+ *
+ * FAIL CLOSED, in both directions: a Project Manager with no assignment is NONE (zero rows, with an
+ * explicit sentence on screen), never the organisation and never a Department fallback.
+ */
+export function reportScopeFor(
+  role: string,
+  departmentId: number | null,
+  assignedProjectIds: readonly number[] | null = null
+): ReportScope {
   // The organisation-wide readers, exactly the non-Department-scoped holders of
   // `viewPortfolioDashboard`.
   if (role === "PM" || role === "ADMIN" || role === "COO") return { kind: "ORGANISATION" };
+  // A Project Manager reads exactly the projects he manages. Deduplicated, positive, sorted, so the
+  // provenance line and the filters hash do not change when the same set arrives in another order.
+  if (role === "PROJECT_MANAGER") {
+    const projectIds = [...new Set(assignedProjectIds ?? [])]
+      .filter((id) => Number.isInteger(id) && id > 0)
+      .sort((a, b) => a - b);
+    return projectIds.length ? { kind: "PROJECTS", projectIds } : { kind: "NONE" };
+  }
   // A Department-scoped head: HOD (both shapes) and DEPT_HEAD read their whole Department. The
   // Section is intentionally not consulted — a section-narrowed account and a department-wide
   // account behave identically on this report.
@@ -210,11 +263,44 @@ export function intersectDepartmentFilter(
 ): number[] | null {
   if (scope.kind === "ORGANISATION") return requested;
   if (scope.kind === "NONE") return [];
+  // A PROJECTS scope says nothing about Departments: a project spans them, so it must never narrow
+  // this dimension. The Project predicate is what bounds that actor (see `intersectProjectFilter`).
+  if (scope.kind === "PROJECTS") return requested;
   // DEPARTMENT: keep only the requested ids that ARE the actor's Department. No request -> the
   // actor's Department alone. An empty result is the honest "disjoint" case (an EMPTY array, never
   // a substituted Department).
   if (requested == null) return [scope.departmentId];
   return requested.filter((id) => id === scope.departmentId);
+}
+
+/**
+ * The Project filter to apply to the Job Order query, given the actor's scope and the project ids
+ * the REQUEST asked for.
+ *
+ * The same contract as `intersectDepartmentFilter`, for the same reason — INTERSECT, NEVER TRUST:
+ *
+ *   null  — no Project predicate at all (an organisation actor with no request).
+ *   []    — an EMPTY intersection: the request is disjoint from the actor's assignment. This is a
+ *           real, honest answer meaning "nothing matches", and the loader must turn it into
+ *           `{ in: [] }`. It must NOT fall back to the assigned set: a report that silently ignores
+ *           the filter it was handed is worse than an empty one, because the reader believes a
+ *           filter was applied.
+ *   ids   — those projects.
+ *
+ * A DEPARTMENT scope says nothing about projects (a Department spans projects and a project spans
+ * Departments), so the request flows through untouched; the Department predicate is what enforces
+ * that actor's bound. A NONE scope always matches nothing.
+ */
+export function intersectProjectFilter(
+  scope: ReportScope,
+  requested: number[] | null
+): number[] | null {
+  if (scope.kind === "NONE") return [];
+  if (scope.kind === "PROJECTS") {
+    if (requested == null) return [...scope.projectIds];
+    return requested.filter((id) => scope.projectIds.includes(id));
+  }
+  return requested;
 }
 
 export const SUMMARY_VISIBLE_STATUSES = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"] as const;

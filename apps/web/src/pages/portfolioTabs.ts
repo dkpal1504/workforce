@@ -50,6 +50,10 @@ export const PORTFOLIO_TABS = [
   // dangerous row in the portfolio, so it gets a tab of its own instead of silently redefining one.
   { id: "schedule-delays", label: "Schedule & delays", tone: "danger" },
   { id: "job-work", label: "Job work", tone: "primary" },
+  // The hierarchy register: which WBS elements and Networks sit under each Project, and how the
+  // work beneath them stands. It sits next to "Job work" because it is the same data seen as a
+  // TREE instead of a ranking — and it is the section a Project Manager lands on.
+  { id: "project-structure", label: "Project structure", tone: "primary" },
   { id: "department-load", label: "Department load", tone: "warning" },
   { id: "exceptions", label: "Exceptions & readiness", tone: "danger" },
 ] as const satisfies readonly { id: string; label: string; tone: PortfolioTabTone }[];
@@ -77,6 +81,17 @@ export const REPORTS_TAB_IDS: readonly ReportsTabId[] = REPORTS_TABS.map((tab) =
 
 /** The section the screen opens on: the primary answer ("what needs a push"). */
 export const DEFAULT_TAB: PortfolioTabId = "needs-push";
+
+/**
+ * The section a ROLE opens on.
+ *
+ * A Project Manager's screen is his own projects; "what needs a push" ranks work he may not manage,
+ * so his answer is the register. Everyone else keeps the default. Pure and exported so both screens
+ * (and the tests) agree on it — a per-screen copy would open the two screens on different sections.
+ */
+export function defaultTabFor(role: string | null | undefined): PortfolioTabId {
+  return role === "PROJECT_MANAGER" ? "project-structure" : DEFAULT_TAB;
+}
 
 /** Is this string one of the tabs? Guards a value that came from outside (a stale bundle, a link). */
 export function isPortfolioTabId(value: unknown): value is PortfolioTabId {

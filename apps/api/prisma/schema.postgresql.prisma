@@ -58,6 +58,9 @@ model User {
   budgetRevisionsCreated    JobOrderBudgetRevision[]   @relation("JobOrderBudgetRevisionCreator")
   jobOrderProgressRemarks   JobOrderProgressRemark[]   @relation("JobOrderProgressRemarkAuthor")
   @@index([sectionId])
+  projectManagerAssignments        ProjectManagerAssignment[] @relation("ProjectManagerAssignments")
+  projectManagerAssignmentsCreated ProjectManagerAssignment[] @relation("ProjectManagerAssignmentCreator")
+
   @@map("users")
 }
 
@@ -421,6 +424,8 @@ model Project {
   employeeAllocations EmployeeAllocation[]
   timesheetEntries    TimesheetEntry[]     @relation("TimesheetEntryProject")
 
+  managerAssignments ProjectManagerAssignment[]
+
   @@map("projects")
 }
 
@@ -743,6 +748,34 @@ model Network {
   @@index([projectId, active])
   @@index([wbsId, active])
   @@map("networks")
+}
+
+/// A Project Manager's assignment to a Project.
+///
+/// A JOIN TABLE, not `Project.managerId`: one manager holds several projects and one project may
+/// hold several managers (cover, handover), and a scalar would make the second manager a migration.
+///
+/// ROWS ARE NEVER DELETED. Ending an assignment sets `status = "revoked"` and stamps `revokedAt`,
+/// so "who managed this project last quarter" stays answerable; a re-assignment REUSES the row
+/// (`@@unique([projectId, userId])`) rather than adding a second history line for the same pair.
+model ProjectManagerAssignment {
+  id           Int       @id @default(autoincrement())
+  projectId    Int       @map("project_id")
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId       Int       @map("user_id")
+  user         User      @relation("ProjectManagerAssignments", fields: [userId], references: [id], onDelete: Cascade)
+  /// active | revoked
+  status       String    @default("active")
+  assignedById Int?      @map("assigned_by")
+  assignedBy   User?     @relation("ProjectManagerAssignmentCreator", fields: [assignedById], references: [id])
+  assignedAt   DateTime  @default(now()) @map("assigned_at")
+  revokedAt    DateTime? @map("revoked_at")
+  note         String?
+
+  @@unique([projectId, userId])
+  @@index([userId, status])
+  @@index([projectId, status])
+  @@map("project_manager_assignments")
 }
 
 /// Effective-dated budget revision. Revision 1 is the budget set when the Job

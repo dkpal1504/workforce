@@ -10,6 +10,7 @@ import {
   hodScopeMatches,
   hodScopeMatchesSet,
   intersectDepartmentFilter,
+  intersectProjectFilter,
   landingPathFor,
   reportScopeFor,
 } from "./roleAccess";
@@ -35,17 +36,23 @@ const MUTATING_CAPABILITIES = [
   "manageJobOrderMaster",
   "manageJobOrderProgress",
   "manageAttendanceHours",
+  "manageProjectManagers",
 ] as const;
 
 test("requested role capability matrix is enforced", () => {
   assert.deepEqual(
-    ["EMPLOYEE", "SUPERVISOR", "HOD", "PM", "ADMIN"].map((role) => [role, capabilitiesFor(role, "PAYROLL")]),
+    ["EMPLOYEE", "SUPERVISOR", "HOD", "PM", "PROJECT_MANAGER", "ADMIN"].map((role) => [role, capabilitiesFor(role, "PAYROLL")]),
     [
-      ["EMPLOYEE", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false }],
-      ["SUPERVISOR", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false }],
-      ["HOD", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:true, manageJobOrderMaster:false, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:true }],
-      ["PM", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:true, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:true, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:true }],
-      ["ADMIN", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:true, manageSupervisors:true, manageMasterData:true, manageEmployees:true, uploadEmployees:true, transferEmployees:true, allocateHours:true, assignRoles:true, viewDepartmentSummary:true, manageJobOrderMaster:true, manageJobOrderProgress:true, manageAttendanceHours:true, viewEmployees:true, viewPortfolioDashboard:true }],
+      ["EMPLOYEE", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false, manageProjectManagers:false, viewTimesheetCoverage:false }],
+      ["SUPERVISOR", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:false, manageProjectManagers:false, viewTimesheetCoverage:false }],
+      ["HOD", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:true, manageJobOrderMaster:false, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:true, manageProjectManagers:false, viewTimesheetCoverage:true }],
+      ["PM", { selectTeam:false, editTimesheet:false, viewSummary:true, approveTimesheets:true, manageSupervisors:false, manageMasterData:false, manageEmployees:true, uploadEmployees:false, transferEmployees:true, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:true, manageJobOrderProgress:true, manageAttendanceHours:false, viewEmployees:true, viewPortfolioDashboard:true, manageProjectManagers:false, viewTimesheetCoverage:true }],
+      // The Project Manager: read-only, ONE screen and its reports. Every mutating flag is false,
+      // `viewSummary` is false (the Summary router does not admit the role, so a nav link there
+      // would be a 403), and the coverage report is out because its row set is an employee roster
+      // a project scope cannot define.
+      ["PROJECT_MANAGER", { selectTeam:false, editTimesheet:false, viewSummary:false, approveTimesheets:false, manageSupervisors:false, manageMasterData:false, manageEmployees:false, uploadEmployees:false, transferEmployees:false, allocateHours:true, assignRoles:false, viewDepartmentSummary:false, manageJobOrderMaster:false, manageJobOrderProgress:false, manageAttendanceHours:false, viewEmployees:false, viewPortfolioDashboard:true, manageProjectManagers:false, viewTimesheetCoverage:false }],
+      ["ADMIN", { selectTeam:true, editTimesheet:true, viewSummary:true, approveTimesheets:true, manageSupervisors:true, manageMasterData:true, manageEmployees:true, uploadEmployees:true, transferEmployees:true, allocateHours:true, assignRoles:true, viewDepartmentSummary:true, manageJobOrderMaster:true, manageJobOrderProgress:true, manageAttendanceHours:true, viewEmployees:true, viewPortfolioDashboard:true, manageProjectManagers:true, viewTimesheetCoverage:true }],
     ]
   );
 });
@@ -262,6 +269,86 @@ test("the capability follows the employment type, not the role", () => {
   assert.equal(capabilitiesFor("SUPERVISOR", "PAYROLL").allocateHours, true);
   assert.equal(capabilitiesFor("SUPERVISOR", "CLMS").allocateHours, false);
   assert.equal(capabilitiesFor("SUPERVISOR", "CLMS").selectTeam, true, "the Timesheet page is where he works instead");
+});
+
+/* ------------------------------------------------------------------ *
+ * The PROJECTS scope — a Project Manager reads exactly his assignments
+ * ------------------------------------------------------------------ */
+
+test("a PROJECT_MANAGER reads exactly its assigned projects, and nothing when unassigned", () => {
+  assert.deepEqual(
+    reportScopeFor("PROJECT_MANAGER", 4, [7, 3]),
+    { kind: "PROJECTS", projectIds: [3, 7] },
+    "deduplicated and sorted, so the provenance line and the filters hash are stable"
+  );
+  assert.deepEqual(reportScopeFor("PROJECT_MANAGER", 4, []), { kind: "NONE" }, "no assignment -> nothing");
+  assert.deepEqual(reportScopeFor("PROJECT_MANAGER", 4, null), { kind: "NONE" }, "unknown assignment -> nothing");
+  assert.deepEqual(reportScopeFor("PROJECT_MANAGER", null, [7]), { kind: "PROJECTS", projectIds: [7] },
+    "a project scope needs no Department");
+  assert.deepEqual(reportScopeFor("PROJECT_MANAGER", 4, [0, -3, 2.5, 9]), { kind: "PROJECTS", projectIds: [9] },
+    "junk ids are dropped, never turned into a scope");
+});
+
+test("assignments are consulted for the PROJECT_MANAGER role ONLY, so a stray row cannot narrow anyone", () => {
+  // THE security property: the loader reads assignments only for that one role, and the pure rule
+  // backs it up — an Admin/HOD that somehow carried an assignment row still reads what it read before.
+  for (const role of ["PM", "ADMIN", "COO"]) {
+    assert.deepEqual(reportScopeFor(role, 4, [7]), { kind: "ORGANISATION" }, `${role} stays organisation-wide`);
+  }
+  assert.deepEqual(reportScopeFor("HOD", 4, [7]), { kind: "DEPARTMENT", departmentId: 4 }, "an HOD stays in its Department");
+  assert.deepEqual(reportScopeFor("SUPERVISOR", 4, [7]), { kind: "NONE" }, "a non-account role reads nothing");
+});
+
+test("intersectProjectFilter INTERSECTS the request with the assignment, never trusts it", () => {
+  const scoped = reportScopeFor("PROJECT_MANAGER", null, [3, 7]);
+  const org = reportScopeFor("PM", 4);
+  const dept = reportScopeFor("HOD", 4);
+  const none = reportScopeFor("PROJECT_MANAGER", null, []);
+
+  assert.deepEqual(intersectProjectFilter(scoped, null), [3, 7], "no request -> the assignment");
+  assert.deepEqual(intersectProjectFilter(scoped, [7]), [7], "a request narrows WITHIN the assignment");
+  assert.deepEqual(intersectProjectFilter(scoped, [7, 9]), [7], "the foreign id is dropped, never added");
+  assert.deepEqual(intersectProjectFilter(scoped, [9]), [],
+    "a disjoint request is the EMPTY set (zero rows), NOT the assignment substituted back in");
+
+  assert.deepEqual(intersectProjectFilter(org, [9]), [9], "organisation: the request passes through");
+  assert.equal(intersectProjectFilter(org, null), null, "organisation: no request -> no filter");
+  assert.deepEqual(intersectProjectFilter(dept, null), null,
+    "a Department scope says nothing about projects, so no project predicate is added");
+  assert.deepEqual(intersectProjectFilter(none, null), [], "NONE matches nothing");
+});
+
+test("the Project Manager role is read-only, lands on the portfolio, and is EC-No login", () => {
+  const pm = capabilitiesFor("PROJECT_MANAGER", "PAYROLL");
+  assert.equal(pm.viewPortfolioDashboard, true, "the role exists for this screen");
+  for (const capability of MUTATING_CAPABILITIES) {
+    // My Hours is the one exception, and it is not an exception to the read-only promise: it is a
+    // person booking HIS OWN hours, exactly as PM already does. Everything that acts on OTHER
+    // people's work stays false.
+    if (capability === "allocateHours") continue;
+    assert.equal(pm[capability], false, `PROJECT_MANAGER must not be able to ${capability}`);
+  }
+  assert.equal(pm.viewSummary, false, "the Summary router does not admit the role");
+  assert.equal(pm.viewTimesheetCoverage, false, "an employee roster is not a project scope");
+  assert.equal(pm.viewEmployees, false);
+  assert.equal(landingPathFor("PROJECT_MANAGER"), "/portfolio");
+  // A payroll manager books his own hours, exactly like PM.
+  assert.equal(pm.allocateHours, true);
+  assert.equal(canUseMyHours("PROJECT_MANAGER", "PAYROLL"), true);
+  assert.equal(canUseMyHours("PROJECT_MANAGER", "CLMS"), false);
+  // EC-No sign-in, and it MUST be on the list or the account cannot log in at all.
+  assert.equal(usesEcNoLogin("PROJECT_MANAGER", 5), true);
+  assert.equal(usesEcNoLogin("PROJECT_MANAGER", null), false, "an unlinked account falls back to e-mail");
+});
+
+test("legacy behaviour is untouched: every pre-existing role resolves to the same scope", () => {
+  // The regression lock for this change. Adding a scope kind must not move any existing role.
+  assert.deepEqual(reportScopeFor("PM", 4), { kind: "ORGANISATION" });
+  assert.deepEqual(reportScopeFor("ADMIN", null), { kind: "ORGANISATION" });
+  assert.deepEqual(reportScopeFor("COO", 9), { kind: "ORGANISATION" });
+  assert.deepEqual(reportScopeFor("HOD", 4), { kind: "DEPARTMENT", departmentId: 4 });
+  assert.deepEqual(reportScopeFor("DEPT_HEAD", 4), { kind: "DEPARTMENT", departmentId: 4 });
+  assert.deepEqual(reportScopeFor("HOD", null), { kind: "NONE" });
 });
 
 test("landingPathFor is unchanged, so a contract supervisor still lands on Select Team", () => {

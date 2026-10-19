@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
+import { assignedProjectIdsFor, projectPickerWhere } from "../services/projectScope";
 import { departmentScope } from "../services/roleAccess";
 import { employeeListScopeFor, employeeListWhere } from "../services/employeeListScope";
 
@@ -51,9 +52,13 @@ mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "DEPT_HEAD", "
  * `projects` keeps its old key and shape (id, code, name, colorKey) because the
  * Project Summary filter chips read it. `wbs` is the same data as a flat list.
  */
-mastersRouter.get("/projects-wbs", async (_req, res) => {
+mastersRouter.get("/projects-wbs", async (req, res) => {
+  // DISCLOSURE, not authorisation: the report is already clamped, but a dropdown that listed every
+  // project would still show a Project Manager the shape of the whole portfolio. `null` (every other
+  // role) adds no predicate at all, so their feed is byte-identical to before.
+  const projectIds = await assignedProjectIdsFor(req.user!);
   const projects = await prisma.project.findMany({
-    where: { active: true },
+    where: { active: true, ...projectPickerWhere(projectIds) },
     orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
     include: {
       wbsRows: {
@@ -79,8 +84,10 @@ mastersRouter.get("/projects-wbs", async (_req, res) => {
  * Entry "Project" dropdown and the Job Order Summary "Select Projects"
  * multi-select. Sorted by sortOrder so "Project A" comes first.
  */
-mastersRouter.get("/projects", async (_req, res) => {
+mastersRouter.get("/projects", async (req, res) => {
+  const projectIds = await assignedProjectIdsFor(req.user!);
   const projects = await prisma.project.findMany({
+    where: projectPickerWhere(projectIds),
     orderBy: { sortOrder: "asc" },
     include: {
       jobOrders: {
@@ -197,8 +204,16 @@ mastersRouter.get("/networks", async (req, res) => {
 mastersRouter.get("/project-wbs", async (req, res) => {
   const includeInactive = req.query.include_inactive === "true";
   const projectId = req.query.project_id ? Number(req.query.project_id) : undefined;
+  // A project-scoped actor sees the WBS of its assignment only. The request can NARROW that but
+  // never add to it, so a foreign `project_id` intersects to the empty set (zero rows) rather than
+  // being substituted back — the same rule the report applies to the same two ids.
+  const scopedProjectIds = await assignedProjectIdsFor(req.user!);
+  const projectFilter =
+    scopedProjectIds === null
+      ? projectId ? { projectId } : {}
+      : { projectId: { in: projectId ? scopedProjectIds.filter((id) => id === projectId) : scopedProjectIds } };
   const wbs = await prisma.projectWbs.findMany({
-    where: { ...(includeInactive ? {} : { active: true }), ...(projectId ? { projectId } : {}) },
+    where: { ...(includeInactive ? {} : { active: true }), ...projectFilter },
     select: { id: true, projectId: true, wbsCode: true, name: true, sortOrder: true, active: true },
     orderBy: [{ projectId: "asc" }, { sortOrder: "asc" }, { wbsCode: "asc" }],
   });

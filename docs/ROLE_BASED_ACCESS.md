@@ -15,6 +15,7 @@ control which links are shown in the browser.
 | Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section | — |
 | Organisation and supervisor administration | — | — | — | — | Yes | — (the API refuses: 403) |
 | Operations dashboard (`viewPortfolioDashboard`) | — | — | Own Department (whole, every Section) | Own Department (whole) | Yes | Yes (whole organisation, read only) |
+| Project-manager dashboard (`PROJECT_MANAGER`) | — | — | — | — | — | — (separate role, see below) |
 
 Each HOD must have an explicit `User.departmentId + User.sectionId` scope. HOD
 approval and creation permissions fail closed when either mapping is absent. HOD and
@@ -40,6 +41,29 @@ allows reports to retain the HOD decision after a later PM decision.
 
 Legacy HR and Finance permissions remain for their existing operational screens;
 they are outside this matrix. CSV upload remains Admin/HR-only.
+
+## The PROJECT_MANAGER role (assigned projects)
+
+`PROJECT_MANAGER` is a **read-only, project-scoped** role. It exists so the person running one or
+more Projects can see everything UNDER those projects — every WBS element, Network and Job Order,
+across every Department — without being given a Department scope (a project legitimately spans
+Departments) and without the organisation-wide reach of `PM`.
+
+| Property | PROJECT_MANAGER behaviour |
+|---|---|
+| Login identifier | EC No once a payroll Employee is linked (`usesEcNoLogin`, and `EC_NO_LOGIN_ROLES` for the reset screen); an unlinked account falls back to e-mail like `PM`. |
+| Landing page | `/portfolio` (`landingPathFor`). |
+| Read scope | **Exactly the Projects assigned to the account**, server-side, via `reportScopeFor` → `{ kind: "PROJECTS" }`. Cross-department by construction: a Project is not a Department. |
+| Unassigned | `NONE` — **zero rows**, with the sentence "No project is in this scope…" on screen. Never the organisation, never a Department fallback. |
+| Assignment | Set by an Admin on **Project Managers** (`GET/POST/DELETE /api/admin/project-managers`). The role is granted separately on **Role Assignment**; an assignment on an account that does not hold the role is refused (`ROLE_NOT_PROJECT_MANAGER`), because it would read as access and grant none. |
+| Scope reach | Dashboard (`/portfolio`), Reports (`/reports`) and both downloads. The request's `projectIds` is **intersected** with the assignment, never trusted; a disjoint request returns zero rows and the export states that it was narrowed. |
+| Not granted | Approvals, timesheet editing, My Hours for others, master data, employee registration, role assignment, the Job Order Summary, and the **Timesheet coverage** report (its row set is the employee roster, which a project scope cannot define — its routes carry their own narrower gate). |
+| My Hours (own hours) | Yes while the account is a PAYROLL employee, exactly like `PM` (`canUseMyHours` keys off employment type). |
+| One role per account | Promoting an `EMPLOYEE` to `PROJECT_MANAGER` replaces their Employee landing page, as promoting to `HOD`/`PM` does. |
+
+The register on both screens lists each project's WBS elements and Networks. **A Network has no
+lifecycle status of its own** — the master stores only `active` — so every band shown against a
+Network is derived from its Job Orders and labelled as derived.
 
 ## The COO role (operations dashboard)
 

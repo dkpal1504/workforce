@@ -510,6 +510,12 @@ export type JobOrderIdentity = {
   uom?: string | null;
   project: { id: number; code: string; name: string };
   wbs: { id: number; wbsCode: string; name: string };
+  /**
+   * The SAP Network this Job Order belongs to. A Network belongs to ONE WBS element, so it is a
+   * third level of the same hierarchy and not a grouping of its own. Optional at this boundary so
+   * the pure fixtures keep working; `JobOrderFacts.network` is always present (null when absent).
+   */
+  network?: { id: number; code: string; name: string } | null;
   department: { id: number; name: string };
   section: { id: number; name: string } | null;
   /**
@@ -562,6 +568,8 @@ export type JobOrderFacts = {
   displayName: string;
   project: { id: number; code: string; name: string };
   wbs: { id: number; wbsCode: string; name: string };
+  /** The Network under the WBS, or null when the row carries none (see JobOrderIdentity). */
+  network: { id: number; code: string; name: string } | null;
   department: { id: number; name: string };
   section: { id: number; name: string } | null;
   status: string;
@@ -766,6 +774,8 @@ export function buildJobOrderFacts(input: BuildJobOrderFactsInput): JobOrderFact
     // form, the table, the exports and the (later) schedule judgement all read the same day.
     plannedStartDate: jobOrder.plannedStartDate ?? null,
     plannedEndDate: jobOrder.plannedEndDate ?? null,
+    // Structure only: the register groups by Network under its WBS. No band or score reads it.
+    network: jobOrder.network ?? null,
     scheduleBand: schedule.scheduleBand,
     daysToEnd: schedule.daysToEnd,
     planElapsedPct: schedule.planElapsedPct,

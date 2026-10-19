@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import {
   BandBadge,
   ExceptionCard,
@@ -9,6 +10,7 @@ import {
   scheduleDaysText,
   Panel,
   PortfolioFilterBar,
+  ProjectStructureSection,
   PctQtyCell,
   ReasonsCell,
   ReportTabs,
@@ -34,6 +36,7 @@ import { defaultFilters, decodeFilters, portfolioQuery, type PortfolioFilterStat
 import {
   DEFAULT_TAB,
   REPORTS_TABS,
+  defaultTabFor,
   isPortfolioTabId,
   panelDomId,
   tabDomId,
@@ -69,8 +72,19 @@ export function ReportsPage() {
   const [downloadNotice, setDownloadNotice] = useState("");
   const [busyFormat, setBusyFormat] = useState<"xlsx" | "pdf" | null>(null);
   // Which section is open. View state, not in the URL (see portfolioTabs.ts). Type is the REPORTS
-  // strip's, which is the portfolio sections PLUS the coverage report.
-  const [tab, setTab] = useState<ReportsTabId>(DEFAULT_TAB);
+  // strip's, which is the portfolio sections PLUS the coverage report. A Project Manager opens on
+  // his projects, exactly as he does on the dashboard.
+  const { user } = useAuth();
+  const [tab, setTab] = useState<ReportsTabId>(() => defaultTabFor(user?.role));
+
+  /**
+   * A project scope cannot define the coverage report's EMPLOYEE ROSTER, so the API refuses that
+   * role on its two routes. Its tab is hidden to match — and `!== false` (never `!== true`) keeps the
+   * tab VISIBLE for an older bundle whose capabilities predate the flag: fail-visible, so no existing
+   * reader loses a tab to a stale session.
+   */
+  const canCoverage = user?.capabilities.viewTimesheetCoverage !== false;
+  const tabs = canCoverage ? REPORTS_TABS : REPORTS_TABS.filter((entry) => entry.id !== "timesheet-coverage");
 
   const { report, loading, error, query } = usePortfolioReport(filters);
 
@@ -128,6 +142,7 @@ export function ReportsPage() {
         "on-track-not-measurable": report.onTrackNotMeasurable.length,
         "schedule-delays": report.scheduleDelays.length,
         "job-work": report.jobWork.length,
+        "project-structure": report.projectStructure.length,
         "department-load": report.departmentLoad.length,
         exceptions:
           report.exceptions.noBudgetHours.count +
@@ -158,8 +173,8 @@ export function ReportsPage() {
     </span>
   );
 
-  /** Which strip is on screen: the six portfolio sections, or the coverage report. */
-  const coverageTab = tab === "timesheet-coverage";
+  /** Which strip is on screen: the portfolio sections, or the coverage report. */
+  const coverageTab = canCoverage && tab === "timesheet-coverage";
 
   return (
     <>
@@ -188,7 +203,7 @@ export function ReportsPage() {
       {coverageTab ? (
         <>
           <ReportTabs
-            tabs={REPORTS_TABS}
+            tabs={tabs}
             active={tab}
             counts={tabCounts}
             onChange={(id) => {
@@ -252,7 +267,7 @@ export function ReportsPage() {
 
           {/* ---- The section tabs: one dataset at a time, each with its row count ---- */}
           <ReportTabs
-            tabs={REPORTS_TABS}
+            tabs={tabs}
             active={tab}
             counts={tabCounts}
             onChange={(id) => {
@@ -268,6 +283,7 @@ export function ReportsPage() {
             ) : null}
             {tab === "schedule-delays" ? <ScheduleDelaysSection report={report} resetKey={filterKey} /> : null}
             {tab === "job-work" ? <JobWorkSection report={report} resetKey={filterKey} /> : null}
+            {tab === "project-structure" ? <ProjectStructureSection report={report} /> : null}
             {tab === "department-load" ? <DepartmentLoadSection report={report} resetKey={filterKey} /> : null}
             {tab === "exceptions" ? <ExceptionsSection report={report} resetKey={filterKey} /> : null}
           </div>

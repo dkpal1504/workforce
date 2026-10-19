@@ -10,7 +10,7 @@
  */
 
 /** Roles that sign in with their EC No once a payroll Employee is linked (usesEcNoLogin). */
-export const EC_NO_LOGIN_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM"] as const;
+export const EC_NO_LOGIN_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER"] as const;
 
 /**
  * A reset targets a person's own payroll login. SUPERVISOR is included because a

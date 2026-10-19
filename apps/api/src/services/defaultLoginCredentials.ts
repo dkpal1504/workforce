@@ -125,5 +125,6 @@ export async function initialCredentialState(): Promise<InitialCredential> {
 }
 
 export function usesEcNoLogin(role: string, employeeId: number | null | undefined): boolean {
-  return employeeId != null && ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM"].includes(role);
+  return employeeId != null
+    && ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER"].includes(role);
 }

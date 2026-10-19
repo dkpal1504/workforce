@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, getToken } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { burnSummary, healthSummary } from "./portfolioHero";
 import { MultiSelectFilter } from "./MultiSelectFilter";
 import {
@@ -20,6 +21,7 @@ import { paginate, pageNumbers, type PageSlice } from "./portfolioPaging";
 import {
   DEFAULT_TAB,
   PORTFOLIO_TABS,
+  defaultTabFor,
   isPortfolioTabId,
   panelDomId,
   tabDomId,
@@ -128,6 +130,40 @@ export type DepartmentRollUp = RollUpCounts & {
   sectionCount: number;
 };
 
+/**
+ * The Project → WBS → Network register (see `services/projectStructure.ts` on the API).
+ *
+ * `jobOrderCount` is what the READER can see; `jobOrderCountAll` is the master count. Both are
+ * printed, because "0 of 6 in your scope" and "an empty WBS element" are different facts and only
+ * the pair of numbers tells them apart.
+ */
+export type StructureNode = {
+  id: number;
+  code: string;
+  name: string | null;
+  active: boolean;
+  jobOrderCount: number;
+  jobOrderCountAll: number;
+  budgetHours: number;
+  actualHours: number;
+  burnPct: number | null;
+  hoursBand: PortfolioBand;
+  scheduleBand: PortfolioScheduleBand;
+  qtyCompletePct: number | null;
+  qtyBand: PortfolioBand;
+  noActivity: number;
+  unapprovedHours: number;
+  jobOrderIds: number[];
+};
+
+export type StructureWbsNode = StructureNode & { networks: StructureNode[] };
+
+export type ProjectStructureRow = {
+  project: { id: number; code: string; name: string; active: boolean };
+  totals: StructureNode;
+  wbs: StructureWbsNode[];
+};
+
 export type ExceptionBucket = { count: number; rows: PortfolioJobRow[] };
 
 export type PortfolioPulse = {
@@ -184,6 +220,8 @@ export type PortfolioReport = {
   definitions: PortfolioDefinitions;
   pulse: PortfolioPulse;
   projectRollUps: ProjectRollUp[];
+  /** The hierarchy register. Every number in it comes from the same scoped facts as the sections. */
+  projectStructure: ProjectStructureRow[];
   needsPush: PortfolioJobRow[];
   needsPushTotal: number;
   onTrack: PortfolioJobRow[];
@@ -850,7 +888,10 @@ export function PortfolioDashboardPage() {
   const [busyFormat, setBusyFormat] = useState<"xlsx" | "pdf" | null>(null);
   // Which section is open. View state, deliberately NOT in the URL: the query string is the one
   // contract shared by the fetch, the filter round-trip and both downloads (see portfolioTabs.ts).
-  const [tab, setTab] = useState<PortfolioTabId>(DEFAULT_TAB);
+  // A Project Manager opens on HIS projects; everyone else opens on the headline answer
+  // ("what needs a push"). The pure helper is shared with /reports so the two screens agree.
+  const { user } = useAuth();
+  const [tab, setTab] = useState<PortfolioTabId>(() => defaultTabFor(user?.role));
 
   const { report, loading, error, query, reload } = usePortfolioReport(filters);
 
@@ -1005,6 +1046,7 @@ export function PortfolioDashboardPage() {
               "on-track-not-measurable": report.onTrackNotMeasurable.length,
               "schedule-delays": report.scheduleDelays.length,
               "job-work": report.jobWork.length,
+              "project-structure": report.projectStructure.length,
               "department-load": report.departmentLoad.length,
               exceptions:
                 report.exceptions.noBudgetHours.count +
@@ -1030,6 +1072,7 @@ export function PortfolioDashboardPage() {
             ) : null}
             {tab === "schedule-delays" ? <ScheduleDelaysSection report={report} resetKey={filterKey} /> : null}
             {tab === "job-work" ? <JobWorkSection report={report} resetKey={filterKey} /> : null}
+            {tab === "project-structure" ? <ProjectStructureSection report={report} /> : null}
             {tab === "department-load" ? <DepartmentLoadSection report={report} resetKey={filterKey} /> : null}
             {tab === "exceptions" ? <ExceptionsSection report={report} resetKey={filterKey} /> : null}
           </div>
@@ -1115,6 +1158,167 @@ export function PortfolioDashboardPage() {
 
 /** Every section is rendered from the ONE response, so a tab and its table cannot disagree. */
 type SectionProps = { report: PortfolioReport; resetKey: string };
+
+/**
+ * One row's numeric cells, shared by the WBS and Network levels so the two can never drift.
+ *
+ * The job-order cell prints `in scope / total` ONLY when they differ: "0 / 6" is the honest way to
+ * say "this element holds work you cannot see", while a bare "6" would claim those six.
+ */
+function StructureCells({ node }: { node: StructureNode }) {
+  return (
+    <>
+      <td
+        className="pf-num"
+        title={`${node.jobOrderCount} in this scope of ${node.jobOrderCountAll} in total`}
+      >
+        {node.jobOrderCount === node.jobOrderCountAll
+          ? node.jobOrderCount
+          : `${node.jobOrderCount} / ${node.jobOrderCountAll}`}
+      </td>
+      <td><BandBadge band={node.hoursBand} /></td>
+      <td><ScheduleBadge band={node.scheduleBand} /></td>
+      <td className="pf-num">{fmtPct(node.qtyCompletePct)}</td>
+      <td className="pf-num">{fmtHours(node.budgetHours)}</td>
+      <td className="pf-num">{fmtHours(node.actualHours)}</td>
+      <td className="pf-num">{fmtPct(node.burnPct)}</td>
+      <td className="pf-num">{node.noActivity === 0 ? "—" : node.noActivity}</td>
+      <td className="pf-num">{fmtHours(node.unapprovedHours)}</td>
+    </>
+  );
+}
+
+/**
+ * Project structure — Project → WBS → Network, with the work beneath each node.
+ *
+ * WHY A SECTION OF ITS OWN: the other sections RANK job orders ("what needs a push"). This one
+ * answers "what is under this project" — which WBS elements exist, which networks hang off them, and
+ * how the work beneath each node stands. It is the same scoped data as "Job work", arranged as the
+ * hierarchy it belongs to, and it is the section a Project Manager lands on.
+ *
+ * TWO LABELS ARE DELIBERATE:
+ *  - a node's bands are the WORST of its children, never an average, so one RED job order colours
+ *    its WBS and its project;
+ *  - a Network has no status of its own (the master stores only active/inactive), so every band on a
+ *    network row is DERIVED from its job orders — the panel hint says so rather than letting a
+ *    derived figure read as a stored SAP status.
+ */
+export function ProjectStructureSection({ report }: { report: PortfolioReport }) {
+  if (report.projectStructure.length === 0) {
+    return (
+      <Panel
+        title="Project structure"
+        count={0}
+        hint="Each project's WBS elements and their Networks, with the job orders beneath them."
+      >
+        <div className="empty-state">
+          No project is in this scope. A Project Manager sees this until an Admin assigns a project to the
+          account on <strong>Project Managers</strong>; a Department Head sees it when nothing in the
+          scope carries a Job Order.
+        </div>
+      </Panel>
+    );
+  }
+
+  return (
+    <div className="pf-structure">
+      {report.projectStructure.map((row) => (
+        <Panel
+          key={row.project.id}
+          title={`${row.project.code} · ${row.project.name}${row.project.active ? "" : " (inactive)"}`}
+          count={`${row.totals.jobOrderCount} job order${row.totals.jobOrderCount === 1 ? "" : "s"}`}
+          hint="A node's bands are the WORST of its job orders, never an average. A Network has no status of its own — its bands are derived from its job orders."
+        >
+          <div className="pf-basis">
+            <div>
+              <div className="pf-basis__label">Budgeted</div>
+              <div className="pf-basis__value">{fmtHours(row.totals.budgetHours)}</div>
+            </div>
+            <div>
+              <div className="pf-basis__label">Actual</div>
+              <div className="pf-basis__value">{fmtHours(row.totals.actualHours)}</div>
+            </div>
+            <div>
+              <div className="pf-basis__label">Burn</div>
+              <div className="pf-basis__value">{fmtPct(row.totals.burnPct)}</div>
+            </div>
+            <div>
+              <div className="pf-basis__label">Worst hours band</div>
+              <div className="pf-basis__value"><BandBadge band={row.totals.hoursBand} /></div>
+            </div>
+            <div>
+              <div className="pf-basis__label">Worst schedule</div>
+              <div className="pf-basis__value"><ScheduleBadge band={row.totals.scheduleBand} /></div>
+            </div>
+            <div>
+              <div className="pf-basis__label">Quantity</div>
+              <div className="pf-basis__value">{fmtPct(row.totals.qtyCompletePct)}</div>
+            </div>
+            <div>
+              <div className="pf-basis__label">No activity</div>
+              <div className="pf-basis__value">{row.totals.noActivity}</div>
+            </div>
+            <div>
+              <div className="pf-basis__label">Hours awaiting approval</div>
+              <div className="pf-basis__value">{fmtHours(row.totals.unapprovedHours)}</div>
+            </div>
+          </div>
+
+          {row.wbs.length === 0 ? (
+            <div className="empty-state">
+              No WBS element is defined for this project yet, so its job orders have no structure to show.
+            </div>
+          ) : (
+            <div className="pf-table-wrap">
+              <table className="pf-table pf-table--compact">
+                <thead>
+                  <tr>
+                    <th>Project / WBS / Network</th>
+                    <th className="pf-num">Job orders</th>
+                    <th>Hours band</th>
+                    <th>Schedule</th>
+                    <th className="pf-num">Qty</th>
+                    <th className="pf-num">Budget</th>
+                    <th className="pf-num">Actual</th>
+                    <th className="pf-num">Burn</th>
+                    <th className="pf-num">No activity</th>
+                    <th className="pf-num">Unapproved</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {row.wbs.map((wbs) => (
+                    <Fragment key={wbs.id}>
+                      <tr className="pf-structure__wbs">
+                        <td>
+                          <div className="pf-cell-cap">
+                            <span className="pf-cell-strong">{wbs.code}{wbs.name ? ` · ${wbs.name}` : ""}</span>
+                            <span className="pf-cell-sub">WBS{wbs.active ? "" : " · inactive"}</span>
+                          </div>
+                        </td>
+                        <StructureCells node={wbs} />
+                      </tr>
+                      {wbs.networks.map((network) => (
+                        <tr key={network.id} className="pf-structure__network">
+                          <td>
+                            <div className="pf-cell-cap">
+                              <span className="pf-cell-sub">↳ Network {network.code}{network.name ? ` · ${network.name}` : ""}</span>
+                              <span className="pf-cell-sub">{network.active ? "derived from its job orders" : "inactive · derived from its job orders"}</span>
+                            </div>
+                          </td>
+                          <StructureCells node={network} />
+                        </tr>
+                      ))}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      ))}
+    </div>
+  );
+}
 
 /**
  * Schedule & delays — the seventh section, and the reason it is its own tab.

@@ -15,6 +15,7 @@ import { DepartmentsPage } from "./pages/DepartmentsPage";
 import { CsvUploadPage } from "./pages/CsvUploadPage";
 import { EmployeesPage } from "./pages/EmployeesPage";
 import { RoleAssignmentPage } from "./pages/RoleAssignmentPage";
+import { ProjectManagersPage } from "./pages/ProjectManagersPage";
 import { MasterDataPage } from "./pages/MasterDataPage";
 import { JobOrderProgressPage } from "./pages/JobOrderProgressPage";
 import { JobOrderUploadPage } from "./pages/JobOrderUploadPage";
@@ -130,6 +131,12 @@ export function App() {
           <Route path="/account/password" element={<ChangePasswordPage />} />
           <Route element={<RequireCapability capability="assignRoles" />}>
             <Route path="/role-assignment" element={<RoleAssignmentPage />} />
+          </Route>
+          {/* Which account manages which Projects. Admin-only: an assignment IS a read scope over
+              work, so granting it is an administrative act. The role itself is granted on Role
+              Assignment; this screen only scopes it. */}
+          <Route element={<RequireCapability capability="manageProjectManagers" />}>
+            <Route path="/project-managers" element={<ProjectManagersPage />} />
           </Route>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="*" element={<HomeRedirect />} />

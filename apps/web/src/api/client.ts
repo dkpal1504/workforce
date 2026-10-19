@@ -28,6 +28,17 @@ export type AuthCapabilities = {
    * dashboard crosses every Department and must never be reachable by a Department-scoped reader.
    */
   viewPortfolioDashboard: boolean;
+  /**
+   * Assign accounts to Projects (the Project Managers panel). ADMIN only.
+   * Read as `=== true` by the panel's own route guard; absent on an older bundle means "no panel".
+   */
+  manageProjectManagers?: boolean;
+  /**
+   * The Timesheet coverage report. Absent/false hides its tab on Reports.
+   * Read as `!== false` there on purpose: an older session that predates this flag keeps the tab
+   * rather than losing a screen it can still use.
+   */
+  viewTimesheetCoverage?: boolean;
 };
 
 export type AuthUser = {

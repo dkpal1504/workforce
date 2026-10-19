@@ -386,6 +386,13 @@ function scopeLabel(scope: ReturnType<typeof reportScopeFor>, effectiveDepartmen
       ? "Whole organisation (no Department filter)"
       : `Organisation scope, narrowed by the request to Department(s) ${effectiveDepartmentIds.join(", ")}`;
   }
+  if (scope.kind === "PROJECTS") {
+    // HONEST, NOT SILENT: this report's row set is the EMPLOYEE ROSTER, and a project scope cannot
+    // define who is in it. The route gate refuses that role before it can reach here; if a caller
+    // ever did, the report says exactly why it holds no rows rather than pretending to be empty.
+    return `Project scope (${scope.projectIds.length} assigned project(s)) — this report lists the `
+      + "employee roster, which a project scope cannot define, so it contains no rows.";
+  }
   return `Department ${scope.departmentId} (the account's own scope; the request can only narrow it)`;
 }
 

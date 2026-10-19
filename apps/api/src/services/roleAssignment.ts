@@ -11,7 +11,7 @@
  */
 import { legacySectionId, normaliseSectionIds, validateScopeSections } from "./userScope";
 
-export const ASSIGNABLE_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "ADMIN", "HR", "FINANCE", "COO"] as const;
+export const ASSIGNABLE_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER", "ADMIN", "HR", "FINANCE", "COO"] as const;
 export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
 
 /** Roles that capture a team and fill timesheets for contract (CLMS) labour. */
@@ -19,7 +19,7 @@ export const CAPTURE_ROLES: string[] = ["SUPERVISOR"];
 /** Roles that approve, so outstanding approval work blocks a move off them. */
 export const APPROVER_ROLES: string[] = ["HOD", "PM", "ADMIN"];
 /** Roles that need to be linked to a person (they report on or act for real labour). */
-export const EMPLOYEE_LINKED_ROLES: string[] = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM"];
+export const EMPLOYEE_LINKED_ROLES: string[] = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER"];
 /**
  * Organisation-wide roles: they read or administer the WHOLE organisation and act for no single
  * person, so they need no Employee record and ALWAYS get `sectionId = null`. The COO belongs here
@@ -128,8 +128,11 @@ export type RoleSourceEmployee = {
  */
 export function creatableRolesFor(employee: RoleSourceEmployee): AssignableRole[] {
   if (!employee.active || !employee.ecNo) return [];
+  // PROJECT_MANAGER is creatable from a PAYROLL Employee, unlike PM: it is an Employee-linked,
+  // project-scoped role (EC-No sign-in, My Hours), not an organisation-wide login. The PROJECTS it
+  // reads come from the assignment panel, never from the Employee's Department/Section.
   return employee.employmentType === "PAYROLL"
-    ? ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD"]
+    ? ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PROJECT_MANAGER"]
     : ["EMPLOYEE", "SUPERVISOR"];
 }
 
@@ -160,7 +163,8 @@ export function refusalForRoleCreation(
     };
   }
   if (creatableRolesFor(employee).includes(requestedRole)) return null;
-  if ((requestedRole === "HOD" || requestedRole === "DEPT_HEAD") && employee.employmentType !== "PAYROLL") {
+  if ((requestedRole === "HOD" || requestedRole === "DEPT_HEAD" || requestedRole === "PROJECT_MANAGER")
+      && employee.employmentType !== "PAYROLL") {
     return {
       code: "ROLE_REQUIRES_PAYROLL_EMPLOYEE",
       error:
@@ -306,7 +310,7 @@ export function planRoleChange(
     ? legacySectionId(resultingSectionIds)
     : (ORGANISATION_WIDE_ROLES.includes(requestedRole) || requestedRole === "DEPT_HEAD")
       ? null
-      : requestedRole === "SUPERVISOR" || requestedRole === "PM" ? null
+      : requestedRole === "SUPERVISOR" || requestedRole === "PM" || requestedRole === "PROJECT_MANAGER" ? null
         : target.sectionAssignment?.sectionId ?? null;
   const scopeOnlyChange =
     target.role === "HOD" && requestedRole === "HOD" && !sameSectionSets(target.currentSectionIds, resultingSectionIds);

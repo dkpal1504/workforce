@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { assignedProjectIdsFor, projectPickerWhere } from "../services/projectScope";
 import { planDateToUtc } from "../services/jobOrderCsv";
 import { plannedDayKey } from "../services/jobOrderSchedule";
 import {
@@ -103,7 +104,11 @@ async function allWbsRowsWithProject() {
  * Each Network is reported with its `wbsId` and the `wbsCode` of the WBS element it
  * belongs to, so the screen can show and filter a WBS column without a second call.
  */
-masterDataRouter.get("/projects", async (_req, res) => {
+masterDataRouter.get("/projects", async (req, res) => {
+  // A project-scoped actor reads only its own projects here too: this feed drives the Job Order
+  // form, and listing every project would disclose the portfolio's structure even though the
+  // dashboard is clamped. Every other role gets `{}` (no narrowing, unchanged behaviour).
+  const scopedProjectIds = await assignedProjectIdsFor(req.user!);
   // Counted separately (not through `_count`, whose `jobOrders` key already means "all of
   // them") so the Project tab can show how many Job Orders would block a deactivation.
   const activeJobOrderRows = await prisma.jobOrder.groupBy({
@@ -113,6 +118,7 @@ masterDataRouter.get("/projects", async (_req, res) => {
   });
   const activeJobOrderCounts = new Map(activeJobOrderRows.map((row) => [row.projectId, row._count._all]));
   const projects = await prisma.project.findMany({
+    where: projectPickerWhere(scopedProjectIds),
     orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
     include: {
       wbsRows: { orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }] },
@@ -635,9 +641,16 @@ masterDataRouter.get("/job-orders", async (req, res) => {
   if (status && !(JOB_ORDER_STATUSES as readonly string[]).includes(status)) {
     return res.status(400).json({ error: "status must be active or inactive.", code: "INVALID_STATUS" });
   }
+  // The request may narrow a project-scoped actor's assignment, never widen it (a foreign
+  // `project_id` intersects to the empty set). `null` = the role is not project-scoped.
+  const scopedProjectIds = await assignedProjectIdsFor(req.user!);
+  const projectFilter =
+    scopedProjectIds === null
+      ? (projectId ? { projectId } : {})
+      : { projectId: { in: projectId ? scopedProjectIds.filter((id) => id === projectId) : scopedProjectIds } };
   const jobOrders = await prisma.jobOrder.findMany({
     where: {
-      ...(projectId ? { projectId } : {}),
+      ...projectFilter,
       ...(status ? { status } : {}),
       ...(q ? { OR: [{ code: { contains: q } }, { name: { contains: q } }] } : {}),
     },

@@ -25,6 +25,7 @@ import { masterDataRouter } from "./routes/masterData";
 import { jobOrderCsvRouter } from "./routes/jobOrderCsv";
 import { jobOrderProgressRouter } from "./routes/jobOrderProgress";
 import { delegationRouter } from "./routes/delegations";
+import { projectManagersRouter } from "./routes/projectManagers";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { attendanceHoursRouter } from "./routes/attendanceHours";
 import { startAttendanceHoursScheduler, stopAttendanceHoursScheduler } from "./services/attendanceHoursScheduler";
@@ -153,6 +154,10 @@ api.use("/summary", summaryRouter);
 // Operations dashboard (portfolio burn, attention ranking) — PM / ADMIN / COO only.
 api.use("/reports", reportsRouter);
 api.use("/approvals", approvalsRouter);
+// Project Manager assignments (which account manages which Projects) — ADMIN only.
+// Mounted BEFORE the /admin router so the path is resolved by its own router rather than falling
+// through another one's authentication first.
+api.use("/admin/project-managers", projectManagersRouter);
 api.use("/admin", adminRouter);
 api.use("/supervisors", supervisorRegistrationRouter);
 api.use("/allocations", employeeAllocationRouter);
@@ -162,6 +167,8 @@ api.use("/job-order-upload", jobOrderCsvRouter);
 api.use("/job-order-progress", jobOrderProgressRouter);
 api.use("/master-data", masterDataRouter);
 api.use("/delegations", delegationRouter);
+// Project Manager assignments (which account manages which Projects) — ADMIN only.
+api.use("/admin/project-managers", projectManagersRouter);
 // Clocked attendance hours (in/out) for submitted timesheets, ADMIN only.
 api.use("/attendance-hours", attendanceHoursRouter);
 app.use("/api", api);

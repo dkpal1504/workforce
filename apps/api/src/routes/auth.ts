@@ -124,7 +124,7 @@ authRouter.post("/login", async (req, res) => {
     select: { ...lifecycleUserSelect, passwordHash: true },
   });
   const emailUser = emailCandidate
-    && ["ADMIN", "HR", "HOD", "DEPT_HEAD", "PM", "FINANCE", "COO"].includes(emailCandidate.role)
+    && ["ADMIN", "HR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER", "FINANCE", "COO"].includes(emailCandidate.role)
       ? emailCandidate
       : null;
   const user = ecNoUser ?? emailUser;

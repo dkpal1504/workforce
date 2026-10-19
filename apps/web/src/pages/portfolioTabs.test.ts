@@ -4,6 +4,7 @@ import {
   COVERAGE_TAB,
   DEFAULT_TAB,
   PORTFOLIO_TABS,
+  defaultTabFor,
   PORTFOLIO_TAB_IDS,
   REPORTS_TAB_IDS,
   TAB_TONES,
@@ -27,7 +28,7 @@ import {
  *      return an id outside the list (a throw inside a keydown handler kills the tab strip).
  */
 
-test("the seven sections are present, in the required order, with unique ids and non-empty labels", () => {
+test("the eight sections are present, in the required order, with unique ids and non-empty labels", () => {
   // The order is the operator-facing table of contents: attention first, the register last.
   assert.deepEqual(PORTFOLIO_TAB_IDS, [
     "needs-push",
@@ -37,10 +38,13 @@ test("the seven sections are present, in the required order, with unique ids and
     // register: a breached window is an answer; the whole register is a reference.
     "schedule-delays",
     "job-work",
+    // The same data as "Job work", arranged as the hierarchy it belongs to. It follows the register
+    // because that is the reading order, and it precedes the department view.
+    "project-structure",
     "department-load",
     "exceptions",
   ]);
-  assert.equal(PORTFOLIO_TABS.length, 7);
+  assert.equal(PORTFOLIO_TABS.length, 8);
   for (const tab of PORTFOLIO_TABS) {
     assert.ok(tab.label.trim().length > 0, `tab ${tab.id} has no label`);
     assert.ok(tab.id.trim().length > 0, "every tab needs an id");
@@ -56,6 +60,14 @@ test("the seven sections are present, in the required order, with unique ids and
 test("the screen opens on the primary answer, and that tab exists", () => {
   assert.equal(DEFAULT_TAB, "needs-push");
   assert.ok(isPortfolioTabId(DEFAULT_TAB));
+});
+
+test("a Project Manager opens on his projects, everyone else on the primary answer", () => {
+  assert.equal(defaultTabFor("PROJECT_MANAGER"), "project-structure");
+  assert.ok(isPortfolioTabId(defaultTabFor("PROJECT_MANAGER")), "the role's tab must exist in the strip");
+  for (const role of ["PM", "ADMIN", "COO", "HOD", "DEPT_HEAD", "SUPERVISOR", "EMPLOYEE", null, undefined, "UNKNOWN"]) {
+    assert.equal(defaultTabFor(role), DEFAULT_TAB, `${String(role)} keeps the default section`);
+  }
 });
 
 test("isPortfolioTabId accepts exactly the six ids and rejects anything else", () => {
@@ -86,20 +98,21 @@ test("every tab wears a tone from the closed set, so no tab can render colourles
       // are the only sections that name work going wrong today.
       ["schedule-delays", "danger"],
       ["job-work", "primary"],
+      ["project-structure", "primary"],
       ["department-load", "warning"],
       ["exceptions", "danger"],
     ]
   );
-  // The strip must not be a single colour: at least four distinct tones across the six tabs.
+  // The strip must not be a single colour: at least four distinct tones across the sections.
   assert.ok(new Set(PORTFOLIO_TABS.map((tab) => tab.tone)).size >= 4);
 });
 
-test("the REPORTS strip is the six portfolio sections PLUS the coverage report, on Reports only", () => {
+test("the REPORTS strip is the portfolio sections PLUS the coverage report, on Reports only", () => {
   // The dashboard renders PORTFOLIO_TABS (its own filters cannot produce a timesheet report), and
   // Reports renders REPORTS_TABS. Pinning the difference stops the coverage tab leaking onto the
   // dashboard, where its dataset does not exist.
   assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage"]);
-  assert.equal(REPORTS_TAB_IDS.length, 8);
+  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 1);
   assert.equal(COVERAGE_TAB.label, "Timesheet coverage");
   assert.ok((TAB_TONES as readonly string[]).includes(COVERAGE_TAB.tone));
   assert.equal(PORTFOLIO_TAB_IDS.includes("timesheet-coverage" as never), false, "not a portfolio section");

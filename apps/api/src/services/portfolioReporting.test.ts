@@ -842,6 +842,7 @@ function makeFacts(over: Partial<JobOrderFacts> = {}): JobOrderFacts {
     displayName: "JO-1-Job One",
     project: { id: 1, code: "P1", name: "Project One" },
     wbs: { id: 1, wbsCode: "W1", name: "WBS One" },
+    network: null,
     department: { id: 1, name: "Dept One" },
     section: { id: 1, name: "Section One" },
     status: "active",

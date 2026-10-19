@@ -56,9 +56,17 @@ import {
 } from "./portfolioFilters";
 import {
   intersectDepartmentFilter,
+  intersectProjectFilter,
   reportScopeFor,
   type ReportScope,
 } from "./roleAccess";
+import { assignedProjectIdsFor } from "./projectScope";
+import {
+  buildProjectStructure,
+  type ProjectStructureRow,
+  type StructureNetworkRow,
+  type StructureWbsRow,
+} from "./projectStructure";
 import { SCHEDULE_ATTENTION_WEIGHTS, SCHEDULE_BAND_DEFINITIONS, SCHEDULE_RULES, type ScheduleBand } from "./jobOrderSchedule";
 
 /* --------------------------------------------------------------------------- *
@@ -227,6 +235,11 @@ export type PortfolioReport = {
       kind: ReportScope["kind"];
       /** The Department id when `kind === "DEPARTMENT"`, else null. */
       departmentId: number | null;
+      /**
+       * The Project ids when `kind === "PROJECTS"`, else null. Carried so a forwarded export states
+       * the exact assignment it was built from, not merely "assigned projects".
+       */
+      projectIds: number[] | null;
       /** A sentence a reader can quote, e.g. "Department 4 (whole department)". */
       description: string;
     };
@@ -234,6 +247,15 @@ export type PortfolioReport = {
   definitions: PortfolioDefinitions;
   pulse: PortfolioPulse;
   projectRollUps: ProjectRollUp[];
+  /**
+   * The Project → WBS → Network → Job Order register (see `projectStructure.ts`).
+   *
+   * It is a SECTION OF ITS OWN because it answers a different question from the rest of the report:
+   * the other sections rank work ("what needs a push"), this one describes shape ("what is under
+   * this project"). Every node's hours and dates come from the SAME scoped facts as the sections
+   * above, so the register can never disagree with them.
+   */
+  projectStructure: ProjectStructureRow[];
   needsPush: ReportJobRow[];
   /** The full number of ranked job orders, even when `needsPush` is capped. */
   needsPushTotal: number;
@@ -317,7 +339,10 @@ function dateKeyOrNull(date: Date | null): string | null {
 function describeScope(scope: ReportScope): string {
   if (scope.kind === "ORGANISATION") return "Whole organisation (all departments)";
   if (scope.kind === "DEPARTMENT") return `Department ${scope.departmentId} (whole department)`;
-  return "No department mapping — nothing in scope";
+  if (scope.kind === "PROJECTS") return `Assigned projects only (${scope.projectIds.length})`;
+  // Reached by an HOD/DEPT_HEAD with no Department mapping, or a PROJECT_MANAGER with no active
+  // assignment. The sentence must fit BOTH, so it names neither.
+  return "No usable scope for this account — nothing in scope";
 }
 
 /**
@@ -328,6 +353,9 @@ function describeScope(scope: ReportScope): string {
  * honest statement — a Department filter IS in force and it admits nothing.
  */
 const EMPTY_DEPARTMENT_FILTER_LINE = "None (nothing in the applied scope)";
+/** The Project dimension's counterpart: an applied-but-empty Project set reads as an explicit
+ *  "nothing", never as a blank that looks like "no filter". */
+const EMPTY_PROJECT_FILTER_LINE = "None (nothing in the applied scope)";
 
 /**
  * Order-independent equality for two Department sets, either of which may be null. Used only to
@@ -423,6 +451,18 @@ export type AssembleInput = {
    * The loader always passes it, so a real report never falls back to the request.
    */
   effectiveDepartmentIds?: number[] | null;
+  /**
+   * The EFFECTIVE Project set the loader applied, with the same four states as the Department set
+   * above (undefined = unknown/request, null = no predicate, [] = applied and admits nothing,
+   * ids = exactly those). The loader always passes it.
+   */
+  effectiveProjectIds?: number[] | null;
+  /**
+   * The register the loader assembled from the SAME scoped facts. Optional so the pure-assembly
+   * fixtures keep working; a fixture that omits it gets an empty register, which is the honest
+   * answer for a caller that supplied no master rows.
+   */
+  projectStructure?: ProjectStructureRow[];
 };
 
 /**
@@ -451,23 +491,34 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
     input.effectiveDepartmentIds === undefined
       ? filters.departmentIds
       : input.effectiveDepartmentIds;
+  // The Project set is treated IDENTICALLY, and for the same reason: a manager who asked for
+  // `projectIds=[9]` outside his assignment read 0 rows, so an export that printed "9" would be
+  // claiming a scope the report never consulted.
+  const appliedProjectIds =
+    input.effectiveProjectIds === undefined
+      ? filters.projectIds
+      : input.effectiveProjectIds;
   // ONE effective filter set drives BOTH the readable line and the hash, so they can never
   // disagree with each other or with the rows the query returned.
   const appliedFilters: PortfolioFilters =
-    appliedDepartmentIds === filters.departmentIds
+    appliedDepartmentIds === filters.departmentIds && appliedProjectIds === filters.projectIds
       ? filters
-      : { ...filters, departmentIds: appliedDepartmentIds };
+      : { ...filters, departmentIds: appliedDepartmentIds, projectIds: appliedProjectIds };
 
   // The filter list is a COMPLETE statement of scope: every unset filter still prints "All". The
   // Department line is the one entry that must reflect the intersection, and an empty applied set
   // is rendered explicitly (the shared describe would print it as a blank value) so a zero-row
   // report never looks like it simply had no Department filter.
   const filterLines = describePortfolioFilters(appliedFilters);
-  const describedFilters = filterLines.map((entry) =>
-    entry.label === "Department" && appliedDepartmentIds !== null && appliedDepartmentIds.length === 0
-      ? { label: entry.label, value: EMPTY_DEPARTMENT_FILTER_LINE }
-      : entry
-  );
+  const describedFilters = filterLines.map((entry) => {
+    if (entry.label === "Department" && appliedDepartmentIds !== null && appliedDepartmentIds.length === 0) {
+      return { label: entry.label, value: EMPTY_DEPARTMENT_FILTER_LINE };
+    }
+    if (entry.label === "Project" && appliedProjectIds !== null && appliedProjectIds.length === 0) {
+      return { label: entry.label, value: EMPTY_PROJECT_FILTER_LINE };
+    }
+    return entry;
+  });
 
   // Record that a NARROWING happened, so a reader can see both truths: what was ASKED for and what
   // was APPLIED. `scope` already states the applied truth; this note removes any ambiguity about
@@ -475,6 +526,9 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
   const requestedDepartmentFilterNarrowed =
     input.effectiveDepartmentIds !== undefined &&
     !sameNumberSet(filters.departmentIds, input.effectiveDepartmentIds);
+  const requestedProjectFilterNarrowed =
+    input.effectiveProjectIds !== undefined &&
+    !sameNumberSet(filters.projectIds, input.effectiveProjectIds);
 
   const projectIds = new Set<number>();
   let budgetHours = 0;
@@ -616,6 +670,13 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
             `Requested Department filter: ${filters.departmentIds?.join(", ") ?? "All"} — intersected with the acting scope and narrowed to the applied scope above; the request never widened it.`,
           ]
         : []),
+      // The same disclosure for the Project dimension: a manager's request can only narrow his
+      // assignment, and an export must say so rather than print the ids he asked for.
+      ...(requestedProjectFilterNarrowed
+        ? [
+            `Requested Project filter: ${filters.projectIds?.join(", ") ?? "All"} — intersected with the acting scope and narrowed to the applied scope above; the request never widened it.`,
+          ]
+        : []),
       "Quantity achievement is NOT_MEASURABLE until HODs punch and PMs approve progress; it is never assumed.",
       BOOKED_HOURS_NOTE,
       "The budget used is the revision in force on the as-of date, exactly as budgetInForce() defines it.",
@@ -641,6 +702,7 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
       scope: {
         kind: scope.kind,
         departmentId: scope.kind === "DEPARTMENT" ? scope.departmentId : null,
+        projectIds: scope.kind === "PROJECTS" ? [...scope.projectIds] : null,
         description: describeScope(scope),
       },
     },
@@ -663,6 +725,7 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
       oldestUnapprovedAt: dateKeyOrNull(oldestUnapprovedAt),
     },
     projectRollUps: rollUpProjects(facts),
+    projectStructure: input.projectStructure ?? [],
     needsPush,
     needsPushTotal: facts.length,
     onTrack,
@@ -695,6 +758,23 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
   };
 }
 
+/**
+ * The distinct projects represented in the fetched job orders, in code order.
+ *
+ * Used for every scope that is NOT project-scoped: the register then describes exactly the projects
+ * the reader can already see rows for, which is what keeps a Department head's structure honest. A
+ * project-scoped actor uses its assignment instead (so an assigned project with no work still shows).
+ */
+function projectsFromJobOrders(
+  jobOrders: ReadonlyArray<{ project: { id: number; code: string; name: string; active: boolean } }>
+): Array<{ id: number; code: string; name: string; active: boolean }> {
+  const seen = new Map<number, { id: number; code: string; name: string; active: boolean }>();
+  for (const jobOrder of jobOrders) {
+    if (!seen.has(jobOrder.project.id)) seen.set(jobOrder.project.id, jobOrder.project);
+  }
+  return [...seen.values()].sort((a, b) => a.code.localeCompare(b.code));
+}
+
 /* --------------------------------------------------------------------------- *
  * The bounded loader
  * ------------------------------------------------------------------------- */
@@ -711,11 +791,18 @@ function jobOrderWhere(
    * Derived once in `buildPortfolioReport` so the request can never widen the actor's scope. An HOD
    * asking for another Department lands on the empty array and therefore reads zero rows.
    */
-  departmentFilter: number[] | null
+  departmentFilter: number[] | null,
+  /**
+   * The EFFECTIVE, already-intersected Project set — see `intersectProjectFilter`. NOT
+   * `filters.projectIds`: an EMPTY array must survive as `{ in: [] }` (zero rows), while `null`
+   * means "no Project predicate at all". Collapsing the two would turn a disjoint request into the
+   * whole assignment.
+   */
+  projectFilter: number[] | null,
 ): Prisma.JobOrderWhereInput {
   const where: Prisma.JobOrderWhereInput = {};
   if (filters.status !== "all") where.status = filters.status;
-  if (filters.projectIds) where.projectId = { in: filters.projectIds };
+  if (projectFilter !== null) where.projectId = { in: projectFilter };
   if (filters.wbsIds) where.projectWbsId = { in: filters.wbsIds };
   if (departmentFilter !== null) where.departmentId = { in: departmentFilter };
   // A `sectionIds` filter needs no separate cross-department guard: Section ids are globally
@@ -769,18 +856,28 @@ export async function buildPortfolioReport(
   // does NOT fall back to the actor's own Department: a report that quietly ignores the filter it
   // was handed is worse than an empty one, because the reader believes a filter was applied. The
   // provenance block records the scope actually applied either way.
-  const scope = reportScopeFor(actor.role, actor.departmentId ?? null);
+  // The Project assignment is read HERE, server-side, and only for the role that is scoped by it
+  // (`assignedProjectIdsFor` returns null with no query for every other role). It is deliberately
+  // not passed in by the route: a request must never be able to name its own project scope.
+  const assignedProjectIds = await assignedProjectIdsFor(actor);
+  const scope = reportScopeFor(actor.role, actor.departmentId ?? null, assignedProjectIds);
   const effectiveDepartmentIds = intersectDepartmentFilter(scope, filters.departmentIds);
+  // The Project dimension is intersected with the assignment exactly as the Department one is with
+  // the Department: the request narrows, never widens, and a disjoint request stays EMPTY.
+  const effectiveProjectIds = intersectProjectFilter(scope, filters.projectIds);
 
   // 1. The job orders and every relation the report names. ONE query, scoped by the intersected
   //    Department set above — so the pulse, needs-push, on-track, job work, department load, the
   //    exception buckets AND both exports (which reuse this assembly) all derive from the SAME
   //    scoped fetch. There is no second scoping path.
   const jobOrders = await db.jobOrder.findMany({
-    where: jobOrderWhere(filters, effectiveDepartmentIds),
+    where: jobOrderWhere(filters, effectiveDepartmentIds, effectiveProjectIds),
     include: {
-      project: { select: { id: true, code: true, name: true } },
+      // `active` is carried so the register can state a project's stored state without a second
+      // read for the ordinary (non-project-scoped) caller.
+      project: { select: { id: true, code: true, name: true, active: true } },
       projectWbs: { select: { id: true, wbsCode: true, name: true } },
+      network: { select: { id: true, code: true, name: true } },
       uom: { select: { code: true } },
       department: { select: { id: true, name: true } },
       section: { select: { id: true, name: true } },
@@ -789,6 +886,74 @@ export async function buildPortfolioReport(
   });
 
   const jobOrderIds = jobOrders.map((jobOrder) => jobOrder.id);
+
+  // ── The structure register's master rows ───────────────────────────────────────────────────────
+  // TWO bounded queries (+ one for a Project Manager, whose projects include ones with NO job orders
+  // and therefore cannot be derived from the facts). The `_count` rides on the same query, so
+  // telling an EMPTY node from an out-of-scope node costs nothing extra.
+  //
+  // WHICH PROJECTS: for a PROJECT_MANAGER the ASSIGNMENT — an assigned project with no job orders is
+  // the row that matters most, and deriving from the facts would hide it. For everyone else the
+  // projects whose job orders are in scope, which is what keeps a Department head's register
+  // describing his own department.
+  //
+  // It follows the EFFECTIVE PROJECT FILTER, not the bare scope, so it can never contradict the rows
+  // above it: a disjoint request (which matches nothing) leaves an EMPTY register rather than a
+  // register of projects whose counts would then read zero against facts that were filtered out.
+  // With no project request, the effective set IS the assignment (or null for a role that is not
+  // project-scoped), which is exactly the case that must keep an assigned-but-idle project visible.
+  const structureProjectIds = effectiveProjectIds !== null
+    ? [...effectiveProjectIds]
+    : [...new Set(jobOrders.map((jobOrder) => jobOrder.projectId))].sort((a, b) => a - b);
+
+  const [structureProjects, structureWbs, structureNetworks] = await Promise.all([
+    effectiveProjectIds !== null
+      ? db.project.findMany({
+          where: { id: { in: structureProjectIds } },
+          select: { id: true, code: true, name: true, active: true },
+          orderBy: { code: "asc" },
+        })
+      : Promise.resolve(projectsFromJobOrders(jobOrders)),
+    structureProjectIds.length === 0
+      ? Promise.resolve([] as StructureWbsRow[])
+      : db.projectWbs.findMany({
+          where: { projectId: { in: structureProjectIds } },
+          select: {
+            id: true,
+            projectId: true,
+            wbsCode: true,
+            name: true,
+            sortOrder: true,
+            active: true,
+            _count: { select: { jobOrders: true } },
+          },
+          orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }],
+        }).then((rows) => rows.map((row) => ({ ...row, jobOrderCount: row._count.jobOrders }))),
+    structureProjectIds.length === 0
+      ? Promise.resolve([] as StructureNetworkRow[])
+      : db.network.findMany({
+          where: { projectId: { in: structureProjectIds } },
+          select: {
+            id: true,
+            projectId: true,
+            wbsId: true,
+            code: true,
+            name: true,
+            active: true,
+            _count: { select: { jobOrders: true } },
+          },
+          orderBy: { code: "asc" },
+        }).then((rows) => rows.map((row) => ({ ...row, jobOrderCount: row._count.jobOrders }))),
+  ]);
+
+  const structureFor = (facts: readonly JobOrderFacts[]) =>
+    buildProjectStructure({
+      facts,
+      projects: structureProjects,
+      wbsRows: structureWbs,
+      networkRows: structureNetworks,
+      activityDays: filters.activityDays,
+    });
 
   if (jobOrderIds.length === 0) {
     // Nothing in scope: no further queries, and the as-of date falls back to today. The scope is
@@ -800,11 +965,15 @@ export async function buildPortfolioReport(
       asOf: filters.asOf ?? now,
       now,
       scope,
-      // The intersected set actually applied. On this branch it is the EMPTY set for a disjoint
-      // request (or an unmapped head), which is exactly what lets the provenance say "None
-      // (nothing in the applied scope)" instead of echoing the foreign Department that was asked
-      // for. The rows are zero; the disclosure now matches.
+      // The intersected sets actually applied. On this branch they are the EMPTY sets for a
+      // disjoint request (or an unmapped head / unassigned manager), which is exactly what lets the
+      // provenance say "None (nothing in the applied scope)" instead of echoing the foreign
+      // Department or Project that was asked for. The rows are zero; the disclosure now matches.
       effectiveDepartmentIds,
+      effectiveProjectIds,
+      // An assigned project with no work still appears, with a zeroed register: that is the row a
+      // Project Manager needs to see, and deriving the register from the facts alone would hide it.
+      projectStructure: structureFor([]),
     });
   }
 
@@ -943,6 +1112,11 @@ export async function buildPortfolioReport(
           wbsCode: jobOrder.projectWbs.wbsCode,
           name: jobOrder.projectWbs.name ?? "",
         },
+        // ProjectWbs.name is nullable and so is Network.name; the facts shape wants a string, so an
+        // unnamed network renders as an empty name rather than leaking a null into the register.
+        network: jobOrder.network
+          ? { id: jobOrder.network.id, code: jobOrder.network.code, name: jobOrder.network.name ?? "" }
+          : null,
         department: jobOrder.department,
         section: jobOrder.section,
         plannedStartDate: jobOrder.plannedStartDate,
@@ -964,5 +1138,15 @@ export async function buildPortfolioReport(
     })
   );
 
-  return assemblePortfolioReport({ facts, filters, actor, asOf, now, scope, effectiveDepartmentIds });
+  return assemblePortfolioReport({
+    facts,
+    filters,
+    actor,
+    asOf,
+    now,
+    scope,
+    effectiveDepartmentIds,
+    effectiveProjectIds,
+    projectStructure: structureFor(facts),
+  });
 }

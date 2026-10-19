@@ -20,7 +20,7 @@ import {
 } from "./roleAssignmentSelection";
 import "../styles/supervisors.css";
 
-type Role = "EMPLOYEE" | "SUPERVISOR" | "HOD" | "DEPT_HEAD" | "PM" | "ADMIN" | "HR" | "FINANCE";
+type Role = "EMPLOYEE" | "SUPERVISOR" | "HOD" | "DEPT_HEAD" | "PM" | "PROJECT_MANAGER" | "ADMIN" | "HR" | "FINANCE";
 type HodScope = "SECTION" | "DEPARTMENT";
 
 /** The two row shapes the server sends: an account, and an Employee with no account yet. */
@@ -55,6 +55,7 @@ const ROLE_LABELS: Record<Role, string> = {
   HOD: "HOD (approves own Section)",
   DEPT_HEAD: "Department Head (department-wide view, no approval)",
   PM: "Project Head (approves across Departments)",
+  PROJECT_MANAGER: "Project Manager (reads only the Projects assigned to him)",
   ADMIN: "Admin (full access)",
   HR: "HR (registration screens)",
   FINANCE: "Finance (approved summary)",
@@ -68,6 +69,9 @@ const ROLE_EFFECT: Record<Role, string> = {
   DEPT_HEAD:
     "Lands on Summary and sees approved hours for every Section of their Department; does not approve timesheets.",
   PM: "Lands on Project Head Approvals across all Departments.",
+  PROJECT_MANAGER:
+    "Lands on the portfolio dashboard, scoped to the Projects an Admin assigns on Project Managers. " +
+    "Read-only: no approvals, no master data. Until a project is assigned he sees nothing.",
   ADMIN: "Full access, including this panel.",
   HR: "Registration screens (employees, supervisors, CSV).",
   FINANCE: "Read-only approved summary.",
@@ -79,14 +83,25 @@ const ROLE_EFFECT: Record<Role, string> = {
  * one rule that is not per-row, so an operator understands the shape of the list at a glance.
  */
 const CREATION_POLICY_NOTE =
-  "Contract (blue-collar) employees can be given Employee or Supervisor. HOD and Department Head need a payroll " +
-  "(white-collar) Employee; PM, HR, Finance and Admin are not Employee roles at all.";
+  "Contract (blue-collar) employees can be given Employee or Supervisor. HOD, Department Head and Project " +
+  "Manager need a payroll (white-collar) Employee; PM, HR, Finance and Admin are not Employee roles at all. " +
+  "The Project Manager role only scopes the dashboard — which projects he reads is set on Project Managers.";
 
 /** Cap on rendered picker options: a filtered select stays usable, an unfiltered 5000-row one does not. */
 const PICKER_OPTION_LIMIT = 200;
 
 /** The roles this panel can tick, used to sanity-check an account's stored role before pre-ticking it. */
-const SELECTABLE_ROLES: Role[] = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "ADMIN", "HR", "FINANCE"];
+const SELECTABLE_ROLES: Role[] = [
+  "EMPLOYEE",
+  "SUPERVISOR",
+  "HOD",
+  "DEPT_HEAD",
+  "PM",
+  "PROJECT_MANAGER",
+  "ADMIN",
+  "HR",
+  "FINANCE",
+];
 
 function errorText(error: unknown): string {
   if (error instanceof ApiError && error.payload && typeof error.payload === "object" && "error" in error.payload) {

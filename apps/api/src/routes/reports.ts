@@ -46,7 +46,26 @@ export const reportsRouter = Router();
  * from the audit row they are REQUIRED to write — "who pulled these numbers" has to be
  * answerable later, and an export writes nothing else at all.
  */
-reportsRouter.use(requireAuth, requireRoles("PM", "ADMIN", "COO", "HOD", "DEPT_HEAD"));
+/**
+ * WHO may open the portfolio report.
+ *
+ * PROJECT_MANAGER is admitted here and NARROWED to its assigned projects by `reportScopeFor`; the
+ * gate is only the door. HOD/DEPT_HEAD are narrowed to their Department in the same place, and the
+ * request's filters can only narrow further.
+ */
+const PORTFOLIO_ROLES = ["PM", "ADMIN", "COO", "HOD", "DEPT_HEAD", "PROJECT_MANAGER"] as const;
+
+/**
+ * WHO may read the Timesheet coverage report — deliberately WITHOUT PROJECT_MANAGER.
+ *
+ * That report's row set is the EMPLOYEE ROSTER (employees x dates), and a project scope cannot
+ * define who is in it. Because the router-level gate above admits the new role, its two routes carry
+ * this second, narrower gate explicitly; inheriting the wider one would hand a Project Manager a
+ * report whose scope is undefined.
+ */
+const COVERAGE_ROLES = ["PM", "ADMIN", "COO", "HOD", "DEPT_HEAD"] as const;
+
+reportsRouter.use(requireAuth, requireRoles(...PORTFOLIO_ROLES));
 
 reportsRouter.get("/portfolio", async (req, res) => {
   // One parser for every format: the JSON screen, the XLSX and the PDF all go through
@@ -222,7 +241,7 @@ function coverageActor(req: Request): CoverageActor {
  * to the browser to page there would push megabytes for one screenful. The coverage figures are
  * computed over ALL rows before the page is cut, so the summary never changes with the page.
  */
-reportsRouter.get("/timesheet-coverage", async (req, res) => {
+reportsRouter.get("/timesheet-coverage", requireRoles(...COVERAGE_ROLES), async (req, res) => {
   const filters = parseCoverageFilters(req.query as Record<string, unknown>);
   if ("error" in filters) return res.status(400).json(filters.error);
   try {
@@ -244,7 +263,7 @@ reportsRouter.get("/timesheet-coverage", async (req, res) => {
  * `includeAllRows: true` and NO page parameter is read from the request: a download is always the
  * whole period, so a hostile `?page=3` cannot turn the file into one page of the screen.
  */
-reportsRouter.get("/timesheet-coverage.xlsx", async (req, res) => {
+reportsRouter.get("/timesheet-coverage.xlsx", requireRoles(...COVERAGE_ROLES), async (req, res) => {
   const filters = parseCoverageFilters(req.query as Record<string, unknown>);
   if ("error" in filters) return res.status(400).json(filters.error);
   const actor = coverageActor(req);

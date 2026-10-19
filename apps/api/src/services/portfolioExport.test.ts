@@ -163,7 +163,20 @@ function fixtureReport(): PortfolioReport {
 /** The exact sheet names the workbook must contain, in order, one per report section. */
 // One sheet per report section, in the report's own order. "Schedule & delays" is the seventh
 // section: a workbook that omitted it would hide exactly the delays a forwarded report is read for.
-const EXPECTED_SHEETS = ["Summary", "Needs push", "Schedule & delays", "Job work", "On track", "Dept load", "Exceptions", "Filters"];
+// The register is a sheet of its own, immediately after the other job-order views: it carries the
+// same scoped rows arranged as Project → WBS → Network, and a download that omitted it would leave
+// the screen's seventh section out of the file.
+const EXPECTED_SHEETS = [
+  "Summary",
+  "Needs push",
+  "Schedule & delays",
+  "Job work",
+  "On track",
+  "Project structure",
+  "Dept load",
+  "Exceptions",
+  "Filters",
+];
 
 /** Every string/number/date a sheet contains, flattened for substring assertions. */
 function sheetText(sheet: ExcelJS.Worksheet): string {

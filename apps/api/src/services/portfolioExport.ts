@@ -37,10 +37,75 @@ import {
 } from "./portfolioFilters";
 import type { DepartmentRollUp, ProjectRollUp } from "./portfolioReporting";
 import type { PortfolioReport, ReportJobRow } from "./portfolioReport";
+import type { ProjectStructureRow, StructureNode } from "./projectStructure";
 
 /* --------------------------------------------------------------------------- *
  * Shared shaping
  * --------------------------------------------------------------------------- */
+
+/**
+ * The structure register as flat rows, for BOTH formats.
+ *
+ * One row per node with its LEVEL named, rather than nested groups: a spreadsheet cannot nest, and a
+ * printed table must not imply a depth it does not show. The three levels are Project, WBS and
+ * Network, in that order, and each network row carries its WBS in the `parent` column so a row stays
+ * attributable after a sort or a filter.
+ *
+ * A NETWORK'S BANDS ARE DERIVED. The column header says so ("Worst hours band (derived)") because
+ * the master stores only active/inactive and presenting a derived figure as a stored status is the
+ * kind of confident-looking lie this report exists to avoid.
+ */
+export type StructureExportRow = {
+  level: string;
+  parent: string;
+  node: string;
+  jobOrders: string;
+  hoursBand: string;
+  schedule: string;
+  qtyCompletePct: number | null;
+  budgetHours: number;
+  actualHours: number;
+  burnPct: number | null;
+  noActivity: number;
+  unapprovedHours: number;
+};
+
+export function flattenProjectStructure(rows: readonly ProjectStructureRow[]): StructureExportRow[] {
+  const out: StructureExportRow[] = [];
+  const push = (level: string, parent: string, label: string, node: StructureNode): void => {
+    out.push({
+      level,
+      parent,
+      node: label,
+      // "in scope / total" only when they differ — the same honesty rule the screen applies.
+      jobOrders:
+        node.jobOrderCount === node.jobOrderCountAll
+          ? String(node.jobOrderCount)
+          : `${node.jobOrderCount} / ${node.jobOrderCountAll}`,
+      hoursBand: node.hoursBand,
+      schedule: node.scheduleBand,
+      qtyCompletePct: node.qtyCompletePct,
+      budgetHours: node.budgetHours,
+      actualHours: node.actualHours,
+      burnPct: node.burnPct,
+      noActivity: node.noActivity,
+      unapprovedHours: node.unapprovedHours,
+    });
+  };
+
+  for (const project of rows) {
+    const projectLabel = `${project.project.code} - ${project.project.name}`;
+    push("Project", "", projectLabel, project.totals);
+    for (const wbs of project.wbs) {
+      const wbsLabel = `${wbs.code}${wbs.name ? ` - ${wbs.name}` : ""}`;
+      push("WBS", projectLabel, wbsLabel, wbs);
+      for (const network of wbs.networks) {
+        push("Network", wbsLabel, `${network.code}${network.name ? ` - ${network.name}` : ""}`, network);
+      }
+    }
+  }
+  return out;
+}
 
 /** The two formats this module renders. Used for the audit row and the filename. */
 export type PortfolioExportFormat = "xlsx" | "pdf";
@@ -314,6 +379,27 @@ export async function buildPortfolioXlsx(
     ...report.onTrack,
     ...report.onTrackNotMeasurable,
   ]);
+
+  /* ---- Project structure ------------------------------------------------ */
+  // The same scoped facts as "Job work", arranged as the hierarchy they belong to. Flat rows with a
+  // Level column, because a sheet cannot nest; the Parent column keeps a WBS/Network row
+  // attributable after a sort. A Network's bands are DERIVED (the header says so) — the master
+  // stores only active/inactive.
+  const structureColumns: SheetColumn<StructureExportRow>[] = [
+    { header: "Level", width: 10, value: (row) => row.level },
+    { header: "Parent", width: 34, value: (row) => row.parent },
+    { header: "Node", width: 38, value: (row) => row.node },
+    { header: "Job orders (in scope / total)", width: 16, value: (row) => row.jobOrders },
+    { header: "Worst hours band", width: 16, value: (row) => row.hoursBand },
+    { header: "Worst schedule (derived)", width: 20, value: (row) => row.schedule },
+    { header: "Qty complete %", width: 12, numFmt: "0.0%", value: (row) => row.qtyCompletePct },
+    { header: "Budget h", width: 12, numFmt: "0.00", value: (row) => row.budgetHours },
+    { header: "Actual h", width: 12, numFmt: "0.00", value: (row) => row.actualHours },
+    { header: "Burn %", width: 10, numFmt: "0.0%", value: (row) => row.burnPct },
+    { header: "No activity", width: 11, numFmt: "0", value: (row) => row.noActivity },
+    { header: "Unapproved h", width: 12, numFmt: "0.00", value: (row) => row.unapprovedHours },
+  ];
+  addDataSheet(workbook, "Project structure", structureColumns, flattenProjectStructure(report.projectStructure));
 
   /* ---- Dept load -------------------------------------------------------- */
   const deptColumns: SheetColumn<DepartmentRollUp>[] = [
@@ -694,6 +780,27 @@ export async function buildPortfolioPdf(
         { header: "Attention", width: 11, value: (row) => String(row.attentionScore) },
       ];
       drawTable(doc, "Project roll-ups", projectColumns, report.projectRollUps);
+
+      /* ---- Project structure -------------------------------------------- */
+      // Printed right after the project roll-ups, because it is the same hierarchy one level deeper.
+      // A Network's bands are derived from its job orders; the section title says so.
+      const structureColumns: PdfColumn<StructureExportRow>[] = [
+        { header: "Level", width: 11, value: (row) => row.level },
+        { header: "Node", width: 44, value: (row) => row.node },
+        { header: "JOs", width: 9, value: (row) => row.jobOrders },
+        { header: "Hours", width: 13, value: (row) => row.hoursBand },
+        { header: "Schedule (derived)", width: 19, value: (row) => row.schedule },
+        { header: "Qty", width: 9, value: (row) => pdfPct(row.qtyCompletePct) },
+        { header: "Budget h", width: 13, value: (row) => pdfHours(row.budgetHours) },
+        { header: "Actual h", width: 13, value: (row) => pdfHours(row.actualHours) },
+        { header: "Burn", width: 9, value: (row) => pdfPct(row.burnPct) },
+      ];
+      drawTable(
+        doc,
+        "Project structure (Project > WBS > Network; a Network has no status of its own, so its bands are derived from its job orders)",
+        structureColumns,
+        flattenProjectStructure(report.projectStructure)
+      );
 
       /* ---- Needs push / Job work / On track ----------------------------- */
       drawTable(doc, `Needs push (top ${report.needsPush.length} of ${report.needsPushTotal} by attention)`, PDF_JOB_COLUMNS, report.needsPush);
