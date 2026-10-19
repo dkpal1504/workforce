@@ -97,3 +97,25 @@ tab is hidden from a role without `viewTimesheetCoverage`.
   assignment (so an assigned project with no work still appears); with a filter it is that filter.
 - **Deactivating a project** does not revoke its assignments; the manager keeps the row and sees it
   marked inactive. Deactivate/reactivate assignments deliberately.
+
+## Shipping this in production
+
+The release carries **one migration**, `20261019000000_project_manager_scope`, and it is
+**additive only**: `CREATE TABLE project_manager_assignments`, three indexes and three foreign keys.
+It contains no `DROP`, no `ALTER` of an existing table and no `DELETE` / `TRUNCATE` / `UPDATE`, so no
+existing row is read or rewritten and there is nothing to backfill.
+
+The one-shot `migrate` container in `infra/docker/compose.production.yml` runs
+`npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`. That applies the pending
+migration and nothing else — it never touches a table the migration does not name.
+
+**Commands that must never be run against production** (none of them appears in the release
+sequence): `prisma migrate reset`, `prisma db push`, `npm run db:seed`, `npm run db:setup`,
+`docker compose down -v`. The production stack has **no database service** — `DATABASE_URL` points at
+the PostgreSQL server outside the stack — so recreating `api` and `web` cannot reach the data at all.
+
+The production image build also requires the committed schema to declare PostgreSQL (the Dockerfile
+refuses a SQLite datasource), which `apps/api/prisma/schema.prisma` now does.
+
+Rollback: drop the single table and revert the code. No other object is touched, so there is no data
+to restore.
