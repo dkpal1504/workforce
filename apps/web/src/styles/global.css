@@ -120,28 +120,40 @@ a {
   min-width: 0;
 }
 
-.app-header__mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 11px;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--accent) 80%, white), var(--primary));
-  display: grid;
-  place-items: center;
+/* The company brand mark (apps/web/public/brand/sdhi.png).
+ *
+ * The PNG is dark navy on a TRANSPARENT background, so it is drawn on a literal white chip rather
+ * than a theme surface: a token would be dark in Nocturne and the artwork would vanish, and a
+ * logo's colours are brand, not theme. The chip is what makes it readable on the dark rail, the
+ * header and the login panel's gradient alike.
+ */
+.app-brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 5px 8px;
+  box-shadow: 0 1px 2px rgba(2, 6, 23, 0.28);
 }
 
-.app-header__mark span {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #fff;
-  border-radius: 4px;
-  transform: rotate(18deg);
+.app-brand-logo img {
+  display: block;
+  height: 16px;
+  width: auto;
 }
 
 .app-header__titles {
   min-width: 0;
+}
+
+/* On a phone the header also carries the page title and the menu button; the logo takes one step
+ * down rather than wrapping the title onto three lines. */
+@media (max-width: 767px) {
+  .app-header__brand .app-brand-logo img {
+    height: 13px;
+  }
 }
 
 .app-header__product {
@@ -570,6 +582,24 @@ select option {
   pointer-events: none;
 }
 
+.login-page__brand-row {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.login-page__brand-row .app-brand-logo {
+  padding: 6px 9px;
+  border-radius: 12px;
+}
+
+.login-page__brand-row .app-brand-logo img {
+  height: 22px;
+}
+
 .login-page__brand {
   position: relative;
   z-index: 1;
@@ -578,7 +608,7 @@ select option {
   letter-spacing: 0.16em;
   text-transform: uppercase;
   opacity: 0.8;
-  margin: 0 0 12px;
+  margin: 0;
 }
 
 .login-page__visual h1 {
@@ -947,10 +977,25 @@ select option {
   }
 
   .app-rail__brand {
+    /* Stacked: the logo is a 7.3:1 lockup, so it needs the full width rather than a 36px square. */
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
     padding: 4px 8px 2px;
+  }
+
+  .app-rail__brand .app-brand-logo {
+    width: 100%;
+    max-width: 184px;
+    padding: 7px 9px;
+    border-radius: 12px;
+  }
+
+  /* Width-led so the lockup keeps its own ratio (no squashing), and it follows the rail's width. */
+  .app-rail__brand .app-brand-logo img {
+    width: 100%;
+    height: auto;
   }
 
   .app-rail__name {

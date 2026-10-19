@@ -47,6 +47,29 @@ function titleForPath(pathname: string, role?: string) {
 
 const RAIL_PIN_KEY = "workforce_rail_pinned";
 
+/**
+ * The company brand mark: the supplied SDHI logo, drawn on a LIGHT chip.
+ *
+ * WHY AN EXPLICIT WHITE CHIP AND NOT A THEME TOKEN: the PNG is dark navy artwork on a TRANSPARENT
+ * background. On the Nocturne rail a themed surface is dark, so the logo would disappear — and a
+ * logo's colours are brand, not theme. The chip keeps it legible on every rail, header and the
+ * login panel's gradient without recolouring the artwork.
+ *
+ * `decorative` is set where adjacent text already names the product and the group (the rail), so a
+ * screen reader is not told the same thing twice.
+ */
+function BrandLogo({ decorative = false }: { decorative?: boolean }) {
+  return (
+    <span className="app-brand-logo">
+      <img
+        src="/brand/sdhi.png"
+        alt={decorative ? "" : "Swan Defence and Heavy Industries"}
+        aria-hidden={decorative || undefined}
+      />
+    </span>
+  );
+}
+
 type RailIconName =
   | "team" | "clock" | "chart" | "check" | "hours"
   | "supervisor" | "people" | "building" | "star"
@@ -272,9 +295,7 @@ export function AppLayout() {
         }}
       >
         <div className="app-rail__brand">
-          <div className="app-header__mark" aria-hidden>
-            <span />
-          </div>
+          <BrandLogo decorative />
           <div>
             <p className="app-rail__name">Workforce</p>
             <p className="app-rail__org">Swan Group</p>
@@ -332,9 +353,7 @@ export function AppLayout() {
       <header className="app-header">
         <div className="app-header__top">
           <div className="app-header__brand">
-            <div className="app-header__mark" aria-hidden>
-              <span />
-            </div>
+            <BrandLogo />
             <div className="app-header__titles">
               <p className="app-header__product">Workforce</p>
               <h1 className="app-header__title">{titleForPath(location.pathname, user?.role)}</h1>
@@ -524,9 +543,7 @@ export function HeaderOnly({ title, children }: { title: string; children: React
     <div className="app-shell">
       <header className="app-header">
         <div className="app-header__brand">
-          <div className="app-header__mark" aria-hidden>
-            <span />
-          </div>
+          <BrandLogo />
           <div className="app-header__titles">
             <p className="app-header__product">Workforce</p>
             <h1 className="app-header__title">{title}</h1>

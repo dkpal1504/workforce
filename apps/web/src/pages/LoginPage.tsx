@@ -42,7 +42,12 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <section className="login-page__visual">
-        <p className="login-page__brand">Workforce</p>
+        <div className="login-page__brand-row">
+          <span className="app-brand-logo">
+            <img src="/brand/sdhi.png" alt="Swan Defence and Heavy Industries" />
+          </span>
+          <p className="login-page__brand">Workforce</p>
+        </div>
         <h1>Manpower & timesheet, refined for the yard floor.</h1>
         <p>
           Select teams, tag hours across projects, and move approvals with a clear daily rhythm — built for supervisors,
