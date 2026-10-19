@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { todayDateString } from "../utils/date";
+// The ONE way a day is printed in this app: dd-mm-yyyy (see pages/formatDate.ts). The date INPUTS
+// stay ISO because `<input type="date">` requires it; everything READ by a person goes through this.
+import { formatDay } from "./formatDate";
 import "../styles/supervisors.css";
 import "./AttendanceHoursPage.css";
 
@@ -110,7 +113,7 @@ const OUTCOME_LABEL: Record<PlannedRow["outcome"], string> = {
 /** "3 checks since 19 Sep" - the evidence that a pending day is still outstanding. */
 function checkLabel(row: PendingRow): string {
   if (row.inOutAttempts === 0) return "never checked";
-  const when = row.inOutCheckedAt ? new Date(row.inOutCheckedAt).toISOString().slice(0, 10) : "—";
+  const when = formatDay(row.inOutCheckedAt);
   return `${row.inOutAttempts} check${row.inOutAttempts === 1 ? "" : "s"} · last ${when}`;
 }
 
@@ -286,7 +289,7 @@ export function AttendanceHoursPage() {
       {message && <div className="carry-banner">{message}</div>}
       {result && result.errors.length > 0 && (
         <div className="warning-banner">
-          {result.errors.length} day(s) could not be read: {result.errors[0].date} — {result.errors[0].message}
+          {result.errors.length} day(s) could not be read: {formatDay(result.errors[0].date)} — {result.errors[0].message}
         </div>
       )}
 
@@ -336,7 +339,9 @@ export function AttendanceHoursPage() {
         <div className="panel__body">
           {result && (
             <p className="att-summary">
-              {result.dateFrom === result.dateTo ? result.dateFrom : `${result.dateFrom} → ${result.dateTo}`} ·{" "}
+              {result.dateFrom === result.dateTo
+                ? formatDay(result.dateFrom)
+                : `${formatDay(result.dateFrom)} → ${formatDay(result.dateTo)}`} ·{" "}
               {result.dryRun ? "nothing written" : `${result.updated} saved`} · {result.unchanged} already current ·{" "}
               {changedRows.length} difference(s) to review
             </p>
@@ -368,7 +373,7 @@ export function AttendanceHoursPage() {
                       <tr key={row.dayId} data-day-id={row.dayId}>
                         <td>{row.employeeName}</td>
                         <td>{row.ecNo}</td>
-                        <td>{row.workDate}</td>
+                        <td>{formatDay(row.workDate)}</td>
                         <td>{row.status}</td>
                         <td>{hours(row.bookedHours)}</td>
                         <td>{hours(row.clockedHours)}</td>
@@ -409,7 +414,7 @@ export function AttendanceHoursPage() {
                       <span>{row.ecNo}</span>
                     </div>
                     <div className="att-card__meta">
-                      {row.workDate} · {row.status} · booked {hours(row.bookedHours)}h · clocked {hours(row.clockedHours)}h
+                      {formatDay(row.workDate)} · {row.status} · booked {hours(row.bookedHours)}h · clocked {hours(row.clockedHours)}h
                       {row.difference != null && ` (${row.difference > 0 ? "+" : ""}${hours(row.difference)}h)`}
                     </div>
                     <div className="att-card__meta">
@@ -473,7 +478,7 @@ export function AttendanceHoursPage() {
                       <tr key={row.dayId} data-day-id={row.dayId}>
                         <td>{row.employeeName}</td>
                         <td>{row.ecNo}</td>
-                        <td>{row.workDate}</td>
+                        <td>{formatDay(row.workDate)}</td>
                         <td className={row.ageDays > 7 ? "att-diff att-diff--over" : ""}>{row.ageDays}d</td>
                         <td>{row.status}</td>
                         <td>{hours(row.bookedHours)}</td>
@@ -487,7 +492,7 @@ export function AttendanceHoursPage() {
                               max={24}
                               step={0.01}
                               placeholder="hours"
-                              aria-label={`Clocked hours for ${row.employeeName} on ${row.workDate}`}
+                              aria-label={`Clocked hours for ${row.employeeName} on ${formatDay(row.workDate)}`}
                               value={manualDraft[row.dayId] ?? ""}
                               disabled={manualBusy === row.dayId}
                               onChange={(e) =>
@@ -517,7 +522,7 @@ export function AttendanceHoursPage() {
                       <span>{row.ecNo}</span>
                     </div>
                     <div className="att-card__meta">
-                      {row.workDate} · age {row.ageDays}d · {row.status} · booked {hours(row.bookedHours)}h · clocked{" "}
+                      {formatDay(row.workDate)} · age {row.ageDays}d · {row.status} · booked {hours(row.bookedHours)}h · clocked{" "}
                       {row.inOutHours == null ? "no row" : `${hours(row.inOutHours)}h`}
                     </div>
                     <div className="att-card__meta">{checkLabel(row)}</div>
@@ -528,7 +533,7 @@ export function AttendanceHoursPage() {
                         max={24}
                         step={0.01}
                         placeholder="hours"
-                        aria-label={`Clocked hours for ${row.employeeName} on ${row.workDate}`}
+                        aria-label={`Clocked hours for ${row.employeeName} on ${formatDay(row.workDate)}`}
                         value={manualDraft[row.dayId] ?? ""}
                         disabled={manualBusy === row.dayId}
                         onChange={(e) => setManualDraft((drafts) => ({ ...drafts, [row.dayId]: e.target.value }))}

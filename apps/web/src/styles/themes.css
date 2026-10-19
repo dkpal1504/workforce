@@ -2,6 +2,8 @@
 
 :root,
 [data-theme="harbor"] {
+  /* Native controls follow the theme; Nocturne sets the opposite. */
+  color-scheme: light;
   --font-ui: "Sora", "Segoe UI", sans-serif;
   --font-display: "Sora", "Segoe UI", sans-serif;
   --radius: 10px;
@@ -179,6 +181,10 @@
 }
 
 [data-theme="nocturne"] {
+  /* The platform draws native controls (a date picker, a scrollbar, an <option> popup) in ITS
+     default lightness unless told otherwise, so a dark theme otherwise gets a white date picker
+     and a white dropdown menu. This is the one declaration that makes the UA follow the theme. */
+  color-scheme: dark;
   --bg: #0c1118;
   --bg-elevated: #151c27;
   --bg-subtle: #1b2431;

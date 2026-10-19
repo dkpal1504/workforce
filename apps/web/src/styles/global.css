@@ -346,6 +346,44 @@ a {
   transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
 
+/* THE BASE SKIN FOR EVERY OTHER SELECT.
+ *
+ * The rule above is a hardcoded CONTAINER list, so a select rendered outside one of those
+ * containers (the Project picker on Project Master Data, for instance) got no `color` at all and
+ * inherited the page ink - which is dark in a light theme and therefore invisible on the dark
+ * surface Nocturne gives it. A select with no background set is the mirror case: the native white
+ * control with light ink.
+ *
+ * So COLOUR AND BACKGROUND ARE SET TOGETHER, from tokens, on the bare element. Every more specific
+ * rule (.filter-field select, .search-input, the theme panel, the login card) still wins on
+ * specificity, so this changes ONLY the controls that had no skin - the broken ones - and it
+ * follows whichever theme is active, which is the actual requirement.
+ */
+select {
+  color: var(--text);
+  background-color: var(--bg-elevated);
+  /* WHY A BORDER AND RADIUS ARE PART OF THE COLOUR FIX: with `appearance: auto` and no border or
+     radius, Chrome/Edge paint the PLATFORM's own widget face - a white box with the platform's
+     text colour - so the two colours above are ignored and a dark theme gets white-on-white.
+     Giving the control the app's own border + radius makes the browser paint our background
+     instead. Every themed control in this app already carries them (.filter-field select,
+     .md-page .md-toolbar__right select, .search-input), and those more specific rules still win;
+     this only skins the controls that had no rule at all - the broken case. */
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+select:disabled {
+  color: var(--text-muted);
+}
+
+/* The popup list is drawn by the platform, not by the page, so it needs its own colours stated:
+   without this a dark theme shows dark text on the platform's white menu. */
+select option {
+  color: var(--text);
+  background-color: var(--bg-elevated);
+}
+
 .filter-field select:focus,
 .filter-field input:focus,
 .search-input:focus,
