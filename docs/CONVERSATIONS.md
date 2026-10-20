@@ -79,6 +79,20 @@ off and can never contradict the row.
 - **Job work** deliberately has no affordance: a 300-row register is not a place for a hover that
   starts an escalation.
 
+## Reading a thread
+
+The drawer is built for threads that run for months, not for a chat that ends in an afternoon.
+
+- **One message, one row.** Every message is collapsed to a single line — `+ · kind · who · first
+  words · time` — and opens when clicked. The newest message opens by itself; `Expand all` /
+  `Collapse all` is one chip.
+- **The assistant is a dialog.** `Bottleneck brief` and `Where this stands` open a 680 px panel with the
+  full text and the fact chips, closed with `×`, Escape, or a click on the backdrop. Inline they were
+  squeezed by the drawer's flex column into two lines with their own scrollbars — unreadable.
+- **`⤢` is the reading view.** It takes the drawer full-page for a long trail; `⌃` collapses the drawer
+  to its header when you are only looking at the list.
+- The composer is three rows and scrolls: it never grows to push the trail out of sight.
+
 ## Who the notification says it comes from
 
 The mailbox that **authenticates** and the name the reader **sees** are separated, on purpose:

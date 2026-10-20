@@ -1903,3 +1903,103 @@ tr:hover .pf-escalate-btn,
 .conv-escalate-banner__actions a { color: var(--primary); font-size: 0.76rem; }
 
 .conv-stats { margin: 0 16px 8px; font-size: 0.75rem; color: var(--text-muted); }
+
+/* ── The drawer, simplified ────────────────────────────────────────────────────────────────────────
+   Collapsed message rows, and the assistant in a dialog. The old inline briefing was a victim of the
+   flex column: two blocks with `flex-shrink: 1` and no `min-height` collapsed to two lines each. */
+
+.conv-drawer { max-height: calc(100vh - 120px); }
+
+.conv-assist { padding: 8px 16px 4px; gap: 6px; }
+
+/* The thread takes what is left, and scrolls. No min-height: it was what squeezed the blocks above. */
+.conv-thread { flex: 1 1 auto; min-height: 140px; overflow-y: auto; padding: 8px 16px 10px; }
+
+/* One collapsed message = one row. */
+.conv-msg { border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+.conv-msg--open { border-color: var(--border); box-shadow: var(--shadow-sm); }
+
+.conv-msg__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 7px 10px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.conv-msg__summary:hover { background: var(--bg-subtle); }
+.conv-msg__twisty {
+  flex: 0 0 14px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-align: center;
+}
+.conv-msg__who { white-space: nowrap; }
+.conv-msg__role { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+.conv-msg__excerpt {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-msg__time { margin-left: auto; font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+
+.conv-msg__detail { padding: 0 12px 10px 32px; }
+.conv-msg__flags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.conv-msg__body { margin: 8px 0 0; font-size: 0.92rem; line-height: 1.6; white-space: pre-wrap; }
+
+.conv-msg--system .conv-msg__summary { color: var(--text-muted); font-style: italic; }
+
+/* The dialog the assistant's text deserves. */
+.conv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: color-mix(in srgb, var(--navy-deep) 55%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
+}
+
+.conv-dialog {
+  width: min(680px, 100%);
+  max-height: min(76vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.conv-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.conv-dialog__title { font-size: 0.98rem; font-weight: 700; color: var(--text); }
+.conv-dialog__aside { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+.conv-dialog__body { padding: 14px 16px 18px; overflow-y: auto; }
+.conv-dialog__text { margin: 0 0 12px; font-size: 0.92rem; line-height: 1.65; color: var(--text); }
+.conv-dialog__list { margin: 0 0 12px; padding-left: 20px; font-size: 0.92rem; line-height: 1.6; }
+.conv-dialog__facts { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* The composer must not eat the trail: three rows, and it scrolls rather than grows. */
+.conv-composer textarea { max-height: 26vh; }
+.conv-composer { padding: 8px 16px 10px; }

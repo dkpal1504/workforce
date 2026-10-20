@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, getToken, ApiError } from "../api/client";
 import { formatStamp } from "./formatDate";
@@ -450,8 +451,11 @@ function ThreadDrawer(props: {
   const [collapsed, setCollapsed] = useState(false);
   const [summary, setSummary] = useState<string[] | null>(null);
   // Both assistant blocks are COLLAPSED by default: the trail is the screen, the briefing is on demand.
-  const [showBrief, setShowBrief] = useState(false);
-  const [showSummary, setShowSummary] = useState(false);
+  // The assistant's text is a DIALOG now: inline, it was squeezed to two lines by the flex column and
+  // could not be read at all. One of these at a time, closed with the × or Escape.
+  const [assist, setAssist] = useState<"brief" | "summary" | null>(null);
+  // Which messages are open. `expanded` above is the full-page toggle — different thing.
+  const [openMessages, setOpenMessages] = useState<number[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -470,6 +474,15 @@ function ThreadDrawer(props: {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Open the newest message when the thread (or its last message) changes; leave the rest folded.
+  // Declared BEFORE the guards below: a hook after an early return would change the hook count.
+  const newestMessageId = data?.thread?.messages?.length
+    ? data.thread.messages[data.thread.messages.length - 1].id
+    : null;
+  useEffect(() => {
+    if (newestMessageId != null) setOpenMessages([newestMessageId]);
+  }, [newestMessageId, jobOrderId]);
 
   if (error) {
     return (
@@ -504,6 +517,7 @@ function ThreadDrawer(props: {
       ? escalationPrefill({ code: data.jobOrder.code, name: data.jobOrder.name }, brief.numbers)
       : undefined;
   const originLabel = intent.active && intent.origin ? ORIGIN_META[intent.origin].label : null;
+
 
   const onSummary = async () => {
     if (!data.thread) return;
@@ -594,9 +608,9 @@ function ThreadDrawer(props: {
             <div className="conv-assist">
               <button
                 type="button"
-                className={`conv-chip conv-chip--action${showBrief ? " is-open" : ""}`}
-                onClick={() => setShowBrief((value) => !value)}
-                aria-expanded={showBrief}
+                className="conv-chip conv-chip--action"
+                onClick={() => setAssist("brief")}
+                aria-haspopup="dialog"
                 title={brief.brief}
               >
                 ✦ Bottleneck brief
@@ -605,43 +619,65 @@ function ThreadDrawer(props: {
               {data.thread && messages.length > 1 && (
                 <button
                   type="button"
-                  className={`conv-chip conv-chip--action${showSummary ? " is-open" : ""}`}
+                  className="conv-chip conv-chip--action"
                   onClick={() => {
-                    if (!showSummary && !summary) void onSummary();
-                    setShowSummary((value) => !value);
+                    if (!summary) void onSummary();
+                    setAssist("summary");
                   }}
-                  aria-expanded={showSummary}
+                  aria-haspopup="dialog"
                 >
                   Where this stands
                 </button>
               )}
-              <span className="conv-assist__hint">the trail is the record — the briefing is on demand</span>
+              <button
+                type="button"
+                className="conv-chip conv-chip--action"
+                onClick={() => setOpenMessages(openMessages.length ? [] : messages.map((message) => message.id))}
+              >
+                {openMessages.length ? "Collapse all" : "Expand all"}
+              </button>
+              <span className="conv-assist__hint">
+                {messages.length} message{messages.length === 1 ? "" : "s"} · click a row to open it
+              </span>
             </div>
           )}
 
-          {showSummary && summary && (
-            <div className="brief brief--summary">
-              <div className="brief__title">Where this stands</div>
-              <ul>
-                {summary.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {showBrief && (
-            <div className="brief">
-              <div className="brief__title">Bottleneck brief</div>
-              <p className="brief__text">{brief?.brief}</p>
-              <div className="brief__facts">
+          {assist === "brief" && (
+            <AssistDialog
+              title="Bottleneck brief"
+              aside={brief?.assisted ? "drafted by the assistant" : "from the facts"}
+              onClose={() => setAssist(null)}
+            >
+              <p className="conv-dialog__text">{brief?.brief}</p>
+              <div className="conv-dialog__facts">
                 {(brief?.facts ?? []).map((fact) => (
                   <span key={fact.label} className="conv-chip">
                     <em>{fact.label}</em> {fact.value}
                   </span>
                 ))}
               </div>
-            </div>
+            </AssistDialog>
+          )}
+
+          {assist === "summary" && (
+            <AssistDialog
+              title="Where this stands"
+              aside={summary ? "from the conversation" : "reading the thread…"}
+              onClose={() => setAssist(null)}
+            >
+              {summary ? (
+                <ul className="conv-dialog__list">
+                  {summary.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="conv-dialog__text">
+                  The assistant is reading this thread. If it is switched off, the brief above already carries the
+                  facts.
+                </p>
+              )}
+            </AssistDialog>
           )}
 
           <div className="conv-thread">
@@ -652,12 +688,25 @@ function ThreadDrawer(props: {
               </p>
             )}
             {newestFirst.map((message) => (
-              <MessageCard key={message.id} message={message} meRole={data.me.role} onAck={async () => {
-                if (!data.thread) return;
-                await api(`/conversations/${data.thread.id}/messages/${message.id}/acknowledge`, { method: "POST" });
-                await load();
-                onChanged();
-              }} />
+              <MessageCard
+                key={message.id}
+                message={message}
+                meRole={data.me.role}
+                expanded={openMessages.includes(message.id)}
+                onToggle={() =>
+                  setOpenMessages((current) =>
+                    current.includes(message.id)
+                      ? current.filter((id) => id !== message.id)
+                      : [...current, message.id]
+                  )
+                }
+                onAck={async () => {
+                  if (!data.thread) return;
+                  await api(`/conversations/${data.thread.id}/messages/${message.id}/acknowledge`, { method: "POST" });
+                  await load();
+                  onChanged();
+                }}
+              />
             ))}
           </div>
 
@@ -679,95 +728,174 @@ function ThreadDrawer(props: {
   );
 }
 
-function MessageCard(props: { message: Message; meRole: string; onAck: () => Promise<void> }) {
-  const { message } = props;
+/**
+ * One message, collapsed to a single line until somebody opens it.
+ *
+ * WHY COLLAPSED: a Job Order lives for months and its thread grows with it. Forty fully-open messages
+ * is a wall of text that hides the one thing a reader came for — what changed last. The newest message
+ * opens by itself; everything else is a scannable row with the kind, who, when and the first line.
+ */
+function MessageCard(props: {
+  message: Message;
+  meRole: string;
+  expanded: boolean;
+  onToggle: () => void;
+  onAck: () => Promise<void>;
+}) {
+  const { message, expanded, onToggle } = props;
   const line = contextLine(message.contextJson);
   const isEscalation = message.kind === "ESCALATION";
+  const firstLine = message.body.replace(/\s+/g, " ").trim();
 
   return (
-    <article className={`conv-msg${message.kind === "SYSTEM" ? " conv-msg--system" : ""}`}>
-      <header className="conv-msg__head">
-        <span className={KIND_TONE[message.kind] ?? "conv-kind"}>{message.kind.toLowerCase().replace(/_/g, " ")}</span>
-        <strong>{message.authorName}</strong>
-        <span className="muted">{message.authorRole}</span>
+    <article
+      className={`conv-msg${expanded ? " conv-msg--open" : ""}${message.kind === "SYSTEM" ? " conv-msg--system" : ""}`}
+    >
+      <button
+        type="button"
+        className="conv-msg__summary"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Open"} message ${message.seq} from ${message.authorName}`}
+      >
+        <span className="conv-msg__twisty" aria-hidden="true">
+          {expanded ? "−" : "+"}
+        </span>
+        <span className={KIND_TONE[message.kind] ?? "conv-kind"}>
+          {message.kind.toLowerCase().replace(/_/g, " ")}
+        </span>
+        <strong className="conv-msg__who">{message.authorName}</strong>
+        <span className="conv-msg__role">{message.authorRole}</span>
+        {!expanded && <span className="conv-msg__excerpt">{firstLine}</span>}
         <span className="conv-seq">#{message.seq}</span>
-        <time className="muted">{formatStamp(message.createdAt)}</time>
-        {message.source === "MAGIC_LINK" && <span className="conv-flag">via e-mail</span>}
-        {message.origin && (
-          <span className="conv-flag" title="Raised from the dashboard">
-            {ORIGIN_META[message.origin as keyof typeof ORIGIN_META]?.label.replace("Portfolio · ", "") ?? message.origin}
-          </span>
-        )}
-        {message.bodyRevision > 1 && <span className="conv-flag">edited</span>}
-      </header>
+        <time className="conv-msg__time">{formatStamp(message.createdAt)}</time>
+      </button>
 
-      {line && <div className="conv-msg__context">{line}</div>}
+      {expanded && (
+        <div className="conv-msg__detail">
+          <div className="conv-msg__flags">
+            {message.source === "MAGIC_LINK" && <span className="conv-flag">via e-mail</span>}
+            {message.origin && (
+              <span className="conv-flag" title="Raised from the dashboard">
+                {ORIGIN_META[message.origin as keyof typeof ORIGIN_META]?.label.replace("Portfolio · ", "") ?? message.origin}
+              </span>
+            )}
+            {message.bodyRevision > 1 && <span className="conv-flag">edited</span>}
+            {isEscalation && !message.acknowledgedAt && <span className="conv-flag conv-flag--escalation">unanswered</span>}
+            {isEscalation && message.acknowledgedAt && <span className="conv-flag">acknowledged</span>}
+          </div>
 
-      <p className="conv-msg__body">{message.body}</p>
+          {line && <div className="conv-msg__context">{line}</div>}
 
-      {message.proposalJson && (
-        <div className="conv-msg__proposal">
-          <div className="brief__title">Proposed change</div>
-          <code>{message.proposalJson}</code>
-        </div>
-      )}
+          <p className="conv-msg__body">{message.body}</p>
 
-      {(message.attachments ?? []).length > 0 && (
-        <ul className="conv-files">
-          {(message.attachments ?? []).map((file) => (
-            <li key={file.id}>
-              <button
-                type="button"
-                className="conv-chip conv-chip--file"
-                onClick={() => void downloadAttachment(`/api/conversations/attachments/${file.id}`, file.filename)}
-              >
-                {file.filename} <em>{humanSize(file.sizeBytes)}</em>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {message.commitments.length > 0 && (
-        <div className="conv-promises">
-          {message.commitments.map((commitment) => (
-            <div key={commitment.id} className="conv-promise">
-              <span className="conv-promise__tag">promise</span>
-              due {commitment.dueOn.slice(0, 10)} · {commitment.state.toLowerCase()} · {commitment.text.slice(0, 120)}
+          {message.proposalJson && (
+            <div className="conv-msg__proposal">
+              <div className="brief__title">Proposed change</div>
+              <code>{message.proposalJson}</code>
             </div>
-          ))}
+          )}
+
+          {(message.attachments ?? []).length > 0 && (
+            <ul className="conv-files">
+              {(message.attachments ?? []).map((file) => (
+                <li key={file.id}>
+                  <button
+                    type="button"
+                    className="conv-chip conv-chip--file"
+                    onClick={() => void downloadAttachment(`/api/conversations/attachments/${file.id}`, file.filename)}
+                  >
+                    {file.filename} <em>{humanSize(file.sizeBytes)}</em>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {message.commitments.length > 0 && (
+            <div className="conv-promises">
+              {message.commitments.map((commitment) => (
+                <div key={commitment.id} className="conv-promise">
+                  <span className="conv-promise__tag">promise</span>
+                  due {commitment.dueOn.slice(0, 10)} · {commitment.state.toLowerCase()} · {commitment.text.slice(0, 120)}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <footer className="conv-msg__foot">
+            {message.recipients.length > 0 && (
+              <span className="muted">
+                {message.recipients
+                  .map((recipient) =>
+                    recipient.state === "SENT"
+                      ? `emailed ${recipient.email}${recipient.sentAt ? ` ${formatStamp(recipient.sentAt).slice(-5)}` : ""}`
+                      : recipient.state === "FAILED"
+                        ? `could not email ${recipient.email}`
+                        : recipient.state === "EMAIL_OFF"
+                          ? "not emailed — e-mail is off"
+                          : recipient.state === "MUTED"
+                            ? `${recipient.email} muted`
+                            : `queued ${recipient.email}`
+                  )
+                  .join(" · ")}
+              </span>
+            )}
+            {isEscalation && !message.acknowledgedAt && (
+              <button type="button" className="conv-btn conv-btn--ghost" onClick={() => void props.onAck()}>
+                Acknowledge
+              </button>
+            )}
+          </footer>
         </div>
       )}
-
-      <footer className="conv-msg__foot">
-        {message.recipients.length > 0 && (
-          <span className="muted">
-            {message.recipients
-              .map((recipient) =>
-                recipient.state === "SENT"
-                  ? `emailed ${recipient.email}${recipient.sentAt ? ` ${formatStamp(recipient.sentAt).slice(-5)}` : ""}`
-                  : recipient.state === "FAILED"
-                    ? `could not email ${recipient.email}`
-                    : recipient.state === "EMAIL_OFF"
-                      ? "not emailed — e-mail is off"
-                      : recipient.state === "MUTED"
-                        ? `${recipient.email} muted`
-                        : `queued ${recipient.email}`
-              )
-              .join(" · ")}
-          </span>
-        )}
-        {isEscalation && (
-          message.acknowledgedAt ? (
-            <span className="conv-flag">acknowledged</span>
-          ) : (
-            <button type="button" className="conv-btn conv-btn--ghost" onClick={() => void props.onAck()}>
-              Acknowledge
-            </button>
-          )
-        )}
-      </footer>
     </article>
+  );
+}
+
+/**
+ * The assistant's text as a DIALOG.
+ *
+ * Inline it was unreadable: a flex column squeezed two paragraphs into two lines with their own
+ * scrollbars. A dialog gives the text the width and height to be read, closes on × or Escape, and
+ * leaves the trail untouched underneath.
+ */
+function AssistDialog(props: {
+  title: string;
+  aside: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [props]);
+
+  return createPortal(
+    <div className="conv-overlay" role="presentation" onClick={props.onClose}>
+      <div
+        className="conv-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={props.title}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="conv-dialog__head">
+          <div>
+            <div className="conv-dialog__title">{props.title}</div>
+            <div className="conv-dialog__aside">{props.aside}</div>
+          </div>
+          <button type="button" className="conv-icon" onClick={props.onClose} aria-label="Close">
+            ✕
+          </button>
+        </header>
+        <div className="conv-dialog__body">{props.children}</div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -906,7 +1034,7 @@ function Composer(props: {
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void send();
         }}
         placeholder="What do you need, from whom, by when?"
-        rows={5}
+        rows={3}
         maxLength={4000}
         aria-label="Message"
       />
