@@ -60,7 +60,14 @@ assistantRouter.get("/job-orders/:id/conversation/brief", requireRoles(...CONVER
   const template = templateBrief(facts);
   const cfg = assistantConfig();
   if (!assistantReady(cfg)) {
-    return res.json({ facts: factChips(facts), template, brief: template, assisted: false, reason: cfg.enabled ? "NO_ENDPOINT" : "DISABLED" });
+    return res.json({
+      facts: factChips(facts),
+      numbers: numbersOf(facts),
+      template,
+      brief: template,
+      assisted: false,
+      reason: cfg.enabled ? "NO_ENDPOINT" : "DISABLED",
+    });
   }
   const answer = await chatComplete(buildBriefPrompt(facts), cfg);
   const model = answer.ok ? answer.model : cfg.model;
@@ -69,13 +76,14 @@ assistantRouter.get("/job-orders/:id/conversation/brief", requireRoles(...CONVER
   if (!answer.ok || !cleaned) {
     return res.json({
       facts: factChips(facts),
+      numbers: numbersOf(facts),
       template,
       brief: template,
       assisted: false,
       reason: answer.ok ? "UNUSABLE_TEXT" : answer.reason,
     });
   }
-  res.json({ facts: factChips(facts), template, brief: cleaned, assisted: true, model });
+  res.json({ facts: factChips(facts), numbers: numbersOf(facts), template, brief: cleaned, assisted: true, model });
 });
 
 /** GET /api/conversations/:id/summary — three bullets for a long thread. */
@@ -166,6 +174,17 @@ assistantRouter.post("/usage", requireRoles(...CONVERSATION_ROLES), async (req, 
   });
   res.json({ ok: true });
 });
+
+/** The raw figures behind the chips, so a caller can build its own sentence without parsing text. */
+function numbersOf(facts: BriefFacts) {
+  return {
+    burnPct: facts.burnPct,
+    hoursBand: facts.hoursBand,
+    scheduleBand: facts.scheduleBand,
+    daysToEnd: facts.daysToEnd,
+    qtyCompletePct: facts.qtyCompletePct,
+  };
+}
 
 function factChips(facts: BriefFacts) {
   const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 100)}%`);

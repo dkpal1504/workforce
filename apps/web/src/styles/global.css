@@ -1806,3 +1806,100 @@ select option {
 .conv-msg__body { font-size: 0.95rem; line-height: 1.6; }
 .brief { max-height: 30vh; overflow-y: auto; }
 .conv-drawer { max-height: calc(100vh - 150px); }
+
+/* ── Escalate from a Portfolio row ────────────────────────────────────────────────────────────────
+   The action column, the popover and the banner. Tokens only: the popover must read in Nocturne as
+   well as in Harbor, and it sits over table rows whose backgrounds change per section. */
+.pf-actions { width: 30px; text-align: right; padding-left: 0 !important; }
+
+.pf-escalate-btn {
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms var(--ease), background 120ms var(--ease);
+}
+
+tr:hover .pf-escalate-btn,
+.pf-escalate-btn:focus-visible,
+.pf-escalate-btn.is-open { opacity: 1; }
+.pf-escalate-btn:hover { background: var(--primary-soft); color: var(--primary-ink); border-color: var(--primary); }
+.pf-escalate-btn:disabled { opacity: 0.25; cursor: default; }
+
+/* No hover on a touch screen, so the affordance is always visible there. */
+@media (hover: none) {
+  .pf-escalate-btn { opacity: 1; }
+}
+
+.pf-escalate-pop {
+  position: fixed;
+  z-index: 90;
+  width: 278px;
+  padding: 12px 14px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+
+.pf-escalate-pop__title { font-size: 0.82rem; font-weight: 700; }
+.pf-escalate-pop__who { font-size: 0.78rem; color: var(--text); margin-top: 3px; }
+.pf-escalate-pop__facts { font-size: 0.74rem; color: var(--text-muted); margin-top: 6px; line-height: 1.45; }
+.pf-escalate-pop__actions { display: flex; justify-content: flex-end; margin-top: 10px; gap: 8px; }
+.pf-escalate-pop__muted { font-size: 0.75rem; color: var(--text-muted); }
+
+.pf-escalate-pop__list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 190px; overflow-y: auto; }
+
+.pf-escalate-pop__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+  padding: 6px 2px;
+  cursor: pointer;
+}
+
+.pf-escalate-pop__item:hover { background: var(--bg-subtle); }
+.pf-escalate-pop__item span { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-escalate-pop__item em { color: var(--text-muted); font-style: normal; font-size: 0.68rem; }
+
+/* The banner that says where the escalation came from, and the way back. */
+.conv-escalate-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 16px 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.conv-escalate-banner strong { display: block; color: var(--accent); }
+.conv-escalate-banner span { color: var(--text); }
+.conv-escalate-banner--open { border-left-color: var(--danger); background: var(--danger-soft); }
+.conv-escalate-banner--open strong { color: var(--danger); }
+.conv-escalate-banner__actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.conv-escalate-banner__actions a { color: var(--primary); font-size: 0.76rem; }
+
+.conv-stats { margin: 0 16px 8px; font-size: 0.75rem; color: var(--text-muted); }

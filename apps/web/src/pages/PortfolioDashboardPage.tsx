@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { EscalatableNodeRow, EscalatableRow } from "../components/EscalateToOwner";
 import { api, getToken } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { burnSummary, healthSummary } from "./portfolioHero";
@@ -897,7 +898,14 @@ export function PortfolioDashboardPage() {
   // A Project Manager opens on HIS projects; everyone else opens on the headline answer
   // ("what needs a push"). The pure helper is shared with /reports so the two screens agree.
   const { user } = useAuth();
-  const [tab, setTab] = useState<PortfolioTabId>(() => defaultTabFor(user?.role));
+  // A RETURN HINT, read once: the conversation screen sends the reader back to the tab and the project
+  // they were on. It is not a contract for the report fetch — `portfolioTabs.ts` deliberately keeps the
+  // tab out of that query string.
+  const [returnParams] = useState(() => new URLSearchParams(window.location.search));
+  const [tab, setTab] = useState<PortfolioTabId>(() => {
+    const hint = returnParams.get("returnTab");
+    return isPortfolioTabId(hint) ? hint : defaultTabFor(user?.role);
+  });
 
   const { report, loading, error, query, reload } = usePortfolioReport(filters);
 
@@ -1289,12 +1297,18 @@ export function ProjectStructureSection({ report }: { report: PortfolioReport })
                     <th className="pf-num">Burn</th>
                     <th className="pf-num">No activity</th>
                     <th className="pf-num">Unapproved</th>
+                    <th className="pf-actions" aria-label="Actions" />
                   </tr>
                 </thead>
                 <tbody>
                   {row.wbs.map((wbs) => (
                     <Fragment key={wbs.id}>
-                      <tr className="pf-structure__wbs">
+                      <EscalatableNodeRow
+                        className="pf-structure__wbs"
+                        node={wbs}
+                        scope={{ projectId: row.project.id, wbsId: wbs.id }}
+                        origin="PORTFOLIO_STRUCTURE"
+                      >
                         <td>
                           <div className="pf-cell-cap">
                             <span className="pf-cell-strong">{wbs.code}{wbs.name ? ` · ${wbs.name}` : ""}</span>
@@ -1302,9 +1316,15 @@ export function ProjectStructureSection({ report }: { report: PortfolioReport })
                           </div>
                         </td>
                         <StructureCells node={wbs} />
-                      </tr>
+                      </EscalatableNodeRow>
                       {wbs.networks.map((network) => (
-                        <tr key={network.id} className="pf-structure__network">
+                        <EscalatableNodeRow
+                          key={network.id}
+                          className="pf-structure__network"
+                          node={network}
+                          scope={{ projectId: row.project.id, wbsId: wbs.id, networkId: network.id }}
+                          origin="PORTFOLIO_STRUCTURE"
+                        >
                           <td>
                             <div className="pf-cell-cap">
                               <span className="pf-cell-sub">↳ Network {network.code}{network.name ? ` · ${network.name}` : ""}</span>
@@ -1312,7 +1332,7 @@ export function ProjectStructureSection({ report }: { report: PortfolioReport })
                             </div>
                           </td>
                           <StructureCells node={network} />
-                        </tr>
+                        </EscalatableNodeRow>
                       ))}
                     </Fragment>
                   ))}
@@ -1367,11 +1387,12 @@ function ScheduleDelaysSection({ report, resetKey }: SectionProps) {
                   <th>Projected finish</th>
                   <th>Attention</th>
                   <th>Reasons</th>
+                  <th className="pf-actions" aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
                 {pager.slice.rows.map((row) => (
-                  <tr key={row.id}>
+                  <EscalatableRow key={row.id} jobOrder={row} origin="PORTFOLIO_SCHEDULE">
                     <JobIdentityCell row={row} />
                     <td>
                       <div className="pf-cell-cap pf-cell-cap--department">{row.department.name}</div>
@@ -1388,7 +1409,7 @@ function ScheduleDelaysSection({ report, resetKey }: SectionProps) {
                     <td>{fmtDate(row.projectedFinish)}</td>
                     <td className="pf-num">{row.attentionScore}</td>
                     <td className="pf-reasons">{row.reasons.length ? row.reasons.join("; ") : "—"}</td>
-                  </tr>
+                  </EscalatableRow>
                 ))}
               </tbody>
             </table>
@@ -1449,11 +1470,12 @@ function NeedsPushSection({ report, resetKey }: SectionProps) {
                 <th>Forecast</th>
                 <th className="pf-num">Attention</th>
                 <th>Reasons</th>
+                <th className="pf-actions" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {pager.slice.rows.map((row) => (
-                <tr key={row.id}>
+                <EscalatableRow key={row.id} jobOrder={row} origin="PORTFOLIO_NEEDS_PUSH">
                   <JobIdentityCell row={row} />
                   <td>
                     <div className="pf-cell-cap pf-cell-cap--department">
@@ -1469,7 +1491,7 @@ function NeedsPushSection({ report, resetKey }: SectionProps) {
                   <td className="pf-nowrap">{fmtDate(row.forecastExhaustedOn)}</td>
                   <td className="pf-num pf-attention">{row.attentionScore}</td>
                   <ReasonsCell reasons={row.reasons} />
-                </tr>
+                </EscalatableRow>
               ))}
             </tbody>
           </table>

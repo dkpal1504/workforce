@@ -67,6 +67,8 @@ export type PostMessageInput = {
   proposal?: unknown | null;
   /** The owner is e-mailed unless the author unticked the box. */
   emailOwner: boolean;
+  /** Where it was raised from, when not the drawer (a Portfolio row). Validated by the route. */
+  origin?: string | null;
   now?: Date;
 };
 
@@ -144,6 +146,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
         contextJson: context ? JSON.stringify(context.data) : null,
         proposalJson: input.proposal ? JSON.stringify(input.proposal) : null,
         escalationDueAt: escalationDue,
+        origin: input.origin ?? null,
         ipHash: input.author.ipHash ?? null,
         createdAt: now,
       },
@@ -370,6 +373,7 @@ export async function threadFor(jobOrderId: number) {
           escalationDueAt: true,
           acknowledgedAt: true,
           acknowledgedByEmail: true,
+          origin: true,
           createdAt: true,
           recipients: { select: { email: true, state: true, sentAt: true } },
           attachments: { select: { id: true, filename: true, sizeBytes: true } },

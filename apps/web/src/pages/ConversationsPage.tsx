@@ -11,6 +11,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, getToken, ApiError } from "../api/client";
 import { formatStamp } from "./formatDate";
+import {
+  decideEscalationMode,
+  escalationPrefill,
+  parseEscalateIntent,
+  portfolioReturnHref,
+  ORIGIN_META,
+  type EscalateIntent,
+} from "./escalateLink";
 
 type ThreadRow = {
   id: number;
@@ -56,6 +64,7 @@ type Message = {
   acknowledgedAt: string | null;
   contextJson: string | null;
   proposalJson: string | null;
+  origin: string | null;
   recipients: Array<{ email: string; state: string; sentAt: string | null }>;
   commitments: Array<{ id: number; dueOn: string; text: string; state: string; ownerEmail: string }>;
   attachments: Attachment[];
@@ -91,6 +100,13 @@ type ConversationResponse = {
 
 type BriefResponse = {
   facts: Array<{ label: string; value: string }>;
+  numbers?: {
+    burnPct: number | null;
+    hoursBand: string | null;
+    scheduleBand: string | null;
+    daysToEnd: number | null;
+    qtyCompletePct: number | null;
+  };
   template: string;
   brief: string;
   assisted: boolean;
@@ -169,8 +185,16 @@ export function ConversationsPage() {
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [query, setQuery] = useState("");
   const [picking, setPicking] = useState(false);
+  const [stats, setStats] = useState<{
+    raisedFromPortfolio: number;
+    answered: number;
+    unanswered: number;
+    medianHoursToFirstReply: number | null;
+    windowDays: number;
+  } | null>(null);
 
   const openJobOrder = Number(params.get("jobOrder")) || null;
+  const intent = parseEscalateIntent(params);
 
   const load = useCallback(async () => {
     try {
@@ -189,6 +213,14 @@ export function ConversationsPage() {
     const timer = window.setInterval(() => void load(), 60_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    api<{ raisedFromPortfolio: number; answered: number; unanswered: number; medianHoursToFirstReply: number | null; windowDays: number }>(
+      "/conversations/escalation-stats"
+    )
+      .then(setStats)
+      .catch(() => undefined);
+  }, []);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -230,6 +262,15 @@ export function ConversationsPage() {
         <button type="button" className="conv-btn conv-new" onClick={() => setPicking(true)}>
           Start a follow-up
         </button>
+        {stats && stats.raisedFromPortfolio > 0 && (
+          <p className="conv-stats">
+            ⚡ {stats.raisedFromPortfolio} escalation{stats.raisedFromPortfolio === 1 ? "" : "s"} raised from the
+            dashboard in the last {stats.windowDays} days ·{" "}
+            {stats.medianHoursToFirstReply !== null
+              ? `median first reply ${stats.medianHoursToFirstReply}h`
+              : "none answered yet"}
+          </p>
+        )}
         <input
           className="conv-search"
           type="search"
@@ -293,6 +334,10 @@ export function ConversationsPage() {
       {openJobOrder ? (
         <ThreadDrawer
           jobOrderId={openJobOrder}
+          intent={intent}
+          // Once the escalation is sent the intent has done its job: the URL goes back to a plain
+          // deep link so a refresh cannot re-arm it.
+          onConsumeIntent={() => setParams({ jobOrder: String(openJobOrder) }, { replace: true })}
           onClose={() => setParams({}, { replace: true })}
           onChanged={() => void load()}
         />
@@ -390,8 +435,14 @@ function JobOrderPicker(props: { onPick: (jobOrderId: number) => void; onClose: 
   );
 }
 
-function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChanged: () => void }) {
-  const { jobOrderId, onClose, onChanged } = props;
+function ThreadDrawer(props: {
+  jobOrderId: number;
+  intent: EscalateIntent;
+  onClose: () => void;
+  onChanged: () => void;
+  onConsumeIntent: () => void;
+}) {
+  const { jobOrderId, intent, onClose, onChanged, onConsumeIntent } = props;
   const [data, setData] = useState<ConversationResponse | null>(null);
   const [brief, setBrief] = useState<BriefResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -443,6 +494,16 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
 
   const messages = data.thread?.messages ?? [];
   const newestFirst = messages.slice().reverse();
+
+  // Arriving from a Portfolio row: an escalation is already written, or — if one is still unanswered —
+  // the drawer opens in reply mode on that one instead of raising a second.
+  const escalation = intent.active ? decideEscalationMode(messages) : null;
+  const initialKind = escalation ? (escalation.mode === "REPLY_TO_OPEN" ? "REPLY" : "ESCALATION") : undefined;
+  const initialBody =
+    escalation?.mode === "NEW" && brief?.numbers
+      ? escalationPrefill({ code: data.jobOrder.code, name: data.jobOrder.name }, brief.numbers)
+      : undefined;
+  const originLabel = intent.active && intent.origin ? ORIGIN_META[intent.origin].label : null;
 
   const onSummary = async () => {
     if (!data.thread) return;
@@ -508,6 +569,27 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
 
       {!collapsed && (
         <>
+          {intent.active && (
+            <div className={`conv-escalate-banner${escalation?.mode === "REPLY_TO_OPEN" ? " conv-escalate-banner--open" : ""}`}>
+              <div>
+                <strong>
+                  {escalation?.mode === "REPLY_TO_OPEN" ? "This Job Order already has an open escalation" : "Escalating to the Job Owner"}
+                </strong>
+                <span>
+                  {escalation?.mode === "REPLY_TO_OPEN"
+                    ? ` #${escalation.seq} from ${formatStamp(escalation.createdAt)} is still unanswered — reply to it below, or raise a second one deliberately.`
+                    : ` Raised from ${originLabel ?? "the portfolio"}. The message is written from the row's own figures — check it, then send.`}
+                </span>
+              </div>
+              <div className="conv-escalate-banner__actions">
+                <Link to={intent.active ? portfolioReturnHref(intent) : "/portfolio"}>← Back to the portfolio</Link>
+                <button type="button" className="conv-icon" onClick={onConsumeIntent} aria-label="Dismiss">
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           {brief && (
             <div className="conv-assist">
               <button
@@ -565,8 +647,8 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
           <div className="conv-thread">
             {newestFirst.length === 0 && (
               <p className="conv-empty">
-                No messages yet. Start with a follow-up{data.owner.email ? ` to ${data.owner.name}` : ""} — the thread is
-                the Job Order&rsquo;s record, not a chat that disappears.
+                No messages yet{data.owner.userId ? ` — the first one is addressed to ${data.owner.name}` : ""}. The trail
+                is the Job Order&rsquo;s record, not a chat that disappears.
               </p>
             )}
             {newestFirst.map((message) => (
@@ -580,11 +662,15 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
           </div>
 
           <Composer
-            key={data.thread?.id ?? `new-${jobOrderId}`}
+            key={`${data.thread?.id ?? `new-${jobOrderId}`}-${initialKind ?? "manual"}`}
             data={data}
+            initialKind={initialKind}
+            initialBody={initialBody}
+            origin={intent.active && intent.origin ? intent.origin : null}
             onSent={async () => {
               await load();
               onChanged();
+              onConsumeIntent();
             }}
           />
         </>
@@ -607,6 +693,11 @@ function MessageCard(props: { message: Message; meRole: string; onAck: () => Pro
         <span className="conv-seq">#{message.seq}</span>
         <time className="muted">{formatStamp(message.createdAt)}</time>
         {message.source === "MAGIC_LINK" && <span className="conv-flag">via e-mail</span>}
+        {message.origin && (
+          <span className="conv-flag" title="Raised from the dashboard">
+            {ORIGIN_META[message.origin as keyof typeof ORIGIN_META]?.label.replace("Portfolio · ", "") ?? message.origin}
+          </span>
+        )}
         {message.bodyRevision > 1 && <span className="conv-flag">edited</span>}
       </header>
 
@@ -680,10 +771,25 @@ function MessageCard(props: { message: Message; meRole: string; onAck: () => Pro
   );
 }
 
-function Composer(props: { data: ConversationResponse; onSent: () => Promise<void> }) {
-  const { data, onSent } = props;
-  const [kind, setKind] = useState(data.canPostKinds.includes("FOLLOW_UP") ? "FOLLOW_UP" : data.canPostKinds[0] ?? "REPLY");
-  const [body, setBody] = useState("");
+function Composer(props: {
+  data: ConversationResponse;
+  /** Preselected when the drawer was opened from a Portfolio row. */
+  initialKind?: string;
+  /** The escalation text built from the row's own figures. */
+  initialBody?: string;
+  /** Recorded on the message: which Portfolio tab it was raised from. */
+  origin?: string | null;
+  onSent: () => Promise<void>;
+}) {
+  const { data, onSent, initialKind, initialBody, origin } = props;
+  const startingKind =
+    initialKind && data.canPostKinds.includes(initialKind)
+      ? initialKind
+      : data.canPostKinds.includes("FOLLOW_UP")
+        ? "FOLLOW_UP"
+        : data.canPostKinds[0] ?? "REPLY";
+  const [kind, setKind] = useState(startingKind);
+  const [body, setBody] = useState(initialBody ?? "");
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<Array<{ id: number; filename: string; sizeBytes: number }>>([]);
   const [uploading, setUploading] = useState(0);
@@ -759,6 +865,7 @@ function Composer(props: { data: ConversationResponse; onSent: () => Promise<voi
             kind,
             body,
             emailOwner,
+            origin: origin ?? undefined,
             attachmentIds: files.map((file) => file.id),
           }),
         }

@@ -868,6 +868,9 @@ model JobOrderMessage {
   escalationDueAt     DateTime? @map("escalation_due_at")
   acknowledgedAt      DateTime? @map("acknowledged_at")
   acknowledgedByEmail String?  @map("acknowledged_by_email")
+  /// Where the message was raised from when it was not the conversation screen itself
+  /// (a Portfolio row, a structure node). Null means the drawer. Closed list in services/conversationOrigins.ts.
+  origin              String?
   ipHash              String?  @map("ip_hash")
   createdAt           DateTime @default(now()) @map("created_at")
 

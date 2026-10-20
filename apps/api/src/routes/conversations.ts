@@ -26,6 +26,7 @@ import {
 import {
   acknowledge,
   listThreads,
+  threadScopeWhere,
   markRead,
   postMessage,
   postSystemMessage,
@@ -34,6 +35,8 @@ import {
   unreadTotal,
 } from "../services/conversations";
 import { resolveOwner } from "../services/jobOrderContext";
+import { isMessageOrigin } from "../services/conversationOrigins";
+import { summariseEscalations } from "../services/escalationStats";
 import { deliverMessage, conversationEmailEnabled } from "../services/notificationMail";
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, attachToMessage, downloadTicket, saveUpload, sendDownload, sweepOrphanUploads } from "../services/attachments";
 import { deliverySummary } from "../services/conversationText";
@@ -89,13 +92,30 @@ conversationsRouter.get("/conversations/threads", async (req, res) => {
   res.json({ threads, scope: scope.kind, emailEnabled: conversationEmailEnabled() });
 });
 
-/** GET /api/conversations/job-orders?q= — the Job Orders this caller may start a thread on. */
+/**
+ * GET /api/conversations/job-orders?q=&projectId=&wbsId=&networkId= — the Job Orders this caller may
+ * start a thread on.
+ *
+ * The three structural filters exist for the Project-structure popover: a WBS or Network node owns
+ * several Job Orders and cannot name one itself. They NARROW the scope and never widen it — an id from
+ * another project simply intersects to nothing.
+ */
 conversationsRouter.get("/conversations/job-orders", async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const asId = (value: unknown): number | undefined => {
+    const id = Number(value);
+    return Number.isInteger(id) && id > 0 ? id : undefined;
+  };
+  const projectId = asId(req.query.projectId);
+  const wbsId = asId(req.query.wbsId);
+  const networkId = asId(req.query.networkId);
   const jobOrders = await prisma.jobOrder.findMany({
     where: {
       ...jobOrderScopeWhere(scope),
+      ...(projectId ? { projectId } : {}),
+      ...(wbsId ? { projectWbsId: wbsId } : {}),
+      ...(networkId ? { networkId } : {}),
       ...(q ? { OR: [{ code: { contains: q } }, { name: { contains: q } }] } : {}),
     },
     orderBy: { code: "asc" },
@@ -112,6 +132,60 @@ conversationsRouter.get("/conversations/job-orders", async (req, res) => {
     },
   });
   res.json({ jobOrders });
+});
+
+/**
+ * GET /api/conversations/escalation-stats?days=90 — did the dashboard button actually start
+ * conversations? Scoped like every other read, so a Project Manager sees its own projects only.
+ *
+ * The first reply is found per escalation with ONE grouped read over the thread's messages: the query
+ * pulls the escalations with their thread's messages after them, and the first one by another person
+ * wins. Bounded to 500 escalations, which is far more than a quarter produces.
+ */
+conversationsRouter.get("/conversations/escalation-stats", async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  const days = Math.min(365, Math.max(1, Number(req.query.days ?? 90) || 90));
+  const since = new Date(Date.now() - days * 86_400_000);
+
+  const escalations = await prisma.jobOrderMessage.findMany({
+    where: { kind: "ESCALATION", createdAt: { gte: since }, thread: threadScopeWhere(scope) },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+    select: {
+      id: true,
+      seq: true,
+      createdAt: true,
+      origin: true,
+      acknowledgedAt: true,
+      authorEmail: true,
+      threadId: true,
+      thread: {
+        select: {
+          messages: {
+            where: { seq: { gt: 0 } },
+            orderBy: { seq: "asc" },
+            select: { seq: true, createdAt: true, authorEmail: true },
+          },
+        },
+      },
+    },
+  });
+
+  const facts = escalations.map((row) => {
+    const answer = row.thread.messages.find(
+      (message) => message.seq > row.seq && message.authorEmail.toLowerCase() !== row.authorEmail.toLowerCase()
+    );
+    return {
+      id: row.id,
+      seq: row.seq,
+      createdAt: row.createdAt,
+      origin: row.origin,
+      acknowledgedAt: row.acknowledgedAt,
+      firstReplyAt: answer?.createdAt ?? null,
+    };
+  });
+
+  res.json({ windowDays: days, ...summariseEscalations(facts) });
 });
 
 /** GET /api/conversations/unread — the bell. */
@@ -184,6 +258,13 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", async (req, re
     if (!proposal) return res.status(400).json({ error: "A decision must propose a change.", code: "NO_PROPOSAL" });
   }
 
+  // A CLOSED list. An unknown origin is a client bug, and storing it would poison the only number
+  // this column exists to produce.
+  const rawOrigin = req.body?.origin ?? null;
+  if (rawOrigin !== null && !isMessageOrigin(rawOrigin)) {
+    return res.status(400).json({ error: "Unknown origin.", code: "BAD_ORIGIN" });
+  }
+
   const posted = await postMessage({
     jobOrderId,
     author: authorOf(req),
@@ -192,6 +273,7 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", async (req, re
     replyToId,
     proposal,
     emailOwner: req.body?.emailOwner !== false,
+    origin: rawOrigin,
   });
 
   const attachmentIds = Array.isArray(req.body?.attachmentIds)
@@ -326,6 +408,22 @@ conversationsRouter.post("/conversations/:id/messages/:messageId/acknowledge", a
     authorOf(req, "APP")
   );
   res.json({ acknowledged: true });
+});
+
+/**
+ * GET /api/job-orders/:id/conversation/owner — the name the Portfolio popover promises to escalate to.
+ * Two queries, cached by the browser for the session; scope-checked like everything else.
+ */
+conversationsRouter.get("/job-orders/:id/conversation/owner", async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+  const owner = await resolveOwner(jobOrderId);
+  res.json({
+    owner,
+    // What the popover prints while the person has no routable address.
+    deliveryNote: owner.email ? null : owner.userId ? "No e-mail address on file" : "No owner set",
+  });
 });
 
 /** GET /api/job-orders/:id/conversation/owner-candidates — who this Job Order could name as owner. */

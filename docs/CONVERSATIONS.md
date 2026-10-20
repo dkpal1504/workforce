@@ -54,6 +54,30 @@ notification address on Role assignment to fix it.
 The assistant is a layer, never a dependency: with it off, or the endpoint down, the brief falls back to
 the deterministic template and sending is unaffected.
 
+## Escalating from the Portfolio
+
+On **Needs push**, **Schedule & delays** and **Project structure**, hovering a row for half a second
+raises a small popover — *Escalate to Job Owner?* — naming the owner it will address and quoting the
+row's own figures. Clicking **Escalate** opens that Job Order's thread with the kind set to Escalation
+and the message already written:
+
+> M4157 is carrying no planned window at all, 0% quantity complete, 154% of budget hours used (RED).
+> Please set the planned window and the quantity target, and confirm the date the work will be
+> complete.
+
+The text is built from the report's own numbers, not by the assistant, so it works with the assistant
+off and can never contradict the row.
+
+- **Project structure** nodes own several Job Orders: a node with one goes straight through, a node
+  with several lists them (worst first) to choose from.
+- **An open escalation is never duplicated.** If the thread already carries an unacknowledged
+  escalation, the drawer opens on that one in reply mode and says so.
+- Every message raised this way records an `origin` (`PORTFOLIO_NEEDS_PUSH`, `PORTFOLIO_SCHEDULE`,
+  `PORTFOLIO_STRUCTURE`), shown as a chip on the message. The Conversations header prints what they
+  came to: *"N escalations raised from the dashboard in the last 90 days · median first reply 4h"*.
+- **Job work** deliberately has no affordance: a 300-row register is not a place for a hover that
+  starts an escalation.
+
 ## The escalation clock
 
 An `ESCALATION` message is unanswered until somebody presses **Acknowledge** (in the app) or replies.
