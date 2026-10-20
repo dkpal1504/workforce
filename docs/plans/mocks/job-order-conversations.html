@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Order conversations — UI draft</title>
+<style>
+  /* Colours are the app's Nocturne tokens, so this draft reads like the product, not a wireframe. */
+  :root{
+    --bg:#0c1118; --elev:#151c27; --subtle:#1b2431; --line:#2a3648; --line-soft:#223044;
+    --text:#e8eef6; --muted:#94a3b8; --primary:#38bdf8; --primary-ink:#0b1a24;
+    --accent:#fbbf24; --danger:#f87171; --green:#4ade80;
+    --radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#070b11;color:var(--text);font:14px/1.45 "Sora","Segoe UI",system-ui,sans-serif;padding:26px 30px 60px}
+  h1{font-size:19px;margin:0 0 4px}
+  .lede{color:var(--muted);margin:0 0 22px;max-width:900px}
+  .grid{display:grid;grid-template-columns:470px 660px 560px;gap:26px;align-items:start}
+  .col{display:flex;flex-direction:column;gap:26px}
+  .cap{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .card__head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft);background:var(--elev)}
+  .muted{color:var(--muted)}
+  .tiny{font-size:12px}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:11.5px;border:1px solid var(--line);color:var(--muted);background:var(--subtle)}
+  .chip--on{border-color:transparent;background:var(--primary);color:var(--primary-ink);font-weight:650}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--primary)}
+  .dot--warn{background:var(--accent)} .dot--bad{background:var(--danger)} .dot--ok{background:var(--green)}
+  .badge{font-size:11px;font-weight:650;padding:2px 7px;border-radius:6px;border:1px solid transparent}
+  .badge--amber{background:#3a2a08;color:#fbbf24;border-color:#5a4310}
+  .badge--red{background:#3b1518;color:#fca5a5;border-color:#5b1f24}
+  .badge--grey{background:#1d2634;color:#94a3b8;border-color:#2a3648}
+  .badge--blue{background:#072a3a;color:#7dd3fc;border-color:#0e4257}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;padding:7px 12px;font:inherit;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--elev);color:var(--text);cursor:pointer}
+  .btn--primary{background:var(--primary);border-color:var(--primary);color:var(--primary-ink)}
+  .btn--ghost{background:transparent}
+  .btn--sm{padding:4px 9px;font-size:12px}
+  .icon{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+  /* ---------- conversations list ---------- */
+  .row{display:grid;grid-template-columns:14px 1fr auto;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft)}
+  .row:last-child{border-bottom:0}
+  .row__title{font-weight:650}
+  .row__sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .row__meta{text-align:right;font-size:12px;color:var(--muted);white-space:nowrap}
+  .row--esc{background:linear-gradient(90deg,rgba(248,113,113,.10),transparent 55%)}
+
+  /* ---------- drawer ---------- */
+  .drawer{position:relative;background:var(--bg);border:1px solid var(--line);border-radius:16px;box-shadow:0 24px 60px rgba(0,0,0,.5);overflow:hidden}
+  .drawer__head{padding:14px 16px 12px;border-bottom:1px solid var(--line-soft);background:var(--elev)}
+  .drawer__id{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+  .drawer__title{font-size:16px;font-weight:700;letter-spacing:-.01em}
+  .drawer__struct{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .drawer__state{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:9px;font-size:12.5px;color:var(--muted)}
+  .filters{display:flex;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-soft)}
+  .filters .btn{margin-left:auto}
+  .msgs{padding:6px 0 4px}
+  .msg{padding:12px 16px;border-bottom:1px solid var(--line-soft)}
+  .msg:last-child{border-bottom:0}
+  .msg__head{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);flex-wrap:wrap}
+  .seq{font-weight:700;color:var(--text)}
+  .who{color:var(--text);font-weight:600}
+  .msg__body{margin-top:6px;white-space:pre-wrap}
+  .ctx{margin-top:8px;display:inline-flex;gap:10px;align-items:center;padding:4px 9px;border:1px dashed var(--line);border-radius:8px;font-size:11.5px;color:var(--muted)}
+  .ctx b{color:var(--text);font-weight:600}
+  .deliv{margin-top:6px;font-size:11.5px;color:var(--muted)}
+  .deliv--warn{color:var(--accent)}
+  .sys{background:rgba(148,163,184,.05);font-size:12.5px;color:var(--muted)}
+  .brief{margin:10px 16px 4px;padding:11px 12px;border-radius:11px;border:1px solid #1f4a5c;background:linear-gradient(180deg,rgba(56,189,248,.09),rgba(56,189,248,.03))}
+  .brief__top{display:flex;align-items:center;gap:8px;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:#7dd3fc}
+  .brief__body{font-size:12.8px;color:var(--text);margin-top:7px;line-height:1.5}
+  .brief__action{margin-top:8px;font-size:12.5px;color:var(--text);border-top:1px dashed #1f4a5c;padding-top:7px}
+  .brief__action b{color:#7dd3fc}
+  .promise{display:inline-flex;gap:6px;align-items:center;margin-left:8px;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid #5a4310;background:#3a2a08;color:#fbbf24}
+  .tag{display:inline-flex;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted);background:var(--subtle);margin-left:6px}
+  .composer{border-top:1px solid var(--line);background:var(--elev);padding:12px 14px 10px}
+  .composer__top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;font-size:12.5px;color:var(--muted)}
+  .composer textarea{width:100%;min-height:74px;resize:vertical;background:var(--bg);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:10px 11px;font:inherit}
+  .composer__foot{display:flex;align-items:center;gap:12px;margin-top:9px;font-size:12.5px;color:var(--muted)}
+  .composer__foot .btn{margin-left:auto}
+  .participants{padding:9px 14px;border-top:1px solid var(--line-soft);font-size:12.5px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+
+  /* ---------- e-mail / reply page ---------- */
+  .mail{background:#f6f7f9;color:#141d27;border-radius:14px;overflow:hidden;border:1px solid #d7dde6}
+  .mail__head{padding:12px 16px;border-bottom:1px solid #e2e7ee;font-size:12.5px;color:#4b5b6b}
+  .mail__subj{font-weight:700;color:#0f1a24;font-size:13.5px;margin-bottom:3px}
+  .mail__body{padding:16px;font-size:13.5px;line-height:1.55}
+  .mail__quote{border-left:3px solid #cfd8e3;padding:2px 0 2px 10px;margin:6px 0;color:#3d4b5a}
+  .mail__ctx{background:#eef2f7;border:1px solid #dde3eb;border-radius:9px;padding:8px 10px;font-size:12px;color:#3d4b5a;margin:12px 0}
+  .mail .btn{background:#0e7490;border-color:#0e7490;color:#fff}
+  .mail .btn--ghost{background:#fff;border-color:#c6d0dc;color:#14212b}
+  .mail__foot{padding:12px 16px;border-top:1px solid #e2e7ee;font-size:11.5px;color:#6b7a8a;background:#eef1f5}
+  .reply{background:var(--bg);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .reply__bar{display:flex;align-items:center;gap:9px;padding:10px 14px;background:#0f1723;border-bottom:1px solid var(--line-soft);font-size:12.5px;color:var(--muted)}
+  .reply__body{padding:14px}
+
+  /* ---------- bell ---------- */
+  .bell{position:relative;display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:9px;border:1px solid var(--line);background:var(--elev);font-size:13px}
+  .bell__dot{position:absolute;top:-5px;right:-5px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;border-radius:999px;padding:1px 5px}
+  .toast{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:11px;background:var(--elev);border:1px solid var(--line);box-shadow:0 14px 30px rgba(0,0,0,.45);max-width:360px}
+  .toast__t{font-weight:650;font-size:13px}
+  .toast__s{color:var(--muted);font-size:12px;margin-top:2px}
+  .legend{color:var(--muted);font-size:12px;margin-top:10px}
+  .legend b{color:var(--text)}
+</style>
+</head>
+<body>
+  <h1>Job Order conversations — UI draft for sign-off</h1>
+  <p class="lede">Four surfaces, drawn in the app's Nocturne palette with real-looking data. Point at what to change by its number (the design doc's §7 numbering matches this page). Nothing here is wired to the application.</p>
+
+  <div class="grid">
+
+    <!-- ============ 1. Conversations ============ -->
+    <div class="col">
+      <div>
+        <p class="cap">1 · Conversations (/messages)</p>
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div style="font-weight:700">Conversations</div>
+              <div class="tiny muted">Threads on Job Orders in your scope</div>
+            </div>
+            <div style="display:flex;gap:6px">
+              <span class="chip chip--on">Unread 4</span>
+              <span class="chip">Escalations 2</span>
+            </div>
+          </div>
+
+          <div class="row row--esc">
+            <span style="padding-top:5px"><span class="dot dot--bad"></span></span>
+            <div>
+              <div class="row__title">1900000107 · Pipe Spool Installation</div>
+              <div class="row__sub">“Please re-sequence the remaining spool fit-ups…”</div>
+              <div class="row__sub" style="margin-top:4px"><span class="badge badge--red">Escalation</span> <span class="muted">8h unanswered</span></div>
+            </div>
+            <div class="row__meta">CSR.013<br>Hull / Fabrication<div style="margin-top:4px">18-10 14:32</div></div>
+          </div>
+
+          <div class="row">
+            <span style="padding-top:5px"><span class="dot"></span></span>
+            <div>
+              <div class="row__title">1900000204 · Block Transfer</div>
+              <div class="row__sub">“Two fitters are on the grating; spools resume Friday.”</div>
+              <div class="row__sub" style="margin-top:4px"><span class="badge badge--blue">Reply</span> <span class="muted">R. Patil · 2h ago</span></div>
+            </div>
+            <div class="row__meta">CSR.012<br>Hull / Fabrication</div>
+          </div>
+
+          <div class="row">
+            <span style="padding-top:5px"><span class="dot" style="background:#334155"></span></span>
+            <div>
+              <div class="row__title">1900000112 · Hull Blasting</div>
+              <div class="row__sub">“Plan accepted for week 43.” — resolved</div>
+              <div class="row__sub" style="margin-top:4px"><span class="badge badge--grey">Decision</span> <span class="muted">yesterday</span></div>
+            </div>
+            <div class="row__meta">CSR.013<br>Blasting / Paint</div>
+          </div>
+        </div>
+        <p class="legend"><b>Order:</b> escalations → unread → newest. A resolved thread stays in the list, never disappears.</p>
+      </div>
+
+      <div>
+        <p class="cap">5 · Bell + toast (any screen)</p>
+        <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;justify-content:flex-end">
+            <span class="bell">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+              Messages <span class="bell__dot">4</span>
+            </span>
+          </div>
+          <div class="toast">
+            <span class="dot dot--warn" style="margin-top:6px"></span>
+            <div>
+              <div class="toast__t">Project Manager asked a follow-up</div>
+              <div class="toast__s">1900000107 · Pipe Spool Installation</div>
+              <div style="display:flex;gap:8px;margin-top:9px">
+                <button class="btn btn--primary btn--sm">Reply</button>
+                <button class="btn btn--ghost btn--sm">Later</button>
+              </div>
+            </div>
+          </div>
+          <p class="tiny muted" style="margin:0">Escalations raise a <b style="color:var(--text)">banner</b> that stays until acknowledged, not a toast that fades.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 2. Drawer ============ -->
+    <div class="col">
+      <div>
+        <p class="cap">2 · Thread drawer (collapsible · expandable to a full page)</p>
+        <div class="drawer">
+          <div class="drawer__head">
+            <div class="drawer__id">
+              <div>
+                <div class="drawer__title">1900000107 · Pipe Spool Installation</div>
+                <div class="drawer__struct">CSR.013 MV AINA · WBS H030.002 · Network N-1042 · Hull / Fabrication</div>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn--ghost btn--sm" title="Collapse to the Job Order row">⌄</button>
+                <button class="btn btn--ghost btn--sm" title="Open as a full page">⤢</button>
+                <button class="btn btn--ghost btn--sm" aria-label="Close">✕</button>
+              </div>
+            </div>
+            <div class="drawer__state">
+              <span><b style="color:var(--text)">Owner</b> R. Patil (Section Head)</span>
+              <span class="badge badge--grey"><span class="dot dot--ok" style="margin-right:5px"></span>Open</span>
+              <span>7 messages · last 2h ago</span>
+            </div>
+          </div>
+
+          <div class="filters">
+            <span class="chip chip--on">All</span>
+            <span class="chip">Follow-ups 3</span>
+            <span class="chip">Escalations 1</span>
+            <span class="chip">Decisions 1</span>
+            <button class="btn btn--ghost btn--sm">Resolve thread</button>
+          </div>
+
+          <div class="brief">
+            <div class="brief__top">
+              <svg class="icon" viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/><circle cx="12" cy="12" r="3"/></svg>
+              Bottleneck brief · from the report's own figures
+            </div>
+            <div class="brief__body">
+              Six days past the planned end with <b>36% quantity outstanding</b> and no progress punched for
+              <b>9 days</b>. The thread names the grating as the constraint (per #5–#7).
+              Effort is still being booked (80% burn), so this is a <b>sequencing delay, not a resource loss</b>.
+            </div>
+            <div class="brief__action">Action for <b>Section Head</b>: confirm the re-sequence plan and the Friday restart date — promise #6 is due 23-10-2026.</div>
+          </div>
+
+          <div class="msgs">
+            <div class="msg">
+              <div class="msg__head">
+                <span class="seq">#7</span>
+                <span class="who">A. Manager</span> · Project Manager · 18-10-2026 14:32
+                <span style="margin-left:auto">⋯</span>
+              </div>
+              <div class="msg__body">Please re-sequence the remaining spool fit-ups; the grating is holding the deck. Confirm a plan by Thursday.</div>
+              <div class="ctx">
+                <span>Burn <b>82%</b> <span class="badge badge--amber">AMBER</span></span>
+                <span>Schedule <b>DELAYED</b> 6d</span>
+                <span>Qty <b>64%</b></span>
+                <span>Budget <b>rev 3</b></span>
+                <span class="muted">⌄ details</span>
+              </div>
+              <div class="deliv">▸ emailed to r.patil@swan.co.in · delivered 14:32</div>
+            </div>
+
+            <div class="msg">
+              <div class="msg__head">
+                <span class="seq">#6</span>
+                <span class="who">R. Patil</span> · Section Head · 18-10-2026 11:05
+                <span class="badge badge--blue" style="margin-left:auto">from e-mail</span>
+              </div>
+              <div class="msg__body">Two fitters are on the grating; spools resume Friday.</div>
+              <div class="ctx"><span>Burn <b>80%</b> <span class="badge badge--amber">AMBER</span></span><span>Schedule <b>DELAYED</b> 6d</span><span class="muted">⌄ details</span>
+                <span class="tag">Manpower</span>
+              </div>
+              <div class="deliv">✓ promise recorded: <b style="color:var(--text)">spools resume</b> · due 23-10-2026 · open
+                <span class="promise">chase on the day</span>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg__head">
+                <span class="seq">#5</span>
+                <span class="who">S. Rao</span> · HOD · 17-10-2026 09:12
+                <span class="badge badge--red" style="margin-left:auto">escalation</span>
+              </div>
+              <div class="msg__body">The grating has been holding the deck for three days. I need a decision today.</div>
+              <div class="ctx"><span>Clock <b>acknowledged 09:40</b></span><span class="muted">28 min</span></div>
+            </div>
+
+            <div class="msg sys">
+              <span class="seq">#4</span> System · assigned to R. Patil · 17-10-2026 09:10
+            </div>
+          </div>
+
+          <div class="composer">
+            <div class="composer__top">
+              <span>Reply as <b style="color:var(--text)">A. Manager</b> (Project Manager)</span>
+              <label>Kind
+                <select style="background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:3px 6px;font:inherit;font-size:12.5px">
+                  <option>Reply</option><option>Follow-up</option><option>Instruction</option><option>Escalation</option><option>Decision</option>
+                </select>
+              </label>
+            </div>
+            <textarea placeholder="Write a follow-up, instruction or decision…"></textarea>
+            <div class="composer__foot">
+              <button class="btn btn--ghost btn--sm" title="Writes a draft from the brief and the last messages — you edit before sending">
+                <svg class="icon" viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M5 19l4-1 9-9-3-3-9 9-1 4Z"/><path d="M14 6l3 3"/></svg>
+                Draft with assistant
+              </button>
+              <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" checked> Email the owner now</label>
+              <span>Ctrl+Enter to send</span>
+              <button class="btn btn--primary">Send reply</button>
+            </div>
+          </div>
+
+          <div class="participants">
+            <span>Participants</span>
+            <span class="chip chip--on">R. Patil · owner</span>
+            <span class="chip">S. Rao · HOD</span>
+            <span class="chip">Planning</span>
+            <span class="chip">+ Add participant</span>
+          </div>
+        </div>
+        <p class="legend">Newest first, one by one. <b>#n</b> is the quotable sequence number. The context strip freezes the Job Order's numbers at the moment of writing.</p>
+      </div>
+    </div>
+
+    <!-- ============ 3 & 4. Email + reply page ============ -->
+    <div class="col">
+      <div>
+        <p class="cap">3 · The e-mail (outlook / gmail)</p>
+        <div class="mail">
+          <div class="mail__head">
+            <div class="mail__subj">[JO 1900000107 · Pipe Spool Installation] Follow-up — re-sequence spools</div>
+            <div>Workforce &lt;workforce@swan.co.in&gt; · to r.patil@swan.co.in · 14:32</div>
+          </div>
+          <div class="mail__body">
+            <p style="margin:0 0 10px"><b>A. Manager (Project Manager)</b> asked a follow-up on <b>1900000107</b>:</p>
+            <blockquote class="mail__quote">Please re-sequence the remaining spool fit-ups; the grating is holding the deck. Confirm a plan by Thursday.</blockquote>
+            <div class="mail__ctx">
+              Burn 82% AMBER · Schedule DELAYED 6d · Qty 64% · Budget rev 3<br>
+              CSR.013 MV AINA · WBS H030.002 · Network N-1042
+            </div>
+            <div style="display:flex;gap:9px;margin:14px 0 4px">
+              <button class="btn">Reply</button>
+              <button class="btn btn--ghost">Acknowledge</button>
+            </div>
+            <p style="font-size:12px;color:#5a6b7c;margin:12px 0 0">Earlier in this thread</p>
+            <p class="mail__quote" style="font-size:12.5px">#6 R. Patil, 18-10-2026 11:05 — Two fitters are on the grating; spools resume Friday.</p>
+            <p class="mail__quote" style="font-size:12.5px">#5 S. Rao, 17-10-2026 09:12 — Escalation: the grating is holding the deck.</p>
+          </div>
+          <div class="mail__foot">You are receiving this because you are the owner of this Job Order. Reply from the button — no sign-in needed.</div>
+        </div>
+      </div>
+
+      <div>
+        <p class="cap">4 · Reply page (no login, from the e-mail button)</p>
+        <div class="reply">
+          <div class="reply__bar">
+            <span style="width:22px;height:22px;border-radius:6px;background:#fff;display:grid;place-items:center;color:#0f172a;font-weight:800;font-size:11px">S</span>
+            Workforce · Job Order conversation
+          </div>
+          <div class="reply__body">
+            <div style="font-weight:700;font-size:15px">1900000107 · Pipe Spool Installation</div>
+            <div class="tiny muted" style="margin:2px 0 10px">You are replying as <b style="color:var(--text)">r.patil@swan.co.in</b> · not you? ask for a new link</div>
+
+            <div class="msg" style="padding:12px 0;border-top:1px solid var(--line-soft)">
+              <div class="msg__head"><span class="seq">#7</span><span class="who">A. Manager</span> · Project Manager · 18-10-2026 14:32</div>
+              <div class="msg__body">Please re-sequence the remaining spool fit-ups; the grating is holding the deck. Confirm a plan by Thursday.</div>
+              <div class="ctx"><span>Burn <b>82%</b> AMBER</span><span>Schedule <b>DELAYED</b> 6d</span></div>
+            </div>
+            <div class="msg" style="padding:12px 0;border-bottom:0">
+              <div class="msg__head"><span class="seq">#6</span><span class="who">R. Patil</span> · Section Head · 18-10-2026 11:05</div>
+              <div class="msg__body">Two fitters are on the grating; spools resume Friday.</div>
+            </div>
+
+            <label class="tiny muted" style="display:block;margin:8px 0 5px">Your reply</label>
+            <textarea style="width:100%;min-height:86px;background:var(--bg);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:10px 11px;font:inherit" placeholder="Type your answer…"></textarea>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:10px;font-size:12.5px;color:var(--muted)">
+              <label style="display:flex;gap:6px;align-items:center"><input type="checkbox"> E-mail me a copy</label>
+              <button class="btn btn--primary" style="margin-left:auto">Send reply</button>
+            </div>
+            <p class="tiny muted" style="margin:12px 0 0">This link is personal, expires in 30 days, and can only post to this Job Order.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

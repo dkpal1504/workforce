@@ -402,7 +402,7 @@ function toRow(fact: JobOrderFacts): ReportJobRow {
  *      difference is documented rather than "fixed" because the operations number wants both.)
  * Both differences are intentional and the printed note states them. See `BOOKED_HOURS_NOTE`.
  */
-function hoursOf(counts: { shiftSlot: number; hourSlot: number }, otHoursSum: number | null): number {
+export function hoursOf(counts: { shiftSlot: number; hourSlot: number }, otHoursSum: number | null): number {
   return (otHoursSum ?? 0) + counts.shiftSlot * 2 + counts.hourSlot * 1;
 }
 
@@ -414,7 +414,7 @@ function hoursOf(counts: { shiftSlot: number; hourSlot: number }, otHoursSum: nu
  */
 
 /** Statuses whose hours are punched but NOT yet approved (approval-aging signal). */
-const UNAPPROVED_STATUSES = ["DRAFT", "SUBMITTED", "SUP_APPROVED"] as const;
+export const UNAPPROVED_STATUSES = ["DRAFT", "SUBMITTED", "SUP_APPROVED"] as const;
 
 /* --------------------------------------------------------------------------- *
  * The pure assembler

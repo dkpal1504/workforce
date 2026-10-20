@@ -1,0 +1,397 @@
+/**
+ * Job Order conversations — the in-app spine.
+ *
+ * Every route re-derives the caller's scope from the DATABASE (never from the token or the query
+ * string) and then intersects it with the Job Order. A conversation is therefore never a way around
+ * the register: if you cannot see the Job Order, you cannot see — or join — its thread.
+ *
+ * `POST /job-orders/:id/conversation/messages` answers 201 with the stored message and the delivery
+ * rows, and starts the e-mail afterwards (`void deliverMessage`). Sending never waits for SMTP.
+ */
+
+import express, { Router, type Request } from "express";
+import { createHash } from "node:crypto";
+import { prisma } from "../db";
+import { requireAuth, requireRoles } from "../middleware/auth";
+import { writeAudit } from "../audit";
+import {
+  CONVERSATION_ROLES,
+  canAccessJobOrder,
+  conversationScopeFor,
+  isUserMessageKind,
+  jobOrderScopeWhere,
+  mayPostKind,
+  type ConversationActor,
+} from "../services/conversationScope";
+import {
+  acknowledge,
+  listThreads,
+  markRead,
+  postMessage,
+  postSystemMessage,
+  setThreadStatus,
+  threadFor,
+  unreadTotal,
+} from "../services/conversations";
+import { resolveOwner } from "../services/jobOrderContext";
+import { deliverMessage, conversationEmailEnabled } from "../services/notificationMail";
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, attachToMessage, downloadTicket, saveUpload, sendDownload, sweepOrphanUploads } from "../services/attachments";
+import { deliverySummary } from "../services/conversationText";
+
+export const conversationsRouter = Router();
+
+conversationsRouter.use(requireAuth);
+conversationsRouter.use(requireRoles(...CONVERSATION_ROLES));
+
+function actorOf(req: Request): ConversationActor {
+  const user = req.user!;
+  return {
+    id: user.id,
+    role: user.role,
+    departmentId: user.departmentId,
+    sectionId: user.sectionId,
+    sectionScope: user.sectionScope,
+  };
+}
+
+function authorOf(req: Request, source: "APP" | "MAGIC_LINK" = "APP") {
+  const user = req.user!;
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    source,
+    ipHash: hashIp(req.ip ?? ""),
+  };
+}
+
+function hashIp(ip: string): string | null {
+  if (!ip) return null;
+  return createHash("sha256").update(ip).digest("hex").slice(0, 32);
+}
+
+/** 404 vs 403: an id that does not exist is not "forbidden", and saying so leaks nothing. */
+function deny(res: import("express").Response, code: "JOB_ORDER_NOT_FOUND" | "OUT_OF_SCOPE") {
+  return res.status(code === "JOB_ORDER_NOT_FOUND" ? 404 : 403).json({
+    error: code === "JOB_ORDER_NOT_FOUND" ? "Job Order not found." : "This Job Order is outside your scope.",
+    code,
+  });
+}
+
+/** GET /api/conversations/threads?unread=1 — the list, escalations first. */
+conversationsRouter.get("/conversations/threads", async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  const threads = await listThreads(scope, req.user!.email, {
+    unreadOnly: req.query.unread === "1",
+    take: Math.min(200, Number(req.query.take ?? 100) || 100),
+  });
+  res.json({ threads, scope: scope.kind, emailEnabled: conversationEmailEnabled() });
+});
+
+/** GET /api/conversations/job-orders?q= — the Job Orders this caller may start a thread on. */
+conversationsRouter.get("/conversations/job-orders", async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const jobOrders = await prisma.jobOrder.findMany({
+    where: {
+      ...jobOrderScopeWhere(scope),
+      ...(q ? { OR: [{ code: { contains: q } }, { name: { contains: q } }] } : {}),
+    },
+    orderBy: { code: "asc" },
+    take: 60,
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      status: true,
+      project: { select: { code: true, name: true } },
+      department: { select: { name: true } },
+      section: { select: { name: true } },
+      thread: { select: { id: true, messageCount: true, lastMessageAt: true } },
+    },
+  });
+  res.json({ jobOrders });
+});
+
+/** GET /api/conversations/unread — the bell. */
+conversationsRouter.get("/conversations/unread", async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  res.json({ unread: await unreadTotal(scope, req.user!.email) });
+});
+
+/** GET /api/job-orders/:id/conversation — the drawer. `thread: null` is the empty state, not an error. */
+conversationsRouter.get("/job-orders/:id/conversation", async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const [thread, owner] = await Promise.all([threadFor(jobOrderId), resolveOwner(jobOrderId)]);
+  const kinds = ["FOLLOW_UP", "INSTRUCTION", "ESCALATION", "REPLY", "DECISION"].filter((kind) =>
+    mayPostKind(req.user!.role, kind)
+  );
+
+  if (thread) await markRead(thread.id, req.user!.email);
+
+  res.json({
+    jobOrder: access.jobOrder,
+    owner,
+    thread,
+    canPostKinds: kinds,
+    emailEnabled: conversationEmailEnabled(),
+    me: { id: req.user!.id, name: req.user!.name, role: req.user!.role, email: req.user!.email },
+  });
+});
+
+/** POST /api/job-orders/:id/conversation/messages */
+conversationsRouter.post("/job-orders/:id/conversation/messages", async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
+
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const body = typeof req.body?.body === "string" ? req.body.body.trim() : "";
+  const kind = String(req.body?.kind ?? "REPLY").toUpperCase();
+  if (!isUserMessageKind(kind) || !mayPostKind(req.user!.role, kind)) {
+    return res.status(403).json({ error: `${req.user!.role} may not post a ${kind} message.`, code: "KIND_NOT_ALLOWED" });
+  }
+  if (!body) return res.status(400).json({ error: "A message cannot be empty.", code: "EMPTY" });
+  if (body.length > 4000) return res.status(400).json({ error: "Keep a message under 4000 characters.", code: "TOO_LONG" });
+
+  const replyToId = Number.isInteger(Number(req.body?.replyToId)) ? Number(req.body.replyToId) : null;
+  if (replyToId != null) {
+    const parent = await prisma.jobOrderMessage.findUnique({
+      where: { id: replyToId },
+      select: { thread: { select: { jobOrderId: true } } },
+    });
+    if (!parent || parent.thread.jobOrderId !== jobOrderId) {
+      return res.status(400).json({ error: "That message belongs to another Job Order.", code: "BAD_REPLY_TO" });
+    }
+  }
+
+  // A DECISION carries a proposed change; only the two roles that may edit Project Master reach here.
+  let proposal: unknown = null;
+  if (kind === "DECISION") {
+    const raw = req.body?.proposal;
+    if (raw && typeof raw === "object") {
+      const allowed = ["status", "plannedStartDate", "plannedEndDate", "budgetHours", "budgetQuantity"];
+      const clean: Record<string, unknown> = {};
+      for (const key of allowed) if (key in raw) clean[key] = (raw as Record<string, unknown>)[key];
+      proposal = Object.keys(clean).length ? clean : null;
+    }
+    if (!proposal) return res.status(400).json({ error: "A decision must propose a change.", code: "NO_PROPOSAL" });
+  }
+
+  const posted = await postMessage({
+    jobOrderId,
+    author: authorOf(req),
+    kind,
+    body,
+    replyToId,
+    proposal,
+    emailOwner: req.body?.emailOwner !== false,
+  });
+
+  const attachmentIds = Array.isArray(req.body?.attachmentIds)
+    ? req.body.attachmentIds.map(Number).filter((id: number) => Number.isInteger(id) && id > 0)
+    : [];
+  const attached = attachmentIds.length
+    ? await attachToMessage({ attachmentIds, threadId: posted.threadId, messageId: posted.id, uploadedById: req.user!.id })
+    : 0;
+
+  // After the response is committed: mail is a side effect, never a gate.
+  void deliverMessage(posted.id).catch(() => undefined);
+
+  res.status(201).json({
+    message: {
+      id: posted.id,
+      seq: posted.seq,
+      threadId: posted.threadId,
+      kind,
+      createdAt: posted.createdAt,
+      contextLine: posted.contextLine,
+      attachments: attached,
+      deliveries: deliverySummary(posted.recipients),
+    },
+    commitments: posted.commitments,
+  });
+});
+
+/** POST /api/job-orders/:id/conversation/attachments?filename=… — raw body, one file per request. */
+conversationsRouter.post(
+  "/job-orders/:id/conversation/attachments",
+  express.raw({ type: () => true, limit: MAX_ATTACHMENT_BYTES + 4096 }),
+  async (req: Request, res) => {
+    const jobOrderId = Number(req.params.id);
+    const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+    if (!access.ok) return deny(res, access.code);
+
+    const filename = typeof req.query.filename === "string" ? req.query.filename : "";
+    if (!filename) return res.status(400).json({ error: "A filename is required.", code: "NO_FILENAME" });
+    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+    const thread = await prisma.jobOrderThread.findUnique({ where: { jobOrderId }, select: { id: true } });
+    const threadId = thread?.id ?? (await prisma.jobOrderThread.create({ data: { jobOrderId, openedById: req.user!.id }, select: { id: true } })).id;
+
+    const pending = await prisma.jobOrderMessageAttachment.count({ where: { threadId, messageId: null } });
+    if (pending >= MAX_ATTACHMENTS_PER_MESSAGE * 2) {
+      return res.status(429).json({ error: "Too many unsent attachments on this thread. Send or remove them first.", code: "TOO_MANY_PENDING" });
+    }
+
+    const saved = await saveUpload({ threadId, uploadedById: req.user!.id, filename, bytes });
+    if ("ok" in saved) {
+      return res.status(400).json({
+        error:
+          saved.reason === "TOO_LARGE"
+            ? "A file may be at most 10 MB."
+            : saved.reason === "TYPE_NOT_ALLOWED" || saved.reason === "NO_EXTENSION"
+              ? "That file type is not accepted. Allowed: PDF, images (PNG/JPG/WEBP), Excel, Word, PowerPoint, CSV, TXT, ZIP."
+              : "The file is empty.",
+        code: saved.reason,
+      });
+    }
+    res.status(201).json({ attachment: saved, max: MAX_ATTACHMENTS_PER_MESSAGE });
+  }
+);
+
+/** GET /api/conversations/attachments/:id — scope-checked download. */
+conversationsRouter.get("/conversations/attachments/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid attachment." });
+  const row = await prisma.jobOrderMessageAttachment.findUnique({ where: { id }, select: { thread: { select: { jobOrderId: true } } } });
+  if (!row) return res.status(404).json({ error: "Not found." });
+  const access = await canAccessJobOrder(actorOf(req), row.thread.jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+  const ticket = await downloadTicket(id);
+  if (!ticket) return res.status(410).json({ error: "The file is no longer available." });
+  sendDownload(res, ticket);
+});
+
+/** POST /api/conversations/:id/read */
+conversationsRouter.post("/conversations/:id/read", async (req, res) => {
+  const thread = await loadThread(req);
+  if (!thread) return res.status(404).json({ error: "Not found." });
+  const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+  await markRead(thread.id, req.user!.email);
+  res.json({ ok: true });
+});
+
+/** POST /api/conversations/:id/resolve | /reopen — a system line records who did it. */
+conversationsRouter.post("/conversations/:id/:action(resolve|reopen)", async (req, res) => {
+  const thread = await loadThread(req);
+  if (!thread) return res.status(404).json({ error: "Not found." });
+  const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const status = req.params.action === "resolve" ? "RESOLVED" : "OPEN";
+  await setThreadStatus(thread.id, status, req.user!.id);
+  await postSystemMessage(
+    thread.jobOrderId,
+    status === "RESOLVED"
+      ? `${req.user!.name} (${req.user!.role}) marked this thread resolved. A new message reopens it.`
+      : `${req.user!.name} (${req.user!.role}) reopened this thread.`,
+    authorOf(req, "APP")
+  );
+  res.json({ id: thread.id, status });
+});
+
+/** POST /api/conversations/:id/mute {muted: boolean} — per person, per thread. */
+conversationsRouter.post("/conversations/:id/mute", async (req, res) => {
+  const thread = await loadThread(req);
+  if (!thread) return res.status(404).json({ error: "Not found." });
+  const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+  const muted = req.body?.muted !== false;
+  await prisma.jobOrderThreadParticipant.updateMany({
+    where: { threadId: thread.id, email: req.user!.email.toLowerCase() },
+    data: { mutedAt: muted ? new Date() : null },
+  });
+  res.json({ muted });
+});
+
+/** POST /api/conversations/:id/messages/:messageId/acknowledge — "I have seen this". */
+conversationsRouter.post("/conversations/:id/messages/:messageId/acknowledge", async (req, res) => {
+  const thread = await loadThread(req);
+  if (!thread) return res.status(404).json({ error: "Not found." });
+  const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+  const ok = await acknowledge(thread.id, Number(req.params.messageId), req.user!.email);
+  if (!ok) return res.status(409).json({ error: "That escalation is already acknowledged, or is not one.", code: "NOT_ACKNOWLEDGEABLE" });
+  await postSystemMessage(
+    thread.jobOrderId,
+    `${req.user!.name} (${req.user!.role}) acknowledged the escalation.`,
+    authorOf(req, "APP")
+  );
+  res.json({ acknowledged: true });
+});
+
+/** GET /api/job-orders/:id/conversation/owner-candidates — who this Job Order could name as owner. */
+conversationsRouter.get("/job-orders/:id/conversation/owner-candidates", async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+  const candidates = await prisma.user.findMany({
+    where: {
+      active: true,
+      departmentId: access.jobOrder.departmentId,
+      role: { in: ["HOD", "DEPT_HEAD", "SUPERVISOR", "PM", "PROJECT_MANAGER"] },
+    },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, role: true, email: true, notificationEmail: true, sectionId: true },
+  });
+  res.json({
+    candidates: candidates.map((user) => ({
+      ...user,
+      email: user.notificationEmail ?? (user.email.endsWith("@employee.local") ? null : user.email),
+    })),
+    current: await resolveOwner(jobOrderId),
+  });
+});
+
+/** PUT /api/job-orders/:id/owner {userId | null} — PM/ADMIN, audited, with a system line in the thread. */
+conversationsRouter.put("/job-orders/:id/owner", async (req, res) => {
+  if (req.user!.role !== "PM" && req.user!.role !== "ADMIN") {
+    return res.status(403).json({ error: "Only a Project Manager or an Admin may name a Job Order owner.", code: "FORBIDDEN" });
+  }
+  const jobOrderId = Number(req.params.id);
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const raw = req.body?.userId;
+  const userId = raw === null || raw === "" || raw === undefined ? null : Number(raw);
+  if (userId !== null) {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, active: true, name: true } });
+    if (!user || !user.active) return res.status(400).json({ error: "That account is not active.", code: "BAD_USER" });
+    await prisma.jobOrder.update({
+      where: { id: jobOrderId },
+      data: { ownerUserId: userId, ownerAssignedById: req.user!.id, ownerAssignedAt: new Date() },
+    });
+    await writeAudit(req.user!.id, "JOB_ORDER_OWNER_SET", "job_order", jobOrderId, { ownerUserId: userId });
+    await postSystemMessage(jobOrderId, `${req.user!.name} named ${user.name} as the owner of this Job Order.`, authorOf(req));
+  } else {
+    await prisma.jobOrder.update({
+      where: { id: jobOrderId },
+      data: { ownerUserId: null, ownerAssignedById: req.user!.id, ownerAssignedAt: new Date() },
+    });
+    await writeAudit(req.user!.id, "JOB_ORDER_OWNER_CLEARED", "job_order", jobOrderId, {});
+    await postSystemMessage(jobOrderId, `${req.user!.name} cleared the named owner; the Section HOD is addressed instead.`, authorOf(req));
+  }
+
+  res.json({ owner: await resolveOwner(jobOrderId) });
+});
+
+/** POST /api/conversations/sweep-uploads — the scheduler's hook, exposed for an operator too. */
+conversationsRouter.post("/conversations/sweep-uploads", async (req, res) => {
+  if (req.user!.role !== "ADMIN") return res.status(403).json({ error: "Admin only." });
+  const removed = await sweepOrphanUploads(new Date(Date.now() - 24 * 3_600_000));
+  res.json({ removed });
+});
+
+async function loadThread(req: Request): Promise<{ id: number; jobOrderId: number } | null> {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return null;
+  return prisma.jobOrderThread.findUnique({ where: { id }, select: { id: true, jobOrderId: true } });
+}

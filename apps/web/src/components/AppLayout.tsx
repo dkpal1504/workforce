@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useAuth } from "../auth/AuthContext";
-import type { AuthCapabilities, AuthUser } from "../api/client";
+import { api, type AuthCapabilities, type AuthUser } from "../api/client";
 import { useTheme } from "../theme/ThemeContext";
 import { ThemePanel } from "./ThemePanel";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 
 function titleForPath(pathname: string, role?: string) {
+  if (pathname.startsWith("/conversations")) return "Job Order Conversations";
   if (pathname.startsWith("/timesheet")) return "Daily Timesheet";
   if (pathname.startsWith("/summary")) return "Summary";
   if (pathname.startsWith("/approvals")) {
@@ -134,6 +135,7 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
     items: [
       { to: "/portfolio", label: "Portfolio dashboard", cap: "viewPortfolioDashboard", icon: "portfolio" },
       { to: "/reports", label: "Reports", cap: "viewPortfolioDashboard", icon: "reports" },
+      { to: "/conversations", label: "Conversations", cap: "viewConversations", icon: "reports" },
     ],
   },
   {
@@ -146,6 +148,30 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
     ],
   },
 ];
+
+/** The bell: one poll a minute, silent on failure, and only for a role that holds the capability. */
+function useUnreadConversations(enabled: boolean) {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!enabled) {
+      setCount(0);
+      return;
+    }
+    let alive = true;
+    const tick = () => {
+      api<{ unread: number }>("/conversations/unread")
+        .then((data) => alive && setCount(typeof data.unread === "number" ? data.unread : 0))
+        .catch(() => undefined);
+    };
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [enabled]);
+  return count;
+}
 
 /** The desktop page head. The title itself comes from `titleForPath`, so the
  *  desktop and the phone can never show two different names for one screen. */
@@ -182,6 +208,11 @@ const PAGE_META: Array<{ prefix: string; lede: string; wide?: true; action?: { l
     prefix: "/reports",
     lede: "The same six datasets, table-first, for taking away — download the identical scope as Excel or PDF.",
     action: { label: "Open dashboard", to: "/portfolio", icon: "portfolio" },
+    wide: true,
+  },
+  {
+    prefix: "/conversations",
+    lede: "One thread per Job Order — follow-ups, instructions and escalations, newest first, with the numbers frozen at the moment each message was written.",
     wide: true,
   },
   { prefix: "/csv-upload", lede: "Load the employee roster from a CSV file." },
@@ -223,6 +254,7 @@ export function AppLayout() {
   const location = useLocation();
   const { openPanel } = useTheme();
   const capabilities = user?.capabilities;
+  const unread = useUnreadConversations(Boolean(capabilities?.viewConversations));
   const roleDisplay = user?.role === "PM" ? "Project Head" : user?.role;
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -450,6 +482,12 @@ export function AppLayout() {
           {capabilities?.viewPortfolioDashboard && (
             <NavLink to="/reports" className={({ isActive }) => (isActive ? "active" : "")}>
               Reports
+            </NavLink>
+          )}
+          {capabilities?.viewConversations && (
+            <NavLink to="/conversations" className={({ isActive }) => (isActive ? "active" : "")}>
+              Conversations
+              {unread > 0 && <span className="nav-count" aria-label={`${unread} unread`}>{unread}</span>}
             </NavLink>
           )}
           {capabilities?.uploadEmployees && (

@@ -22,6 +22,8 @@ import { JobOrderUploadPage } from "./pages/JobOrderUploadPage";
 import { AttendanceHoursPage } from "./pages/AttendanceHoursPage";
 import { PortfolioDashboardPage } from "./pages/PortfolioDashboardPage";
 import { ReportsPage } from "./pages/ReportsPage";
+import { ConversationsPage } from "./pages/ConversationsPage";
+import { PublicThreadPage } from "./pages/PublicThreadPage";
 
 function LoadingSession() {
   return <div className="loading-state" style={{ margin: "20vh auto", maxWidth: 420 }}>Checking your session…</div>;
@@ -69,6 +71,8 @@ function HomeRedirect() {
 export function App() {
   return (
     <Routes>
+      {/* The no-login reply page: opened from the e-mail button, outside every guard on purpose. */}
+      <Route path="/thread/:token" element={<PublicThreadPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/change-password" element={<RequirePasswordChange />} />
       <Route path="/select-section" element={<RequireSectionSelection />} />
@@ -135,6 +139,10 @@ export function App() {
           {/* Which account manages which Projects. Admin-only: an assignment IS a read scope over
               work, so granting it is an administrative act. The role itself is granted on Role
               Assignment; this screen only scopes it. */}
+          {/* Job Order conversations: one thread per Job Order, scoped per request. */}
+          <Route element={<RequireCapability capability="viewConversations" />}>
+            <Route path="/conversations" element={<ConversationsPage />} />
+          </Route>
           <Route element={<RequireCapability capability="manageProjectManagers" />}>
             <Route path="/project-managers" element={<ProjectManagersPage />} />
           </Route>

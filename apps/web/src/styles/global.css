@@ -1376,3 +1376,402 @@ select option {
     max-width: 128px;
   }
 }
+
+
+/* ── Conversations ──────────────────────────────────────────────────────────────────────────────
+   The Job Order drawer, its trail and the public reply page. Every value here is a THEME TOKEN: the
+   screen must look native in Nocturne, Harbor, Daylight and the rest, and the two earlier regressions
+   (an unreadable <select>, a hard-coded grey) both came from literal colours in a new component. */
+
+.conv-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 4px 0 24px;
+}
+
+.conv-list {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.conv-list__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+}
+
+.conv-list__head h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.conv-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.conv-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.conv-tabs button.active {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  font-weight: 600;
+}
+
+.conv-search {
+  width: calc(100% - 32px);
+  margin: 0 16px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.conv-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+}
+
+.conv-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 10px 16px 12px;
+  cursor: pointer;
+}
+
+.conv-row:hover { background: var(--bg-subtle); }
+.conv-row--open { background: var(--primary-soft); }
+.conv-row--unread { box-shadow: inset 3px 0 0 var(--primary); }
+
+.conv-row__top { display: flex; align-items: center; gap: 6px; }
+.conv-row__top strong { font-size: 0.9rem; }
+.conv-row__name { display: block; font-size: 0.85rem; margin-top: 2px; }
+.conv-row__meta, .conv-row__time { display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+.conv-row__excerpt { display: block; font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; line-height: 1.35; }
+
+.conv-flag {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  white-space: nowrap;
+}
+
+.conv-flag--escalation { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+.conv-flag--unread { background: var(--primary); color: var(--bg-elevated); border-color: var(--primary); font-weight: 700; }
+.conv-flag--open { background: var(--success-soft); color: var(--success); border-color: var(--success); }
+
+.conv-drawer {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 190px);
+  min-height: 420px;
+}
+
+.conv-drawer--full {
+  position: fixed;
+  inset: calc(var(--header-h) + 8px) 16px 16px;
+  max-height: none;
+  z-index: 60;
+}
+
+.conv-drawer--collapsed { min-height: 0; }
+
+.conv-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.conv-head h2 { margin: 2px 0 4px; font-size: 1.05rem; color: var(--text); }
+.conv-head__project { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.conv-head__sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-muted); }
+.conv-head__actions { display: flex; gap: 4px; }
+
+.conv-count { font-size: 0.75rem; color: var(--text-muted); }
+
+.conv-icon {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  width: 30px;
+  height: 30px;
+  line-height: 1;
+  cursor: pointer;
+  font: inherit;
+}
+
+.conv-icon--tiny { width: 20px; height: 20px; font-size: 0.7rem; margin-left: 6px; }
+.conv-icon:hover { background: var(--bg-subtle); }
+
+.brief {
+  margin: 12px 16px 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.brief--summary { border-left-color: var(--accent); }
+.brief__title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 6px; }
+.brief__text { margin: 0; font-size: 0.88rem; line-height: 1.5; color: var(--text); }
+.brief ul { margin: 0; padding-left: 18px; font-size: 0.86rem; line-height: 1.45; color: var(--text); }
+.brief__facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.conv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.conv-chip em { color: var(--text-muted); font-style: normal; text-transform: uppercase; font-size: 0.66rem; letter-spacing: 0.04em; }
+.conv-chip--file { cursor: pointer; border-radius: var(--radius-sm); }
+
+.conv-thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.conv-msg {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+}
+
+.conv-msg--system {
+  background: var(--bg-subtle);
+  border-style: dashed;
+  font-size: 0.85rem;
+}
+
+.conv-msg__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text); }
+.conv-msg__head time { margin-left: auto; font-size: 0.72rem; }
+.conv-seq { font-size: 0.72rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.conv-kind {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  font-weight: 600;
+}
+
+.conv-kind--escalation { background: var(--danger-soft); color: var(--danger); }
+.conv-kind--instruction { background: var(--warning-soft); color: var(--warning); }
+.conv-kind--decision { background: var(--accent-soft); color: var(--accent); }
+.conv-kind--system { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+
+.conv-msg__context {
+  margin: 6px 0 0;
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid var(--border);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.conv-msg__body { margin: 8px 0 0; font-size: 0.9rem; line-height: 1.55; color: var(--text); white-space: pre-wrap; }
+
+.conv-msg__proposal { margin-top: 8px; padding: 8px 10px; background: var(--accent-soft); border-radius: var(--radius-sm); }
+.conv-msg__proposal code { font-size: 0.75rem; color: var(--text); word-break: break-word; }
+
+.conv-msg__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 0.72rem; }
+.conv-msg__foot .conv-btn { margin-left: auto; }
+
+.conv-files { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; }
+.conv-files a, .conv-files button { text-decoration: none; }
+
+.conv-promises { margin-top: 8px; display: grid; gap: 4px; }
+.conv-promise { font-size: 0.76rem; color: var(--text-muted); background: var(--warning-soft); border-radius: var(--radius-sm); padding: 4px 8px; }
+.conv-promise__tag { color: var(--warning); font-weight: 700; text-transform: uppercase; font-size: 0.66rem; margin-right: 6px; }
+
+.conv-composer {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 12px;
+  background: var(--bg);
+}
+
+.conv-composer__row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.conv-composer select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.conv-as { font-size: 0.78rem; color: var(--text-muted); }
+.conv-as strong { color: var(--text); }
+
+.conv-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+.conv-composer textarea::placeholder { color: var(--text-muted); }
+
+.conv-composer__foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.conv-composer__left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.conv-btn {
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: var(--bg-elevated);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.conv-btn:hover { background: var(--primary-hover); }
+.conv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.conv-btn--ghost { background: transparent; color: var(--text); border-color: var(--border); font-weight: 500; }
+.conv-btn--ghost:hover { background: var(--bg-subtle); }
+
+.conv-check { display: inline-flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--text-muted); }
+
+.conv-notice { margin-top: 8px; font-size: 0.8rem; color: var(--primary-ink); background: var(--primary-soft); border-radius: var(--radius-sm); padding: 6px 9px; }
+.conv-notice--error { color: var(--danger); background: var(--danger-soft); }
+.conv-draft-label { font-size: 0.75rem; color: var(--accent); margin-bottom: 6px; font-weight: 600; }
+.conv-hintline { margin-top: 6px; font-size: 0.72rem; color: var(--text-muted); }
+.conv-hintline a { color: var(--primary); }
+
+.conv-empty { padding: 16px; font-size: 0.85rem; color: var(--text-muted); margin: 0; }
+.conv-empty--error { color: var(--danger); }
+.conv-hint { border: 1px dashed var(--border); border-radius: var(--radius); padding: 20px; color: var(--text-muted); font-size: 0.88rem; }
+
+.public-thread { min-height: 100vh; background: var(--bg); padding: 28px 12px 48px; }
+.public-thread__card {
+  max-width: 760px;
+  margin: 0 auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+.public-thread__head { padding: 18px 18px 12px; border-bottom: 1px solid var(--border-light); }
+.public-thread__head h1 { margin: 4px 0 6px; font-size: 1.15rem; color: var(--text); }
+.public-thread__who { margin: 8px 0 0; font-size: 0.8rem; }
+.public-thread .conv-thread { max-height: 60vh; }
+.public-thread .conv-composer { padding-bottom: 18px; }
+
+@media (max-width: 900px) {
+  .conv-layout { grid-template-columns: minmax(0, 1fr); }
+  .conv-drawer { position: fixed; inset: var(--header-h) 0 0; z-index: 60; border-radius: 0; max-height: none; }
+  .conv-drawer--full { inset: var(--header-h) 0 0; }
+  .conv-rows { max-height: none; }
+}
+
+/* The "start a follow-up" picker and its modal shell. Tokens only. */
+.conv-new { margin: 0 16px 10px; width: calc(100% - 32px); }
+.conv-search--modal { width: calc(100% - 32px); }
+
+.conv-modal {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--navy-deep) 55%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 12px 24px;
+  z-index: 80;
+}
+
+.conv-modal__card {
+  width: min(620px, 100%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.conv-rows--modal { max-height: 55vh; }
+
+/* The unread count on the Conversations rail item. Tokens only, so every theme reads it. */
+.nav-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--header-text);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+}

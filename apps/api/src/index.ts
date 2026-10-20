@@ -26,6 +26,10 @@ import { jobOrderCsvRouter } from "./routes/jobOrderCsv";
 import { jobOrderProgressRouter } from "./routes/jobOrderProgress";
 import { delegationRouter } from "./routes/delegations";
 import { projectManagersRouter } from "./routes/projectManagers";
+import { conversationsRouter } from "./routes/conversations";
+import { publicThreadRouter } from "./routes/publicThread";
+import { assistantRouter } from "./routes/assistant";
+import { startConversationScheduler } from "./services/conversationScheduler";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { attendanceHoursRouter } from "./routes/attendanceHours";
 import { startAttendanceHoursScheduler, stopAttendanceHoursScheduler } from "./services/attendanceHoursScheduler";
@@ -147,6 +151,12 @@ app.get("/api/health", ready);
 // All app APIs under /api so Vite SPA routes (/timesheet, /summary, /approvals) are not proxied away
 const api = express.Router();
 api.use("/auth", authRouter);
+// The no-login reply page MUST be mounted before the "/" masters router: that router applies
+// `requireAuth` to every request that reaches it, so a public path registered after it answers 401.
+api.use("/thread", publicThreadRouter);
+// Conversations answer on BOTH shapes the screen uses: /job-orders/:id/conversation (a thread is a
+// property of one Job Order) and /conversations/… (the list, the bell, a reply's actions).
+api.use("/", conversationsRouter);
 api.use("/", mastersRouter);
 api.use("/teams", teamsRouter);
 api.use("/timesheet", timesheetRouter);
@@ -167,8 +177,9 @@ api.use("/job-order-upload", jobOrderCsvRouter);
 api.use("/job-order-progress", jobOrderProgressRouter);
 api.use("/master-data", masterDataRouter);
 api.use("/delegations", delegationRouter);
+api.use("/assistant", assistantRouter);
 // Project Manager assignments (which account manages which Projects) — ADMIN only.
-api.use("/admin/project-managers", projectManagersRouter);
+
 // Clocked attendance hours (in/out) for submitted timesheets, ADMIN only.
 api.use("/attendance-hours", attendanceHoursRouter);
 app.use("/api", api);
@@ -182,6 +193,7 @@ const server = app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
   startBadgeViewSyncScheduler();
   startAttendanceHoursScheduler();
+  startConversationScheduler();
 });
 
 async function shutdown(signal: string): Promise<void> {

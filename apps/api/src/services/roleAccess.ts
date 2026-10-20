@@ -69,6 +69,14 @@ export type CapabilityMap = {
    * cannot admit it by accident.
    */
   viewTimesheetCoverage: boolean;
+  /**
+   * The Job Order conversations screen and the header bell.
+   *
+   * The door only. WHO each thread shows is decided per request by `conversationScopeFor` — an
+   * assigned Project Manager sees its projects, an HOD its department and section set, PM/ADMIN/COO
+   * everything — so this flag must never be read as "may read every conversation".
+   */
+  viewConversations: boolean;
 };
 
 export function capabilitiesFor(role: string, employmentType: string | null | undefined): CapabilityMap {
@@ -113,6 +121,8 @@ export function capabilitiesFor(role: string, employmentType: string | null | un
     // Every existing reader of the Reports screen keeps the coverage report; a project scope does
     // not (see the CapabilityMap note). This list MUST match the coverage routes' own role list.
     viewTimesheetCoverage: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD",
+    // Same six roles the conversation router admits, and no others.
+    viewConversations: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD" || role === "PROJECT_MANAGER",
   };
 }
 

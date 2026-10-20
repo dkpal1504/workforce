@@ -39,6 +39,8 @@ export type AuthCapabilities = {
    * rather than losing a screen it can still use.
    */
   viewTimesheetCoverage?: boolean;
+  /** The Job Order conversations screen and the header bell. Absent on an older bundle means "no". */
+  viewConversations?: boolean;
 };
 
 export type AuthUser = {

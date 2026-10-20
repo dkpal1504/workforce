@@ -61,7 +61,23 @@ model User {
   projectManagerAssignments        ProjectManagerAssignment[] @relation("ProjectManagerAssignments")
   projectManagerAssignmentsCreated ProjectManagerAssignment[] @relation("ProjectManagerAssignmentCreator")
 
-  @@map("users")
+    /// Where Workforce writes to this person (the login e-mail may be a <ecno>@employee.local handle).
+  notificationEmail String? @map("notification_email")
+
+  jobOrdersOwned        JobOrder[] @relation("JobOrderOwner")
+  threadsOpened         JobOrderThread[] @relation("ThreadOpenedBy")
+  threadsResolved       JobOrderThread[] @relation("ThreadResolvedBy")
+  threadsLastMessage    JobOrderThread[] @relation("ThreadLastMessageBy")
+  messagesAuthored      JobOrderMessage[] @relation("MessageAuthor")
+  messagesEdited        JobOrderMessage[] @relation("MessageEditor")
+  threadParticipations  JobOrderThreadParticipant[] @relation("ThreadParticipant")
+  threadParticipantsAdded JobOrderThreadParticipant[] @relation("ThreadParticipantAddedBy")
+  replyTokensCreated    JobOrderReplyToken[] @relation("ReplyTokenCreator")
+  commitmentsOwned      JobOrderCommitment[] @relation("CommitmentOwner")
+  attachmentsUploaded   JobOrderMessageAttachment[] @relation("AttachmentUploader")
+  assistantUsage        AssistantUsage[] @relation("AssistantUsageUser")
+
+@@map("users")
 }
 
 model Department {
@@ -478,6 +494,16 @@ model JobOrder {
   budgetRevisions     JobOrderBudgetRevision[]
   progressEntries     JobOrderProgress[]
 
+  /// Who holds this Job Order for conversations. Null = fall back to the Section HOD, then the
+  /// department HOD (resolved in services/conversationScope.ts). Explicit beats derived.
+  ownerUserId       Int?      @map("owner_user_id")
+  owner             User?     @relation("JobOrderOwner", fields: [ownerUserId], references: [id])
+  ownerAssignedById Int?     @map("owner_assigned_by")
+  ownerAssignedAt   DateTime? @map("owner_assigned_at")
+
+  thread       JobOrderThread?
+  commitments  JobOrderCommitment[] @relation("JobOrderCommitments")
+
   @@unique([projectId, code])
   @@index([projectWbsId, status])
   @@index([departmentId, status])
@@ -778,6 +804,211 @@ model ProjectManagerAssignment {
   @@map("project_manager_assignments")
 }
 
+
+/// One conversation per Job Order (docs/plans/2026-10-19-job-order-conversations.md).
+/// Created lazily on the first message. RESOLVED is not deleted: it stays readable and reopens.
+model JobOrderThread {
+  id              Int      @id @default(autoincrement())
+  jobOrderId      Int      @unique @map("job_order_id")
+  jobOrder        JobOrder @relation(fields: [jobOrderId], references: [id], onDelete: Cascade)
+  /// OPEN | RESOLVED
+  status          String   @default("OPEN")
+  openedById      Int?     @map("opened_by")
+  openedBy        User?    @relation("ThreadOpenedBy", fields: [openedById], references: [id])
+  openedAt        DateTime @default(now()) @map("opened_at")
+  resolvedById    Int?     @map("resolved_by")
+  resolvedBy      User?    @relation("ThreadResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt      DateTime? @map("resolved_at")
+  lastMessageAt   DateTime @default(now()) @map("last_message_at")
+  lastMessageById Int?     @map("last_message_by")
+  lastMessageBy   User?    @relation("ThreadLastMessageBy", fields: [lastMessageById], references: [id])
+  /// Denormalised for the list and the bell; maintained in the same transaction as a message.
+  messageCount    Int      @default(0) @map("message_count")
+
+  messages     JobOrderMessage[]
+  participants JobOrderThreadParticipant[]
+  tokens       JobOrderReplyToken[]
+  commitments  JobOrderCommitment[]
+
+  attachments  JobOrderMessageAttachment[]
+
+  @@index([status, lastMessageAt])
+  @@map("job_order_threads")
+}
+
+/// Append-only conversation entry. An edit bumps `bodyRevision` and is recorded as a system line;
+/// a row is never deleted, and `seq` is the quotable number ("per #7").
+model JobOrderMessage {
+  id                  Int      @id @default(autoincrement())
+  threadId            Int      @map("thread_id")
+  thread              JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  seq                 Int
+  /// FOLLOW_UP | INSTRUCTION | ESCALATION | REPLY | DECISION | SYSTEM
+  kind                String
+  authorUserId        Int?     @map("author_user_id")
+  author              User?    @relation("MessageAuthor", fields: [authorUserId], references: [id])
+  /// Always present, even for a magic-link reply: who spoke, in one field.
+  authorEmail         String   @map("author_email")
+  authorName          String   @map("author_name")
+  authorRole          String   @map("author_role")
+  /// APP | MAGIC_LINK | SYSTEM
+  source              String   @default("APP")
+  body                String
+  bodyRevision        Int      @default(1) @map("body_revision")
+  editedAt            DateTime? @map("edited_at")
+  editedById          Int?     @map("edited_by")
+  editedBy            User?    @relation("MessageEditor", fields: [editedById], references: [id])
+  replyToId           Int?     @map("reply_to_id")
+  replyTo             JobOrderMessage? @relation("MessageReply", fields: [replyToId], references: [id])
+  replies             JobOrderMessage[] @relation("MessageReply")
+  /// The Job Order's operational snapshot at the moment of writing (see the plan, 4.2).
+  contextJson         String?  @map("context_json")
+  /// A DECISION's proposed change (see 4.3).
+  proposalJson        String?  @map("proposal_json")
+  escalationDueAt     DateTime? @map("escalation_due_at")
+  acknowledgedAt      DateTime? @map("acknowledged_at")
+  acknowledgedByEmail String?  @map("acknowledged_by_email")
+  ipHash              String?  @map("ip_hash")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  recipients  JobOrderMessageRecipient[]
+  attachments JobOrderMessageAttachment[]
+  commitments JobOrderCommitment[]
+
+  @@unique([threadId, seq])
+  @@index([threadId, createdAt])
+  @@index([kind, escalationDueAt])
+  @@map("job_order_messages")
+}
+
+model JobOrderThreadParticipant {
+  id         Int      @id @default(autoincrement())
+  threadId   Int      @map("thread_id")
+  thread     JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  userId     Int?     @map("user_id")
+  user       User?    @relation("ThreadParticipant", fields: [userId], references: [id])
+  email      String
+  roleAtJoin String   @map("role_at_join")
+  addedById  Int?     @map("added_by")
+  addedBy    User?    @relation("ThreadParticipantAddedBy", fields: [addedById], references: [id])
+  addedAt    DateTime @default(now()) @map("added_at")
+  mutedAt    DateTime? @map("muted_at")
+  lastReadAt DateTime? @map("last_read_at")
+  /// The highest `seq` this person has seen; unread = thread.messageCount - lastReadSeq.
+  lastReadSeq Int     @default(0) @map("last_read_seq")
+
+  @@unique([threadId, email])
+  @@index([userId])
+  @@map("job_order_thread_participants")
+}
+
+/// Per-recipient delivery truth, shown on the message ("emailed to X · delivered 14:32"
+/// or "not emailed — no address"). A message is never "sent" in the abstract.
+model JobOrderMessageRecipient {
+  id        Int      @id @default(autoincrement())
+  messageId Int      @map("message_id")
+  message   JobOrderMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  email     String
+  userId    Int?     @map("user_id")
+  /// QUEUED | SENT | FAILED | NO_ADDRESS | MUTED
+  state     String   @default("QUEUED")
+  sentAt    DateTime? @map("sent_at")
+  error     String?
+
+  @@index([messageId])
+  @@map("job_order_message_recipients")
+}
+
+/// A signed, expiring link that lets the holder reply from e-mail without an account.
+/// Stored HASHED, bound to one address and one thread, revocable.
+model JobOrderReplyToken {
+  id          Int      @id @default(autoincrement())
+  tokenHash   String   @unique @map("token_hash")
+  threadId    Int      @map("thread_id")
+  thread      JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  email       String
+  userId      Int?     @map("user_id")
+  createdById Int?     @map("created_by")
+  createdBy   User?    @relation("ReplyTokenCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+  expiresAt   DateTime @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  useCount    Int      @default(0) @map("use_count")
+  lastUsedAt  DateTime? @map("last_used_at")
+
+  @@index([threadId, email])
+  @@map("job_order_reply_tokens")
+}
+
+/// A promise found in a reply ("spools resume Friday"), chased on its due day (see the plan, A4).
+model JobOrderCommitment {
+  id                  Int      @id @default(autoincrement())
+  threadId            Int      @map("thread_id")
+  thread              JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messageId           Int      @map("message_id")
+  message             JobOrderMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  jobOrderId          Int      @map("job_order_id")
+  jobOrder            JobOrder @relation("JobOrderCommitments", fields: [jobOrderId], references: [id], onDelete: Cascade)
+  ownerEmail          String   @map("owner_email")
+  ownerUserId         Int?     @map("owner_user_id")
+  owner               User?    @relation("CommitmentOwner", fields: [ownerUserId], references: [id])
+  dueOn               DateTime @map("due_on")
+  text                String
+  /// OPEN | KEPT | MISSED | DISMISSED
+  state               String   @default("OPEN")
+  resolvedAt          DateTime? @map("resolved_at")
+  chasedAt            DateTime? @map("chased_at")
+
+  @@index([state, dueOn])
+  @@index([jobOrderId])
+  @@map("job_order_commitments")
+}
+
+/// What the assistant was asked to do and what a human did with it. The only way to know whether
+/// it is earning its place; also the record that a sent message began as a draft.
+model AssistantUsage {
+  id               Int      @id @default(autoincrement())
+  userId           Int?     @map("user_id")
+  user             User?    @relation("AssistantUsageUser", fields: [userId], references: [id])
+  action           String
+  jobOrderId       Int?     @map("job_order_id")
+  threadId         Int?     @map("thread_id")
+  model            String
+  promptTokens     Int?     @map("prompt_tokens")
+  completionTokens Int?     @map("completion_tokens")
+  /// RETURNED | FAILED | DISABLED | ACCEPTED | EDITED | DISCARDED
+  outcome          String
+  latencyMs        Int?     @map("latency_ms")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([action, createdAt])
+  @@map("assistant_usage")
+}
+
+/// A document attached to a conversation message — drawings, photos, delivery notes, spreadsheets.
+/// The bytes live on disk (`ATTACHMENT_DIR`), never in the database; this row is the index, the
+/// integrity hash and the access record. A row with `messageId = null` is an upload that has not been
+/// sent yet, so an abandoned compose never leaves an orphan on a thread.
+model JobOrderMessageAttachment {
+  id           Int      @id @default(autoincrement())
+  threadId     Int      @map("thread_id")
+  thread       JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messageId    Int?     @map("message_id")
+  message      JobOrderMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  filename     String
+  mimeType     String   @map("mime_type")
+  sizeBytes    Int      @map("size_bytes")
+  /// The name on disk (opaque); the user-facing name is `filename`.
+  storageKey   String   @unique @map("storage_key")
+  sha256       String
+  uploadedById Int?     @map("uploaded_by")
+  uploadedBy   User?    @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([messageId])
+  @@index([threadId])
+  @@map("job_order_message_attachments")
+}
 /// Effective-dated budget revision. Revision 1 is the budget set when the Job
 /// Order was created. Consumption is always compared against the revision in
 /// force on the WORK DATE, so a past month keeps the budget it was measured
