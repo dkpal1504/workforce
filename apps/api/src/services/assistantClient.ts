@@ -81,6 +81,9 @@ export async function chatComplete(
         model: cfg.model,
         temperature: 0.2,
         max_tokens: cfg.maxTokens,
+        // Qwen3 and its siblings think before answering; on this screen that thinking IS the answer
+        // unless it is switched off. Servers that do not know the field ignore it.
+        chat_template_kwargs: { enable_thinking: false },
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
@@ -98,7 +101,11 @@ export async function chatComplete(
       choices?: Array<{ message?: { content?: string } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
-    const text = payload.choices?.[0]?.message?.content?.trim();
+    const message = payload.choices?.[0]?.message as
+      | { content?: string; reasoning_content?: string }
+      | undefined;
+    const text = message?.content?.trim();
+    // `reasoning_content` is deliberately NOT used: it is the model's scratchpad, not an answer.
     if (!text) return { ok: false, reason: "BAD_RESPONSE" };
     return {
       ok: true,

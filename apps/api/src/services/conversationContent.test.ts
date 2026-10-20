@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { deliverySummary, emailSubject, escapeHtml, excerpt, linkify, renderBodyHtml } from "./conversationText";
 import { extensionOf, inspectUpload, sanitizeFilename } from "./attachments";
-import { briefFactsBlock, buildBriefPrompt, templateBrief, type BriefFacts } from "./assistantPrompts";
+import { briefFactsBlock, buildBriefPrompt, cleanAssistantText, templateBrief, type BriefFacts } from "./assistantPrompts";
 
 /** What goes into an e-mail, and which files may be stored. */
 
@@ -127,4 +127,37 @@ test("the template brief states the situation without inventing anything", () =>
   // A promise changes the ask, an escalation outranks it.
   assert.equal(templateBrief({ ...base, promisesOverdue: 1 }).includes("Action for Section Head:"), true);
   assert.equal(templateBrief({ ...base, openEscalations: 1 }).includes("Action for HOD:"), true);
+});
+
+test("a reasoning model's scratchpad is not the answer", () => {
+  const raw = [
+    "Thinking Process: 1. **Analyze the Request:** **Role:** Operations assistant inside Workforce",
+    "(shipyard manpower/job-order system). **Tone:** Short sentences, plain words, no marketing language.",
+    "**Constraint 1 (Facts):** ONLY use numbers in the FACTS block. **Task:** Write a three-sentence brief.",
+    "",
+    "**Analyze the Facts:** * Job Order: B1049 * Project: CSR.014",
+    "",
+    "The job has no plan and no bookings: 0% of budget hours used with no start or end date.",
+    "Nothing has been booked, so the burn cannot be measured.",
+    "Action for Section Head: set the planned window this week, then book the first crew day.",
+  ].join("\n");
+
+  const cleaned = cleanAssistantText(raw);
+  assert.equal(cleaned.startsWith("The job has no plan"), true, cleaned);
+  assert.equal(cleaned.includes("Thinking Process"), false);
+  assert.equal(cleaned.includes("**"), false);
+  assert.equal(cleaned.includes("Constraint 1"), false);
+  // The closing ask survives: it is the most useful line in the brief.
+  assert.equal(cleaned.includes("Action for Section Head:"), true);
+});
+
+test("a clean answer is passed through, and an empty one stays empty", () => {
+  const clean = "Burn is 82% AMBER with 36% quantity complete. Action for HOD: confirm the restart date.";
+  assert.equal(cleanAssistantText(clean), clean);
+  assert.equal(cleanAssistantText(""), "");
+  assert.equal(cleanAssistantText("<think>plan</think>"), "");
+});
+
+test("markdown emphasis and headings are stripped, not rendered", () => {
+  assert.equal(cleanAssistantText("## Heading\n**Bold** and *italic*"), "Heading\nBold and italic");
 });

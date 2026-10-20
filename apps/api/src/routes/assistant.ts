@@ -13,7 +13,14 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { CONVERSATION_ROLES, canAccessJobOrder, type ConversationActor } from "../services/conversationScope";
 import { briefFactsFor } from "../services/jobOrderContext";
 import { assistantConfig, assistantReady, chatComplete, listModels } from "../services/assistantClient";
-import { buildBriefPrompt, buildDraftPrompt, buildSummaryPrompt, templateBrief, type BriefFacts } from "../services/assistantPrompts";
+import {
+  buildBriefPrompt,
+  buildDraftPrompt,
+  buildSummaryPrompt,
+  cleanAssistantText,
+  templateBrief,
+  type BriefFacts,
+} from "../services/assistantPrompts";
 
 export const assistantRouter = Router();
 
@@ -56,9 +63,19 @@ assistantRouter.get("/job-orders/:id/conversation/brief", requireRoles(...CONVER
     return res.json({ facts: factChips(facts), template, brief: template, assisted: false, reason: cfg.enabled ? "NO_ENDPOINT" : "DISABLED" });
   }
   const answer = await chatComplete(buildBriefPrompt(facts), cfg);
-  await recordUsage({ userId: req.user!.id, action: "BRIEF", jobOrderId, model: answer.ok ? answer.model : cfg.model, outcome: answer.ok ? "RETURNED" : "FAILED", answer });
-  if (!answer.ok) return res.json({ facts: factChips(facts), template, brief: template, assisted: false, reason: answer.reason });
-  res.json({ facts: factChips(facts), template, brief: answer.text, assisted: true, model: answer.model });
+  const model = answer.ok ? answer.model : cfg.model;
+  await recordUsage({ userId: req.user!.id, action: "BRIEF", jobOrderId, model, outcome: answer.ok ? "RETURNED" : "FAILED", answer });
+  const cleaned = answer.ok ? cleanAssistantText(answer.text) : "";
+  if (!answer.ok || !cleaned) {
+    return res.json({
+      facts: factChips(facts),
+      template,
+      brief: template,
+      assisted: false,
+      reason: answer.ok ? "UNUSABLE_TEXT" : answer.reason,
+    });
+  }
+  res.json({ facts: factChips(facts), template, brief: cleaned, assisted: true, model });
 });
 
 /** GET /api/conversations/:id/summary — three bullets for a long thread. */
@@ -92,9 +109,11 @@ assistantRouter.get("/conversations/:id/summary", requireRoles(...CONVERSATION_R
     }),
     cfg
   );
-  await recordUsage({ userId: req.user!.id, action: "SUMMARY", threadId, jobOrderId: thread.jobOrderId, model: answer.ok ? answer.model : cfg.model, outcome: answer.ok ? "RETURNED" : "FAILED", answer });
-  if (!answer.ok) return res.json({ bullets: null, assisted: false, reason: answer.reason });
-  res.json({ bullets: answer.text, assisted: true, model: answer.model });
+  const model = answer.ok ? answer.model : cfg.model;
+  await recordUsage({ userId: req.user!.id, action: "SUMMARY", threadId, jobOrderId: thread.jobOrderId, model, outcome: answer.ok ? "RETURNED" : "FAILED", answer });
+  const cleaned = answer.ok ? cleanAssistantText(answer.text) : "";
+  if (!cleaned) return res.json({ bullets: null, assisted: false, reason: answer.ok ? "UNUSABLE_TEXT" : answer.reason });
+  res.json({ bullets: cleaned, assisted: true, model });
 });
 
 /** POST /api/job-orders/:id/conversation/draft {kind} — text for the composer, never sent by us. */
@@ -121,9 +140,13 @@ assistantRouter.post("/job-orders/:id/conversation/draft", requireRoles(...CONVE
     }),
     cfg
   );
-  await recordUsage({ userId: req.user!.id, action: `DRAFT_${kind}`, jobOrderId, model: answer.ok ? answer.model : cfg.model, outcome: answer.ok ? "RETURNED" : "FAILED", answer });
-  if (!answer.ok) return res.json({ draft: templateDraft(kind, facts), assisted: false, reason: answer.reason });
-  res.json({ draft: answer.text, assisted: true, model: answer.model });
+  const model = answer.ok ? answer.model : cfg.model;
+  await recordUsage({ userId: req.user!.id, action: `DRAFT_${kind}`, jobOrderId, model, outcome: answer.ok ? "RETURNED" : "FAILED", answer });
+  const cleaned = answer.ok ? cleanAssistantText(answer.text) : "";
+  if (!cleaned) {
+    return res.json({ draft: templateDraft(kind, facts), assisted: false, reason: answer.ok ? "UNUSABLE_TEXT" : answer.reason });
+  }
+  res.json({ draft: cleaned, assisted: true, model });
 });
 
 /** POST /api/assistant/usage — a human's verdict on a draft. */

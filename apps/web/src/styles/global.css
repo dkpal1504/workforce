@@ -1775,3 +1775,34 @@ select option {
   line-height: 1;
   vertical-align: middle;
 }
+
+/* Assistant strip: the briefing is on demand, the trail is the screen. Chips only — no box eats the
+   message area until somebody asks for it. */
+.conv-assist {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 16px 2px;
+}
+
+.conv-chip--action {
+  cursor: pointer;
+  background: var(--bg);
+  border-style: dashed;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+}
+
+.conv-chip--action:hover { border-style: solid; background: var(--bg-subtle); }
+.conv-chip--action.is-open { border-style: solid; background: var(--primary-soft); color: var(--primary-ink); font-weight: 600; }
+.conv-chip--action em { font-style: normal; font-size: 0.68rem; color: var(--text-muted); }
+.conv-chip--action.is-open em { color: var(--primary-ink); }
+
+.conv-assist__hint { font-size: 0.72rem; color: var(--text-muted); margin-left: auto; }
+
+/* The trail gets the height it needs; a briefing that is longer than the window scrolls inside itself. */
+.conv-thread { min-height: 40vh; }
+.conv-msg__body { font-size: 0.95rem; line-height: 1.6; }
+.brief { max-height: 30vh; overflow-y: auto; }
+.conv-drawer { max-height: calc(100vh - 150px); }

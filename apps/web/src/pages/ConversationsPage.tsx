@@ -398,6 +398,9 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
   const [expanded, setExpanded] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [summary, setSummary] = useState<string[] | null>(null);
+  // Both assistant blocks are COLLAPSED by default: the trail is the screen, the briefing is on demand.
+  const [showBrief, setShowBrief] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -479,11 +482,6 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
           </div>
         </div>
         <div className="conv-head__actions">
-          {data.thread && messages.length > 1 && (
-            <button type="button" className="conv-icon" onClick={() => void onSummary()} title="Summarise this thread">
-              ≡
-            </button>
-          )}
           <button
             type="button"
             className="conv-icon"
@@ -510,7 +508,36 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
 
       {!collapsed && (
         <>
-          {summary && (
+          {brief && (
+            <div className="conv-assist">
+              <button
+                type="button"
+                className={`conv-chip conv-chip--action${showBrief ? " is-open" : ""}`}
+                onClick={() => setShowBrief((value) => !value)}
+                aria-expanded={showBrief}
+                title={brief.brief}
+              >
+                ✦ Bottleneck brief
+                <em>{brief.assisted ? "AI assisted" : "from the facts"}</em>
+              </button>
+              {data.thread && messages.length > 1 && (
+                <button
+                  type="button"
+                  className={`conv-chip conv-chip--action${showSummary ? " is-open" : ""}`}
+                  onClick={() => {
+                    if (!showSummary && !summary) void onSummary();
+                    setShowSummary((value) => !value);
+                  }}
+                  aria-expanded={showSummary}
+                >
+                  Where this stands
+                </button>
+              )}
+              <span className="conv-assist__hint">the trail is the record — the briefing is on demand</span>
+            </div>
+          )}
+
+          {showSummary && summary && (
             <div className="brief brief--summary">
               <div className="brief__title">Where this stands</div>
               <ul>
@@ -521,14 +548,12 @@ function ThreadDrawer(props: { jobOrderId: number; onClose: () => void; onChange
             </div>
           )}
 
-          {brief && (
+          {showBrief && (
             <div className="brief">
-              <div className="brief__title">
-                Bottleneck brief {brief.assisted ? <span className="conv-flag">drafted by assistant</span> : <span className="conv-flag">from the facts</span>}
-              </div>
-              <p className="brief__text">{brief.brief}</p>
+              <div className="brief__title">Bottleneck brief</div>
+              <p className="brief__text">{brief?.brief}</p>
               <div className="brief__facts">
-                {brief.facts.map((fact) => (
+                {(brief?.facts ?? []).map((fact) => (
                   <span key={fact.label} className="conv-chip">
                     <em>{fact.label}</em> {fact.value}
                   </span>
@@ -706,7 +731,9 @@ function Composer(props: { data: ConversationResponse; onSent: () => Promise<voi
     setDrafting(true);
     setNotice(null);
     try {
-      const result = await api<{ draft: string; assisted: boolean }>(`/job-orders/${data.jobOrder.id}/conversation/draft`, {
+      // The assistant's routes live under /assistant, like the brief. Calling the bare job-order path
+      // returned 404 "Not Found" — a route that never existed, not a model failure.
+      const result = await api<{ draft: string; assisted: boolean }>(`/assistant/job-orders/${data.jobOrder.id}/conversation/draft`, {
         method: "POST",
         body: JSON.stringify({ kind }),
       });
