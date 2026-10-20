@@ -56,8 +56,8 @@ the deterministic template and sending is unaffected.
 
 ## Escalating from the Portfolio
 
-On **Needs push**, **Schedule & delays** and **Project structure**, hovering a row for half a second
-raises a small popover — *Escalate to Job Owner?* — naming the owner it will address and quoting the
+On **Needs push**, **Schedule & delays** and **Project structure**, resting the pointer on a row for a
+moment raises a small popover — *Escalate to Job Owner?* — naming the owner it will address and quoting the
 row's own figures. Clicking **Escalate** opens that Job Order's thread with the kind set to Escalation
 and the message already written:
 

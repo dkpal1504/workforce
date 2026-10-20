@@ -50,8 +50,8 @@ Project structure. **Job work** (the full register) deliberately does NOT get it
 
 ## 4. The interaction
 
-- **Hover intent, not hover-accident.** The popover appears after **350 ms** on the row and closes
-  after a **150 ms** grace period, so travelling into the popover does not dismiss it and sweeping the
+- **Hover intent, not hover-accident.** The popover appears after **120 ms** on the row and closes
+  after a **120 ms** grace period, so travelling into the popover does not dismiss it and sweeping the
   mouse across a table does not strobe. It never navigates by itself — only the click does.
 - **Where it appears:** anchored to the row's right edge, flipped above/below to stay inside the
   viewport, ~240 px wide, one line plus one button. It is rendered **once** (a single portal element
@@ -173,8 +173,11 @@ Locked, and nothing outside it:
 - **Three tabs only:** Needs push, Schedule & delays (one row = one Job Order) and Project structure
   (a node offers its Job Orders, worst first; one Job Order goes straight through). Job work and the
   other sections stay untouched.
-- **Hover intent, never hover navigation:** 350 ms in, 150 ms grace out, popover opened by the row's
-  action button on focus too; the click is the only thing that moves the page.
+- **Hover intent, never hover navigation:** 120 ms dwell in, 120 ms grace out, popover opened by the
+  row's action button on focus too; the click is the only thing that moves the page.
+- **Exactly one popover, dashboard-wide:** `components/hoverPopoverStore.ts` owns the single slot. A
+  row claims it on dwell and every other row closes in the same tick — per-row state let several live
+  at once and stack as the pointer moved down a table (fixed 20-10-2026).
 - **The prefill is built from the row's own figures** — no model in the click path.
 - **An open escalation is never duplicated**: the drawer opens in reply mode on the live one.
 - **`origin` recorded** so "raised from the dashboard" is answerable later.

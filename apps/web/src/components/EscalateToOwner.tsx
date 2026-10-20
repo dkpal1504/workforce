@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { claimPopover, closeAllPopovers, isPopoverOpen, releasePopover, subscribePopover } from "./hoverPopoverStore";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
@@ -46,6 +47,25 @@ type JobOrderFacts = {
   daysToEnd?: number | null;
   qtyCompletePct?: number | null;
 };
+
+
+/**
+ * Bind one row to the ONE popover slot.
+ *
+ * `open` is derived from the store, so a row cannot stay open after another row claims the slot: the
+ * store notifies every subscriber and the displaced row re-renders closed in the same tick. That is the
+ * difference between one popover and a cascade.
+ */
+function useSinglePopover(key: string): boolean {
+  const [open, setOpen] = useState(() => isPopoverOpen(key));
+  useEffect(() => {
+    setOpen(isPopoverOpen(key));
+    return subscribePopover((active) => setOpen(active === key));
+  }, [key]);
+  // Leaving the screen must not leave a popover behind.
+  useEffect(() => () => releasePopover(key), [key]);
+  return open;
+}
 
 type PopoverAnchor = { top: number; left: number } | null;
 
@@ -93,7 +113,8 @@ export function EscalatableRow(props: {
   const { jobOrder, origin, children, className } = props;
   const navigate = useNavigate();
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
+  const popoverKey = `jo:${jobOrder.id}`;
+  const open = useSinglePopover(popoverKey);
   const [owner, setOwner] = useState<OwnerResponse | null>(ownerCache.get(jobOrder.id) ?? null);
   const [anchor, setAnchor] = useState<PopoverAnchor>(null);
   const closeTimer = useRef<number | undefined>(undefined);
@@ -113,21 +134,22 @@ export function EscalatableRow(props: {
     const top = rect.top + height > window.innerHeight - 8 ? Math.max(8, rect.top - height + 28) : Math.max(8, rect.top - 6);
     const left = Math.max(8, rect.left - 286);
     setAnchor({ top, left });
-    setOpen(true);
-  }, []);
+    // Exclusive: taking the slot closes whatever row held it, before this one paints.
+    claimPopover(popoverKey);
+  }, [popoverKey]);
 
-  // HOVER INTENT, not hover-accident: half a second of dwell before the popover appears, so sweeping
-  // the pointer across a 300-row table cannot strobe it over the REASONS column.
+  // FAST, but not accidental: a 120 ms dwell is enough to feel immediate while still swallowing the
+  // pointer sweeping down a long table. The previous popover is closed by the claim, never by a timer.
   const show = useCallback(() => {
     window.clearTimeout(closeTimer.current);
     window.clearTimeout(dwellTimer.current);
-    dwellTimer.current = window.setTimeout(openNow, 500);
+    dwellTimer.current = window.setTimeout(openNow, 120);
   }, [openNow]);
 
   const scheduleHide = useCallback(() => {
     window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setOpen(false), 150);
-  }, []);
+    closeTimer.current = window.setTimeout(() => releasePopover(popoverKey), 120);
+  }, [popoverKey]);
 
   useEffect(() => {
     if (!open || owner) return;
@@ -146,7 +168,7 @@ export function EscalatableRow(props: {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") closeAllPopovers();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -213,7 +235,8 @@ export function EscalatableNodeRow(props: {
   const { node, scope, origin, children, className } = props;
   const navigate = useNavigate();
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
+  const popoverKey = `node:${scope.projectId}:${scope.wbsId ?? 0}:${scope.networkId ?? 0}:${node.id}`;
+  const open = useSinglePopover(popoverKey);
   const [rows, setRows] = useState<NodeJobOrder[] | null>(null);
   const [anchor, setAnchor] = useState<PopoverAnchor>(null);
   const closeTimer = useRef<number | undefined>(undefined);
@@ -232,19 +255,19 @@ export function EscalatableNodeRow(props: {
       top: rect.top + height > window.innerHeight - 8 ? Math.max(8, rect.top - height + 28) : Math.max(8, rect.top - 6),
       left: Math.max(8, rect.left - 300),
     });
-    setOpen(true);
-  }, []);
+    claimPopover(popoverKey);
+  }, [popoverKey]);
 
   const show = useCallback(() => {
     window.clearTimeout(closeTimer.current);
     window.clearTimeout(dwellTimer.current);
-    dwellTimer.current = window.setTimeout(openNow, 500);
+    dwellTimer.current = window.setTimeout(openNow, 120);
   }, [openNow]);
 
   const scheduleHide = useCallback(() => {
     window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setOpen(false), 150);
-  }, []);
+    closeTimer.current = window.setTimeout(() => releasePopover(popoverKey), 120);
+  }, [popoverKey]);
 
   useEffect(() => {
     if (!open || rows) return;
@@ -260,7 +283,7 @@ export function EscalatableNodeRow(props: {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") closeAllPopovers();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
