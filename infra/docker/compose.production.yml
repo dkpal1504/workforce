@@ -28,6 +28,11 @@ services:
     networks: [backend]
     read_only: true
     tmpfs: [/tmp]
+    # Conversation attachments are FILES ON DISK. The container's root is read-only, so without this
+    # volume every upload fails with EROFS and the message keeps its text but loses its documents.
+    # A named volume stays writable over a read-only root, and survives `up -d --force-recreate`.
+    volumes:
+      - attachments:/app/data/attachments
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     healthcheck:
@@ -68,3 +73,7 @@ services:
 networks:
   frontend: {}
   backend: {}
+
+volumes:
+  # Named, not bind-mounted: it must outlive the container and must not depend on a host path.
+  attachments: {}

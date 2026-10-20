@@ -15,6 +15,7 @@ control which links are shown in the browser.
 | Add payroll Employee | — | — | Mapped Department/Section | Any Department/Section | Any Department/Section | — |
 | Organisation and supervisor administration | — | — | — | — | Yes | — (the API refuses: 403) |
 | Operations dashboard (`viewPortfolioDashboard`) | — | — | Own Department (whole, every Section) | Own Department (whole) | Yes | Yes (whole organisation, read only) |
+| Job Order conversations (`viewConversations`) | — | — | Own Department, narrowed to his Section set | Own Department | All | All (read/write on the trail; no `DECISION`) |
 | Project-manager dashboard (`PROJECT_MANAGER`) | — | — | — | — | — | — (separate role, see below) |
 
 Each HOD must have an explicit `User.departmentId + User.sectionId` scope. HOD
@@ -80,6 +81,15 @@ oversees every Department but acts on nothing.
 | Router access | Present on the read-only `summary` router (`/api/summary/*`) and the portfolio router; **absent from every mutating `requireRoles(...)` list**, so the COO reaches only the reads its `viewSummary` / `viewPortfolioDashboard` capabilities advertise. |
 | Role assignment | Assignable in `ASSIGNABLE_ROLES`, takes **no** Employee linkage and **no** Section scope (like ADMIN/HR/FINANCE). It is never *created* from an Employee record. |
 | Self-approval / work | Holds no approval queue, captures no team and fills no timesheet. |
+
+**`viewConversations`** admits the six roles that may take part in a Job Order conversation and is
+enforced twice: the capability hides the nav item, and every conversation route re-derives the reader's
+scope from the database and intersects it with the Job Order. A `PROJECT_MANAGER` therefore reads only
+the Projects assigned to it on **Project managers**; an HOD its Department narrowed to its Section set;
+`PM`, `COO` and `ADMIN` everything. `DECISION` messages — the only kind that carries a change to a Job
+Order — are refused to everyone except `PM` and `ADMIN`, who already hold Project Master. An account
+outside those six roles gets **no screen, no nav item and no thread**. The full operator manual is
+`docs/CONVERSATIONS.md`.
 
 The new **`viewPortfolioDashboard`** capability gates the operations dashboard and its
 exports. It is granted to **COO, PM and Admin** (whole organisation) and to **HOD (either
