@@ -13,6 +13,7 @@ import { prisma } from "../db";
 import { safeSmtpError, smtpConfigured, createSmtpTransport } from "./smtp";
 import { emailSubject, escapeHtml, jobOrderLabel, kindLabel, renderBodyHtml, type DeliveryLine } from "./conversationText";
 import { createReplyTokenValue, hashReplyToken, replyLink, replyTokenExpiry } from "./replyToken";
+import { fromModeFromEnv, mailIdentity } from "./mailIdentity";
 
 export function conversationEmailEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env.CONVERSATION_EMAIL_ENABLED ?? "true").toLowerCase() !== "false" && smtpConfigured();
@@ -161,6 +162,7 @@ export async function deliverMessage(messageId: number): Promise<DeliveryLine[]>
       threadId: true,
       authorName: true,
       authorRole: true,
+      authorEmail: true,
       recipients: { where: { state: "QUEUED" }, select: { id: true, email: true, userId: true } },
       attachments: { select: { filename: true, sizeBytes: true } },
       thread: {
@@ -202,7 +204,17 @@ export async function deliverMessage(messageId: number): Promise<DeliveryLine[]>
     : null;
 
   const transport = createSmtpTransport();
-  const from = process.env.CONVERSATION_FROM ?? process.env.SMTP_FROM ?? process.env.SMTP_USER ?? "workforce@localhost";
+  const serviceFrom = process.env.CONVERSATION_FROM ?? process.env.SMTP_FROM ?? process.env.SMTP_USER ?? "workforce@localhost";
+  // The person who wrote the message speaks through the notification: their name on the From line, and
+  // — when they have a real address — their mailbox as Reply-To. The authenticated envelope stays the
+  // service account, which is what keeps the mail deliverable. See services/mailIdentity.ts.
+  const identity = mailIdentity({
+    authorName: message.authorName,
+    authorRole: message.authorRole,
+    authorEmail: message.authorEmail,
+    serviceFrom,
+    mode: fromModeFromEnv(process.env.CONVERSATION_FROM_MODE),
+  });
 
   for (const recipient of message.recipients) {
     try {
@@ -224,7 +236,14 @@ export async function deliverMessage(messageId: number): Promise<DeliveryLine[]>
         seq: message.seq,
         threadStatus: message.thread.status,
       });
-      await transport.sendMail({ from, to: recipient.email, subject: mail.subject, text: mail.text, html: mail.html });
+      await transport.sendMail({
+        from: identity.from,
+        to: recipient.email,
+        ...(identity.replyTo ? { replyTo: identity.replyTo } : {}),
+        subject: mail.subject,
+        text: mail.text,
+        html: mail.html,
+      });
       await prisma.jobOrderMessageRecipient.update({ where: { id: recipient.id }, data: { state: "SENT", sentAt: new Date() } });
       lines.push({ email: recipient.email, state: "SENT" });
     } catch (error) {

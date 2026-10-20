@@ -40,7 +40,8 @@ notification address on Role assignment to fix it.
 |---|---|---|
 | `CONVERSATION_EMAIL_ENABLED` | `true` | `false` records recipients as `EMAIL_OFF` and sends nothing |
 | `APP_BASE_URL` | `http://localhost:5173` | the host used in the reply link |
-| `CONVERSATION_FROM` | `SMTP_FROM` | the From: address |
+| `CONVERSATION_FROM` | `SMTP_FROM` | the authenticated mailbox the notification is sent from |
+| `CONVERSATION_FROM_MODE` | `display` | `display` = person's name on the From line, their address in Reply-To. `sender` = the person's address in From — only after IT grants Send As |
 | `CONVERSATION_SCHEDULER_ENABLED` | `false` | turns on the 15-minute sweep |
 | `CONVERSATION_SCHEDULER_MINUTES` | `15` | sweep interval |
 | `ATTACHMENT_DIR` | `./data/attachments` | where uploads live — **must be a mounted volume** |
@@ -77,6 +78,33 @@ off and can never contradict the row.
   came to: *"N escalations raised from the dashboard in the last 90 days · median first reply 4h"*.
 - **Job work** deliberately has no affordance: a 300-row register is not a place for a hover that
   starts an escalation.
+
+## Who the notification says it comes from
+
+The mailbox that **authenticates** and the name the reader **sees** are separated, on purpose:
+
+```
+From:     "Sunil Babariya (Project Manager) - Workforce" <noreply@swan.co.in>
+Reply-To: sunil.babariya@swan.co.in
+```
+
+- **From** stays the one service mailbox, because that is the address SPF, DKIM and DMARC check. Pointing
+  it at the person would mean spoofing `swan.co.in`: it survives a `p=none` policy and is junked or
+  refused under `p=quarantine`/`p=reject`.
+- **Reply-To** is the author's own address, so hitting Reply writes to the person who raised it — which
+  is what "the mail should come from the employee" is really asking for.
+- The display name is the author's name and role, sanitised: a name from the users table can never
+  break the header.
+- An author with no routable address (`40032021@employee.local`, or nothing on file) gets the name but
+  no Reply-To, and the delivery row already says *"not emailed — no address on file"* where relevant.
+
+**`CONVERSATION_FROM_MODE=sender`** puts the person's address in From instead. Use it only once IT has
+granted the service account Send As on the mailboxes (Exchange/Graph); without that the mail is
+misaligned and will start failing. It degrades back to `display` automatically when the author has no
+routable address.
+
+To make replies work, fill **notification address** on Role assignment for the people who will raise or
+answer escalations. `User.email` is often a login handle, not a mailbox.
 
 ## The escalation clock
 
