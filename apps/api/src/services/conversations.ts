@@ -372,6 +372,7 @@ export async function threadFor(jobOrderId: number) {
           acknowledgedByEmail: true,
           createdAt: true,
           recipients: { select: { email: true, state: true, sentAt: true } },
+          attachments: { select: { id: true, filename: true, sizeBytes: true } },
           commitments: { select: { id: true, dueOn: true, text: true, state: true, ownerEmail: true } },
         },
       },

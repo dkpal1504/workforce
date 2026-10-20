@@ -596,9 +596,9 @@ function MessageCard(props: { message: Message; meRole: string; onAck: () => Pro
         </div>
       )}
 
-      {message.attachments.length > 0 && (
+      {(message.attachments ?? []).length > 0 && (
         <ul className="conv-files">
-          {message.attachments.map((file) => (
+          {(message.attachments ?? []).map((file) => (
             <li key={file.id}>
               <button
                 type="button"
