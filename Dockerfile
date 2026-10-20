@@ -110,6 +110,11 @@ COPY --from=build /app/packages/shared/package.json ./packages/shared/package.js
 # The generated client and its engine are copied from the build stage as root; the API runs
 # as `node`, so hand them over.
 RUN chown -R node:node /app/node_modules/.prisma
+# Conversation attachments are written at run time to ATTACHMENT_DIR. The container's root is
+# read-only and the process is `node`, so the directory must exist HERE with the right owner: an
+# empty named volume mounted over a directory that exists in the image inherits that directory's
+# ownership, and over one that does not it is created root:root - where `node` cannot write a file.
+RUN mkdir -p /app/data/attachments && chown -R node:node /app/data
 USER node
 EXPOSE 4000
 CMD ["node", "apps/api/dist/index.js"]

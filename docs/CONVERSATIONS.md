@@ -222,7 +222,7 @@ is no down-migration, and `migrate deploy` only moves forward.
 | The rail badge counts higher than the list | badge counts messages, list counts threads | expected |
 | `× new` never appears | already read, or you are the author | opening a thread marks it read |
 | No reminder after 8 h | scheduler off | `CONVERSATION_SCHEDULER_ENABLED=true`, restart api |
-| Upload fails / message loses its file | `ATTACHMENT_DIR` not the volume, or the volume missing | check `docker compose … exec api ls -la /app/data/attachments` |
+| Upload fails / message loses its file | `ATTACHMENT_DIR` is not the volume, the volume is missing, or it is root-owned and the api runs as `node` | `docker compose … exec api ls -la /app/data` must show `attachments` owned by `node`; if it does not, `docker compose … run --rm --user root api chown -R node:node /app/data` |
 | "Draft with assistant" answers *Not Found* | the button called a path the API does not serve | fixed; hard-reload the tab |
 | The brief is a wall of `Thinking Process:` text | the model's scratchpad leaked | fixed: `enable_thinking:false` plus a cleaner; hard-reload |
 | A screen looks unchanged after a deploy | the tab is serving the previous bundle | hard-reload (Ctrl+Shift+R), then check the code is mounted |
