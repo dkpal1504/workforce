@@ -79,6 +79,16 @@ off and can never contradict the row.
 - **Job work** deliberately has no affordance: a 300-row register is not a place for a hover that
   starts an escalation.
 
+## The list
+
+New first, and said out loud: a `NEW n` heading carries the unread threads, `EARLIER` follows it, and a
+row with news shows `n new`, a bolder title and a solid excerpt. The order is decided on the server by
+`orderThreads` (pure, tested): unread before read, an **unanswered** escalation first inside each group
+because it is the only row with a clock running, then most recent activity. An escalation that has been
+acknowledged no longer floats — it is history, and it was hiding the unread work it sat above.
+
+The bell in the rail counts unread messages across the reader's scope, not threads.
+
 ## Reading a thread
 
 The drawer is built for threads that run for months, not for a chat that ends in an afternoon.

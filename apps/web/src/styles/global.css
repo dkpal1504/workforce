@@ -2003,3 +2003,38 @@ tr:hover .pf-escalate-btn,
 /* The composer must not eat the trail: three rows, and it scrolls rather than grows. */
 .conv-composer textarea { max-height: 26vh; }
 .conv-composer { padding: 8px 16px 10px; }
+
+/* Group headings in the conversation list: "New" then "Earlier". */
+.conv-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg);
+  border-top: 1px solid var(--border-light);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.conv-group__count {
+  background: var(--accent);
+  color: var(--header-text);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 0.68rem;
+  line-height: 16px;
+}
+
+.conv-group--muted { color: var(--text-muted); background: transparent; }
+
+/* A row with news reads solid; a row without stays quiet. */
+.conv-row--unread .conv-row__name { font-weight: 600; }
+.conv-row--unread .conv-row__excerpt { color: var(--text); }
+.conv-flag--unread { font-weight: 700; }

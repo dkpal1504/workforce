@@ -322,13 +322,40 @@ export async function listThreads(
       };
     })
     .filter((row) => (options.unreadOnly ? row.unread > 0 : true))
-    .sort((a, b) => {
-      const aEsc = a.status === "OPEN" && a.lastMessage?.kind === "ESCALATION" && !a.lastMessage.acknowledgedAt ? 1 : 0;
-      const bEsc = b.status === "OPEN" && b.lastMessage?.kind === "ESCALATION" && !b.lastMessage.acknowledgedAt ? 1 : 0;
-      if (aEsc !== bEsc) return bEsc - aEsc;
-      if (a.unread !== b.unread) return b.unread - a.unread;
-      return b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
-    });
+    .sort(orderThreads);
+}
+
+export type ThreadOrderRow = {
+  unread: number;
+  lastMessageAt: Date;
+  status: string;
+  lastMessage: { kind: string; acknowledgedAt: Date | null } | null;
+};
+
+/**
+ * The order of the list. PURE, so it is pinned by a test rather than by squinting at a screen.
+ *
+ * NEW FIRST. A conversation screen is read to find out what has arrived since you last looked, so a
+ * thread with unread messages outranks one without — however recently the quiet one was touched.
+ * Inside each group an UNANSWERED ESCALATION comes first (it is the one with a clock running), then
+ * the most recent activity.
+ *
+ * This is why an answered escalation no longer floats to the top: being escalated is history once
+ * somebody has acknowledged it, and hoisting it above unread work was hiding the thing being asked for.
+ */
+export function orderThreads<T extends ThreadOrderRow>(a: T, b: T): number {
+  const rank = (row: T): number => {
+    // A thread opened for a draft but never posted to has nothing to show; it belongs at the end.
+    if (!row.lastMessage) return -1;
+    const unread = row.unread > 0 ? 2 : 0;
+    const escalated = row.status === "OPEN" && row.lastMessage?.kind === "ESCALATION" && !row.lastMessage.acknowledgedAt ? 1 : 0;
+    return unread + escalated;
+  };
+  const byRank = rank(b) - rank(a);
+  if (byRank !== 0) return byRank;
+  const byUnreadCount = b.unread - a.unread;
+  if (byUnreadCount !== 0) return byUnreadCount;
+  return b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
 }
 
 /** The whole thread for a Job Order, oldest-to-newest (the UI renders it reversed). */

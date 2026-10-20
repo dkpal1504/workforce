@@ -234,6 +234,11 @@ export function ConversationsPage() {
     );
   }, [threads, query]);
 
+  // The server sends unread first; splitting them here lets the list SAY so, and keeps the two groups
+  // in that order even when somebody sorts the array differently by accident.
+  const unreadRows = useMemo(() => visible.filter((row) => row.unread > 0), [visible]);
+  const readRows = useMemo(() => visible.filter((row) => row.unread === 0), [visible]);
+
   return (
     <div className="conv-layout">
       <section className="conv-list" aria-label="Job Order conversations">
@@ -291,33 +296,34 @@ export function ConversationsPage() {
         )}
 
         <ul className="conv-rows">
-          {visible.map((row) => (
-            <li key={row.id}>
-              <button
-                type="button"
-                className={`conv-row${openJobOrder === row.jobOrder.id ? " conv-row--open" : ""}${row.unread ? " conv-row--unread" : ""}`}
-                onClick={() => setParams({ jobOrder: String(row.jobOrder.id) }, { replace: true })}
-              >
-                <span className="conv-row__top">
-                  <strong>{row.jobOrder.code}</strong>
-                  {row.lastMessage?.kind === "ESCALATION" && !row.lastMessage.acknowledgedAt && (
-                    <span className="conv-flag conv-flag--escalation">escalation</span>
-                  )}
-                  {row.status === "RESOLVED" && <span className="conv-flag">resolved</span>}
-                  {row.unread > 0 && <span className="conv-flag conv-flag--unread">{row.unread}</span>}
-                </span>
-                <span className="conv-row__name">{row.jobOrder.name}</span>
-                <span className="conv-row__meta">
-                  {row.jobOrder.project.code} · {row.jobOrder.section?.name ?? row.jobOrder.department.name}
-                </span>
-                {row.lastMessage && (
-                  <span className="conv-row__excerpt">
-                    <em>{row.lastMessage.authorName}</em> · {row.lastMessage.body.slice(0, 90)}
-                  </span>
-                )}
-                <span className="conv-row__time">{formatStamp(row.lastMessageAt)}</span>
-              </button>
+          {/* NEW FIRST, and said out loud. The server already orders unread threads first; the heading
+              is what turns an ordering into something a reader can trust at a glance. */}
+          {unreadRows.length > 0 && filter === "all" && (
+            <li className="conv-group">
+              <span>New</span>
+              <span className="conv-group__count">{unreadRows.length}</span>
             </li>
+          )}
+          {unreadRows.map((row) => (
+            <ThreadListItem
+              key={row.id}
+              row={row}
+              active={openJobOrder === row.jobOrder.id}
+              onOpen={() => setParams({ jobOrder: String(row.jobOrder.id) }, { replace: true })}
+            />
+          ))}
+          {readRows.length > 0 && filter === "all" && unreadRows.length > 0 && (
+            <li className="conv-group conv-group--muted">
+              <span>Earlier</span>
+            </li>
+          )}
+          {readRows.map((row) => (
+            <ThreadListItem
+              key={row.id}
+              row={row}
+              active={openJobOrder === row.jobOrder.id}
+              onOpen={() => setParams({ jobOrder: String(row.jobOrder.id) }, { replace: true })}
+            />
           ))}
         </ul>
       </section>
@@ -359,6 +365,50 @@ export function ConversationsPage() {
  * "Start a follow-up" — a Job Order search, scoped by the API (never by the client). A Job Order that
  * already has a thread shows its message count, so the picker doubles as a way back into a thread.
  */
+
+/**
+ * One row of the conversation list.
+ *
+ * The unread count is a filled marker rather than a quiet pill, because "3 new" on a Job Order is the
+ * reason somebody opened this screen at all.
+ */
+function ThreadListItem(props: { row: ThreadRow; active: boolean; onOpen: () => void }) {
+  const { row, active, onOpen } = props;
+  return (
+    <li>
+      <button
+        type="button"
+        className={`conv-row${active ? " conv-row--open" : ""}${row.unread ? " conv-row--unread" : ""}`}
+        onClick={onOpen}
+        aria-label={`${row.jobOrder.code} ${row.jobOrder.name}${row.unread ? `, ${row.unread} unread` : ""}`}
+      >
+        <span className="conv-row__top">
+          <strong>{row.jobOrder.code}</strong>
+          {row.lastMessage?.kind === "ESCALATION" && !row.lastMessage.acknowledgedAt && (
+            <span className="conv-flag conv-flag--escalation">escalation</span>
+          )}
+          {row.status === "RESOLVED" && <span className="conv-flag">resolved</span>}
+          {row.unread > 0 && (
+            <span className="conv-flag conv-flag--unread" title={`${row.unread} unread`}>
+              {row.unread} new
+            </span>
+          )}
+        </span>
+        <span className="conv-row__name">{row.jobOrder.name}</span>
+        <span className="conv-row__meta">
+          {row.jobOrder.project.code} · {row.jobOrder.section?.name ?? row.jobOrder.department.name}
+        </span>
+        {row.lastMessage && (
+          <span className="conv-row__excerpt">
+            <em>{row.lastMessage.authorName}</em> · {row.lastMessage.body.slice(0, 90)}
+          </span>
+        )}
+        <span className="conv-row__time">{formatStamp(row.lastMessageAt)}</span>
+      </button>
+    </li>
+  );
+}
+
 function JobOrderPicker(props: { onPick: (jobOrderId: number) => void; onClose: () => void }) {
   const { onPick, onClose } = props;
   const [query, setQuery] = useState("");
