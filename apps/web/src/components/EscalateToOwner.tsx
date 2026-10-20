@@ -119,6 +119,7 @@ export function EscalatableRow(props: {
   const [anchor, setAnchor] = useState<PopoverAnchor>(null);
   const closeTimer = useRef<number | undefined>(undefined);
   const dwellTimer = useRef<number | undefined>(undefined);
+  const hovered = useRef(false);
 
   const facts = escalationPrefill(jobOrder, jobOrder);
   const href = buildEscalateHref({ jobOrderId: jobOrder.id, origin, projectId: jobOrder.project?.id ?? null });
@@ -139,14 +140,23 @@ export function EscalatableRow(props: {
   }, [popoverKey]);
 
   // FAST, but not accidental: a 120 ms dwell is enough to feel immediate while still swallowing the
-  // pointer sweeping down a long table. The previous popover is closed by the claim, never by a timer.
+  // pointer sweeping down a long table.
+  //
+  // THE DWELL IS CANCELLED ON LEAVE. Without that, a sweep leaves one pending timer per row it touched
+  // and each fires afterwards, popping open a row the pointer has long left — the "popups keep coming"
+  // report. `hovered` is checked again when the timer fires, so a late timer cannot claim the slot.
   const show = useCallback(() => {
+    hovered.current = true;
     window.clearTimeout(closeTimer.current);
     window.clearTimeout(dwellTimer.current);
-    dwellTimer.current = window.setTimeout(openNow, 120);
+    dwellTimer.current = window.setTimeout(() => {
+      if (hovered.current) openNow();
+    }, 120);
   }, [openNow]);
 
   const scheduleHide = useCallback(() => {
+    hovered.current = false;
+    window.clearTimeout(dwellTimer.current);
     window.clearTimeout(closeTimer.current);
     closeTimer.current = window.setTimeout(() => releasePopover(popoverKey), 120);
   }, [popoverKey]);
@@ -241,6 +251,7 @@ export function EscalatableNodeRow(props: {
   const [anchor, setAnchor] = useState<PopoverAnchor>(null);
   const closeTimer = useRef<number | undefined>(undefined);
   const dwellTimer = useRef<number | undefined>(undefined);
+  const hovered = useRef(false);
 
   const query = new URLSearchParams({ projectId: String(scope.projectId) });
   if (scope.wbsId) query.set("wbsId", String(scope.wbsId));
@@ -259,12 +270,17 @@ export function EscalatableNodeRow(props: {
   }, [popoverKey]);
 
   const show = useCallback(() => {
+    hovered.current = true;
     window.clearTimeout(closeTimer.current);
     window.clearTimeout(dwellTimer.current);
-    dwellTimer.current = window.setTimeout(openNow, 120);
+    dwellTimer.current = window.setTimeout(() => {
+      if (hovered.current) openNow();
+    }, 120);
   }, [openNow]);
 
   const scheduleHide = useCallback(() => {
+    hovered.current = false;
+    window.clearTimeout(dwellTimer.current);
     window.clearTimeout(closeTimer.current);
     closeTimer.current = window.setTimeout(() => releasePopover(popoverKey), 120);
   }, [popoverKey]);

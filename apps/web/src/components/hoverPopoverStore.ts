@@ -10,6 +10,11 @@
  * tick, so the old popover never survives to overlap the new one. Releasing is ownership-checked — a
  * row that has already been displaced cannot close the row that replaced it.
  *
+ * A SECOND INVARIANT LIVES IN THE ROWS, NOT HERE: the dwell timer must be CANCELLED when the pointer
+ * leaves. Otherwise a sweep leaves one pending timer per row it crossed, and each fires afterwards —
+ * the slot is still single, but it opens row after row that the pointer has already left, which reads
+ * as "popups keep coming". `hovered` is re-checked when the timer fires, so a late timer claims nothing.
+ *
  * Pure and framework-free (no React import) so the invariant is a unit test rather than a screenshot.
  */
 
