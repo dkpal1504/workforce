@@ -14,6 +14,7 @@ import { extractCommitments } from "./commitmentExtraction";
 import { escalationDueAt } from "./escalationClock";
 import type { ConversationScope } from "./conversationScope";
 import { jobOrderContextFor, resolveOwner } from "./jobOrderContext";
+import { isRoutableAddress } from "./mailIdentity";
 
 export type ConversationAuthor = {
   id: number | null;
@@ -90,6 +91,41 @@ export type PostedMessage = {
  * `(threadId, seq)` is the guard: two people posting at once cannot take the same number — the second
  * transaction fails and the caller retries, rather than silently duplicating `#7`.
  */
+/**
+ * Where ONE recipient's copy of ONE message is delivered, and what the delivery row says happened.
+ *
+ * `key` is the participant's identity inside the thread: the LOGIN handle (`40032021@employee.local`),
+ * which is what the unread badge looks a reader up by. It is NOT a mailbox, so it is only ever used as
+ * the display value of a row that is not being delivered.
+ *
+ * `accountAddress` is the routable address resolved from the account behind that key — `notification_email`
+ * first, then a real login address. `ownerEmail` is the same thing for an owner, coming from the owner
+ * ladder in `resolveOwner` (explicit owner → section HOD → department HOD → COO → ADMIN).
+ *
+ * Pure and exported because the failure it prevents is invisible: a participant with no routable address
+ * used to be QUEUED at his login handle, the relay refused it, and the screen said "failed" with no hint
+ * that the cause was the address on file rather than the mail server.
+ */
+export function deliveryTarget(input: {
+  key: string;
+  isOwner: boolean;
+  ownerEmail: string | null;
+  accountAddress: string | null;
+  mutedAt: Date | null;
+  emailOwner: boolean;
+}): { address: string; state: "QUEUED" | "MUTED" | "NO_ADDRESS" } {
+  const key = input.key.toLowerCase();
+  const routable = input.isOwner
+    ? (input.ownerEmail && isRoutableAddress(input.ownerEmail) ? input.ownerEmail.toLowerCase() : null)
+    : (input.accountAddress && isRoutableAddress(input.accountAddress) ? input.accountAddress.toLowerCase() : null);
+
+  const address = routable ?? key;
+  if (input.mutedAt) return { address, state: "MUTED" };
+  if (input.isOwner && !input.emailOwner) return { address, state: "MUTED" };
+  if (!routable) return { address, state: "NO_ADDRESS" };
+  return { address, state: "QUEUED" };
+}
+
 export async function postMessage(input: PostMessageInput): Promise<PostedMessage> {
   const now = input.now ?? new Date();
   const context = await jobOrderContextFor(input.jobOrderId, now);
@@ -177,24 +213,40 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
       where: { threadId },
       select: { email: true, userId: true, mutedAt: true },
     });
+
+    // Every participant's DELIVERY address is resolved here, per message, from the account behind the
+    // participant key. The key itself is a login handle and is never a mailbox. Before this, only the
+    // owner was addressed at a routable address; a PM who had posted on the thread was QUEUED at
+    // `40032021@employee.local`, the relay refused it, and the delivery line said FAILED for a cause
+    // nobody could see from the screen.
+    const userIds = participants.map((p) => p.userId).filter((id): id is number => id != null);
+    const accountAddresses = new Map<number, string>();
+    if (userIds.length) {
+      const accounts = await tx.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, email: true, notificationEmail: true },
+      });
+      for (const account of accounts) {
+        const address = (account.notificationEmail?.trim() || account.email || "").trim().toLowerCase();
+        if (isRoutableAddress(address)) accountAddresses.set(account.id, address);
+      }
+    }
+
     const recipientRows: Array<{ email: string; state: string }> = [];
 
     for (const participant of participants) {
       const key = participant.email.toLowerCase();
       if (key === input.author.email.toLowerCase()) continue;
 
-      // The owner is addressed at the ROUTABLE address, not the login handle: a handle like
-      // `1001@employee.local` is not a mailbox. No routable address is recorded as NO_ADDRESS, which
-      // the UI prints as "not emailed — no address on file" — never as a silent success.
       const isOwner = ownerKey != null && key === ownerKey;
-      const address = isOwner ? owner.email ?? key : key;
-      const state = participant.mutedAt
-        ? "MUTED"
-        : isOwner && !owner.email
-          ? "NO_ADDRESS"
-          : isOwner && !input.emailOwner
-            ? "MUTED"
-            : "QUEUED";
+      const { address, state } = deliveryTarget({
+        key,
+        isOwner,
+        ownerEmail: owner.email ?? null,
+        accountAddress: participant.userId != null ? accountAddresses.get(participant.userId) ?? null : null,
+        mutedAt: participant.mutedAt,
+        emailOwner: input.emailOwner,
+      });
       await tx.jobOrderMessageRecipient.create({
         data: { messageId: message.id, email: address, userId: participant.userId, state },
       });
