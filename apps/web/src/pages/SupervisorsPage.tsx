@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { availabilityNeedsServerCheck, resetActionLabel, resetAvailability, signInNote } from "./payrollResetAvailability";
 import { formatDay } from "./formatDate";
+import { payrollEmail } from "./payrollEmail";
 import "../styles/supervisors.css";
 
 type Department = { id: number; name: string; code?: string };
@@ -22,8 +23,14 @@ type PayrollEmployee = {
   section: { id: number; code: string; name: string } | null;
   userId: number; role: string; accountActive: boolean; employeeActive: boolean;
   employeeSource: string; accountSource: string; roleOwned: boolean;
-  login: string; mustChangePassword: boolean; resettable: boolean; canDisableLogin: boolean;
+  login: string;
+  /** The login identifier; `400xxxxx@employee.local` when the account came from an import. */
+  email: string;
+  /** The address a person actually reads, once somebody fills it on Role assignment. */
+  notificationEmail: string | null;
+  mustChangePassword: boolean; resettable: boolean; canDisableLogin: boolean;
 };
+
 type Mode = "list" | "payroll" | "overrides";
 type Modal = { kind: "create" } | { kind: "edit"; supervisor: Supervisor } | { kind: "override" } | { kind: "activate"; supervisor: Supervisor } | null;
 
@@ -73,7 +80,9 @@ export function SupervisorsPage() {
   const shownPayroll=useMemo(()=>payroll.filter(p=>
     (!payrollDepartmentId || String(p.department?.id ?? "")===payrollDepartmentId) &&
     (!payrollSectionId || String(p.section?.id ?? "")===payrollSectionId) &&
-    [p.ecNo,p.name,p.designation,p.category,p.department?.name,p.section?.name,roleLabel(p.role),p.login]
+    // The address is searchable on purpose: typing "employee.local" is how an operator finds every
+    // payroll login that still has a placeholder instead of a mailbox.
+    [p.ecNo,p.name,p.designation,p.category,p.department?.name,p.section?.name,roleLabel(p.role),p.login,p.email,p.notificationEmail]
       .some(v=>v?.toLowerCase().includes(q))
   ),[payroll,q,payrollDepartmentId,payrollSectionId]);
   const payrollSections=useMemo(()=>sections.filter(s=>!payrollDepartmentId||String(s.departmentId)===payrollDepartmentId),[sections,payrollDepartmentId]);
@@ -134,18 +143,33 @@ function OverrideTable({rows,busy,onRevoke}:{rows:Override[];busy:boolean;onRevo
  */
 function PayrollEmployeeTable({rows,busy,onReset,onSetLogin}:{rows:PayrollEmployee[];busy:boolean;onReset:(p:PayrollEmployee,roleOwned:boolean)=>void;onSetLogin:(p:PayrollEmployee,active:boolean)=>void}) {
   if(!rows.length)return null;
-  return <table className="sup-table"><thead><tr><th>Employee</th><th>Sign-in</th><th>Department</th><th>Designation</th><th>Role</th><th>Password</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>
+  return <table className="sup-table"><thead><tr><th>Employee</th><th>Sign-in</th><th>Department</th><th>Designation</th><th>Role</th><th>Email</th><th style={{textAlign:"right"}}>Actions</th></tr></thead><tbody>
     {rows.map(p=>{
       const availability=resetAvailability(p.accountActive,p.role);
       const needsServerCheck=availabilityNeedsServerCheck(availability);
       return <tr key={p.employeeId} className={p.accountActive?"":"sup-row--readonly"}>
       <td><strong>{p.name}</strong><div className="muted">ecNo {p.ecNo}</div></td>
-      <td><strong>{p.login||"—"}</strong><div className="muted">{signInNote(p.accountActive,p.role,!(p.role==="HR"||p.role==="FINANCE"||p.role==="ADMIN"))}</div></td>
+      <td><strong>{p.login||"—"}</strong><div className="muted">{signInNote(p.accountActive,p.role,!(p.role==="HR"||p.role==="FINANCE"||p.role==="ADMIN"))}</div>
+        {p.mustChangePassword&&<span className="badge badge--sync">Must change</span>}</td>
       <td>{p.department?.name??"—"}<div className="muted">{p.section?`${p.section.code} · ${p.section.name}`:"No section"}</div></td>
       <td>{p.designation||"—"}<div className="muted">{p.category||""}</div></td>
       <td><span className={`badge badge--${p.role==="SUPERVISOR"?"sync":p.roleOwned?"readonly":"manual"}`}>{roleLabel(p.role)}</span>
         <div className="muted">{p.accountActive?"Active login":"Inactive login"} · {p.employeeSource}</div></td>
-      <td>{p.mustChangePassword?<span className="badge badge--sync">Must change</span>:"Set by the user"}</td>
+      <td className="sup-email">
+        {(() => {
+          const mail = payrollEmail(p);
+          if (!mail.address) return <span className="muted">—</span>;
+          return <>
+            <span className="sup-email__address">{mail.address}</span>
+            {mail.placeholder && (
+              <span className="badge badge--warn" title="A login handle, not a mailbox — nothing can be delivered to it">
+                placeholder
+              </span>
+            )}
+            {mail.secondary && <div className="muted">{mail.secondary}</div>}
+          </>;
+        })()}
+      </td>
       <td><div className="sup-table__actions">
         {/* A promoted account (PM/ADMIN/HOD) IS resettable, but only deliberately: the click
             asks for the role-owned path explicitly so an ordinary mis-click never touches it. */}

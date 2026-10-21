@@ -58,13 +58,29 @@ supervisorRegistrationRouter.get("/payroll-employees", async (req, res) => {
       employmentType: "PAYROLL",
       ...(departmentId ? { departmentId } : {}),
       ...(sectionId ? { sectionAssignment: { sectionId } } : {}),
-      ...(q ? { OR: [{ ecNo: { contains: q } }, { name: { contains: q } }, { designation: { contains: q } }] } : {}),
+      // The search reaches the ADDRESS too: an operator auditing which logins still carry a
+      // `400xxxxx@employee.local` placeholder types "employee.local" and gets exactly those rows.
+      ...(q
+        ? {
+            OR: [
+              { ecNo: { contains: q } },
+              { name: { contains: q } },
+              { designation: { contains: q } },
+              { user: { email: { contains: q } } },
+              { user: { notificationEmail: { contains: q } } },
+            ],
+          }
+        : {}),
     },
     select: {
       id: true, ecNo: true, name: true, designation: true, category: true, source: true, active: true,
       department: { select: { id: true, code: true, name: true } },
       sectionAssignment: { select: { sectionId: true, section: { select: { id: true, code: true, name: true } } } },
-      user: { select: { id: true, role: true, email: true, active: true, source: true, mustChangePassword: true } },
+      user: {
+        select: {
+          id: true, role: true, email: true, notificationEmail: true, active: true, source: true, mustChangePassword: true,
+        },
+      },
     },
     orderBy: { name: "asc" },
   });
@@ -96,6 +112,10 @@ supervisorRegistrationRouter.get("/payroll-employees", async (req, res) => {
         accountSource: user.source,
         roleOwned,
         login,
+        // BOTH addresses, so the screen can show the one a person actually reads and mark the
+        // `@employee.local` handle for what it is: a login name, not a mailbox.
+        email: user.email,
+        notificationEmail: user.notificationEmail,
         mustChangePassword: user.mustChangePassword,
         // The ordinary payroll row (Employee/Supervisor). A promoted account is resettable
         // too, but only through an explicit, audited `roleOwned` request.

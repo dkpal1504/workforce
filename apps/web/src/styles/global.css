@@ -2038,3 +2038,13 @@ tr:hover .pf-escalate-btn,
 .conv-row--unread .conv-row__name { font-weight: 600; }
 .conv-row--unread .conv-row__excerpt { color: var(--text); }
 .conv-flag--unread { font-weight: 700; }
+
+/* The Email column on Supervisors → Employees (Payroll).
+   An address is long and a badge must never break mid-word: the column is given room and the table
+   scrolls instead of crushing it. */
+.sup-email { min-width: 230px; }
+.sup-email__address { display: block; word-break: break-all; line-height: 1.35; }
+/* The badge sits on its own line: an address plus a word beside it competes for width and the
+   "placeholder" mark is exactly what this column exists to show. */
+.sup-email .badge { display: inline-block; margin-top: 3px; }
+.sup-table .badge { white-space: nowrap; }
