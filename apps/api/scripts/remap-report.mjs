@@ -52,6 +52,50 @@ async function findPair(deptName, sectionCode, side) {
   return { department, section: sections[0] };
 }
 
+// ── --find <text>: what is the EXACT name, and what does that pair carry? ─────────────────────────
+//
+// A department name is typed from a screenshot far more often than copied, and one letter decides
+// whether a move resolves to a row or to nothing. This mode answers "which department is it" with the
+// database's own spelling, plus the load of every section under it, before anything else is composed.
+const find = arg("find");
+if (find !== null) {
+  const like = `%${find}%`;
+  const departments = await prisma.department.findMany({
+    where: { OR: [{ name: { contains: find, mode: "insensitive" } }, { code: { contains: find, mode: "insensitive" } }] },
+    select: {
+      id: true, code: true, name: true, active: true,
+      sections: {
+        select: {
+          id: true, code: true, name: true, active: true,
+          _count: { select: { jobOrders: true } },
+        },
+        orderBy: { code: "asc" },
+      },
+    },
+    orderBy: { id: "asc" },
+  });
+  console.log(`\n  DEPARTMENTS MATCHING "${find}"  (${departments.length})\n`);
+  if (departments.length === 0) {
+    console.log(`     none. Try a shorter fragment — "${find}" is matched as a substring, case-insensitively.\n`);
+  }
+  for (const d of departments) {
+    console.log(`  #${d.id} ${d.name}  [${d.code}]${d.active ? "" : "  (inactive)"}`);
+    for (const s of d.sections) {
+      const entries = await prisma.timesheetEntry.count({ where: { sectionId: s.id } });
+      const people = await prisma.employeeSectionAssignment.count({ where: { sectionId: s.id } });
+      console.log(
+        `       section #${String(s.id).padEnd(4)} ${String(s.code).padEnd(22)} ` +
+          `${String(s.name).slice(0, 30).padEnd(31)} ${String(s._count.jobOrders).padStart(4)} job orders  ` +
+          `${String(entries).padStart(6)} entries  ${String(people).padStart(4)} people` +
+          `${s.active ? "" : "  (inactive)"}`
+      );
+    }
+  }
+  console.log("\n  Read-only: nothing was written.\n");
+  await prisma.$disconnect();
+  process.exit(0);
+}
+
 const from = await findPair(arg("from-dept"), arg("from-section"), "from");
 const to = await findPair(arg("to-dept"), arg("to-section"), "to");
 
