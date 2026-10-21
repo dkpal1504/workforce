@@ -149,12 +149,57 @@ if (from.section.id === to.section.id) die("the source and the destination secti
 line("from", `${from.department.name} / ${from.section.code} (section ${from.section.id})`);
 line("to", `${to.department.name} / ${to.section.code} (section ${to.section.id})`);
 
+// ── optional scope: --codes H0005,H0006 --project ISN.001 ────────────────────────────────────────
+//
+// A WHOLE-SECTION move is the common case, but "these three job orders go, nothing else does" is a
+// different instruction and must not be expressed as a section filter: the moment a fourth order
+// appears on the same section, a section-wide run would take it along.
+//
+// The project matters because a job order CODE is unique only within its project (`(projectId, code)`);
+// H0005 exists once here, but M4152 exists five times across the plant.
+const codeList = (arg("codes") ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+let projectId = null;
+if (codeList.length) {
+  const projectArg = arg("project");
+  if (projectArg) {
+    const projects = await prisma.project.findMany({
+      where: { OR: [{ code: { equals: projectArg, mode: "insensitive" } }, { name: { equals: projectArg, mode: "insensitive" } }] },
+      select: { id: true, code: true, name: true },
+    });
+    if (projects.length !== 1) die(`--project "${projectArg}" matched ${projects.length} projects.`);
+    projectId = projects[0].id;
+    line("project", `${projects[0].code} ${projects[0].name}`);
+  }
+
+  // Every named code must exist. A typo has to stop the run, not quietly move two of the three.
+  const named = await prisma.jobOrder.findMany({
+    where: { code: { in: codeList }, ...(projectId ? { projectId } : {}) },
+    select: { id: true, code: true, sectionId: true, departmentId: true },
+  });
+  const missing = codeList.filter((c) => !named.some((n) => n.code === c));
+  if (missing.length) die(`job order code(s) ${missing.join(", ")} not found${projectId ? " on that project" : ""}.`);
+  if (named.length !== codeList.length) {
+    die(
+      `the code(s) ${named.map((n) => n.code).join(", ")} match ${named.length} rows for ${codeList.length} codes. ` +
+        "Pass --project to say which one, or split the run."
+    );
+  }
+  const alreadyThere = named.filter((n) => n.sectionId === to.section.id);
+  if (alreadyThere.length) {
+    line("already on the destination", alreadyThere.map((n) => `#${n.id} ${n.code}`).join(", "));
+  }
+  line("codes named", codeList.join(", "));
+}
+
 // A Job Order is on the old pair when EITHER column still says so: a half-moved row (new section, old
 // department) is exactly the shape that reads as "migrated" in one screen and "missing" in another.
+const onOldPair = {
+  OR: [{ sectionId: from.section.id }, { departmentId: from.department.id, sectionId: from.section.id }],
+};
 const strays = await prisma.jobOrder.findMany({
-  where: {
-    OR: [{ sectionId: from.section.id }, { departmentId: from.department.id, sectionId: from.section.id }],
-  },
+  where: codeList.length
+    ? { AND: [{ code: { in: codeList }, ...(projectId ? { projectId } : {}) }, onOldPair] }
+    : onOldPair,
   select: { id: true },
   orderBy: { id: "asc" },
 });

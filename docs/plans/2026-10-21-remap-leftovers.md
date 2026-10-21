@@ -88,6 +88,22 @@ dc exec api node apps/api/scripts/remap-leftovers.mjs `
   --to-dept "Production Outfitting - Piping - SEZ" --to-section OUTFITTING_PIPING --apply
 ```
 
+### Moving named job orders only, not a whole section
+
+When the instruction is "these job orders move, nothing else does", say so with `--codes` (and `--project`,
+because a job order code is unique only within its project):
+
+```powershell
+dc exec api node apps/api/scripts/remap-leftovers.mjs `
+  --from-dept "Production - SEZ" --from-section STEEL `
+  --to-dept "Production Outfitting - Steel - SEZ" --to-section OUTFITTING_STEEL `
+  --project ISN.001 --codes H0005,H0006,H0007
+```
+
+A code that does not exist aborts the whole run rather than moving the others: a typo must not become a
+partial migration. Codes already on the destination are reported and skipped. People, scopes and
+approvals are never touched by this script.
+
 It prints `VERIFIED` only when the old section is empty **and** every moved row now names the new
 department. The undo is an `audit_log` row (`SECTION_REMAP_LEFTOVERS`), written in the same transaction
 as the move, so a rollback can always be found:
