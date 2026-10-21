@@ -20,22 +20,30 @@ Either way the data is consistent; the row simply still points at the old pair.
 
 ## 1. Look before touching anything (read-only)
 
-Run on production. `psql` is inside the `postgres` service:
+The production stack has no `postgres` service (the database is external) and the API image carries no
+`psql`, so the report is a script that speaks to the same database the application does:
 
 ```powershell
-dc exec postgres psql -U workforce -d workforce -c @"
-select jo.id, jo.code, jo.name,
-       d.name  as department,
-       coalesce(s.code,'(none)') as section,
-       jo.department_id as dept_id, jo.section_id as sec_id,
-       jo.created_at::date as created,
-       (select count(*) from timesheet_entries te where te.job_order_id = jo.id) as entries
-from job_orders jo
-join departments d on d.id = jo.department_id
-left join sections s on s.id = jo.section_id
-where jo.section_id in (16, 46) or jo.department_id in (3, 27)
-order by jo.section_id nulls last, jo.id;
-"@
+dc exec api node apps/api/scripts/remap-report.mjs `
+  --from-dept "Production - SEZ" --from-section PIPING `
+  --to-dept "Production Outfitting - Piping - SEZ" --to-section OUTFITTING_PIPING
+```
+
+It writes nothing. On the restored copy it prints:
+
+```
+  JOB ORDERS — old pair, new pair, and rows with no section at all
+
+     OLD PAIR        #135   M4152   Spools Fabrication   Production - SEZ   PIPING   156 entries  2026-09-26
+     OLD PAIR        #229   M4152   Spool Fabrication    Production - SEZ   PIPING   280 entries  2026-09-26
+     no section      #277   Np13    Idle                 Production - SEZ   (none)   536 entries  2026-09-28
+     no section      #303   Np39    Maintenance          Production - SEZ   (none)   494 entries  2026-09-28
+
+  TOTALS
+  job orders on the old section                  2
+  job orders on the new section                  0
+  timesheet entries on the old section           436
+  people assigned to the old section             8
 ```
 
 Read it as three questions:
@@ -45,18 +53,16 @@ Read it as three questions:
 - `sec_id` null but `dept_id = 3` → a Job Order with no section at all (e.g. "Idle", "Maintenance").
   It is **not** part of a section move; leave it, or give it a section deliberately.
 
-Check for duplicates created by a later upload:
+The same report ends with the duplicate check, limited to the codes of these two sections:
 
-```powershell
-dc exec postgres psql -U workforce -d workforce -c @"
-select code, count(*), array_agg(id order by id) as ids,
-       array_agg(coalesce(section_id::text,'-') order by id) as sections
-from job_orders group by code having count(*) > 1 order by count(*) desc;
-"@
+```
+  A CODE OF THIS SECTION THAT ALSO EXISTS ELSEWHERE (a later upload may have left a twin)
+
+     M4152      x5  #135 Production - SEZ/PIPING  |  #164 Production - EOU/STEEL  |  #201 … |  #229 … |  #336 …
 ```
 
-A code appearing once on section 16 and once on section 46 is the CSV signature: the upload could not
-match the moved row (its uniqueness is scoped by organisation) and made a second one.
+A code standing on the old pair **and** on the new section is the CSV signature: the upload could not
+match the moved row (its uniqueness is scoped by project and organisation) and made a second one.
 
 ## 2. Move what is left
 
