@@ -1,6 +1,7 @@
 # Remapping PIPING and STEEL to the new SEZ departments
 
-**Status:** plan + tested tool, nothing written to production.
+**Status:** PIPING CONFIRMED (20-10-2026) — PIPING only, old Section stays active, STEEL deferred.
+Nothing has been written to production.
 **Date:** 20-10-2026
 **Tool:** `apps/api/scripts/remap-section.mjs` (dry run by default; `--apply` to commit; `--rollback <id>` to undo one run)
 
@@ -8,10 +9,14 @@
 
 ## 1. What the screenshot maps
 
-| Old | New |
-|---|---|
-| `Production - SEZ` / `PIPING` (`#16`) | `Production Outfitting - Piping - SEZ` / `OUTFITTING_PIPING` (`#46`) |
-| `Production - SEZ` / `STEEL` (`#41`) | `Production Outfitting - Steel - SEZ` / `OUTFITTING_STEEL` (`#47`) |
+| Old | New | Decision |
+|---|---|---|
+| `Production - SEZ` / `PIPING` (`#16`) | `Production Outfitting - Piping - SEZ` / `OUTFITTING_PIPING` (`#46`) | **IN SCOPE — all data moves, the old Section stays active** |
+| `Production - SEZ` / `STEEL` (`#41`) | `Production Outfitting - Steel - SEZ` / `OUTFITTING_STEEL` (`#47`) | **DEFERRED — not part of this change** |
+
+Confirmed 20-10-2026: the old Department and the old `PIPING` section both **remain in service**. Nothing
+is deactivated, so the `--deactivate-old-section` flag is not used. After the move, section `#16` is
+empty and still selectable — that is intended.
 
 Note the **Steel** department's full name ends in `- SEZ`, not `- SE` as the screenshot's column width
 suggests. The script resolves names exactly and refuses an ambiguous match, so a truncated name is
@@ -114,19 +119,31 @@ Every command runs inside the api container, which already has the database conn
 
 **a. Dry run — read the numbers, and check they match your expectation**
 
+Run **PIPING only**. STEEL is a separate decision and nothing below touches it.
+
 ```powershell
 dc exec api node apps/api/scripts/remap-section.mjs `
   --old-dept "Production - SEZ" --old-section PIPING `
   --new-dept "Production Outfitting - Piping - SEZ" --new-section OUTFITTING_PIPING
 ```
 
-```powershell
-dc exec api node apps/api/scripts/remap-section.mjs `
-  --old-dept "Production - SEZ" --old-section STEEL `
-  --new-dept "Production Outfitting - Steel - SEZ" --new-section OUTFITTING_STEEL
+On the restored copy that prints:
+
+```
+job orders on the old section              2
+  timesheet entries HOD_APPROVED           48
+  timesheet entries PM_APPROVED            388
+timesheet entries (total)                  436
+employees assigned to the old section      8
+  of which their assignment came from SYNC 5
+accounts scoped to the old section         1
+job orders already on the new section      0
+timesheet entries already on the new section 0
 ```
 
-**b. Apply, one section at a time, Piping first**
+Production will differ — read the numbers, do not assume them.
+
+**b. Apply — PIPING only**
 
 ```powershell
 dc exec api node apps/api/scripts/remap-section.mjs `
@@ -135,24 +152,11 @@ dc exec api node apps/api/scripts/remap-section.mjs `
 ```
 
 Read the `LEFT BEHIND ON THE OLD SECTION` block: all four counts must be **0**. If any is not, stop and
-investigate — do not run the second one.
+investigate before going further.
 
-```powershell
-dc exec api node apps/api/scripts/remap-section.mjs `
-  --old-dept "Production - SEZ" --old-section STEEL `
-  --new-dept "Production Outfitting - Steel - SEZ" --new-section OUTFITTING_STEEL --apply
-```
-
-**c. Deactivate the old sections** (only after both runs report clean and the screen looks right)
-
-```powershell
-dc exec api node apps/api/scripts/remap-section.mjs `
-  --old-dept "Production - SEZ" --old-section PIPING `
-  --new-dept "Production Outfitting - Piping - SEZ" --new-section OUTFITTING_PIPING `
-  --apply --deactivate-old-section
-```
-
-Re-running on an already-empty section exits without writing, so this is safe to repeat.
+**c. Do NOT deactivate anything.** The confirmed decision is that `Production - SEZ` and the `PIPING`
+section stay in service. Section `#16` will be empty and still selectable, which is intended. The
+`--deactivate-old-section` flag exists but is not used here.
 
 **d. Undo one run** — by the audit row it wrote, which names the exact rows it moved
 
@@ -177,6 +181,21 @@ it — that is a second change, not an undo.
 ```powershell
 dc exec api node -e "const {PrismaClient}=require('@prisma/client');const p=new PrismaClient();(async()=>{console.log('old piping rows', await p.timesheetEntry.count({where:{sectionId:16}}));console.log('new piping rows', await p.timesheetEntry.count({where:{sectionId:46}}));console.log('hod scope', await p.userScopeSection.findMany({where:{userId:74},select:{sectionId:true}}));await p.\$disconnect()})()"
 ```
+
+**Verify by section ID, never by section code.** `PIPING` is not unique: this data also has a
+`PIPING` section under `Production - EOU` with 10 job orders of its own. A check written as
+`where s.code = 'PIPING'` reports that section and reads as a failed remap. The old section is id **16**,
+the new one **46**:
+
+```sql
+select
+  (select count(*) from job_orders                where section_id = 16) as old_jobs,
+  (select count(*) from timesheet_entries         where section_id = 16) as old_entries,
+  (select count(*) from employee_section_assignments where section_id = 16) as old_people,
+  (select count(*) from timesheet_entries         where section_id = 46) as new_entries;
+```
+
+Expected after the run: `0 | 0 | 0 | 436` (plus whatever arrived on 46 from CLMS).
 
 **In the product:**
 
