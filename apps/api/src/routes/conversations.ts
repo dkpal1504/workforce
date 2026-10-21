@@ -43,8 +43,19 @@ import { deliverySummary } from "../services/conversationText";
 
 export const conversationsRouter = Router();
 
-conversationsRouter.use(requireAuth);
-conversationsRouter.use(requireRoles(...CONVERSATION_ROLES));
+/**
+ * THE GATE IS PER ROUTE, NEVER `use()`.
+ *
+ * This router is mounted at "/" (its paths cover both /conversations/… and /job-orders/…), and a
+ * router-level `use(requireRoles(...))` runs for EVERY request that reaches the mount — including
+ * `/departments` and `/teams/pool`, which belong to other routers. A Supervisor, an Employee, HR or
+ * Finance is not in CONVERSATION_ROLES, so the blanket gate answered 403 before the request ever
+ * reached masters or teams: the whole app died for those roles while looking like "the Department
+ * dropdown is blank".
+ *
+ * Applied per route, a request to any other path simply falls through to the next router via next().
+ */
+const guarded = [requireAuth, requireRoles(...CONVERSATION_ROLES)];
 
 function actorOf(req: Request): ConversationActor {
   const user = req.user!;
@@ -83,7 +94,7 @@ function deny(res: import("express").Response, code: "JOB_ORDER_NOT_FOUND" | "OU
 }
 
 /** GET /api/conversations/threads?unread=1 — the list, escalations first. */
-conversationsRouter.get("/conversations/threads", async (req, res) => {
+conversationsRouter.get("/conversations/threads", ...guarded, async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
   const threads = await listThreads(scope, req.user!.email, {
     unreadOnly: req.query.unread === "1",
@@ -100,7 +111,7 @@ conversationsRouter.get("/conversations/threads", async (req, res) => {
  * several Job Orders and cannot name one itself. They NARROW the scope and never widen it — an id from
  * another project simply intersects to nothing.
  */
-conversationsRouter.get("/conversations/job-orders", async (req, res) => {
+conversationsRouter.get("/conversations/job-orders", ...guarded, async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const asId = (value: unknown): number | undefined => {
@@ -142,7 +153,7 @@ conversationsRouter.get("/conversations/job-orders", async (req, res) => {
  * pulls the escalations with their thread's messages after them, and the first one by another person
  * wins. Bounded to 500 escalations, which is far more than a quarter produces.
  */
-conversationsRouter.get("/conversations/escalation-stats", async (req, res) => {
+conversationsRouter.get("/conversations/escalation-stats", ...guarded, async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
   const days = Math.min(365, Math.max(1, Number(req.query.days ?? 90) || 90));
   const since = new Date(Date.now() - days * 86_400_000);
@@ -189,13 +200,13 @@ conversationsRouter.get("/conversations/escalation-stats", async (req, res) => {
 });
 
 /** GET /api/conversations/unread — the bell. */
-conversationsRouter.get("/conversations/unread", async (req, res) => {
+conversationsRouter.get("/conversations/unread", ...guarded, async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
   res.json({ unread: await unreadTotal(scope, req.user!.email) });
 });
 
 /** GET /api/job-orders/:id/conversation — the drawer. `thread: null` is the empty state, not an error. */
-conversationsRouter.get("/job-orders/:id/conversation", async (req, res) => {
+conversationsRouter.get("/job-orders/:id/conversation", ...guarded, async (req, res) => {
   const jobOrderId = Number(req.params.id);
   if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
   const access = await canAccessJobOrder(actorOf(req), jobOrderId);
@@ -219,7 +230,7 @@ conversationsRouter.get("/job-orders/:id/conversation", async (req, res) => {
 });
 
 /** POST /api/job-orders/:id/conversation/messages */
-conversationsRouter.post("/job-orders/:id/conversation/messages", async (req, res) => {
+conversationsRouter.post("/job-orders/:id/conversation/messages", ...guarded, async (req, res) => {
   const jobOrderId = Number(req.params.id);
   if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
 
@@ -304,6 +315,9 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", async (req, re
 /** POST /api/job-orders/:id/conversation/attachments?filename=… — raw body, one file per request. */
 conversationsRouter.post(
   "/job-orders/:id/conversation/attachments",
+  ...guarded,
+  // The body parser comes AFTER the guard: an unauthenticated caller must be refused before its
+  // bytes are buffered into memory.
   express.raw({ type: () => true, limit: MAX_ATTACHMENT_BYTES + 4096 }),
   async (req: Request, res) => {
     const jobOrderId = Number(req.params.id);
@@ -339,7 +353,7 @@ conversationsRouter.post(
 );
 
 /** GET /api/conversations/attachments/:id — scope-checked download. */
-conversationsRouter.get("/conversations/attachments/:id", async (req, res) => {
+conversationsRouter.get("/conversations/attachments/:id", ...guarded, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid attachment." });
   const row = await prisma.jobOrderMessageAttachment.findUnique({ where: { id }, select: { thread: { select: { jobOrderId: true } } } });
@@ -352,7 +366,7 @@ conversationsRouter.get("/conversations/attachments/:id", async (req, res) => {
 });
 
 /** POST /api/conversations/:id/read */
-conversationsRouter.post("/conversations/:id/read", async (req, res) => {
+conversationsRouter.post("/conversations/:id/read", ...guarded, async (req, res) => {
   const thread = await loadThread(req);
   if (!thread) return res.status(404).json({ error: "Not found." });
   const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
@@ -362,7 +376,7 @@ conversationsRouter.post("/conversations/:id/read", async (req, res) => {
 });
 
 /** POST /api/conversations/:id/resolve | /reopen — a system line records who did it. */
-conversationsRouter.post("/conversations/:id/:action(resolve|reopen)", async (req, res) => {
+conversationsRouter.post("/conversations/:id/:action(resolve|reopen)", ...guarded, async (req, res) => {
   const thread = await loadThread(req);
   if (!thread) return res.status(404).json({ error: "Not found." });
   const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
@@ -381,7 +395,7 @@ conversationsRouter.post("/conversations/:id/:action(resolve|reopen)", async (re
 });
 
 /** POST /api/conversations/:id/mute {muted: boolean} — per person, per thread. */
-conversationsRouter.post("/conversations/:id/mute", async (req, res) => {
+conversationsRouter.post("/conversations/:id/mute", ...guarded, async (req, res) => {
   const thread = await loadThread(req);
   if (!thread) return res.status(404).json({ error: "Not found." });
   const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
@@ -395,7 +409,7 @@ conversationsRouter.post("/conversations/:id/mute", async (req, res) => {
 });
 
 /** POST /api/conversations/:id/messages/:messageId/acknowledge — "I have seen this". */
-conversationsRouter.post("/conversations/:id/messages/:messageId/acknowledge", async (req, res) => {
+conversationsRouter.post("/conversations/:id/messages/:messageId/acknowledge", ...guarded, async (req, res) => {
   const thread = await loadThread(req);
   if (!thread) return res.status(404).json({ error: "Not found." });
   const access = await canAccessJobOrder(actorOf(req), thread.jobOrderId);
@@ -414,7 +428,7 @@ conversationsRouter.post("/conversations/:id/messages/:messageId/acknowledge", a
  * GET /api/job-orders/:id/conversation/owner — the name the Portfolio popover promises to escalate to.
  * Two queries, cached by the browser for the session; scope-checked like everything else.
  */
-conversationsRouter.get("/job-orders/:id/conversation/owner", async (req, res) => {
+conversationsRouter.get("/job-orders/:id/conversation/owner", ...guarded, async (req, res) => {
   const jobOrderId = Number(req.params.id);
   const access = await canAccessJobOrder(actorOf(req), jobOrderId);
   if (!access.ok) return deny(res, access.code);
@@ -427,7 +441,7 @@ conversationsRouter.get("/job-orders/:id/conversation/owner", async (req, res) =
 });
 
 /** GET /api/job-orders/:id/conversation/owner-candidates — who this Job Order could name as owner. */
-conversationsRouter.get("/job-orders/:id/conversation/owner-candidates", async (req, res) => {
+conversationsRouter.get("/job-orders/:id/conversation/owner-candidates", ...guarded, async (req, res) => {
   const jobOrderId = Number(req.params.id);
   const access = await canAccessJobOrder(actorOf(req), jobOrderId);
   if (!access.ok) return deny(res, access.code);
@@ -450,7 +464,7 @@ conversationsRouter.get("/job-orders/:id/conversation/owner-candidates", async (
 });
 
 /** PUT /api/job-orders/:id/owner {userId | null} — PM/ADMIN, audited, with a system line in the thread. */
-conversationsRouter.put("/job-orders/:id/owner", async (req, res) => {
+conversationsRouter.put("/job-orders/:id/owner", ...guarded, async (req, res) => {
   if (req.user!.role !== "PM" && req.user!.role !== "ADMIN") {
     return res.status(403).json({ error: "Only a Project Manager or an Admin may name a Job Order owner.", code: "FORBIDDEN" });
   }
@@ -482,7 +496,7 @@ conversationsRouter.put("/job-orders/:id/owner", async (req, res) => {
 });
 
 /** POST /api/conversations/sweep-uploads — the scheduler's hook, exposed for an operator too. */
-conversationsRouter.post("/conversations/sweep-uploads", async (req, res) => {
+conversationsRouter.post("/conversations/sweep-uploads", ...guarded, async (req, res) => {
   if (req.user!.role !== "ADMIN") return res.status(403).json({ error: "Admin only." });
   const removed = await sweepOrphanUploads(new Date(Date.now() - 24 * 3_600_000));
   res.json({ removed });
