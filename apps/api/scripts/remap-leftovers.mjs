@@ -38,6 +38,24 @@ function arg(name, fallback = null) {
   const i = process.argv.indexOf(`--${name}`);
   return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
+
+/**
+ * A LIST argument, read the way a Windows operator actually types it.
+ *
+ * PowerShell treats an unquoted `H0005,H0006,H0007` as an ARRAY and passes three separate arguments, so
+ * `arg("codes")` saw only the first one and moved one of three job orders. Reading every token up to the
+ * next `--flag` accepts both shapes - `--codes a,b,c` and `--codes a b c` - and cannot silently truncate a
+ * list again.
+ */
+function argList(name) {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i < 0) return [];
+  const values = [];
+  for (let j = i + 1; j < process.argv.length && !process.argv[j].startsWith("--"); j += 1) {
+    values.push(...process.argv[j].split(","));
+  }
+  return values.map((v) => v.trim()).filter(Boolean);
+}
 const apply = process.argv.includes("--apply");
 const rollbackId = arg("rollback");
 const dryRunOnly = !apply;
@@ -157,7 +175,7 @@ line("to", `${to.department.name} / ${to.section.code} (section ${to.section.id}
 //
 // The project matters because a job order CODE is unique only within its project (`(projectId, code)`);
 // H0005 exists once here, but M4152 exists five times across the plant.
-const codeList = (arg("codes") ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+const codeList = argList("codes");
 let projectId = null;
 if (codeList.length) {
   const projectArg = arg("project");
@@ -288,11 +306,23 @@ const { moved, auditId } = await prisma.$transaction(async (tx) => {
 
 // Read the result back by ID. A count coming out of updateMany is the report of an intention, not
 // proof that the row now says what the screen needs it to say.
+//
+// WHAT "VERIFIED" MEANS DEPENDS ON THE INSTRUCTION. A section-wide run promises an empty old section; a
+// --codes run promises that THOSE codes moved, and the old section is allowed to keep the rest. Asserting
+// the section-wide promise after a scoped move reported VERIFY FAILED on a correct migration — a false
+// alarm on top of a real one is the worst thing to hand an operator mid-run.
 const afterOld = await prisma.jobOrder.count({ where: { sectionId: from.section.id } });
 const afterDest = await prisma.jobOrder.count({ where: { sectionId: to.section.id } });
 const stillOldDept = await prisma.jobOrder.count({
   where: { id: { in: jobOrderIds }, departmentId: from.department.id },
 });
+const named = codeList.length
+  ? await prisma.jobOrder.findMany({
+      where: { code: { in: codeList }, ...(projectId ? { projectId } : {}) },
+      select: { code: true, sectionId: true },
+    })
+  : [];
+const namedStillOld = named.filter((n) => n.sectionId !== to.section.id);
 
 console.log("");
 line("job orders moved", moved.jobOrders);
@@ -300,13 +330,21 @@ line("entries moved", moved.entries);
 line("AFTER: job orders on old section", afterOld);
 line("AFTER: job orders on destination", afterDest);
 line("AFTER: moving orders still on old dept", stillOldDept);
+if (codeList.length) {
+  line("AFTER: named codes on the destination", `${named.length - namedStillOld.length} of ${named.length}`);
+}
 line("audit id (keep it — it is the undo)", `--rollback ${auditId}`);
 
-const ok = afterOld === 0 && stillOldDept === 0 && afterDest === destOrders + moved.jobOrders;
+const ok = codeList.length
+  ? namedStillOld.length === 0 && named.length === codeList.length && stillOldDept === 0
+  : afterOld === 0 && stillOldDept === 0 && afterDest === destOrders + moved.jobOrders;
 console.log(
   ok
-    ? "\n  VERIFIED: nothing is left on the old section.\n"
-    : "\n  VERIFY FAILED: the counts do not add up. Do NOT continue; inspect before anything else.\n"
+    ? codeList.length
+      ? "\n  VERIFIED: every named job order now stands on the destination.\n"
+      : "\n  VERIFIED: nothing is left on the old section.\n"
+    : `\n  VERIFY FAILED: ${namedStillOld.map((n) => n.code).join(", ") || "the counts"} still do not match. ` +
+        "Do NOT continue; inspect before anything else.\n"
 );
 if (!ok) process.exitCode = 1;
 await prisma.$disconnect();
