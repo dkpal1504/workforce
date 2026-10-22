@@ -324,10 +324,18 @@ function exceptionSheets(report: PortfolioReport): Array<{ label: string; count:
  * (`describePortfolioFilters`) needs the label map, which is a presentation concern the report
  * itself does not carry.
  */
+import type { ReportInsights } from "./reportInsights";
+
 export async function buildPortfolioXlsx(
   report: PortfolioReport,
   filters: PortfolioFilters,
-  labels?: FilterLabels
+  labels?: FilterLabels,
+  /**
+   * The conversation half of the report — delay causes, the response clock and the hindrance register.
+   * Optional so every existing caller and test keeps working; when present the workbook gains two sheets,
+   * and the file can no longer be read as "the portfolio" while the screen also shows why it is late.
+   */
+  insights?: ReportInsights
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = report.provenance.generatedBy.name;
@@ -481,6 +489,46 @@ export async function buildPortfolioXlsx(
   );
   for (const note of report.definitions.notes) filterPairs.push({ label: "Note", value: note });
   addLabelValueSheet(workbook, "Filters", filterPairs);
+
+  /* ---- Delay insights and hindrances ------------------------------------
+   * The conversation half. Written AFTER the portfolio sheets so a reader who only wants the numbers they
+   * opened the file for is not asked to scroll past the narrative first — and each sheet starts with the
+   * sentence the screen shows, so the file and the screen make the same claim in the same words. */
+  if (insights) {
+    const delayColumns: SheetColumn<{ cause: string; count: number; sharePct: number; averageOpenDays: number }>[] = [
+      { header: "Cause", width: 26, value: (row) => row.cause },
+      { header: "Reported", width: 10, numFmt: "0", value: (row) => row.count },
+      { header: "Share %", width: 10, numFmt: "0", value: (row) => row.sharePct },
+      { header: "Avg days since reported", width: 22, numFmt: "0.0", value: (row) => row.averageOpenDays },
+    ];
+    const delaySheet = addDataSheet(workbook, "Delay insights", delayColumns, insights.delays.rows);
+    // The sentence goes ABOVE the table, as a merged statement row: a bare percentage invites the reader
+    // to supply their own denominator.
+    delaySheet.spliceRows(1, 0, [insights.sentence]);
+    delaySheet.mergeCells(1, 1, 1, delayColumns.length);
+    delaySheet.getRow(1).font = { italic: true };
+
+    const hindranceColumns: SheetColumn<{
+      wbsCode: string | null; jobOrderCode: string | null; category: string; description: string;
+      ownerEmail: string; raisedByEmail: string; raisedOn: string; ageDays: number; stale: boolean;
+      state: string; closedByName: string; closedOn: string; closureNote: string;
+    }>[] = [
+      { header: "WBS", width: 16, value: (row) => row.wbsCode ?? "" },
+      { header: "Job order", width: 12, value: (row) => row.jobOrderCode ?? "" },
+      { header: "Cause", width: 14, value: (row) => row.category },
+      { header: "What is holding it up", width: 46, value: (row) => row.description },
+      { header: "Owner", width: 26, value: (row) => row.ownerEmail },
+      { header: "Raised by", width: 26, value: (row) => row.raisedByEmail },
+      { header: "Raised on", width: 12, value: (row) => row.raisedOn },
+      { header: "Days", width: 8, numFmt: "0", value: (row) => row.ageDays },
+      { header: "Stale", width: 8, value: (row) => (row.stale ? "yes" : "") },
+      { header: "State", width: 10, value: (row) => row.state },
+      { header: "Closed by", width: 22, value: (row) => row.closedByName },
+      { header: "Closed on", width: 12, value: (row) => row.closedOn },
+      { header: "Closure note", width: 34, value: (row) => row.closureNote },
+    ];
+    addDataSheet(workbook, "Hindrances", hindranceColumns, insights.hindrances.rows);
+  }
 
   // exceljs types `writeBuffer()` with its own ArrayBuffer-like `Buffer`, not Node's. At
   // runtime it is a Node Buffer; re-wrap it as a Uint8Array view so the declared return type is
@@ -665,7 +713,8 @@ export const PDF_JOB_COLUMNS: PdfColumn<ReportJobRow>[] = [
 export async function buildPortfolioPdf(
   report: PortfolioReport,
   filters: PortfolioFilters,
-  labels?: FilterLabels
+  labels?: FilterLabels,
+  insights?: ReportInsights
 ): Promise<Buffer> {
   const chunks: Buffer[] = [];
   return new Promise<Buffer>((resolve, reject) => {
@@ -850,6 +899,66 @@ export async function buildPortfolioPdf(
         { header: "Reasons", width: 37, value: (item) => reasonsText(item.row) },
       ];
       drawTable(doc, "Exceptions", exceptionColumns, exceptionRows);
+
+      /* ---- Delay insights and hindrances ---------------------------------
+       * The conversation half, after the portfolio half: the sentence first (so the percentage always
+       * arrives with its denominator), then the rows. One page break before each so a section is never
+       * split mid-table. */
+      if (insights) {
+        doc.addPage();
+        doc.font("Helvetica-Bold").fontSize(14).text("Delay insights", left, doc.y, { width });
+        doc.font("Helvetica").fontSize(9);
+        doc.moveDown(0.2);
+        doc.text(insights.sentence, left, doc.y, { width });
+        doc.moveDown(0.35);
+        for (const row of insights.delays.rows) {
+          doc.text(
+            `${row.cause.padEnd(28, " ")} ${String(row.count).padStart(4)}  ${String(row.sharePct).padStart(3)}%   avg ${row.averageOpenDays.toFixed(1)} d`,
+            left,
+            doc.y,
+            { width }
+          );
+        }
+        if (insights.delays.rows.length === 0) doc.text("Nothing reported in this period.", left, doc.y, { width });
+        doc.moveDown(0.3);
+        doc.text(
+          `Response: ${insights.response.answered} of ${insights.response.expected} answered` +
+            (insights.response.medianHours == null ? "" : `, median ${insights.response.medianHours} h`) +
+            (insights.response.withinTargetPct == null ? "" : `, ${insights.response.withinTargetPct}% inside target`) +
+            `, ${insights.response.overdue24} waiting over 24 h.`,
+          left,
+          doc.y,
+          { width }
+        );
+
+        doc.addPage();
+        doc.font("Helvetica-Bold").fontSize(14).text(`Hindrances (${insights.hindrances.state.toLowerCase()})`, left, doc.y, { width });
+        doc.font("Helvetica").fontSize(9);
+        doc.moveDown(0.2);
+        if (insights.hindrances.rows.length === 0) {
+          doc.text("Nothing in this state for the scope of this report.", left, doc.y, { width });
+        }
+        for (const row of insights.hindrances.rows) {
+          doc.text(
+            `${row.wbsCode ?? "—"}  ${row.jobOrderCode ?? "—"}  ${row.category}  ${row.ageDays} d${row.stale ? " STALE" : ""}`,
+            left,
+            doc.y,
+            { width }
+          );
+          doc.text(`    ${row.description}`, left, doc.y, { width });
+          const owner = row.ownerEmail || "no owner";
+          doc.font("Helvetica-Oblique").fontSize(8);
+          doc.text(
+            `    raised ${row.raisedOn} by ${row.raisedByEmail} · owner ${owner}` +
+              (row.closedOn ? ` · closed ${row.closedOn} by ${row.closedByName}` : ""),
+            left,
+            doc.y,
+            { width }
+          );
+          doc.font("Helvetica").fontSize(9);
+          doc.moveDown(0.25);
+        }
+      }
 
       doc.end();
     } catch (error) {

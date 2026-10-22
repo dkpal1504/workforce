@@ -504,3 +504,30 @@ strip (closed row with WBS/owner/impact/closed-by), both dialogs, and the regist
 **Known flake:** the API suite occasionally reports one failing file when run in parallel (different file
 each time; each passes in isolation). It is contention in DB-backed tests, not a failing assertion — noted
 rather than papered over.
+
+
+### Reports export — the conversation half travels with the file
+
+`buildPortfolioXlsx` and `buildPortfolioPdf` take an optional `insights: ReportInsights`, loaded by
+`services/reportInsights.ts` through the SAME conversation scope the screens use (a PM reads his portfolio,
+an HOD his department), so a download cannot show delays or hindrances the reader could not open.
+
+- **Workbook:** two new sheets — `Delay insights` (the sentence as a merged first row, then cause / reported
+  / share % / avg days) and `Hindrances` (WBS, job order, cause, description, owner, raiser, raised on,
+  days, stale, state, closure). The sentence sits ABOVE the table on purpose: a bare percentage invites the
+  reader to supply their own denominator.
+- **PDF:** a page each at the end — the sentence, the cause lines, the response line, then the register
+  rows with description, raiser and owner, oldest first.
+- **The panel downloads with the period it is showing:** Excel/PDF buttons in Delay insights call
+  `/reports/portfolio.{format}` with the screen's own filter string plus `insightsPeriod=<the switch on
+  screen>`, so the file and the panel cannot state two different quarters.
+
+Verified by downloading the real files: the workbook has 11 sheets including `Delay insights` and
+`Hindrances`, with the sentence, the hindrance text and the WBS code in `sharedStrings`; the PDF's last page
+reads `Delay insights / Only 1 delay reported this quarter … / Material not available 1 100% avg 0.0 d /
+Response: 0 of 0 answered … / Hindrances (open) / CSR.013.002.MOP Y1001 MATERIAL 0 d / Vendor spools three
+weeks late. / raised … owner …`. Clicking **Excel** in the panel reports
+`Saved workforce-portfolio_2026-10-15_5053ab61.xlsx`.
+
+One bug caught here: the PDF crashed with `ENOENT: Helvetica-Bold@2x` — that string is pdfkit's internal
+variant notation, not a font name; `doc.font("Helvetica-Bold")` with `fontSize(14)` is the correct form.

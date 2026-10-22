@@ -129,6 +129,9 @@ function filtersDescription(report: PortfolioReport): string {
  * The only difference between the two formats is which pure builder renders the buffer and which
  * Content-Type is set — nothing about the numbers changes.
  */
+import { isInsightPeriod } from "../services/delayReasons";
+import { loadReportInsights } from "../services/reportInsights";
+
 function downloadHandler(format: PortfolioExportFormat) {
   return async (req: Request, res: Response) => {
     const parsed = parsePortfolioFilters(req.query);
@@ -149,10 +152,28 @@ function downloadHandler(format: PortfolioExportFormat) {
     try {
       // SAME assembly as GET /api/reports/portfolio. Nothing is recomputed for the file.
       const report = await buildPortfolioReport(parsed.filters, actor);
+
+      // The conversation half travels with the file. Same scope vocabulary as the screens (a PM reads his
+      // portfolio, an HOD his department), so a download can never show delays or hindrances the reader
+      // could not open on screen.
+      const period = isInsightPeriod(req.query.insightsPeriod) ? req.query.insightsPeriod : "quarter";
+      const hindranceState = req.query.hindranceState === "CLOSED" ? "CLOSED" : "OPEN";
+      const insights = await loadReportInsights(
+        {
+          id: req.user!.id,
+          role: req.user!.role,
+          departmentId: req.user!.departmentId ?? null,
+          sectionScope: req.user!.sectionScope ?? [],
+          sectionId: req.user!.sectionId ?? null,
+        },
+        period,
+        hindranceState
+      );
+
       const buffer =
         format === "xlsx"
-          ? await buildPortfolioXlsx(report, parsed.filters)
-          : await buildPortfolioPdf(report, parsed.filters);
+          ? await buildPortfolioXlsx(report, parsed.filters, undefined, insights)
+          : await buildPortfolioPdf(report, parsed.filters, undefined, insights);
 
       // The filename carries the as-of date AND the filters hash, so two differently-filtered
       // reports can never collide and a file on disk still states its period and scope.
@@ -173,6 +194,12 @@ function downloadHandler(format: PortfolioExportFormat) {
         generatedAt: report.generatedAt,
         generatedBy: actor,
         jobOrders: report.pulse.jobOrders,
+        insights: {
+          period,
+          hindranceState,
+          delayReports: insights.delays.total,
+          hindrances: insights.hindrances.total,
+        },
         bytes: buffer.length,
       });
     } catch (error) {

@@ -231,7 +231,7 @@ export function ReportsPage() {
             }}
           />
           <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
-            <DelayInsightsPanel />
+            <DelayInsightsPanel query={query} />
           </div>
         </>
       ) : coverageTab ? (
@@ -778,13 +778,15 @@ type DelayInsights = {
   sentence: string;
 };
 
-function DelayInsightsPanel() {
+function DelayInsightsPanel({ query }: { query: string }) {
   const [period, setPeriod] = useState<"quarter" | "month" | "year">("quarter");
   const [data, setData] = useState<DelayInsights | null>(null);
   const [sla, setSla] = useState<SlaStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sweeping, setSweeping] = useState(false);
+  const [downloading, setDownloading] = useState<"xlsx" | "pdf" | null>(null);
+  const [downloadNote, setDownloadNote] = useState<string | null>(null);
   const [sweepNote, setSweepNote] = useState<string | null>(null);
   const { user } = useAuth();
   const canSweep = user?.role === "PM" || user?.role === "ADMIN" || user?.role === "PROJECT_MANAGER";
@@ -922,6 +924,35 @@ function DelayInsightsPanel() {
             )}
 
             <div className="di-sla__actions">
+              {(["xlsx", "pdf"] as const).map((format) => (
+                <button
+                  key={format}
+                  type="button"
+                  className="di-period__btn"
+                  disabled={downloading !== null}
+                  title={`Download the report with the ${period} delay data and ${sla ? "the" : ""} hindrance register`}
+                  onClick={async () => {
+                    setDownloading(format);
+                    setDownloadNote(null);
+                    try {
+                      // The SAME filter string the screen sent, plus the period on screen: the file and the
+                      // panel state one period, not two.
+                      const separator = query ? (query.includes("?") ? "&" : "?") : "?";
+                      const { filename } = await downloadPortfolioFile(
+                        format,
+                        `${query || ""}${separator}insightsPeriod=${period}`
+                      );
+                      setDownloadNote(`Saved ${filename}`);
+                    } catch (err) {
+                      setDownloadNote(err instanceof Error ? err.message : "Download failed.");
+                    } finally {
+                      setDownloading(null);
+                    }
+                  }}
+                >
+                  {downloading === format ? "Preparing…" : format === "xlsx" ? "Excel" : "PDF"}
+                </button>
+              ))}
               <button
                 type="button"
                 className="di-period__btn"
@@ -951,6 +982,7 @@ function DelayInsightsPanel() {
               <span className="di-sla__state">
                 {sla.remindersEnabled ? "reminders ON" : "reminders OFF"}
                 {sweepNote ? ` · ${sweepNote}` : ""}
+                {downloadNote ? ` · ${downloadNote}` : ""}
               </span>
             </div>
           </div>
