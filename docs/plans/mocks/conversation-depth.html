@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conversation depth — structured delays, SLA, recovery, hindrances</title>
+<style>
+  /* Nocturne/Harbor tokens only — the same palette the product uses. */
+  :root{
+    --bg:#0c1118; --elev:#151c27; --subtle:#1b2431; --line:#2a3648; --line-soft:#223044;
+    --text:#e8eef6; --muted:#94a3b8; --primary:#38bdf8; --primary-ink:#0b1a24;
+    --accent:#fbbf24; --danger:#f87171; --green:#4ade80; --radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#070b11;color:var(--text);font:14px/1.45 "Sora","Segoe UI",system-ui,sans-serif;padding:26px 30px 70px}
+  h1{font-size:19px;margin:0 0 4px}
+  .lede{color:var(--muted);margin:0 0 22px;max-width:1000px}
+  .grid{display:grid;grid-template-columns:640px 560px;gap:26px;align-items:start}
+  .col{display:flex;flex-direction:column;gap:26px}
+  .cap{display:flex;gap:8px;align-items:baseline;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+  .num{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;background:var(--subtle);border:1px solid var(--line);color:var(--text);font-size:11px;font-weight:700;letter-spacing:0}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .card__head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft);background:var(--elev)}
+  .muted{color:var(--muted)} .tiny{font-size:12px}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:11.5px;border:1px solid var(--line);color:var(--muted);background:var(--subtle)}
+  .chip--on{border-color:transparent;background:var(--primary);color:var(--primary-ink);font-weight:650}
+  .badge{font-size:11px;font-weight:650;padding:2px 7px;border-radius:6px;border:1px solid transparent;white-space:nowrap}
+  .badge--amber{background:#3a2a08;color:#fbbf24;border-color:#5a4310}
+  .badge--red{background:#3b1518;color:#fca5a5;border-color:#5b1f24}
+  .badge--grey{background:#1d2634;color:#94a3b8;border-color:#2a3648}
+  .badge--blue{background:#072a3a;color:#7dd3fc;border-color:#0e4257}
+  .badge--green{background:#0d2a1a;color:#86efac;border-color:#1b4d31}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;padding:7px 12px;font:inherit;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--elev);color:var(--text);cursor:pointer}
+  .btn--primary{background:var(--primary);border-color:var(--primary);color:var(--primary-ink)}
+  .btn--sm{padding:4px 9px;font-size:12px}
+  .btn--ghost{background:transparent}
+  .rowline{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line-soft);font-size:12.5px;color:var(--muted);flex-wrap:wrap}
+  .rowline:last-child{border-bottom:0}
+  .msg{padding:11px 14px;border-bottom:1px solid var(--line-soft)}
+  .msg:last-child{border-bottom:0}
+  .msg__head{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);flex-wrap:wrap}
+  .who{color:var(--text);font-weight:600}
+  .body{margin-top:6px;color:var(--text)}
+  .ctx{margin-top:8px;padding:5px 9px;border:1px dashed var(--line);border-radius:8px;font-size:11.5px;color:var(--muted);display:inline-block}
+  .deliv{margin-top:6px;font-size:11.5px;color:var(--muted)}
+  .sys{background:rgba(148,163,184,.05);font-size:12.5px;color:var(--muted)}
+  .composer{background:var(--elev);padding:12px 14px 14px}
+  .field{border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:9px 11px;color:var(--muted);min-height:64px;font-size:13px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0 10px}
+  .foot{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+  .foot .btn{margin-left:0}
+  .foot .right{margin-left:auto;display:flex;gap:8px}
+  .rec{border:1px solid #1f4a5c;background:linear-gradient(180deg,rgba(56,189,248,.09),rgba(56,189,248,.03));border-radius:12px;padding:12px 14px;margin:12px 14px}
+  .rec__head{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:#7dd3fc;font-weight:700}
+  .kv{display:grid;grid-template-columns:120px 1fr;gap:4px 12px;margin-top:10px;font-size:13px}
+  .kv .k{color:var(--muted)}
+  .decisions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+  .warn{margin-top:10px;padding:8px 10px;border-radius:9px;border:1px solid #5a4310;background:#2a1e06;color:#fbbf24;font-size:12px}
+  .hind{display:grid;grid-template-columns:64px 1fr auto;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line-soft);align-items:start}
+  .hind:last-child{border-bottom:0}
+  .hind__t{font-weight:600}
+  .hind__s{font-size:12px;color:var(--muted);margin-top:3px}
+  .bar{display:grid;grid-template-columns:104px 1fr 44px 40px 92px;gap:10px;align-items:center;padding:6px 14px;font-size:12.5px}
+  .track{height:9px;border-radius:5px;background:var(--subtle);overflow:hidden}
+  .fill{height:100%;background:var(--primary);border-radius:5px}
+  .fill--alt{background:#7dd3fc} .fill--warm{background:var(--accent)}
+  .rep{padding:12px 14px;border-bottom:1px solid var(--line-soft)}
+  .lead{font-size:14px;color:var(--text)}
+  .lead b{color:var(--accent)}
+  .tabs{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--line-soft)}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+  .mini{display:grid;grid-template-columns:1fr auto;gap:6px 10px;padding:8px 14px;font-size:12.5px}
+  .mini:last-child{border-bottom:0}
+  .states{display:grid;gap:10px;padding:12px 14px}
+  .state{border:1px dashed var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px;color:var(--muted)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:18px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<h1>Conversation depth — delays, SLA, recovery, hindrances</h1>
+<p class="lede">Panels 1–7 match §8 of <code>docs/plans/2026-10-21-conversation-depth.md</code>. Nocturne tokens only; nothing here adds a new navigation section.</p>
+
+<div class="grid">
+  <div class="col">
+
+    <!-- 1 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">1</span> Composer — reason chips appear only where they mean something</p>
+      <div class="card">
+        <div class="card__head"><span class="tiny">Reply as <b>Rameshkumar Vaniya</b> · Section HOD</span><span class="chip">Kind: Reply ▾</span></div>
+        <div class="composer">
+          <div class="tiny muted" style="margin-bottom:6px">Why is it delayed? <span class="muted">(owner only · optional · never blocks sending)</span></div>
+          <div class="chips">
+            <span class="chip">manpower</span>
+            <span class="chip chip--on">material ✓</span>
+            <span class="chip">drawing</span>
+            <span class="chip">permit</span>
+            <span class="chip">equipment</span>
+            <span class="chip">weather</span>
+            <span class="chip">client hold</span>
+            <span class="chip">rework</span>
+          </div>
+          <div class="field">Material for M-4152 spools not received; vendor promise was 18 Oct.</div>
+          <div class="foot">
+            <span class="btn btn--sm btn--ghost">+ Attach</span>
+            <span class="badge badge--grey">⏱ Response expected within 4h</span>
+            <div class="right">
+              <span class="btn btn--sm">Propose recovery</span>
+              <span class="btn btn--sm btn--primary">Send</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">2</span> The reason and the clock sit on the collapsed row</p>
+      <div class="card">
+        <div class="card__head"><span class="tiny">B1049 · Spools Fabrication · MV AINA</span><span class="badge badge--amber">SLA reminders on</span></div>
+        <div class="msg">
+          <div class="msg__head"><b>+</b><span class="badge badge--blue">REPLY</span><span class="who">Rameshkumar Vaniya</span><span>· Section HOD</span><span>“Material not received…”</span>
+            <span class="badge badge--red">material</span><span class="badge badge--red">overdue 31h</span><span class="muted">#7 · 19 Oct 14:20</span><span class="muted tiny">— collapsed</span></div>
+        </div>
+        <div class="msg">
+          <div class="msg__head"><b>−</b><span class="badge badge--blue">REPLY</span><span class="who">Rameshkumar Vaniya</span><span>· Section HOD</span><span class="badge badge--red">material</span><span class="badge badge--red">overdue 31h</span><span class="muted">#7 · 19 Oct 14:20</span><span class="muted tiny">— expanded</span></div>
+          <div class="body">Material for M-4152 spools not received; vendor promise was 18 Oct.</div>
+          <div class="ctx">Burn <b>0%</b> · Schedule <b>DELAYED 6d</b> · Qty <b>64%</b></div>
+          <div class="deliv">Delivery sent to sunil.babariya@swan.co.in · reminded HOD at 8h · escalated COO+PM at 24h</div>
+        </div>
+        <div class="rowline sys"><b>SYSTEM</b> Escalation #7 escalated to COO + Project Manager after 24h · 20 Oct 14:20</div>
+        <div class="msg">
+          <div class="msg__head"><b>−</b><span class="badge badge--blue">REPLY</span><span class="who">Sunil Babariya</span><span>· Project Manager</span><span class="badge badge--green">answered in 6h</span><span class="muted">#8 · 19 Oct 20:10</span></div>
+          <div class="body">Vendor confirmed 24 Oct. Propose revised finish 12 Dec with two shifts.</div>
+          <div class="deliv">Delivery sent to rameshkumar.vaniya@swan.co.in</div>
+        </div>
+        <div class="msg">
+          <div class="msg__head"><b>+</b><span class="badge badge--blue">FOLLOW_UP</span><span class="who">Sunil Babariya</span><span>· Project Manager</span><span class="badge badge--grey">no address on file</span><span class="muted">#9 · 20 Oct 09:02</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">3</span> Recovery — proposed, accepted, and stale after the plan moves</p>
+      <div class="card">
+        <div class="rec">
+          <div class="rec__head"><span>Recovery proposed · #9 · 19 Oct 14:20</span><span class="badge badge--amber">awaiting PM</span></div>
+          <div class="kv">
+            <span class="k">Revised finish</span><span><b>12 Dec 2026</b> <span class="muted">was 30 Nov 2026 (+12 days)</span></span>
+            <span class="k">Manpower</span><span>Fitters 6 × 8h, 22 Oct → 5 Dec<br>Riggers 2 × 8h, 28 Oct → 5 Dec</span>
+            <span class="k">Note</span><span>Material lands 24 Oct; two shifts until 5 Dec.</span>
+          </div>
+          <div class="decisions"><span class="btn btn--sm">Reject</span><span class="btn btn--sm btn--primary">Accept revision</span></div>
+        </div>
+        <div class="rec" style="border-color:#1b4d31;background:linear-gradient(180deg,rgba(74,222,128,.08),rgba(74,222,128,.02))">
+          <div class="rec__head" style="color:#86efac"><span>Recovery accepted · Sunil Babariya (PM) · 19 Oct 16:02</span><span class="badge badge--green">accepted</span></div>
+          <div class="kv">
+            <span class="k">Committed</span><span><b>12 Dec 2026</b></span>
+            <span class="k">Planned (CLMS)</span><span>30 Nov 2026 <span class="muted">— unchanged, the upload owns this one</span></span>
+            <span class="k">Manpower</span><span>recorded: 6 fitters, 2 riggers</span>
+          </div>
+          <div class="warn">⚠ The planned date changed on 21 Oct. The commitment of 12 Dec still stands.</div>
+        </div>
+        <div class="rowline"><span class="badge badge--grey">REJECTED</span> 12 Oct · PM note: “Rework the sequence first; no date change yet.” <span class="muted">(collapses to this line)</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="col">
+
+    <!-- 4 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">4</span> Hindrances — in the thread, per WBS</p>
+      <div class="card">
+        <div class="card__head"><span class="tiny">Hindrances on this Job Order’s WBS</span><span class="btn btn--sm">+ Raise</span></div>
+        <div class="hind">
+          <span class="badge badge--red">OPEN</span>
+          <div><div class="hind__t">Vendor spools 3 weeks late</div><div class="hind__s">WBS 1.4.2 · raised 14 Oct · 7 days open · impact 12 d · owner R. Vaniya</div></div>
+          <span class="badge badge--red">material</span>
+        </div>
+        <div class="hind">
+          <span class="badge badge--amber">OPEN</span>
+          <div><div class="hind__t">Hot-work permit pending</div><div class="hind__s">WBS 1.4.3 · raised 18 Oct · 3 days open · impact 2 d · owner Safety</div></div>
+          <span class="badge badge--amber">permit</span>
+        </div>
+        <div class="hind">
+          <span class="badge badge--green">CLOSED</span>
+          <div><div class="hind__t">Isometric revision B</div><div class="hind__s">WBS 1.4.2 · raised 12 Oct · closed 16 Oct · 4 d · closed by R. Vaniya</div></div>
+          <span class="badge badge--grey">drawing</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">5</span> Reports → Delay insights (PM, Central Planning)</p>
+      <div class="card">
+        <div class="card__head"><span class="tiny">Delay insights</span><span class="tiny muted">Quarter ▾ · Dept ▾ · Section ▾ · Project ▾</span></div>
+        <div class="rep"><div class="lead"><b>Material</b> is the largest cause this quarter: <b>41%</b> of 68 reported delays, and the slowest to close (avg 9.0 days open).</div></div>
+        <div class="bar"><span>material</span><div class="track"><div class="fill" style="width:41%"></div></div><span>28</span><span>41%</span><span class="muted">9.0 d open</span></div>
+        <div class="bar"><span>manpower</span><div class="track"><div class="fill" style="width:22%"></div></div><span>15</span><span>22%</span><span class="muted">4.1 d open</span></div>
+        <div class="bar"><span>drawing</span><div class="track"><div class="fill" style="width:13%"></div></div><span>9</span><span>13%</span><span class="muted">6.2 d open</span></div>
+        <div class="bar"><span>permit</span><div class="track"><div class="fill" style="width:9%"></div></div><span>6</span><span>9%</span><span class="muted">2.8 d open</span></div>
+        <div class="bar"><span>equipment</span><div class="track"><div class="fill" style="width:7%"></div></div><span>5</span><span>7%</span><span class="muted">3.5 d open</span></div>
+        <div class="bar"><span>weather</span><div class="track"><div class="fill" style="width:4%"></div></div><span>3</span><span>4%</span><span class="muted">1.2 d open</span></div>
+        <div class="bar"><span>client hold</span><div class="track"><div class="fill" style="width:3%"></div></div><span>2</span><span>3%</span><span class="muted">11.0 d open</span></div>
+        <div class="bar"><span>rework</span><div class="track"><div class="fill" style="width:1%"></div></div><span>1</span><span>1%</span><span class="muted">5.0 d open</span></div>
+        <div class="tabs"><span class="chip chip--on">By cause</span><span class="chip">By department</span><span class="chip">By project</span><span class="chip">By owner</span></div>
+        <div class="rowline">Hindrances: <b>34 open</b> · <b>12 stale</b> (&gt;14 days) · median close 5 d <span class="btn btn--sm" style="margin-left:auto">Open register</span></div>
+      </div>
+    </div>
+
+    <!-- 6 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">6</span> Thread mini-panel — top three causes on this Job Order</p>
+      <div class="card">
+        <div class="card__head"><span class="tiny">Delay causes on B1049</span><span class="tiny muted">this Job Order only</span></div>
+        <div class="mini"><span><b>Material</b> · 3 reports</span><span class="muted">avg 9 d open</span></div>
+        <div class="mini"><span><b>Drawing</b> · 1 report</span><span class="muted">closed in 4 d</span></div>
+        <div class="mini"><span><b>Permit</b> · 1 report</span><span class="muted">open 3 d</span></div>
+        <div class="rowline">First response: median 6h · 1 escalation unanswered 31h</div>
+      </div>
+    </div>
+
+    <!-- 7 ------------------------------------------------------------------ -->
+    <div>
+      <p class="cap"><span class="num">7</span> States that must exist</p>
+      <div class="card">
+        <div class="states">
+          <div class="state"><b>No reasons yet</b> — “No delay reasons recorded. They appear when the owner replies and picks one.”</div>
+          <div class="state"><b>Nothing in this quarter</b> — “Nothing reported in this quarter · previous quarter: 41” (a zero is not a bug).</div>
+          <div class="state"><b>No permission</b> — the section is absent for a Supervisor, rather than showing zeros.</div>
+          <div class="state"><b>Owner has no address</b> — chip reads <span class="badge badge--grey">no address on file</span> and links to Employees → Payroll.</div>
+          <div class="state"><b>Sweep off</b> — a chip in the Conversations header: <span class="badge badge--grey">SLA reminders off</span>, so silence is visible as a choice.</div>
+          <div class="state"><b>Stale commitment</b> — the amber warning in panel 3; never a silent overwrite.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="legend">
+  <span>tokens: --bg --elev --subtle --line --text --muted --primary --accent --danger --green</span>
+  <span>type: Sora / Segoe UI</span>
+  <span>no new palette, no new navigation section</span>
+</div>
+</body>
+</html>
