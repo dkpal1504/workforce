@@ -69,6 +69,8 @@ type Message = {
   recipients: Array<{ email: string; state: string; sentAt: string | null }>;
   commitments: Array<{ id: number; dueOn: string; text: string; state: string; ownerEmail: string }>;
   attachments: Attachment[];
+  /** One of the eight delay causes, when the author was the owner or a PM. */
+  reasonCode: string | null;
 };
 
 type Thread = {
@@ -96,7 +98,16 @@ type ConversationResponse = {
   thread: Thread | null;
   canPostKinds: string[];
   emailEnabled: boolean;
+  /** True only when the server is configured to send reminders on its own. Off is the default. */
+  remindersEnabled: boolean;
   me: { id: number; name: string; role: string; email: string };
+};
+
+type ReasonOption = { code: string; label: string };
+type ThreadInsights = {
+  total: number;
+  uncoded: number;
+  top: Array<{ code: string; label: string; count: number; share: number; averageOpenDays: number }>;
 };
 
 type BriefResponse = {
@@ -121,6 +132,27 @@ const KIND_OPTIONS = [
   { value: "REPLY", label: "Reply" },
   { value: "DECISION", label: "Decision" },
 ];
+
+/**
+ * Code → label for a chip on a message that carries a cause.
+ *
+ * The eight codes are fixed by design, so a local map cannot drift into a wrong label — only an
+ * incomplete one, and the fallback shows the code rather than nothing. The composer's list still comes
+ * from the server, which stays authoritative about which causes are offered.
+ */
+const REASON_LABELS: Record<string, string> = {
+  MANPOWER: "manpower",
+  MATERIAL: "material",
+  DRAWING: "drawing",
+  PERMIT: "permit",
+  EQUIPMENT: "equipment",
+  WEATHER: "weather",
+  CLIENT_HOLD: "client hold",
+  REWORK: "rework",
+};
+function reasonLabelOf(code: string): string {
+  return REASON_LABELS[code] ?? code.toLowerCase();
+}
 
 const KIND_TONE: Record<string, string> = {
   FOLLOW_UP: "conv-kind",
@@ -506,6 +538,8 @@ function ThreadDrawer(props: {
   const [assist, setAssist] = useState<"brief" | "summary" | null>(null);
   // Which messages are open. `expanded` above is the full-page toggle — different thing.
   const [openMessages, setOpenMessages] = useState<number[]>([]);
+  // The causes recorded on this Job Order. Small and deterministic: the server counts, this renders.
+  const [insights, setInsights] = useState<ThreadInsights | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -533,6 +567,30 @@ function ThreadDrawer(props: {
   useEffect(() => {
     if (newestMessageId != null) setOpenMessages([newestMessageId]);
   }, [newestMessageId, jobOrderId]);
+
+  // Causes on this Job Order. Depends on ids and the message count, never on `data` itself, so a
+  // re-render that only reorders nothing refetches. Declared here with the other hooks: a hook after
+  // the guards below renders once too many and React refuses the whole screen.
+  const threadIdForInsights = data?.thread?.id ?? null;
+  const messageCountForInsights = data?.thread?.messageCount ?? 0;
+  useEffect(() => {
+    if (threadIdForInsights == null) {
+      setInsights(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await api<ThreadInsights>(`/job-orders/${jobOrderId}/conversation/insights`);
+        if (!cancelled) setInsights(result);
+      } catch {
+        if (!cancelled) setInsights(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobOrderId, threadIdForInsights, messageCountForInsights]);
 
   if (error) {
     return (
@@ -587,6 +645,7 @@ function ThreadDrawer(props: {
     }
   };
 
+
   return (
     <aside className={`conv-drawer${expanded ? " conv-drawer--full" : ""}${collapsed ? " conv-drawer--collapsed" : ""}`}>
       <header className="conv-head">
@@ -604,6 +663,14 @@ function ThreadDrawer(props: {
             )}
             {data.thread && <span className={`conv-flag${data.thread.status === "RESOLVED" ? "" : " conv-flag--open"}`}>{data.thread.status.toLowerCase()}</span>}
             {data.thread && data.thread.messageCount > 0 && <span className="conv-count">{data.thread.messageCount} messages</span>}
+            {!data.remindersEnabled && (
+              <span
+                className="conv-flag conv-flag--quiet"
+                title="Reminders and automatic escalation are switched off in this server's configuration. A person posting a message still e-mails the thread."
+              >
+                SLA reminders off
+              </span>
+            )}
           </div>
         </div>
         <div className="conv-head__actions">
@@ -731,6 +798,29 @@ function ThreadDrawer(props: {
           )}
 
           <div className="conv-thread">
+            {insights && insights.total > 0 && (
+              <div className="conv-insight">
+                <div className="conv-insight__head">
+                  <span>Delay causes on this Job Order</span>
+                  <span className="conv-insight__count">
+                    {insights.total} report{insights.total === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <ul>
+                  {insights.top.map((reason) => (
+                    <li key={reason.code}>
+                      <span className={`conv-chip conv-chip--reason${reason.code === insights.top[0].code ? " conv-chip--reason-top" : ""}`}>
+                        {reason.label.toLowerCase()}
+                      </span>
+                      <span className="conv-insight__n">
+                        {reason.count} · {reason.share}%
+                      </span>
+                      <span className="conv-insight__age">avg {reason.averageOpenDays.toFixed(1)} d since reported</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {newestFirst.length === 0 && (
               <p className="conv-empty">
                 No messages yet{data.owner.userId ? ` — the first one is addressed to ${data.owner.name}` : ""}. The trail
@@ -816,6 +906,11 @@ function MessageCard(props: {
         </span>
         <strong className="conv-msg__who">{message.authorName}</strong>
         <span className="conv-msg__role">{message.authorRole}</span>
+        {message.reasonCode && (
+          <span className="conv-chip conv-chip--reason conv-chip--reason-inline" title="Recorded delay cause">
+            {reasonLabelOf(message.reasonCode)}
+          </span>
+        )}
         {!expanded && <span className="conv-msg__excerpt">{firstLine}</span>}
         <span className="conv-seq">#{message.seq}</span>
         <time className="conv-msg__time">{formatStamp(message.createdAt)}</time>
@@ -967,6 +1062,15 @@ function Composer(props: {
         ? "FOLLOW_UP"
         : data.canPostKinds[0] ?? "REPLY";
   const [kind, setKind] = useState(startingKind);
+  // The causes come from the server (the table is the source of truth, not a constant in this file).
+  const [reasons, setReasons] = useState<ReasonOption[]>([]);
+  const [reasonCode, setReasonCode] = useState<string>("");
+  // A cause belongs to the person accountable for the work, or to a PM speaking for him. The server
+  // enforces this too; hiding the chips here is courtesy, not security.
+  const mayStampReason =
+    data.owner.userId != null
+      ? data.owner.userId === data.me.id || data.me.role === "PM" || data.me.role === "PROJECT_MANAGER" || data.me.role === "ADMIN"
+      : data.me.role === "PM" || data.me.role === "PROJECT_MANAGER" || data.me.role === "ADMIN";
   const [body, setBody] = useState(initialBody ?? "");
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<Array<{ id: number; filename: string; sizeBytes: number }>>([]);
@@ -1011,6 +1115,23 @@ function Composer(props: {
     if (fileInput.current) fileInput.current.value = "";
   };
 
+  useEffect(() => {
+    if (!mayStampReason) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await api<{ reasons: ReasonOption[] }>("/conversations/reasons");
+        if (!cancelled) setReasons(result.reasons);
+      } catch {
+        // A missing list is not worth an error banner: the reply still sends, just without a cause.
+        if (!cancelled) setReasons([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mayStampReason]);
+
   const draft = async () => {
     setDrafting(true);
     setNotice(null);
@@ -1043,6 +1164,7 @@ function Composer(props: {
             kind,
             body,
             emailOwner,
+            reasonCode: reasonCode || undefined,
             origin: origin ?? undefined,
             attachmentIds: files.map((file) => file.id),
           }),
@@ -1076,6 +1198,28 @@ function Composer(props: {
           Reply as <strong>{data.me.name}</strong> ({data.me.role})
         </span>
       </div>
+
+      {mayStampReason && reasons.length > 0 && (
+        <div className="conv-reasons" role="group" aria-label="Cause of the delay">
+          <span className="conv-reasons__label">
+            Why is it delayed? <em>optional · never blocks sending</em>
+          </span>
+          <div className="conv-reasons__chips">
+            {reasons.map((reason) => (
+              <button
+                key={reason.code}
+                type="button"
+                className={`conv-chip conv-chip--reason${reasonCode === reason.code ? " conv-chip--on" : ""}`}
+                aria-pressed={reasonCode === reason.code}
+                onClick={() => setReasonCode((current) => (current === reason.code ? "" : reason.code))}
+                title={reasonCode === reason.code ? "Click again to clear" : reason.label}
+              >
+                {reason.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <textarea
         value={body}

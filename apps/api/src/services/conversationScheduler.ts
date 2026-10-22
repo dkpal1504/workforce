@@ -13,6 +13,7 @@
  */
 
 import { prisma } from "../db";
+import { remindersEnabled } from "./conversationReminders";
 import { escalationStep, DEFAULT_ESCALATION_CLOCK, type EscalationStep } from "./escalationClock";
 import { isCommitmentDue } from "./commitmentExtraction";
 import { postSystemMessage } from "./conversations";
@@ -93,8 +94,16 @@ export async function runConversationSweep(now: Date = new Date()): Promise<Swee
 
 let timer: NodeJS.Timeout | null = null;
 
-/** Start the sweep. Off unless CONVERSATION_SCHEDULER_ENABLED=true, so a dev box does not chase anybody. */
+/**
+ * Start the sweep.
+ *
+ * TWO gates, both must be true: the rider's master switch (`CONVERSATION_REMINDERS_ENABLED`) and this
+ * scheduler's own switch. An operator who enables reminders still has to turn the timer on, and an
+ * operator who turns the timer on still cannot send unattended mail while reminders are off. Belt and
+ * braces on purpose: this is the only code path that speaks without a person pressing Send.
+ */
 export function startConversationScheduler(): void {
+  if (!remindersEnabled()) return;
   if ((process.env.CONVERSATION_SCHEDULER_ENABLED ?? "false").toLowerCase() !== "true") return;
   if (timer) return;
   const minutes = Math.max(5, Number(process.env.CONVERSATION_SCHEDULER_MINUTES ?? 15));

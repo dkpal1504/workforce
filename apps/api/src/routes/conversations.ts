@@ -38,6 +38,17 @@ import { resolveOwner } from "../services/jobOrderContext";
 import { isMessageOrigin } from "../services/conversationOrigins";
 import { summariseEscalations } from "../services/escalationStats";
 import { deliverMessage, conversationEmailEnabled } from "../services/notificationMail";
+import { remindersEnabled } from "../services/conversationReminders";
+import {
+  DELAY_REASONS,
+  canChooseReason,
+  insightSentence,
+  isDelayReason,
+  isInsightPeriod,
+  periodRange,
+  summariseReasons,
+  topReasons,
+} from "../services/delayReasons";
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, attachToMessage, downloadTicket, saveUpload, sendDownload, sweepOrphanUploads } from "../services/attachments";
 import { deliverySummary } from "../services/conversationText";
 
@@ -225,7 +236,109 @@ conversationsRouter.get("/job-orders/:id/conversation", ...guarded, async (req, 
     thread,
     canPostKinds: kinds,
     emailEnabled: conversationEmailEnabled(),
+    // Shown as a chip in the drawer: a quiet ladder is then a visible choice, not a mystery.
+    remindersEnabled: remindersEnabled(),
     me: { id: req.user!.id, name: req.user!.name, role: req.user!.role, email: req.user!.email },
+  });
+});
+
+/**
+ * GET /api/conversations/reasons — the causes, read from the table rather than a constant.
+ *
+ * A fresh database is seeded by migration, so this normally returns eight rows. The fallback keeps a
+ * half-migrated environment from rendering an empty chip row that looks like a bug in the screen.
+ */
+conversationsRouter.get("/conversations/reasons", ...guarded, async (_req, res) => {
+  const reasons = await prisma.delayReason.findMany({
+    where: { active: true },
+    orderBy: { sortOrder: "asc" },
+    select: { code: true, label: true },
+  });
+  res.json({ reasons: reasons.length ? reasons : DELAY_REASONS });
+});
+
+/**
+ * GET /api/job-orders/:id/conversation/insights — the causes on THIS Job Order.
+ *
+ * Deliberately small: the drawer shows the top three and a total, not a chart. The full picture lives on
+ * Reports, where the scope is the reader's portfolio or department.
+ */
+conversationsRouter.get("/job-orders/:id/conversation/insights", ...guarded, async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const rows = await prisma.jobOrderMessage.findMany({
+    where: { thread: { jobOrderId }, reasonCode: { not: null } },
+    select: { reasonCode: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const summary = summariseReasons(
+    rows.map((row) => ({ reasonCode: row.reasonCode, raisedAt: row.createdAt, closedAt: null })),
+    new Date()
+  );
+
+  res.json({
+    total: summary.total,
+    uncoded: summary.uncoded,
+    top: topReasons(summary, 3),
+    byReason: summary.byReason,
+  });
+});
+
+/**
+ * GET /api/conversations/insights/delays — the quarterly picture, scoped like the conversation list.
+ *
+ * A PM is "Central Planning" here: the scope resolves to his portfolio, HOD/DEPT_HEAD to their
+ * department, ADMIN and COO to everything. The window is a calendar period (see periodRange), because a
+ * sliding 90 days is a number nobody can reconcile with a board pack.
+ */
+conversationsRouter.get("/conversations/insights/delays", ...guarded, async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  const period = isInsightPeriod(req.query.period) ? req.query.period : "quarter";
+  const now = new Date();
+  const { from, to } = periodRange(period, now);
+
+  const departmentId = Number.isInteger(Number(req.query.departmentId)) ? Number(req.query.departmentId) : null;
+  const sectionId = Number.isInteger(Number(req.query.sectionId)) ? Number(req.query.sectionId) : null;
+  const projectId = Number.isInteger(Number(req.query.projectId)) ? Number(req.query.projectId) : null;
+
+  const rows = await prisma.jobOrderMessage.findMany({
+    where: { reasonCode: { not: null }, createdAt: { gte: from, lte: to }, thread: threadScopeWhere(scope) },
+    select: {
+      reasonCode: true,
+      createdAt: true,
+      thread: {
+        select: { jobOrder: { select: { departmentId: true, sectionId: true, projectId: true } } },
+      },
+    },
+  });
+
+  // The organisational filters are applied here rather than in the query: the row set is one quarter of
+  // coded messages, and one WHERE that has to be composed differently for three optional columns is
+  // where a scope bug hides.
+  const filtered = rows.filter((row) => {
+    const order = row.thread.jobOrder;
+    if (departmentId != null && order.departmentId !== departmentId) return false;
+    if (sectionId != null && order.sectionId !== sectionId) return false;
+    if (projectId != null && order.projectId !== projectId) return false;
+    return true;
+  });
+
+  const summary = summariseReasons(
+    filtered.map((row) => ({ reasonCode: row.reasonCode, raisedAt: row.createdAt, closedAt: null })),
+    now
+  );
+
+  res.json({
+    period,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    filters: { departmentId, sectionId, projectId },
+    summary,
+    sentence: insightSentence(summary, period),
   });
 });
 
@@ -254,6 +367,24 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", ...guarded, as
     if (!parent || parent.thread.jobOrderId !== jobOrderId) {
       return res.status(400).json({ error: "That message belongs to another Job Order.", code: "BAD_REPLY_TO" });
     }
+  }
+
+  // A cause belongs to the person accountable for the work, or to a PM speaking for him. The route is
+  // the only place the two facts (the code exists, this author may stamp it) can both be checked against
+  // the database, so it is checked here rather than trusted from the client.
+  const rawReason = req.body?.reasonCode ?? null;
+  let reasonCode: string | null = null;
+  if (rawReason !== null && rawReason !== "") {
+    if (!isDelayReason(rawReason)) {
+      return res.status(400).json({ error: "Unknown delay cause.", code: "BAD_REASON" });
+    }
+    const owner = await resolveOwner(jobOrderId);
+    if (!canChooseReason({ role: req.user!.role, isOwner: owner.userId === req.user!.id })) {
+      return res
+        .status(403)
+        .json({ error: "Only the Job Order owner or a Project Manager may record a delay cause.", code: "REASON_NOT_ALLOWED" });
+    }
+    reasonCode = rawReason;
   }
 
   // A DECISION carries a proposed change; only the two roles that may edit Project Master reach here.
@@ -285,6 +416,7 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", ...guarded, as
     proposal,
     emailOwner: req.body?.emailOwner !== false,
     origin: rawOrigin,
+    reasonCode,
   });
 
   const attachmentIds = Array.isArray(req.body?.attachmentIds)

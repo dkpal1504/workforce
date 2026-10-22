@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   COVERAGE_TAB,
+  DELAY_INSIGHTS_TAB,
   DEFAULT_TAB,
   PORTFOLIO_TABS,
   defaultTabFor,
@@ -10,6 +11,7 @@ import {
   TAB_TONES,
   isPortfolioTabId,
   isReportsTabId,
+  reportsTabFromId,
   panelDomId,
   tabDomId,
   tabForKey,
@@ -107,30 +109,50 @@ test("every tab wears a tone from the closed set, so no tab can render colourles
   assert.ok(new Set(PORTFOLIO_TABS.map((tab) => tab.tone)).size >= 4);
 });
 
-test("the REPORTS strip is the portfolio sections PLUS the coverage report, on Reports only", () => {
-  // The dashboard renders PORTFOLIO_TABS (its own filters cannot produce a timesheet report), and
-  // Reports renders REPORTS_TABS. Pinning the difference stops the coverage tab leaking onto the
-  // dashboard, where its dataset does not exist.
-  assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage"]);
-  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 1);
+test("the REPORTS strip is the portfolio sections PLUS the two Reports-only reports", () => {
+  // The dashboard renders PORTFOLIO_TABS (its own filters cannot produce a timesheet report, and its
+  // query cannot produce delay insights), and Reports renders REPORTS_TABS. Pinning the difference stops
+  // a Reports-only tab leaking onto the dashboard, where its dataset does not exist.
+  assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage", "delay-insights"]);
+  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 2);
   assert.equal(COVERAGE_TAB.label, "Timesheet coverage");
   assert.ok((TAB_TONES as readonly string[]).includes(COVERAGE_TAB.tone));
-  assert.equal(PORTFOLIO_TAB_IDS.includes("timesheet-coverage" as never), false, "not a portfolio section");
-  assert.ok(isReportsTabId("timesheet-coverage"));
+  assert.equal(DELAY_INSIGHTS_TAB.label, "Delay insights");
+  assert.ok((TAB_TONES as readonly string[]).includes(DELAY_INSIGHTS_TAB.tone));
+  for (const reportsOnly of ["timesheet-coverage", "delay-insights"]) {
+    assert.equal(PORTFOLIO_TAB_IDS.includes(reportsOnly as never), false, `${reportsOnly} is not a portfolio section`);
+    assert.ok(isReportsTabId(reportsOnly));
+  }
   assert.ok(isReportsTabId("job-work"));
   assert.equal(isReportsTabId("page"), false);
 });
 
-test("the keyboard walk follows the STRIP IT IS GIVEN, so Reports reaches coverage and the dashboard stops at the six", () => {
-  // Reports: End lands on coverage, and walking right off coverage wraps back to the first section.
+test("EVERY tab in the Reports strip selects itself when clicked", () => {
+  // The bug this pins: the strip rendered a "Delay insights" button, but the click handler enumerated
+  // the ids it accepted (the portfolio sections, plus coverage) so the click was ignored and the tab
+  // appeared to open nothing. Derived from the strip, the rule cannot fall behind it — and this loop
+  // fails the suite for any FUTURE tab whose id the handler does not resolve.
+  for (const id of REPORTS_TAB_IDS) {
+    assert.equal(reportsTabFromId(id), id, `${id} renders a tab that does not select itself`);
+  }
+  assert.equal(reportsTabFromId("not-a-tab"), null);
+  assert.equal(reportsTabFromId(undefined), null);
+  assert.equal(reportsTabFromId(42), null);
+});
+
+test("the keyboard walk follows the STRIP IT IS GIVEN, so Reports reaches both extra reports and the dashboard neither", () => {
+  // Reports: the two Reports-only tabs sit at the end, in strip order, and the walk wraps off the last
+  // one back to the first section.
   assert.equal(tabForKey("exceptions", "ArrowRight", REPORTS_TAB_IDS), "timesheet-coverage");
-  assert.equal(tabForKey("timesheet-coverage", "ArrowRight", REPORTS_TAB_IDS), "needs-push");
-  assert.equal(tabForKey("needs-push", "ArrowLeft", REPORTS_TAB_IDS), "timesheet-coverage");
-  assert.equal(tabForKey("job-work", "End", REPORTS_TAB_IDS), "timesheet-coverage");
-  // The dashboard walk must NOT land on the coverage tab, which it does not render.
+  assert.equal(tabForKey("timesheet-coverage", "ArrowRight", REPORTS_TAB_IDS), "delay-insights");
+  assert.equal(tabForKey("delay-insights", "ArrowRight", REPORTS_TAB_IDS), "needs-push");
+  assert.equal(tabForKey("needs-push", "ArrowLeft", REPORTS_TAB_IDS), "delay-insights");
+  assert.equal(tabForKey("job-work", "End", REPORTS_TAB_IDS), "delay-insights");
+  // The dashboard walk must NOT land on either Reports-only tab, which it does not render.
   for (const current of PORTFOLIO_TAB_IDS) {
     const next = tabForKey(current, "ArrowRight", PORTFOLIO_TAB_IDS);
     assert.notEqual(next, "timesheet-coverage");
+    assert.notEqual(next, "delay-insights");
     assert.ok(PORTFOLIO_TAB_IDS.includes(next));
   }
 });

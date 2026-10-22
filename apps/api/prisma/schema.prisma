@@ -807,6 +807,21 @@ model ProjectManagerAssignment {
 
 /// One conversation per Job Order (docs/plans/2026-10-19-job-order-conversations.md).
 /// Created lazily on the first message. RESOLVED is not deleted: it stays readable and reopens.
+/// The eight causes of a delay, as CODES.
+///
+/// The code is what reports count and it never changes; `label` may be reworded from the header of a
+/// report without rewriting history. Seeded by migration, so a fresh database and production agree.
+model DelayReason {
+  code      String @id
+  label     String
+  sortOrder Int     @map("sort_order")
+  active    Boolean @default(true)
+
+  messages JobOrderMessage[]
+
+  @@map("delay_reasons")
+}
+
 model JobOrderThread {
   id              Int      @id @default(autoincrement())
   jobOrderId      Int      @unique @map("job_order_id")
@@ -868,6 +883,11 @@ model JobOrderMessage {
   escalationDueAt     DateTime? @map("escalation_due_at")
   acknowledgedAt      DateTime? @map("acknowledged_at")
   acknowledgedByEmail String?  @map("acknowledged_by_email")
+  /// The cause of the delay this message reports, as a DelayReason code. Nullable: prose is still a
+  /// valid reply, and a reason is offered, never demanded. Set once — messages are append-only.
+  reasonCode String?      @map("reason_code")
+  reason     DelayReason? @relation(fields: [reasonCode], references: [code])
+
   /// Where the message was raised from when it was not the conversation screen itself
   /// (a Portfolio row, a structure node). Null means the drawer. Closed list in services/conversationOrigins.ts.
   origin              String?
@@ -881,6 +901,7 @@ model JobOrderMessage {
   @@unique([threadId, seq])
   @@index([threadId, createdAt])
   @@index([kind, escalationDueAt])
+  @@index([reasonCode])
   @@map("job_order_messages")
 }
 

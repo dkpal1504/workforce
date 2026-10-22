@@ -2048,3 +2048,43 @@ tr:hover .pf-escalate-btn,
    "placeholder" mark is exactly what this column exists to show. */
 .sup-email .badge { display: inline-block; margin-top: 3px; }
 .sup-table .badge { white-space: nowrap; }
+
+
+/* ---- delay causes and the insight strip (Conversations) ---------------------------------------- */
+.conv-reasons { padding: 8px 12px 0; }
+.conv-reasons__label { display: block; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px; }
+.conv-reasons__label em { font-style: normal; opacity: 0.75; }
+.conv-reasons__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.conv-chip--reason { cursor: pointer; }
+.conv-chip--reason:hover { border-color: var(--primary); color: var(--primary); }
+.conv-chip--on { background: var(--primary); border-color: var(--primary); color: var(--bg-elevated); font-weight: 600; }
+.conv-chip--reason-inline { margin-left: 2px; }
+.conv-chip--reason-top { border-color: var(--accent); color: var(--accent); }
+.conv-flag--quiet { opacity: 0.75; }
+
+.conv-insight { margin: 10px 12px 4px; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); background: var(--bg-subtle); padding: 9px 11px; }
+.conv-insight__head { display: flex; justify-content: space-between; gap: 8px; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.conv-insight__count { color: var(--text); }
+.conv-insight ul { list-style: none; margin: 7px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.conv-insight li { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; flex-wrap: wrap; }
+.conv-insight__n { color: var(--text); font-variant-numeric: tabular-nums; }
+.conv-insight__age { color: var(--text-muted); margin-left: auto; }
+
+
+/* ---- Delay insights (Reports) ------------------------------------------------------------------- */
+.di-period { display: inline-flex; gap: 4px; }
+.di-period__btn { font: inherit; font-size: 0.72rem; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-subtle); color: var(--text-muted); cursor: pointer; }
+.di-period__btn--on { background: var(--primary); border-color: var(--primary); color: var(--bg-elevated); font-weight: 600; }
+.di-lead { margin: 4px 0 14px; font-size: 0.95rem; color: var(--text); max-width: 78ch; }
+.di-bars { display: flex; flex-direction: column; gap: 7px; }
+.di-bar { display: grid; grid-template-columns: 180px 1fr 44px 44px 64px; gap: 10px; align-items: center; font-size: 0.8rem; }
+.di-bar__label { color: var(--text); }
+.di-bar__track { height: 9px; border-radius: 5px; background: var(--bg-subtle); border: 1px solid var(--border-light); overflow: hidden; }
+.di-bar__fill { display: block; height: 100%; background: var(--accent); border-radius: 5px; }
+.di-bar__n, .di-bar__share, .di-bar__age { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.di-bar__n { color: var(--text); text-align: right; }
+.di-empty { color: var(--text-muted); font-size: 0.85rem; }
+.di-empty--error { color: var(--danger); }
+.di-foot { margin-top: 14px; color: var(--text-muted); font-size: 0.75rem; }
+
+.di-head { display: flex; justify-content: flex-end; padding: 10px 14px 0; }

@@ -30,6 +30,7 @@ import { conversationsRouter } from "./routes/conversations";
 import { publicThreadRouter } from "./routes/publicThread";
 import { assistantRouter } from "./routes/assistant";
 import { startConversationScheduler } from "./services/conversationScheduler";
+import { remindersState } from "./services/conversationReminders";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { attendanceHoursRouter } from "./routes/attendanceHours";
 import { startAttendanceHoursScheduler, stopAttendanceHoursScheduler } from "./services/attendanceHoursScheduler";
@@ -191,6 +192,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 const server = app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
+  // Said out loud once, so "why is nobody being reminded?" has an answer in the log.
+  console.log(remindersState());
   startBadgeViewSyncScheduler();
   startAttendanceHoursScheduler();
   startConversationScheduler();

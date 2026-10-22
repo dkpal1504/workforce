@@ -70,6 +70,8 @@ export type PostMessageInput = {
   emailOwner: boolean;
   /** Where it was raised from, when not the drawer (a Portfolio row). Validated by the route. */
   origin?: string | null;
+  /** The cause of the delay, when the author is the owner or a PM. Validated against delay_reasons. */
+  reasonCode?: string | null;
   now?: Date;
 };
 
@@ -172,6 +174,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
         threadId,
         seq,
         kind: input.kind,
+        reasonCode: input.reasonCode ?? null,
         authorUserId: input.author.id,
         authorEmail: input.author.email,
         authorName: input.author.name,
@@ -449,6 +452,7 @@ export async function threadFor(jobOrderId: number) {
           replyToId: true,
           contextJson: true,
           proposalJson: true,
+          reasonCode: true,
           escalationDueAt: true,
           acknowledgedAt: true,
           acknowledgedByEmail: true,

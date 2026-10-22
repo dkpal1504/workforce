@@ -35,8 +35,10 @@ while the sentence stays exactly where it is.
 | 3 | Delay analytics live in **Reports** ("Delay insights") **and** as a compact breakdown inside the thread drawer. | user |
 | 4 | PM/ADMIN accept or reject a recovery; acceptance records the manpower plan and updates the finish date. | user |
 | 5 | A hindrance is closed by the person who raised it or a PM/ADMIN; Central Planning is read-only with export. | user |
-| 6 | **Recommendation:** acceptance writes `job_orders.committed_finish_date` (a column the application owns) and leaves `planned_end_date` as the CLMS plan. Both are shown. Writing into `planned_end_date` would be silently undone by the next Job Order CSV upload, which sets it from the file. | mine — needs your yes |
-| 7 | **Recommendation:** "Central Planning" is not a role in this application (roles are EMPLOYEE, SUPERVISOR, HOD, PM, ADMIN, DEPT_HEAD, COO, HR, FINANCE, PROJECT_MANAGER). CP staff see the register through their existing department/section scope, plus ADMIN/COO org-wide. A `CENTRAL_PLANNING` role would be a roleAccess change and is out of scope here. | mine — needs your yes |
+| 6 | **ACCEPTED:** acceptance writes `job_orders.committed_finish_date` (a column the application owns) and leaves `planned_end_date` as the CLMS plan. Both are shown, with a warning when they diverge. Writing into `planned_end_date` would be silently undone by the next Job Order CSV upload. | user, 21 Oct |
+| 7 | **ACCEPTED:** "Central Planning" **is the PM role** — no new role. PMs read the register and the delay insights over their portfolio; ADMIN and COO see everything. | user, 21 Oct |
+| 8 | **RIDER:** reminders and any system-generated e-mail are **OFF by configuration** and stay off until explicitly enabled. Nothing the system sends on its own may fire while the flag is false; a person posting a message is the only thing that mails in P1. | user, 21 Oct |
+| 9 | Reason chips are also offered to a PM posting on the owner's behalf (same fact, same code). A recovery may carry an optional WBS; the Job Order is required. | mine, pending any objection |
 
 ---
 
@@ -152,9 +154,16 @@ guess dressed as a number is worse than no number.
 
 ```
 CONVERSATION_SCHEDULER_ENABLED   (existing)  still OFF — the old ladder stays dormant
-CONVERSATION_SLA_SWEEP           (new)       governs ONLY: response reminders + escalation rungs
-CONVERSATION_SLA_INTERVAL_MIN    (new)       default 15
+CONVERSATION_REMINDERS_ENABLED   (new)       THE master switch. false/unset = the application
+                                             never sends anything on its own: no reminder at 8h,
+                                             no escalation at 24h, no chase. Person-posted mail
+                                             is unaffected.
+CONVERSATION_SLA_INTERVAL_MIN    (new)       default 15, read only when the master switch is true
 ```
+
+The master switch is checked at the one place that could send unattended mail, not at each call site,
+and its state is logged at startup (`reminders: off`) and shown as a chip in the Conversations header so
+an operator can see why the ladder is quiet. P1 ships with it off and no ladder at all.
 
 Why two switches rather than reusing one: the old sweep also chased commitments and cleaned orphan
 uploads. Turning that on to get SLA would re-enable things you did not ask for. The new sweep does one

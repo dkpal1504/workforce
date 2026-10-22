@@ -74,8 +74,17 @@ export const PORTFOLIO_TAB_IDS: readonly PortfolioTabId[] = PORTFOLIO_TABS.map((
  */
 export const COVERAGE_TAB = { id: "timesheet-coverage", label: "Timesheet coverage", tone: "primary" } as const;
 
-/** The tab strip the REPORTS screen renders: the six portfolio sections, plus coverage. */
-export const REPORTS_TABS = [...PORTFOLIO_TABS, COVERAGE_TAB] as const;
+/**
+ * Delay insights — the causes recorded in conversations, counted.
+ *
+ * Reports-only for the same reason coverage is: it is not a section of the portfolio report and its
+ * numbers come from a different query. A PM is "Central Planning" here: the endpoint scopes the counts
+ * to his portfolio, an HOD to his department, ADMIN/COO to everything.
+ */
+export const DELAY_INSIGHTS_TAB = { id: "delay-insights", label: "Delay insights", tone: "warning" } as const;
+
+/** The tab strip the REPORTS screen renders: the six portfolio sections, plus coverage and delays. */
+export const REPORTS_TABS = [...PORTFOLIO_TABS, COVERAGE_TAB, DELAY_INSIGHTS_TAB] as const;
 export type ReportsTabId = (typeof REPORTS_TABS)[number]["id"];
 export const REPORTS_TAB_IDS: readonly ReportsTabId[] = REPORTS_TABS.map((tab) => tab.id);
 
@@ -98,9 +107,22 @@ export function isPortfolioTabId(value: unknown): value is PortfolioTabId {
   return typeof value === "string" && (PORTFOLIO_TAB_IDS as readonly string[]).includes(value);
 }
 
-/** Is this string a tab of the REPORTS strip (the six, plus coverage)? */
+/** Is this string a tab of the REPORTS strip (the six, plus coverage and delays)? */
 export function isReportsTabId(value: unknown): value is ReportsTabId {
   return typeof value === "string" && (REPORTS_TAB_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * The tab an id selects, or null if this screen has no such tab.
+ *
+ * WHY THIS EXISTS: the strip's click handler used to enumerate the tab ids it accepted, so the moment a
+ * third Reports-only tab was added it rendered a button whose click was ignored — the tab appeared and
+ * "nothing opened". One rule, derived from the strip itself, cannot fall behind the strip: a test walks
+ * every id in REPORTS_TAB_IDS and asserts each one selects ITSELF, so a future tab that the handler does
+ * not know about fails the suite instead of failing in the operator's hand.
+ */
+export function reportsTabFromId(value: unknown): ReportsTabId | null {
+  return isReportsTabId(value) ? value : null;
 }
 
 /**

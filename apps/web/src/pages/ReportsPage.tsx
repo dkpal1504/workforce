@@ -37,7 +37,7 @@ import {
   DEFAULT_TAB,
   REPORTS_TABS,
   defaultTabFor,
-  isPortfolioTabId,
+  reportsTabFromId,
   panelDomId,
   tabDomId,
   type ReportsTabId,
@@ -175,6 +175,9 @@ export function ReportsPage() {
 
   /** Which strip is on screen: the portfolio sections, or the coverage report. */
   const coverageTab = canCoverage && tab === "timesheet-coverage";
+  // Delay insights reads an entirely different endpoint, so it renders like coverage: its own panel,
+  // without waiting for the portfolio report.
+  const delayTab = tab === "delay-insights";
 
   return (
     <>
@@ -183,7 +186,7 @@ export function ReportsPage() {
           timesheet-coverage report, and drawing it above that report would invite the reader to
           believe it filtered it. So the coverage report carries its own controls — a period plus the
           organisation scope — and the portfolio bar returns with the portfolio sections. */}
-      {coverageTab ? null : (
+      {coverageTab || delayTab ? null : (
         <PortfolioFilterBar
           filters={filters}
           onChange={setFilters}
@@ -196,19 +199,37 @@ export function ReportsPage() {
         />
       )}
 
-      {coverageTab ? null : error && <div className="error-banner">{error}</div>}
-      {coverageTab ? null : downloadError && <div className="error-banner">{downloadError}</div>}
-      {coverageTab ? null : downloadNotice && <div className="alloc-note">{downloadNotice}</div>}
+      {coverageTab || delayTab ? null : error && <div className="error-banner">{error}</div>}
+      {coverageTab || delayTab ? null : downloadError && <div className="error-banner">{downloadError}</div>}
+      {coverageTab || delayTab ? null : downloadNotice && <div className="alloc-note">{downloadNotice}</div>}
 
-      {coverageTab ? (
+      {delayTab ? (
         <>
           <ReportTabs
             tabs={tabs}
             active={tab}
             counts={tabCounts}
             onChange={(id) => {
-              if (isPortfolioTabId(id)) setTab(id);
-              else if (id === "timesheet-coverage") setTab("timesheet-coverage");
+              const next = reportsTabFromId(id);
+              if (next) setTab(next);
+            }}
+          />
+          <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
+            <DelayInsightsPanel />
+          </div>
+        </>
+      ) : coverageTab ? (
+        <>
+          <ReportTabs
+            tabs={tabs}
+            active={tab}
+            counts={tabCounts}
+            onChange={(id) => {
+              // ONE handler rule for every strip on this screen: a Reports tab is whichever tab the
+              // Reports list contains. Enumerating the two Reports-only ids here meant a third one
+              // rendered a tab that ignored its own click.
+              const next = reportsTabFromId(id);
+              if (next) setTab(next);
             }}
           />
           <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
@@ -271,7 +292,8 @@ export function ReportsPage() {
             active={tab}
             counts={tabCounts}
             onChange={(id) => {
-              if (isPortfolioTabId(id) || id === "timesheet-coverage") setTab(id);
+              const next = reportsTabFromId(id);
+              if (next) setTab(next);
             }}
           />
 
@@ -705,6 +727,117 @@ function ExceptionsSection({ report, resetKey }: SectionProps) {
           resetKey={resetKey}
         />
       </div>
+    </Panel>
+  );
+}
+
+
+/* --------------------------------------------------------------------------- *
+ * Delay insights — what the conversations say is holding the work up.
+ *
+ * Counts come from the server (one aggregation over coded messages, scoped to the reader's portfolio
+ * or department). Nothing here ranks a cause it was not given, and the sample size is always on
+ * screen: "41% of 68" is a claim, "41%" alone is a rumour.
+ * ------------------------------------------------------------------------- */
+
+type DelayInsights = {
+  period: "quarter" | "month" | "year";
+  from: string;
+  to: string;
+  summary: {
+    total: number;
+    uncoded: number;
+    byReason: Array<{ code: string; label: string; count: number; share: number; averageOpenDays: number }>;
+  };
+  sentence: string;
+};
+
+function DelayInsightsPanel() {
+  const [period, setPeriod] = useState<"quarter" | "month" | "year">("quarter");
+  const [data, setData] = useState<DelayInsights | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const result = await api<DelayInsights>(`/conversations/insights/delays?period=${period}`);
+        if (!cancelled) setData(result);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "The delay insights could not be loaded.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [period]);
+
+  const widest = data?.summary.byReason[0]?.share ?? 0;
+
+  return (
+    <Panel
+      title="Delay insights"
+      count={data ? data.summary.total : undefined}
+      hint="Causes recorded by Job Order owners and PMs in conversations. A reply without a cause is counted separately and never folded into a percentage."
+    >
+      <div className="di-head">
+        <div className="di-period" role="group" aria-label="Period">
+          {(["quarter", "month", "year"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={`di-period__btn${period === option ? " di-period__btn--on" : ""}`}
+              aria-pressed={period === option}
+              onClick={() => setPeriod(option)}
+            >
+              {option === "quarter" ? "This quarter" : option === "month" ? "This month" : "This year"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {loading && <p className="di-empty">Counting…</p>}
+      {error && !loading && <p className="di-empty di-empty--error">{error}</p>}
+
+      {!loading && !error && data && (
+        <>
+          <p className="di-lead">{data.sentence}</p>
+
+          {data.summary.total === 0 ? (
+            <p className="di-empty">
+              Nothing reported in this period. Causes appear here once owners reply and pick one.
+            </p>
+          ) : (
+            <div className="di-bars">
+              {data.summary.byReason.map((reason) => (
+                <div className="di-bar" key={reason.code}>
+                  <span className="di-bar__label">{reason.label}</span>
+                  <span className="di-bar__track">
+                    <span
+                      className="di-bar__fill"
+                      style={{ width: `${widest === 0 ? 0 : Math.round((reason.count / (data.summary.byReason[0].count || 1)) * 100)}%` }}
+                    />
+                  </span>
+                  <span className="di-bar__n">{reason.count}</span>
+                  <span className="di-bar__share">{reason.share}%</span>
+                  <span className="di-bar__age">{reason.averageOpenDays.toFixed(1)} d</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="di-foot">
+            {data.summary.total} cause{data.summary.total === 1 ? "" : "s"} recorded
+            {data.summary.uncoded > 0 ? ` · ${data.summary.uncoded} repl${data.summary.uncoded === 1 ? "y" : "ies"} without a cause` : ""}
+            {" · "}
+            bar length is relative to the largest cause; the percentage is of the {data.summary.total} recorded
+          </p>
+        </>
+      )}
     </Panel>
   );
 }
