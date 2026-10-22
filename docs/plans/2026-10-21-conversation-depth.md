@@ -474,3 +474,33 @@ Measured end to end on the restored copy: a 9-hour-old escalation → `reminded:
 run, one REMIND_HOD line, recipients `NO_ADDRESS` where the HOD still has an `@employee.local` login; at
 26 hours → `escalated: 1` then `0`, one ESCALATE_COO line, the PM's real address QUEUED. With reminders
 off the endpoint answers 409 and the Reports button is disabled and reads `reminders OFF`.
+
+
+### P3 — recovery became a decision
+
+`job_order_recoveries` (offer, manpower, state) and `job_orders.committed_finish_date` — a column the
+application owns, deliberately separate from `planned_end_date`, which the Job Order upload rewrites from
+the file. The offer is a `RECOVERY` message that starts its own SLA clock (policy `RECOVERY 24/48/72`), so an
+unanswered proposal is chased by the ladder shipped in P2.
+
+Rules enforced, not just drawn: a PM cannot accept **his own** offer (403), a second decision on a decided
+offer is 409, and the UI hides the buttons for anyone who cannot decide. `PROJECT_MANAGER` is the role this
+application actually assigns — checking only `PM` had left every real project manager unable to accept
+anything he had not proposed; both names now carry the authority, ADMIN corrects.
+
+### P4 — hindrances got a register
+
+`wbs_hindrances` with raiser, owner, target, stated impact, closure. Raised from the Job Order conversation
+(the WBS is taken from the Job Order), closed by its raiser or a manager, each act writing a SYSTEM line.
+Reports → **Hindrances** lists them with WBS, cause, owner, age and a **stale** mark after 14 days, with an
+Open/Closed switch and CSV export. `impactDays` is what the raiser stated, never derived.
+
+Measured end to end: raise → 201 with the Job Order's WBS resolved automatically; list shows `MATERIAL OPEN
+0d`; register (PM) shows 1; close → 200, open 0 / closed 1, second close 409. Recovery: propose as PM → 201,
+self-accept → 403, admin accepts → 200 with `committed_finish_date` written and `planned_end_date` untouched,
+second decision → 409. Screens verified: the recovery card (accepted, committed vs planned), the hindrance
+strip (closed row with WBS/owner/impact/closed-by), both dialogs, and the register in both states.
+
+**Known flake:** the API suite occasionally reports one failing file when run in parallel (different file
+each time; each passes in isolation). It is contention in DB-backed tests, not a failing assertion — noted
+rather than papered over.

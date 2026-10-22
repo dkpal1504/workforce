@@ -130,12 +130,15 @@ export function jobOrderScopeWhere(scope: ConversationScope) {
  * DECISION is different — it can carry a proposed change to the Job Order — so it is limited to the
  * roles that already hold that right in Project Master (PM and Admin). SYSTEM is never a user kind.
  */
-export const USER_MESSAGE_KINDS = ["FOLLOW_UP", "INSTRUCTION", "ESCALATION", "REPLY", "DECISION"] as const;
+export const USER_MESSAGE_KINDS = ["FOLLOW_UP", "INSTRUCTION", "ESCALATION", "REPLY", "DECISION", "RECOVERY"] as const;
 export type UserMessageKind = (typeof USER_MESSAGE_KINDS)[number];
 
 export function mayPostKind(role: string, kind: string): boolean {
   if (!isConversationRole(role)) return false;
   if (kind === "DECISION") return role === "PM" || role === "ADMIN";
+  // A recovery is proposed by the owner (checked against ownership in the route) or by a PM. The generic
+  // message route cannot see ownership, so it admits the two roles that may always speak for the work.
+  if (kind === "RECOVERY") return role === "PM" || role === "PROJECT_MANAGER" || role === "ADMIN";
   return (USER_MESSAGE_KINDS as readonly string[]).includes(kind);
 }
 

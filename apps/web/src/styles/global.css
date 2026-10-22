@@ -2103,3 +2103,47 @@ tr:hover .pf-escalate-btn,
 .di-sla__bars { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
 .di-sla__actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .di-sla__state { font-size: 0.75rem; color: var(--text-muted); }
+
+
+/* ---- recovery cards, hindrance strip, and the two small forms ---------------------------------- */
+.conv-recovery { margin: 6px 12px 12px; padding: 11px 13px; border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: var(--radius-sm, 10px); background: var(--bg-subtle); }
+.conv-recovery--ok { border-left-color: var(--success); background: var(--success-soft, rgba(74,222,128,.07)); }
+.conv-recovery--no { border-left-color: var(--danger); background: var(--danger-soft); }
+.conv-recovery--gone { opacity: .72; }
+.conv-recovery__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.conv-recovery__grid { display: grid; grid-template-columns: 116px 1fr; gap: 4px 12px; margin-top: 9px; font-size: 0.83rem; }
+.conv-recovery__grid .k { color: var(--text-muted); }
+.conv-recovery__warn { margin-top: 9px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--warning, #b45309); background: var(--warning-soft, rgba(251,191,36,.12)); color: var(--warning, #b45309); font-size: 0.78rem; }
+.conv-recovery__decide { display: flex; gap: 8px; align-items: center; margin-top: 11px; }
+.conv-recovery__decide input { flex: 1; min-width: 120px; }
+.conv-recovery__foot { margin-top: 8px; font-size: 0.78rem; }
+
+.conv-hind { margin: 8px 12px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm, 10px); }
+.conv-hind__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 11px; border-bottom: 1px solid var(--border-light); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.conv-hind__empty { padding: 9px 11px; margin: 0; font-size: 0.8rem; }
+.conv-hind ul { list-style: none; margin: 0; padding: 0; }
+.conv-hind li { display: flex; align-items: flex-start; gap: 8px; padding: 8px 11px; border-bottom: 1px solid var(--border-light); font-size: 0.8rem; }
+.conv-hind li:last-child { border-bottom: 0; }
+.conv-hind__row--closed { opacity: .68; }
+.conv-hind__text { flex: 1; }
+.conv-hind__text em { display: block; font-style: normal; font-size: 0.74rem; margin-top: 2px; }
+.conv-btn--tiny { padding: 2px 7px; font-size: 0.72rem; }
+
+.conv-form { display: flex; flex-direction: column; gap: 12px; }
+.conv-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-muted); }
+.conv-form label > span { text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem; }
+.conv-form input, .conv-form textarea { font: inherit; font-size: 0.85rem; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.conv-form__slip { font-style: normal; color: var(--text-muted); font-size: 0.75rem; }
+.conv-form__plan { display: flex; flex-direction: column; gap: 7px; }
+.conv-form__label { text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem; color: var(--text-muted); }
+.conv-form__line { display: grid; grid-template-columns: 1fr 70px 70px auto; gap: 7px; align-items: center; }
+.conv-form__row { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
+.conv-form__foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* ---- the hindrance register (Reports) ----------------------------------------------------------- */
+.hr-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.hr-table th { text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.hr-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-light); vertical-align: top; }
+.hr-table tr:last-child td { border-bottom: 0; }
+.hr-stale { color: var(--danger); font-weight: 600; }
+.hr-actions { display: flex; gap: 6px; }

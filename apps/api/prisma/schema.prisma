@@ -508,6 +508,13 @@ model JobOrder {
 
   @@unique([projectId, code])
   @@index([projectWbsId, status])
+  /// What the application COMMITTED to when a recovery was accepted. Deliberately a separate column from
+  /// `plannedEndDate`: the Job Order CSV upload writes the plan from the file and would silently undo an
+  /// accepted commitment. Both are shown; a warning appears when they diverge.
+  committedFinishDate DateTime? @map("committed_finish_date")
+  committedSetAt      DateTime? @map("committed_set_at")
+  committedRecoveryId Int?      @map("committed_recovery_id")
+
   @@index([departmentId, status])
   @@index([sectionId])
   @@index([networkId])
@@ -842,6 +849,71 @@ model SlaPolicy {
 
   @@unique([kind, departmentId])
   @@map("sla_policies")
+}
+
+/// A recovery offer: the owner says "I cannot finish by the planned date; here is my date and my
+/// manpower", and a PM accepts or rejects it.
+///
+/// Scalars rather than relations on purpose: this is an append-only record whose whole value is that it
+/// survives. A cascade from a thread edit would erase the negotiation that explains a committed date.
+model JobOrderRecovery {
+  id                Int      @id @default(autoincrement())
+  threadId          Int      @map("thread_id")
+  messageId         Int      @unique @map("message_id")
+  jobOrderId        Int      @map("job_order_id")
+  projectWbsId      Int?     @map("project_wbs_id")
+  proposedByUserId  Int?     @map("proposed_by_user_id")
+  proposedByName    String   @map("proposed_by_name")
+  proposedByEmail   String   @map("proposed_by_email")
+  revisedFinishDate DateTime @map("revised_finish_date")
+  /// [{ trade, headcount, hoursPerDay, fromDate, toDate }] — recorded, never enforced.
+  manpowerPlanJson  String?  @map("manpower_plan_json")
+  note              String?
+  /// PROPOSED | ACCEPTED | REJECTED | SUPERSEDED
+  state             String   @default("PROPOSED")
+  decidedByUserId   Int?     @map("decided_by_user_id")
+  decidedByName     String?  @map("decided_by_name")
+  decidedAt         DateTime? @map("decided_at")
+  decisionNote      String?  @map("decision_note")
+  /// What the commitment replaced and what it set, so an undo restores the exact previous value.
+  appliedFrom       DateTime? @map("applied_from")
+  appliedTo         DateTime? @map("applied_to")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([jobOrderId, state])
+  @@map("job_order_recoveries")
+}
+
+/// A constraint on a WBS node: raised by somebody, owned by somebody, closed with a note.
+///
+/// The register Central Planning reads. Ageing is `now - raised_at` for OPEN rows; `impactDays` is what the
+/// raiser STATED, never derived, because a guess dressed as a number is worse than no number.
+model WbsHindrance {
+  id             Int      @id @default(autoincrement())
+  projectWbsId   Int      @map("project_wbs_id")
+  jobOrderId     Int?     @map("job_order_id")
+  threadId       Int?     @map("thread_id")
+  messageId      Int?     @map("message_id")
+  /// A delay_reasons code, or OTHER.
+  category       String
+  description    String
+  raisedByUserId Int?     @map("raised_by_user_id")
+  raisedByEmail  String   @map("raised_by_email")
+  raisedAt       DateTime @default(now()) @map("raised_at")
+  ownerUserId    Int?     @map("owner_user_id")
+  ownerEmail     String?  @map("owner_email")
+  targetDate     DateTime? @map("target_date")
+  impactDays     Int?     @map("impact_days")
+  /// OPEN | CLOSED | VOID
+  state          String   @default("OPEN")
+  closedByUserId Int?     @map("closed_by_user_id")
+  closedByName   String?  @map("closed_by_name")
+  closedAt       DateTime? @map("closed_at")
+  closureNote    String?  @map("closure_note")
+
+  @@index([projectWbsId, state])
+  @@index([state, raisedAt])
+  @@map("wbs_hindrances")
 }
 
 model JobOrderThread {

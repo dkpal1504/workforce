@@ -178,6 +178,7 @@ export function ReportsPage() {
   // Delay insights reads an entirely different endpoint, so it renders like coverage: its own panel,
   // without waiting for the portfolio report.
   const delayTab = tab === "delay-insights";
+  const hindranceTab = tab === "hindrances";
 
   return (
     <>
@@ -186,7 +187,7 @@ export function ReportsPage() {
           timesheet-coverage report, and drawing it above that report would invite the reader to
           believe it filtered it. So the coverage report carries its own controls — a period plus the
           organisation scope — and the portfolio bar returns with the portfolio sections. */}
-      {coverageTab || delayTab ? null : (
+      {coverageTab || delayTab || hindranceTab ? null : (
         <PortfolioFilterBar
           filters={filters}
           onChange={setFilters}
@@ -199,11 +200,26 @@ export function ReportsPage() {
         />
       )}
 
-      {coverageTab || delayTab ? null : error && <div className="error-banner">{error}</div>}
-      {coverageTab || delayTab ? null : downloadError && <div className="error-banner">{downloadError}</div>}
-      {coverageTab || delayTab ? null : downloadNotice && <div className="alloc-note">{downloadNotice}</div>}
+      {coverageTab || delayTab || hindranceTab ? null : error && <div className="error-banner">{error}</div>}
+      {coverageTab || delayTab || hindranceTab ? null : downloadError && <div className="error-banner">{downloadError}</div>}
+      {coverageTab || delayTab || hindranceTab ? null : downloadNotice && <div className="alloc-note">{downloadNotice}</div>}
 
-      {delayTab ? (
+      {hindranceTab ? (
+        <>
+          <ReportTabs
+            tabs={tabs}
+            active={tab}
+            counts={tabCounts}
+            onChange={(id) => {
+              const next = reportsTabFromId(id);
+              if (next) setTab(next);
+            }}
+          />
+          <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
+            <HindranceRegisterPanel />
+          </div>
+        </>
+      ) : delayTab ? (
         <>
           <ReportTabs
             tabs={tabs}
@@ -938,6 +954,165 @@ function DelayInsightsPanel() {
               </span>
             </div>
           </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+
+/* --------------------------------------------------------------------------- *
+ * The hindrance register. Every constraint raised against a WBS node, with its owner, its age and its
+ * closure — the list Central Planning opens, not a summary of it.
+ * ------------------------------------------------------------------------- */
+
+type HindranceRow = {
+  id: number;
+  projectWbsId: number;
+  wbsCode: string | null;
+  jobOrderCode: string | null;
+  jobOrderName: string | null;
+  category: string;
+  description: string;
+  ownerEmail: string | null;
+  raisedByEmail: string;
+  raisedAt: string;
+  impactDays: number | null;
+  state: "OPEN" | "CLOSED";
+  closedAt: string | null;
+  closedByName: string | null;
+  closureNote: string | null;
+  age: { days: number; stale: boolean };
+};
+
+function HindranceRegisterPanel() {
+  const [state, setState] = useState<"OPEN" | "CLOSED">("OPEN");
+  const [rows, setRows] = useState<HindranceRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const data = await api<{ hindrances: HindranceRow[] }>(`/conversations/hindrances?state=${state}`);
+        if (!cancelled) setRows(data.hindrances);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "The register could not be loaded.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state]);
+
+  const stale = rows.filter((row) => row.age.stale).length;
+
+  const exportCsv = () => {
+    const header = ["WBS", "Job order", "Category", "Description", "Owner", "Raised on", "Days open", "Stale", "State", "Closed by", "Closure note"];
+    const lines = rows.map((row) => [
+      row.wbsCode ?? "",
+      row.jobOrderCode ?? "",
+      row.category,
+      row.description.replace(/"/g, '""'),
+      row.ownerEmail ?? "",
+      row.raisedAt.slice(0, 10),
+      String(row.age.days),
+      row.age.stale ? "yes" : "no",
+      row.state,
+      row.closedByName ?? "",
+      row.closureNote ?? "",
+    ]);
+    const csv = [header, ...lines].map((line) => line.map((cell) => `"${cell}"`).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `hindrances-${state.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Panel
+      title="Hindrance register"
+      count={rows.length}
+      hint="Constraints raised against a WBS node, with the owner who must clear them. An open item is stale after 14 days; impact days are what the raiser stated, never derived."
+    >
+      <div className="di-head" style={{ justifyContent: "space-between" }}>
+        <div className="di-period" role="group" aria-label="Register state">
+          {(["OPEN", "CLOSED"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={`di-period__btn${state === option ? " di-period__btn--on" : ""}`}
+              aria-pressed={state === option}
+              onClick={() => setState(option)}
+            >
+              {option === "OPEN" ? "Open" : "Closed"}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="di-period__btn" onClick={exportCsv} disabled={rows.length === 0}>
+          Export CSV
+        </button>
+      </div>
+
+      {loading && <p className="di-empty">Loading the register…</p>}
+      {error && !loading && <p className="di-empty di-empty--error">{error}</p>}
+      {!loading && !error && rows.length === 0 && (
+        <p className="di-empty">
+          {state === "OPEN"
+            ? "Nothing open. Hindrances appear here as soon as somebody raises one from a Job Order conversation."
+            : "Nothing has been closed yet in this scope."}
+        </p>
+      )}
+
+      {!loading && !error && rows.length > 0 && (
+        <>
+          <table className="hr-table">
+            <thead>
+              <tr>
+                <th>WBS</th>
+                <th>Job order</th>
+                <th>Cause</th>
+                <th>What is holding it up</th>
+                <th>Owner</th>
+                <th>Age</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.wbsCode ?? "—"}</td>
+                  <td>
+                    <strong>{row.jobOrderCode ?? "—"}</strong>
+                    <div className="muted tiny">{row.jobOrderName ?? ""}</div>
+                  </td>
+                  <td><span className="conv-chip conv-chip--reason">{row.category.toLowerCase()}</span></td>
+                  <td>
+                    {row.description}
+                    {row.impactDays ? <div className="muted tiny">stated impact {row.impactDays} d</div> : null}
+                    {row.state === "CLOSED" && row.closedByName ? (
+                      <div className="muted tiny">closed by {row.closedByName} on {(row.closedAt ?? "").slice(0, 10)}</div>
+                    ) : null}
+                  </td>
+                  <td>{row.ownerEmail ?? "—"}</td>
+                  <td className={row.age.stale ? "hr-stale" : ""}>
+                    {row.age.days} d{row.age.stale ? " · stale" : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="di-foot">
+            {rows.length} {state === "OPEN" ? "open" : "closed"} · {stale} stale (&gt;14 days) · raised by{" "}
+            {[...new Set(rows.map((row) => row.raisedByEmail))].length} people
+          </p>
         </>
       )}
     </Panel>

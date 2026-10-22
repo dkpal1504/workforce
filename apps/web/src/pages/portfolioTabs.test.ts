@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   COVERAGE_TAB,
   DELAY_INSIGHTS_TAB,
+  HINDRANCE_TAB,
   DEFAULT_TAB,
   PORTFOLIO_TABS,
   defaultTabFor,
@@ -113,13 +114,15 @@ test("the REPORTS strip is the portfolio sections PLUS the two Reports-only repo
   // The dashboard renders PORTFOLIO_TABS (its own filters cannot produce a timesheet report, and its
   // query cannot produce delay insights), and Reports renders REPORTS_TABS. Pinning the difference stops
   // a Reports-only tab leaking onto the dashboard, where its dataset does not exist.
-  assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage", "delay-insights"]);
-  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 2);
+  assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage", "delay-insights", "hindrances"]);
+  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 3);
   assert.equal(COVERAGE_TAB.label, "Timesheet coverage");
   assert.ok((TAB_TONES as readonly string[]).includes(COVERAGE_TAB.tone));
   assert.equal(DELAY_INSIGHTS_TAB.label, "Delay insights");
   assert.ok((TAB_TONES as readonly string[]).includes(DELAY_INSIGHTS_TAB.tone));
-  for (const reportsOnly of ["timesheet-coverage", "delay-insights"]) {
+  assert.equal(HINDRANCE_TAB.label, "Hindrances");
+  assert.ok((TAB_TONES as readonly string[]).includes(HINDRANCE_TAB.tone));
+  for (const reportsOnly of ["timesheet-coverage", "delay-insights", "hindrances"]) {
     assert.equal(PORTFOLIO_TAB_IDS.includes(reportsOnly as never), false, `${reportsOnly} is not a portfolio section`);
     assert.ok(isReportsTabId(reportsOnly));
   }
@@ -145,9 +148,10 @@ test("the keyboard walk follows the STRIP IT IS GIVEN, so Reports reaches both e
   // one back to the first section.
   assert.equal(tabForKey("exceptions", "ArrowRight", REPORTS_TAB_IDS), "timesheet-coverage");
   assert.equal(tabForKey("timesheet-coverage", "ArrowRight", REPORTS_TAB_IDS), "delay-insights");
-  assert.equal(tabForKey("delay-insights", "ArrowRight", REPORTS_TAB_IDS), "needs-push");
-  assert.equal(tabForKey("needs-push", "ArrowLeft", REPORTS_TAB_IDS), "delay-insights");
-  assert.equal(tabForKey("job-work", "End", REPORTS_TAB_IDS), "delay-insights");
+  assert.equal(tabForKey("delay-insights", "ArrowRight", REPORTS_TAB_IDS), "hindrances");
+  assert.equal(tabForKey("hindrances", "ArrowRight", REPORTS_TAB_IDS), "needs-push");
+  assert.equal(tabForKey("needs-push", "ArrowLeft", REPORTS_TAB_IDS), "hindrances");
+  assert.equal(tabForKey("job-work", "End", REPORTS_TAB_IDS), "hindrances");
   // The dashboard walk must NOT land on either Reports-only tab, which it does not render.
   for (const current of PORTFOLIO_TAB_IDS) {
     const next = tabForKey(current, "ArrowRight", PORTFOLIO_TAB_IDS);

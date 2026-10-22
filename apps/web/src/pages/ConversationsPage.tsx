@@ -7,7 +7,7 @@
  * file, so Nocturne, Harbor and every other theme paint it correctly.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, getToken, ApiError } from "../api/client";
@@ -109,6 +109,8 @@ type ConversationResponse = {
   owner: { userId: number | null; email: string | null; name: string; basis: string };
   thread: Thread | null;
   canPostKinds: string[];
+  recoveries: Recovery[];
+  commitment: Commitment | null;
   emailEnabled: boolean;
   /** True only when the server is configured to send reminders on its own. Off is the default. */
   remindersEnabled: boolean;
@@ -116,6 +118,47 @@ type ConversationResponse = {
 };
 
 type ReasonOption = { code: string; label: string };
+
+type Recovery = {
+  id: number;
+  messageId: number;
+  state: "PROPOSED" | "ACCEPTED" | "REJECTED" | "SUPERSEDED";
+  revisedFinishDate: string;
+  manpowerPlanJson: string | null;
+  note: string | null;
+  proposedByName: string;
+  proposedByUserId: number | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  slipDays: number | null;
+  planMoved: boolean;
+};
+
+type Commitment = {
+  plannedEndDate: string | null;
+  committedFinishDate: string | null;
+  committedRecoveryId: number | null;
+};
+
+type Hindrance = {
+  id: number;
+  projectWbsId: number;
+  wbsCode: string | null;
+  category: string;
+  description: string;
+  ownerEmail: string | null;
+  raisedAt: string;
+  raisedByEmail: string;
+  raisedByUserId: number | null;
+  targetDate: string | null;
+  impactDays: number | null;
+  state: "OPEN" | "CLOSED";
+  closedAt: string | null;
+  closedByName: string | null;
+  closureNote: string | null;
+  age: { days: number; stale: boolean };
+};
 type ThreadInsights = {
   total: number;
   uncoded: number;
@@ -552,6 +595,10 @@ function ThreadDrawer(props: {
   const [openMessages, setOpenMessages] = useState<number[]>([]);
   // The causes recorded on this Job Order. Small and deterministic: the server counts, this renders.
   const [insights, setInsights] = useState<ThreadInsights | null>(null);
+  const [hindrances, setHindrances] = useState<Hindrance[]>([]);
+  const [dialog, setDialog] = useState<"recovery" | "hindrance" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -593,8 +640,14 @@ function ThreadDrawer(props: {
     let cancelled = false;
     void (async () => {
       try {
-        const result = await api<ThreadInsights>(`/job-orders/${jobOrderId}/conversation/insights`);
-        if (!cancelled) setInsights(result);
+        const [causes, bars] = await Promise.all([
+          api<ThreadInsights>(`/job-orders/${jobOrderId}/conversation/insights`),
+          api<{ hindrances: Hindrance[] }>(`/job-orders/${jobOrderId}/hindrances`).catch(() => ({ hindrances: [] })),
+        ]);
+        if (!cancelled) {
+          setInsights(causes);
+          setHindrances(bars.hindrances);
+        }
       } catch {
         if (!cancelled) setInsights(null);
       }
@@ -627,6 +680,11 @@ function ThreadDrawer(props: {
 
   const messages = data.thread?.messages ?? [];
   const newestFirst = messages.slice().reverse();
+  // Who may close a hindrance or decide a recovery. Ownership of an individual row narrows this further
+  // (a PM cannot accept his own offer), which the card and the strip each check.
+  // PM is the older name for the authority PROJECT_MANAGER carries; both decide, ADMIN corrects.
+  const managerRole = data.me.role === "PM" || data.me.role === "PROJECT_MANAGER" || data.me.role === "ADMIN";
+  const canDecide = managerRole;
 
   // Arriving from a Portfolio row: an escalation is already written, or — if one is still unanswered —
   // the drawer opens in reply mode on that one instead of raising a second.
@@ -771,6 +829,31 @@ function ThreadDrawer(props: {
             </div>
           )}
 
+          {dialog === "recovery" && (
+            <RecoveryDialog
+              jobOrderId={data.jobOrder.id}
+              plannedEndDate={data.commitment?.plannedEndDate ?? null}
+              onClose={() => setDialog(null)}
+              onDone={async () => {
+                setDialog(null);
+                await load();
+                onChanged();
+              }}
+            />
+          )}
+
+          {dialog === "hindrance" && (
+            <HindranceDialog
+              jobOrderId={data.jobOrder.id}
+              onClose={() => setDialog(null)}
+              onDone={async () => {
+                setDialog(null);
+                await load();
+                onChanged();
+              }}
+            />
+          )}
+
           {assist === "brief" && (
             <AssistDialog
               title="Bottleneck brief"
@@ -833,13 +916,68 @@ function ThreadDrawer(props: {
                 </ul>
               </div>
             )}
+            {(hindrances.length > 0 || data.thread) && (
+              <div className="conv-hind">
+                <div className="conv-hind__head">
+                  <span>Hindrances on this WBS</span>
+                  <button type="button" className="conv-chip conv-chip--action" onClick={() => setDialog("hindrance")}>
+                    + Raise
+                  </button>
+                </div>
+                {hindrances.length === 0 ? (
+                  <p className="conv-hind__empty muted">Nothing raised. A constraint recorded here is what Central Planning reads.</p>
+                ) : (
+                  <ul>
+                    {hindrances.slice(0, 6).map((row) => (
+                      <li key={row.id} className={row.state === "CLOSED" ? "conv-hind__row--closed" : ""}>
+                        <span className={`conv-sla ${row.state === "CLOSED" ? "conv-sla--answered" : row.age.stale ? "conv-sla--overdue" : "conv-sla--due_soon"}`}>
+                          {row.state === "CLOSED" ? "closed" : row.age.stale ? `${row.age.days}d stale` : `${row.age.days}d`}
+                        </span>
+                        <span className={`conv-chip conv-chip--reason${row.category === "OTHER" ? "" : ""}`}>{row.category.toLowerCase()}</span>
+                        <span className="conv-hind__text">
+                          {row.description}
+                          <em className="muted">
+                            {row.wbsCode ? ` · WBS ${row.wbsCode}` : ""}
+                            {row.ownerEmail ? ` · owner ${row.ownerEmail}` : ""}
+                            {row.impactDays ? ` · impact ${row.impactDays} d` : ""}
+                            {row.state === "CLOSED" && row.closedByName ? ` · closed by ${row.closedByName}` : ""}
+                          </em>
+                        </span>
+                        {row.state === "OPEN" && (data.me.id === row.raisedByUserId || canDecide) && (
+                          <button
+                            type="button"
+                            className="conv-btn conv-btn--ghost conv-btn--tiny"
+                            onClick={async () => {
+                              await api(`/hindrances/${row.id}/close`, {
+                                method: "POST",
+                                body: JSON.stringify({ closureNote: "Closed from the Job Order conversation." }),
+                              });
+                              await load();
+                              onChanged();
+                            }}
+                          >
+                            Close
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             {newestFirst.length === 0 && (
               <p className="conv-empty">
                 No messages yet{data.owner.userId ? ` — the first one is addressed to ${data.owner.name}` : ""}. The trail
                 is the Job Order&rsquo;s record, not a chat that disappears.
               </p>
             )}
-            {newestFirst.map((message) => (
+            {newestFirst.map((message) => {
+              const recovery = data.recoveries.find((row) => row.messageId === message.id) ?? null;
+              const canDecide =
+                data.me.role === "ADMIN" ||
+                ((data.me.role === "PM" || data.me.role === "PROJECT_MANAGER") && recovery?.proposedByUserId !== data.me.id);
+              return (
+              <Fragment key={message.id}>
               <MessageCard
                 key={message.id}
                 message={message}
@@ -859,7 +997,26 @@ function ThreadDrawer(props: {
                   onChanged();
                 }}
               />
-            ))}
+              {recovery && (
+                <RecoveryCard
+                  recovery={recovery}
+                  commitment={data.commitment}
+                  canDecide={canDecide}
+                  meId={data.me.id}
+                  busy={busy}
+                  onDecide={async (decision, note) => {
+                    await api(`/conversations/recoveries/${recovery.id}/decide`, {
+                      method: "POST",
+                      body: JSON.stringify({ decision, note: note || undefined }),
+                    });
+                    await load();
+                    onChanged();
+                  }}
+                />
+              )}
+              </Fragment>
+              );
+            })}
           </div>
 
           <Composer
@@ -873,6 +1030,7 @@ function ThreadDrawer(props: {
               onChanged();
               onConsumeIntent();
             }}
+            onProposeRecovery={() => setDialog("recovery")}
           />
         </>
       )}
@@ -1035,11 +1193,317 @@ function MessageCard(props: {
  * scrollbars. A dialog gives the text the width and height to be read, closes on × or Escape, and
  * leaves the trail untouched underneath.
  */
+/**
+ * Propose a recovery: a revised finish date, the manpower that makes it credible, and why.
+ *
+ * The manpower plan is deliberately a short list, not a grid: eight lines is what a section head will
+ * actually fill in, and a plan nobody fills in is worse than none.
+ */
+function RecoveryDialog(props: { jobOrderId: number; plannedEndDate: string | null; onClose: () => void; onDone: () => Promise<void> }) {
+  const [date, setDate] = useState("");
+  const [note, setNote] = useState("");
+  const [lines, setLines] = useState([{ trade: "", headcount: 1, hoursPerDay: 8 }]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const slip = date && props.plannedEndDate
+    ? Math.round((new Date(`${date}T00:00:00Z`).getTime() - new Date(props.plannedEndDate).getTime()) / 86_400_000)
+    : null;
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/job-orders/${props.jobOrderId}/conversation/recovery`, {
+        method: "POST",
+        body: JSON.stringify({
+          revisedFinishDate: date,
+          note: note || undefined,
+          manpowerPlan: lines.filter((line) => line.trade.trim()),
+        }),
+      });
+      await props.onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not propose the recovery.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AssistDialog title="Propose a recovery" aside="the owner offers; a Project Manager decides" onClose={props.onClose}>
+      <div className="conv-form">
+        <label>
+          <span>Revised finish date</span>
+          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+          {slip != null && (
+            <em className={slip > 0 ? "conv-form__slip" : ""}>
+              {slip === 0 ? "same day as the plan" : `${slip > 0 ? "+" : ""}${slip} days against the plan`}
+            </em>
+          )}
+        </label>
+
+        <div className="conv-form__plan">
+          <span className="conv-form__label">Manpower plan</span>
+          {lines.map((line, index) => (
+            <div className="conv-form__line" key={index}>
+              <input
+                placeholder="Trade (fitters, riggers…)"
+                value={line.trade}
+                onChange={(event) => setLines((current) => current.map((row, i) => (i === index ? { ...row, trade: event.target.value } : row)))}
+              />
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={line.headcount}
+                aria-label="Headcount"
+                onChange={(event) => setLines((current) => current.map((row, i) => (i === index ? { ...row, headcount: Number(event.target.value) } : row)))}
+              />
+              <input
+                type="number"
+                min={1}
+                max={24}
+                step={0.5}
+                value={line.hoursPerDay}
+                aria-label="Hours per day"
+                onChange={(event) => setLines((current) => current.map((row, i) => (i === index ? { ...row, hoursPerDay: Number(event.target.value) } : row)))}
+              />
+              {lines.length > 1 && (
+                <button type="button" className="conv-icon conv-icon--tiny" onClick={() => setLines((current) => current.filter((_, i) => i !== index))} aria-label="Remove line">
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+          {lines.length < 8 && (
+            <button type="button" className="conv-chip conv-chip--action" onClick={() => setLines((current) => [...current, { trade: "", headcount: 1, hoursPerDay: 8 }])}>
+              + Add trade
+            </button>
+          )}
+        </div>
+
+        <label>
+          <span>Why this date</span>
+          <textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Material lands 24 Oct; two shifts until 5 Dec." />
+        </label>
+
+        {error && <div className="conv-notice">{error}</div>}
+        <div className="conv-form__foot">
+          <button type="button" className="conv-btn conv-btn--ghost" onClick={props.onClose}>Cancel</button>
+          <button type="button" className="conv-btn conv-btn--primary" disabled={busy || !date} onClick={() => void submit()}>
+            {busy ? "Proposing…" : "Send proposal"}
+          </button>
+        </div>
+      </div>
+    </AssistDialog>
+  );
+}
+
+/** Raise a hindrance against this Job Order's WBS. */
+function HindranceDialog(props: { jobOrderId: number; onClose: () => void; onDone: () => Promise<void> }) {
+  const [category, setCategory] = useState("MATERIAL");
+  const [description, setDescription] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
+  const [impactDays, setImpactDays] = useState<number | "">("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/job-orders/${props.jobOrderId}/hindrances`, {
+        method: "POST",
+        body: JSON.stringify({
+          category,
+          description,
+          ownerEmail: ownerEmail || undefined,
+          impactDays: impactDays === "" ? undefined : Number(impactDays),
+        }),
+      });
+      await props.onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not raise the hindrance.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AssistDialog title="Raise a hindrance" aside="what is holding this work up, and who owns it" onClose={props.onClose}>
+      <div className="conv-form">
+        <div className="conv-reasons">
+          <span className="conv-reasons__label">Cause</span>
+          <div className="conv-reasons__chips">
+            {["MATERIAL", "MANPOWER", "DRAWING", "PERMIT", "EQUIPMENT", "WEATHER", "CLIENT_HOLD", "REWORK", "OTHER"].map((code) => (
+              <button
+                key={code}
+                type="button"
+                className={`conv-chip conv-chip--reason${category === code ? " conv-chip--on" : ""}`}
+                aria-pressed={category === code}
+                onClick={() => setCategory(code)}
+              >
+                {REASON_LABELS[code] ?? code.toLowerCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label>
+          <span>What is holding it up</span>
+          <textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Vendor spools three weeks late; promise was 14 Oct." />
+        </label>
+        <div className="conv-form__row">
+          <label>
+            <span>Owner (optional)</span>
+            <input value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} placeholder="who must clear it" />
+          </label>
+          <label>
+            <span>Impact (days)</span>
+            <input type="number" min={0} max={365} value={impactDays} onChange={(event) => setImpactDays(event.target.value === "" ? "" : Number(event.target.value))} />
+          </label>
+        </div>
+        {error && <div className="conv-notice">{error}</div>}
+        <div className="conv-form__foot">
+          <button type="button" className="conv-btn conv-btn--ghost" onClick={props.onClose}>Cancel</button>
+          <button type="button" className="conv-btn conv-btn--primary" disabled={busy || !description.trim()} onClick={() => void submit()}>
+            {busy ? "Raising…" : "Raise hindrance"}
+          </button>
+        </div>
+      </div>
+    </AssistDialog>
+  );
+}
+
+/**
+ * The recovery offer, as a card under the message that made it.
+ *
+ * PROPOSED shows the dates and the manpower and asks a PM to decide. ACCEPTED shows the commitment next to
+ * the plan it was measured against, and warns when a later upload has moved the plan — the promise is not
+ * wrong, the plan simply is no longer the one it replaced.
+ */
+function RecoveryCard(props: {
+  recovery: Recovery;
+  commitment: Commitment | null;
+  canDecide: boolean;
+  meId: number;
+  busy: boolean;
+  onDecide: (decision: "ACCEPT" | "REJECT", note: string) => Promise<void>;
+}) {
+  const { recovery } = props;
+  const [note, setNote] = useState("");
+  const [deciding, setDeciding] = useState(false);
+  const plan: Array<{ trade: string; headcount: number; hoursPerDay: number; fromDate: string | null; toDate: string | null }> =
+    recovery.manpowerPlanJson ? JSON.parse(recovery.manpowerPlanJson) : [];
+  const iso = (value: string | null) => (value ? value.slice(0, 10) : "—");
+  const slip = recovery.slipDays;
+
+  const tone =
+    recovery.state === "ACCEPTED" ? "conv-recovery--ok" : recovery.state === "REJECTED" ? "conv-recovery--no" : recovery.state === "SUPERSEDED" ? "conv-recovery--gone" : "";
+
+  return (
+    <div className={`conv-recovery ${tone}`}>
+      <div className="conv-recovery__head">
+        <span>
+          Recovery {recovery.state.toLowerCase()} · #{recovery.messageId} · {recovery.proposedByName}
+        </span>
+        {recovery.state === "PROPOSED" && <span className="conv-sla conv-sla--due_soon">awaiting a decision</span>}
+        {recovery.state === "ACCEPTED" && <span className="conv-sla conv-sla--answered">accepted</span>}
+      </div>
+
+      <div className="conv-recovery__grid">
+        <span className="k">Revised finish</span>
+        <span>
+          <strong>{iso(recovery.revisedFinishDate)}</strong>
+          {slip != null && <span className="muted"> {slip >= 0 ? "+" : ""}{slip} days against the plan</span>}
+        </span>
+        {recovery.state === "ACCEPTED" && (
+          <>
+            <span className="k">Committed</span>
+            <span><strong>{iso(props.commitment?.committedFinishDate ?? recovery.revisedFinishDate)}</strong></span>
+            <span className="k">Planned (CLMS)</span>
+            <span>{iso(props.commitment?.plannedEndDate ?? null)} <span className="muted">— owned by the plan upload</span></span>
+          </>
+        )}
+        <span className="k">Manpower</span>
+        <span>
+          {plan.length === 0 ? <span className="muted">none stated</span> : plan.map((line) => `${line.trade} ${line.headcount} × ${line.hoursPerDay}h`).join(" · ")}
+        </span>
+        {recovery.note && (
+          <>
+            <span className="k">Note</span>
+            <span>{recovery.note}</span>
+          </>
+        )}
+        {recovery.state === "REJECTED" && (
+          <>
+            <span className="k">Rejected by</span>
+            <span>{recovery.decidedByName ?? "—"} {recovery.decisionNote ? `— ${recovery.decisionNote}` : ""}</span>
+          </>
+        )}
+      </div>
+
+      {recovery.planMoved && recovery.state === "ACCEPTED" && (
+        <div className="conv-recovery__warn">
+          ⚠ The planned date changed after this was accepted. The commitment of {iso(recovery.revisedFinishDate)} still stands.
+        </div>
+      )}
+
+      {recovery.state === "PROPOSED" && props.canDecide && (
+        <div className="conv-recovery__decide">
+          <input
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Reason (optional, recorded with the decision)"
+            aria-label="Decision note"
+          />
+          <button
+            type="button"
+            className="conv-btn conv-btn--ghost"
+            disabled={deciding || props.busy}
+            onClick={async () => {
+              setDeciding(true);
+              try {
+                await props.onDecide("REJECT", note);
+              } finally {
+                setDeciding(false);
+              }
+            }}
+          >
+            Reject
+          </button>
+          <button
+            type="button"
+            className="conv-btn conv-btn--primary"
+            disabled={deciding || props.busy}
+            onClick={async () => {
+              setDeciding(true);
+              try {
+                await props.onDecide("ACCEPT", note);
+              } finally {
+                setDeciding(false);
+              }
+            }}
+          >
+            {deciding ? "Saving…" : "Accept revision"}
+          </button>
+        </div>
+      )}
+
+      {recovery.state === "PROPOSED" && !props.canDecide && (
+        <div className="conv-recovery__foot muted">
+          A Project Manager decides this. {props.meId === recovery.proposedByUserId ? "You proposed it, so somebody else must accept it." : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssistDialog(props: {
   title: string;
   aside: string;
   onClose: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1083,8 +1547,10 @@ function Composer(props: {
   /** Recorded on the message: which Portfolio tab it was raised from. */
   origin?: string | null;
   onSent: () => Promise<void>;
+  /** Opens the recovery dialog; only offered to the owner and PMs. */
+  onProposeRecovery?: () => void;
 }) {
-  const { data, onSent, initialKind, initialBody, origin } = props;
+  const { data, onSent, initialKind, initialBody, origin, onProposeRecovery } = props;
   const startingKind =
     initialKind && data.canPostKinds.includes(initialKind)
       ? initialKind
@@ -1305,6 +1771,15 @@ function Composer(props: {
           <button type="button" className="conv-btn conv-btn--ghost" onClick={() => void draft()} disabled={drafting}>
             {drafting ? "Drafting…" : "Draft with assistant"}
           </button>
+          {onProposeRecovery &&
+            (data.owner.userId === data.me.id ||
+              data.me.role === "PM" ||
+              data.me.role === "PROJECT_MANAGER" ||
+              data.me.role === "ADMIN") && (
+              <button type="button" className="conv-btn conv-btn--ghost" onClick={onProposeRecovery}>
+                Propose recovery
+              </button>
+            )}
           {data.owner.email && (
             <label className="conv-check">
               <input type="checkbox" checked={emailOwner} onChange={(event) => setEmailOwner(event.target.checked)} />

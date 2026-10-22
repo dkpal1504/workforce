@@ -42,6 +42,16 @@ import { remindersEnabled } from "../services/conversationReminders";
 import { elapsedHours, responseStats, slaChip, ageingBucket } from "../services/sla";
 import { runSlaLadder } from "../services/slaLadder";
 import {
+  canCloseHindrance,
+  canDecideRecovery,
+  canProposeRecovery,
+  hindranceAge,
+  isOpenForDecision,
+  planHasMoved,
+  slipDays,
+  validateManpowerPlan,
+} from "../services/recovery";
+import {
   DELAY_REASONS,
   canChooseReason,
   insightSentence,
@@ -265,9 +275,32 @@ conversationsRouter.get("/job-orders/:id/conversation", ...guarded, async (req, 
       }
     : null;
 
+  // The recovery negotiation and the date the application owns. `plannedEndDate` is CLMS's; the two are
+  // shown side by side and a disagreement is a warning, never a silent overwrite.
+  const [recoveries, commitment] = await Promise.all([
+    prisma.jobOrderRecovery.findMany({ where: { jobOrderId }, orderBy: { createdAt: "desc" }, take: 20 }),
+    prisma.jobOrder.findUnique({
+      where: { id: jobOrderId },
+      select: { plannedEndDate: true, committedFinishDate: true, committedSetAt: true, committedRecoveryId: true },
+    }),
+  ]);
+
   res.json({
     jobOrder: access.jobOrder,
     owner,
+    recoveries: recoveries.map((row) => ({
+      ...row,
+      slipDays: slipDays(commitment?.plannedEndDate ?? null, row.revisedFinishDate),
+      planMoved: planHasMoved({ plannedEndDate: commitment?.plannedEndDate ?? null, appliedFrom: row.appliedFrom }),
+    })),
+    commitment: commitment
+      ? {
+          plannedEndDate: commitment.plannedEndDate,
+          committedFinishDate: commitment.committedFinishDate,
+          committedSetAt: commitment.committedSetAt,
+          committedRecoveryId: commitment.committedRecoveryId,
+        }
+      : null,
     thread: messagesWithSla,
     canPostKinds: kinds,
     emailEnabled: conversationEmailEnabled(),
@@ -375,6 +408,345 @@ conversationsRouter.get("/conversations/insights/delays", ...guarded, async (req
     summary,
     sentence: insightSentence(summary, period),
   });
+});
+
+/**
+ * POST /api/job-orders/:id/conversation/recovery — the owner offers a revised finish date and a manpower
+ * plan; the message goes into the thread and the offer becomes a row that a PM can act on.
+ */
+conversationsRouter.post("/job-orders/:id/conversation/recovery", ...guarded, async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const owner = await resolveOwner(jobOrderId);
+  if (!canProposeRecovery({ role: req.user!.role, isOwner: owner.userId === req.user!.id })) {
+    return res.status(403).json({
+      error: "Only the Job Order owner or a Project Manager may propose a recovery.",
+      code: "RECOVERY_NOT_ALLOWED",
+    });
+  }
+
+  const rawDate = typeof req.body?.revisedFinishDate === "string" ? req.body.revisedFinishDate.slice(0, 10) : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    return res.status(400).json({ error: "Give the revised finish date as YYYY-MM-DD.", code: "BAD_DATE" });
+  }
+  const revisedFinishDate = new Date(`${rawDate}T00:00:00Z`);
+  if (Number.isNaN(revisedFinishDate.getTime())) {
+    return res.status(400).json({ error: "That is not a date.", code: "BAD_DATE" });
+  }
+
+  const plan = validateManpowerPlan(req.body?.manpowerPlan);
+  if (!plan.ok) return res.status(400).json({ error: plan.error, code: "BAD_MANPOWER" });
+
+  const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 2000) : "";
+  const wbsId = Number.isInteger(Number(req.body?.projectWbsId)) ? Number(req.body.projectWbsId) : null;
+
+  const order = await prisma.jobOrder.findUnique({ where: { id: jobOrderId }, select: { plannedEndDate: true } });
+  const slip = slipDays(order?.plannedEndDate ?? null, revisedFinishDate);
+  const planText = plan.plan.length
+    ? plan.plan.map((line) => `${line.trade} ${line.headcount} × ${line.hoursPerDay}h`).join(", ")
+    : "no manpower stated";
+  const body =
+    `Recovery proposed: finish ${rawDate}` +
+    (slip == null ? "" : ` (${slip >= 0 ? "+" : ""}${slip} days against the plan)`) +
+    `. Manpower: ${planText}.` +
+    (note ? ` ${note}` : "");
+
+  const posted = await postMessage({
+    jobOrderId,
+    author: authorOf(req),
+    kind: "RECOVERY",
+    body,
+    emailOwner: true,
+    now: new Date(),
+  });
+
+  // One open offer per Job Order: a new proposal supersedes the old one, and the old row stays as
+  // SUPERSEDED so the negotiation reads as a sequence rather than a single surviving claim.
+  const recovery = await prisma.$transaction(async (tx) => {
+    await tx.jobOrderRecovery.updateMany({
+      where: { jobOrderId, state: "PROPOSED" },
+      data: { state: "SUPERSEDED" },
+    });
+    return tx.jobOrderRecovery.create({
+      data: {
+        threadId: posted.threadId,
+        messageId: posted.id,
+        jobOrderId,
+        projectWbsId: wbsId,
+        proposedByUserId: req.user!.id,
+        proposedByName: req.user!.name,
+        proposedByEmail: req.user!.email,
+        revisedFinishDate,
+        manpowerPlanJson: JSON.stringify(plan.plan),
+        note: note || null,
+      },
+    });
+  });
+
+  void deliverMessage(posted.id).catch(() => undefined);
+  res.status(201).json({ recovery, seq: posted.seq, messageId: posted.id });
+});
+
+/**
+ * POST /api/conversations/recoveries/:id/decide — a PM accepts or rejects the offer.
+ *
+ * ACCEPT writes `committed_finish_date` (the column the application owns) and leaves `planned_end_date`
+ * alone, because the Job Order upload rewrites that from the file and would silently undo the promise.
+ */
+conversationsRouter.post("/conversations/recoveries/:id/decide", ...guarded, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid recovery." });
+  const decision = String(req.body?.decision ?? "").toUpperCase();
+  if (decision !== "ACCEPT" && decision !== "REJECT") {
+    return res.status(400).json({ error: "Decision must be ACCEPT or REJECT.", code: "BAD_DECISION" });
+  }
+
+  const recovery = await prisma.jobOrderRecovery.findUnique({ where: { id } });
+  if (!recovery) return res.status(404).json({ error: "No such recovery." });
+  const access = await canAccessJobOrder(actorOf(req), recovery.jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  if (!canDecideRecovery({ role: req.user!.role, proposerUserId: recovery.proposedByUserId, actorUserId: req.user!.id })) {
+    return res.status(403).json({
+      error: "Only a different Project Manager, or an administrator, may decide this recovery.",
+      code: "DECISION_NOT_ALLOWED",
+    });
+  }
+  if (!isOpenForDecision(recovery.state)) {
+    return res.status(409).json({ error: `This recovery is already ${recovery.state.toLowerCase()}.`, code: "NOT_OPEN" });
+  }
+
+  const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 2000) : "";
+  const order = await prisma.jobOrder.findUnique({ where: { id: recovery.jobOrderId }, select: { plannedEndDate: true } });
+
+  const result = await prisma.$transaction(async (tx) => {
+    if (decision === "ACCEPT") {
+      await tx.jobOrder.update({
+        where: { id: recovery.jobOrderId },
+        data: {
+          committedFinishDate: recovery.revisedFinishDate,
+          committedSetAt: new Date(),
+          committedRecoveryId: recovery.id,
+        },
+      });
+    }
+    return tx.jobOrderRecovery.update({
+      where: { id },
+      data: {
+        state: decision === "ACCEPT" ? "ACCEPTED" : "REJECTED",
+        decidedByUserId: req.user!.id,
+        decidedByName: req.user!.name,
+        decidedAt: new Date(),
+        decisionNote: note || null,
+        ...(decision === "ACCEPT"
+          ? { appliedFrom: order?.plannedEndDate ?? null, appliedTo: recovery.revisedFinishDate }
+          : {}),
+      },
+    });
+  });
+
+  const iso = recovery.revisedFinishDate.toISOString().slice(0, 10);
+  await postSystemMessage(
+    recovery.jobOrderId,
+    decision === "ACCEPT"
+      ? `Recovery #${recovery.messageId} accepted by ${req.user!.name} (${req.user!.role}): committed finish ${iso}` +
+          (order?.plannedEndDate ? `; the plan of ${order.plannedEndDate.toISOString().slice(0, 10)} is unchanged.` : ".") +
+          (note ? ` Note: ${note}` : "")
+      : `Recovery #${recovery.messageId} rejected by ${req.user!.name} (${req.user!.role}).` + (note ? ` Reason: ${note}` : ""),
+    { id: null, email: "system@workforce", name: "Workforce", role: "SYSTEM", source: "SYSTEM" }
+  );
+
+  res.json({ recovery: result });
+});
+
+/**
+ * GET /api/job-orders/:id/hindrances — the constraints on this Job Order's WBS.
+ */
+conversationsRouter.get("/job-orders/:id/hindrances", ...guarded, async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const rows = await prisma.wbsHindrance.findMany({
+    where: { jobOrderId },
+    orderBy: [{ state: "asc" }, { raisedAt: "desc" }],
+    take: 100,
+  });
+  const now = new Date();
+  const wbsIds = [...new Set(rows.map((row) => row.projectWbsId))];
+  const wbs = wbsIds.length
+    ? await prisma.projectWbs.findMany({ where: { id: { in: wbsIds } }, select: { id: true, wbsCode: true } })
+    : [];
+  const wbsCode = new Map(wbs.map((row) => [row.id, row.wbsCode]));
+
+  res.json({
+    hindrances: rows.map((row) => ({
+      ...row,
+      wbsCode: wbsCode.get(row.projectWbsId) ?? null,
+      age: hindranceAge(row.raisedAt, row.closedAt, now),
+    })),
+  });
+});
+
+/**
+ * POST /api/job-orders/:id/hindrances — raise a constraint.
+ *
+ * It may be raised FROM the thread (messageId) or from the structure; the Job Order is what links it to a
+ * scope, so a hindrance is never orphaned from the work it explains.
+ */
+conversationsRouter.post("/job-orders/:id/hindrances", ...guarded, async (req, res) => {
+  const jobOrderId = Number(req.params.id);
+  if (!Number.isInteger(jobOrderId)) return res.status(400).json({ error: "Invalid Job Order." });
+  const access = await canAccessJobOrder(actorOf(req), jobOrderId);
+  if (!access.ok) return deny(res, access.code);
+
+  const description = typeof req.body?.description === "string" ? req.body.description.trim().slice(0, 2000) : "";
+  if (!description) return res.status(400).json({ error: "Say what is holding the work up.", code: "EMPTY" });
+
+  const rawCategory = String(req.body?.category ?? "OTHER").toUpperCase();
+  const category = isDelayReason(rawCategory) ? rawCategory : "OTHER";
+
+  const order = await prisma.jobOrder.findUnique({
+    where: { id: jobOrderId },
+    select: { projectWbsId: true, departmentId: true },
+  });
+  const wbsId = Number.isInteger(Number(req.body?.projectWbsId)) ? Number(req.body.projectWbsId) : order?.projectWbsId;
+  if (!wbsId) return res.status(400).json({ error: "This Job Order has no WBS node to raise a hindrance against.", code: "NO_WBS" });
+
+  const impactDays = Number.isFinite(Number(req.body?.impactDays)) ? Math.max(0, Math.round(Number(req.body.impactDays))) : null;
+  const target = typeof req.body?.targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.targetDate.slice(0, 10))
+    ? new Date(`${req.body.targetDate.slice(0, 10)}T00:00:00Z`)
+    : null;
+  const ownerEmail = typeof req.body?.ownerEmail === "string" && req.body.ownerEmail.trim() ? req.body.ownerEmail.trim() : null;
+
+  const created = await prisma.wbsHindrance.create({
+    data: {
+      projectWbsId: wbsId,
+      jobOrderId,
+      category,
+      description,
+      raisedByUserId: req.user!.id,
+      raisedByEmail: req.user!.email,
+      ownerEmail,
+      targetDate: target,
+      impactDays,
+    },
+  });
+
+  await postSystemMessage(
+    jobOrderId,
+    `Hindrance raised (${category.toLowerCase()}): ${description}` +
+      (ownerEmail ? ` Owner: ${ownerEmail}.` : "") +
+      (impactDays ? ` Stated impact: ${impactDays} days.` : ""),
+    { id: null, email: "system@workforce", name: "Workforce", role: "SYSTEM", source: "SYSTEM" }
+  );
+
+  res.status(201).json({ hindrance: created });
+});
+
+/**
+ * GET /api/conversations/hindrances — the register Reports shows.
+ *
+ * Same scope vocabulary as every other conversation read: a PM reads his portfolio, an HOD his
+ * department and section set, ADMIN/COO everything. Only hindrances raised against a Job Order are listed;
+ * one raised straight at a WBS with no Job Order has no scope to be judged by, so it is not offered rather
+ * than shown to everybody.
+ */
+conversationsRouter.get("/conversations/hindrances", ...guarded, async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  const state = ["OPEN", "CLOSED"].includes(String(req.query.state)) ? String(req.query.state) : "OPEN";
+
+  const rows = await prisma.wbsHindrance.findMany({
+    where: { jobOrderId: { not: null }, state },
+    orderBy: [{ raisedAt: "asc" }],
+    take: 500,
+  });
+
+  // The scope filter is applied in one place, over the rows' own Job Order, because Prisma cannot express
+  // "the Job Order of this hindrance" without a relation and the row set is one register, not a stream.
+  const jobOrderIds = [...new Set(rows.map((row) => row.jobOrderId).filter((id): id is number => id != null))];
+  const orders = jobOrderIds.length
+    ? await prisma.jobOrder.findMany({ where: { id: { in: jobOrderIds } }, select: { id: true, code: true, name: true, departmentId: true, sectionId: true, projectId: true } })
+    : [];
+  const orderById = new Map(orders.map((order) => [order.id, order]));
+
+  const inScope = (departmentId: number | null, sectionId: number | null, projectId: number | null): boolean => {
+    switch (scope.kind) {
+      case "ORGANISATION":
+        return true;
+      case "PROJECTS":
+        return projectId != null && scope.projectIds.includes(projectId);
+      case "DEPARTMENT":
+        if (departmentId !== scope.departmentId) return false;
+        if (scope.sectionIds.length === 0) return true;
+        return sectionId == null || scope.sectionIds.includes(sectionId);
+      default:
+        return false;
+    }
+  };
+
+  const wbsIds = [...new Set(rows.map((row) => row.projectWbsId))];
+  const wbs = wbsIds.length
+    ? await prisma.projectWbs.findMany({ where: { id: { in: wbsIds } }, select: { id: true, wbsCode: true } })
+    : [];
+  const wbsCode = new Map(wbs.map((row) => [row.id, row.wbsCode]));
+  const now = new Date();
+
+  const visible = rows
+    .map((row) => {
+      const order = row.jobOrderId ? orderById.get(row.jobOrderId) : undefined;
+      return { row, order };
+    })
+    .filter(({ order }) => inScope(order?.departmentId ?? null, order?.sectionId ?? null, order?.projectId ?? null))
+    .map(({ row, order }) => ({
+      ...row,
+      wbsCode: wbsCode.get(row.projectWbsId) ?? null,
+      jobOrderCode: order?.code ?? null,
+      jobOrderName: order?.name ?? null,
+      age: hindranceAge(row.raisedAt, row.closedAt, now),
+    }));
+
+  res.json({ state, total: visible.length, hindrances: visible });
+});
+
+/** POST /api/hindrances/:id/close — the raiser or a PM closes it, with a note. */
+conversationsRouter.post("/hindrances/:id/close", ...guarded, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid hindrance." });
+  const row = await prisma.wbsHindrance.findUnique({ where: { id } });
+  if (!row) return res.status(404).json({ error: "No such hindrance." });
+  if (row.jobOrderId) {
+    const access = await canAccessJobOrder(actorOf(req), row.jobOrderId);
+    if (!access.ok) return deny(res, access.code);
+  }
+
+  if (!canCloseHindrance({ role: req.user!.role, raisedByUserId: row.raisedByUserId, actorUserId: req.user!.id })) {
+    return res.status(403).json({
+      error: "Only the person who raised it, or a Project Manager, may close this hindrance.",
+      code: "CLOSE_NOT_ALLOWED",
+    });
+  }
+  if (row.state === "CLOSED") return res.status(409).json({ error: "Already closed.", code: "ALREADY_CLOSED" });
+
+  const note = typeof req.body?.closureNote === "string" ? req.body.closureNote.trim().slice(0, 1000) : "";
+  const closed = await prisma.wbsHindrance.update({
+    where: { id },
+    data: { state: "CLOSED", closedAt: new Date(), closedByUserId: req.user!.id, closedByName: req.user!.name, closureNote: note || null },
+  });
+
+  if (row.jobOrderId) {
+    await postSystemMessage(
+      row.jobOrderId,
+      `Hindrance closed by ${req.user!.name} (${req.user!.role}): ${row.description.slice(0, 160)}` + (note ? ` — ${note}` : ""),
+      { id: null, email: "system@workforce", name: "Workforce", role: "SYSTEM", source: "SYSTEM" }
+    );
+  }
+
+  res.json({ hindrance: closed });
 });
 
 /**
