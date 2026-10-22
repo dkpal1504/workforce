@@ -2088,3 +2088,18 @@ tr:hover .pf-escalate-btn,
 .di-foot { margin-top: 14px; color: var(--text-muted); font-size: 0.75rem; }
 
 .di-head { display: flex; justify-content: flex-end; padding: 10px 14px 0; }
+
+
+/* ---- the response clock (message chip + Reports) ------------------------------------------------ */
+.conv-sla { font-size: 0.7rem; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.conv-sla--open { color: var(--text-muted); background: var(--bg-subtle); }
+.conv-sla--due_soon { color: var(--accent); background: var(--accent-soft, rgba(196,92,38,.12)); border-color: var(--accent); }
+.conv-sla--overdue { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
+.conv-sla--answered { color: var(--success); background: var(--success-soft); border-color: var(--success); }
+
+.di-split { height: 1px; background: var(--border-light); margin: 18px 0 14px; }
+.di-sla__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.di-sla__sub { text-transform: none; letter-spacing: 0; color: var(--text); }
+.di-sla__bars { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+.di-sla__actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.di-sla__state { font-size: 0.75rem; color: var(--text-muted); }

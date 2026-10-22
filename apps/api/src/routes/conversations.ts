@@ -39,6 +39,8 @@ import { isMessageOrigin } from "../services/conversationOrigins";
 import { summariseEscalations } from "../services/escalationStats";
 import { deliverMessage, conversationEmailEnabled } from "../services/notificationMail";
 import { remindersEnabled } from "../services/conversationReminders";
+import { elapsedHours, responseStats, slaChip, ageingBucket } from "../services/sla";
+import { runSlaLadder } from "../services/slaLadder";
 import {
   DELAY_REASONS,
   canChooseReason,
@@ -230,10 +232,43 @@ conversationsRouter.get("/job-orders/:id/conversation", ...guarded, async (req, 
 
   if (thread) await markRead(thread.id, req.user!.email);
 
+  // The chip is computed here, once, with one 'now': a screen that subtracts its own clock from a deadline
+  // disagrees with the sweep by the length of a tab switch, and the two numbers get reported as a bug.
+  const now = new Date();
+  const messagesWithSla = thread
+    ? {
+        ...thread,
+        messages: thread.messages.map((message) => {
+          const answered = message.answeredBy?.[0]?.createdAt ?? null;
+          const targetHours = message.responseDueAt
+            ? Math.max(1, Math.round((message.responseDueAt.getTime() - message.createdAt.getTime()) / 3_600_000))
+            : 0;
+          const chip = slaChip({
+            postedAt: message.createdAt,
+            dueAt: message.responseDueAt,
+            answeredAt: answered,
+            now,
+            targetHours,
+          });
+          return {
+            ...message,
+            sla: {
+              targetHours,
+              state: chip.state,
+              elapsedHours: elapsedHours(message.createdAt, answered ?? now),
+              remainingHours: Math.round(chip.remainingHours),
+              answeredAt: answered,
+              ladderStep: message.ladderStep ?? null,
+            },
+          };
+        }),
+      }
+    : null;
+
   res.json({
     jobOrder: access.jobOrder,
     owner,
-    thread,
+    thread: messagesWithSla,
     canPostKinds: kinds,
     emailEnabled: conversationEmailEnabled(),
     // Shown as a chip in the drawer: a quiet ladder is then a visible choice, not a mystery.
@@ -340,6 +375,72 @@ conversationsRouter.get("/conversations/insights/delays", ...guarded, async (req
     summary,
     sentence: insightSentence(summary, period),
   });
+});
+
+/**
+ * GET /api/conversations/sla/stats — the response-time panel on Reports.
+ *
+ * Same scope as the conversation list, same period windows as delay insights. Every message that expected
+ * a reply is counted once, and its target travels with it: a 4h escalation and a 24h recovery are not the
+ * same promise and must not be averaged together.
+ */
+conversationsRouter.get("/conversations/sla/stats", ...guarded, async (req, res) => {
+  const scope = await conversationScopeFor(actorOf(req));
+  const period = isInsightPeriod(req.query.period) ? req.query.period : "quarter";
+  const now = new Date();
+  const { from, to } = periodRange(period, now);
+
+  const rows = await prisma.jobOrderMessage.findMany({
+    where: { responseDueAt: { not: null }, createdAt: { gte: from, lte: to }, thread: threadScopeWhere(scope) },
+    select: {
+      createdAt: true,
+      responseDueAt: true,
+      ladderStep: true,
+      answeredBy: { select: { createdAt: true }, take: 1, orderBy: { createdAt: "asc" } },
+    },
+  });
+
+  const stats = responseStats(
+    rows.map((row) => ({
+      postedAt: row.createdAt,
+      dueAt: row.responseDueAt,
+      answeredAt: row.answeredBy[0]?.createdAt ?? null,
+      targetHours: row.responseDueAt
+        ? Math.max(1, Math.round((row.responseDueAt.getTime() - row.createdAt.getTime()) / 3_600_000))
+        : 0,
+    })),
+    now
+  );
+
+  res.json({
+    period,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    remindersEnabled: remindersEnabled(),
+    ...stats,
+    buckets: Object.entries(stats.open).map(([bucket, count]) => ({ bucket, count })),
+  });
+});
+
+/**
+ * POST /api/conversations/sla/sweep — run the ladder once, now.
+ *
+ * Refused while reminders are off: an operator pressing this button must not be able to make the
+ * application mail people behind the switch that the policy says is off. When it is on, the timer and this
+ * button run the same code.
+ */
+conversationsRouter.post("/conversations/sla/sweep", ...guarded, async (req, res) => {
+  if (req.user!.role !== "PM" && req.user!.role !== "ADMIN" && req.user!.role !== "PROJECT_MANAGER") {
+    return res.status(403).json({ error: "Only a Project Manager or an administrator may run the sweep.", code: "SWEEP_NOT_ALLOWED" });
+  }
+  if (!remindersEnabled()) {
+    return res.status(409).json({
+      error: "Reminders are switched off on this server (CONVERSATION_REMINDERS_ENABLED), so the sweep will not send anything.",
+      code: "REMINDERS_OFF",
+    });
+  }
+  const result = await runSlaLadder(new Date());
+  res.json({ ...result, ranAt: new Date().toISOString() });
 });
 
 /** POST /api/job-orders/:id/conversation/messages */

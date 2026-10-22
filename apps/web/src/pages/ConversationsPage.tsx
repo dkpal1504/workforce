@@ -71,6 +71,18 @@ type Message = {
   attachments: Attachment[];
   /** One of the eight delay causes, when the author was the owner or a PM. */
   reasonCode: string | null;
+  /**
+   * The response clock, computed by the server with one "now". Null-free: a message with no clock carries
+   * state NONE, so the screen never has to decide whether silence means "no clock" or "not loaded".
+   */
+  sla: {
+    targetHours: number;
+    state: "NONE" | "ANSWERED" | "OPEN" | "DUE_SOON" | "OVERDUE";
+    elapsedHours: number;
+    remainingHours: number;
+    answeredAt: string | null;
+    ladderStep: string | null;
+  } | null;
 };
 
 type Thread = {
@@ -906,6 +918,24 @@ function MessageCard(props: {
         </span>
         <strong className="conv-msg__who">{message.authorName}</strong>
         <span className="conv-msg__role">{message.authorRole}</span>
+        {message.sla && message.sla.state !== "NONE" && (
+          <span
+            className={`conv-sla conv-sla--${message.sla.state.toLowerCase()}`}
+            title={
+              message.sla.state === "ANSWERED"
+                ? `Answered ${message.sla.elapsedHours}h after it was asked (target ${message.sla.targetHours}h)`
+                : `Target ${message.sla.targetHours}h · ${message.sla.remainingHours < 0 ? `${Math.abs(message.sla.remainingHours)}h late` : `${message.sla.remainingHours}h left`}`
+            }
+          >
+            {message.sla.state === "ANSWERED"
+              ? `answered in ${message.sla.elapsedHours}h`
+              : message.sla.state === "OVERDUE"
+                ? `overdue ${Math.abs(message.sla.remainingHours)}h`
+                : message.sla.state === "DUE_SOON"
+                  ? `due in ${message.sla.remainingHours}h`
+                  : `${message.sla.remainingHours}h left`}
+          </span>
+        )}
         {message.reasonCode && (
           <span className="conv-chip conv-chip--reason conv-chip--reason-inline" title="Recorded delay cause">
             {reasonLabelOf(message.reasonCode)}

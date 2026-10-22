@@ -740,6 +740,16 @@ function ExceptionsSection({ report, resetKey }: SectionProps) {
  * screen: "41% of 68" is a claim, "41%" alone is a rumour.
  * ------------------------------------------------------------------------- */
 
+type SlaStats = {
+  answered: number;
+  expected: number;
+  medianHours: number | null;
+  withinTargetPct: number | null;
+  overdue24: number;
+  remindersEnabled: boolean;
+  buckets: Array<{ bucket: "under4" | "4to8" | "8to24" | "over24"; count: number }>;
+};
+
 type DelayInsights = {
   period: "quarter" | "month" | "year";
   from: string;
@@ -755,8 +765,13 @@ type DelayInsights = {
 function DelayInsightsPanel() {
   const [period, setPeriod] = useState<"quarter" | "month" | "year">("quarter");
   const [data, setData] = useState<DelayInsights | null>(null);
+  const [sla, setSla] = useState<SlaStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sweeping, setSweeping] = useState(false);
+  const [sweepNote, setSweepNote] = useState<string | null>(null);
+  const { user } = useAuth();
+  const canSweep = user?.role === "PM" || user?.role === "ADMIN" || user?.role === "PROJECT_MANAGER";
 
   useEffect(() => {
     let cancelled = false;
@@ -764,8 +779,14 @@ function DelayInsightsPanel() {
     setError(null);
     void (async () => {
       try {
-        const result = await api<DelayInsights>(`/conversations/insights/delays?period=${period}`);
-        if (!cancelled) setData(result);
+        const [causes, clock] = await Promise.all([
+          api<DelayInsights>(`/conversations/insights/delays?period=${period}`),
+          api<SlaStats>(`/conversations/sla/stats?period=${period}`).catch(() => null),
+        ]);
+        if (!cancelled) {
+          setData(causes);
+          setSla(clock);
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "The delay insights could not be loaded.");
       } finally {
@@ -836,6 +857,87 @@ function DelayInsightsPanel() {
             {" · "}
             bar length is relative to the largest cause; the percentage is of the {data.summary.total} recorded
           </p>
+        </>
+      )}
+
+      {/* ---- the other half of the same question: not WHAT holds work up, but HOW LONG we take to answer ── */}
+      {!loading && !error && sla && (
+        <>
+          <div className="di-split" />
+          <div className="di-sla">
+            <div className="di-sla__head">
+              <span>Response time</span>
+              <span className="di-sla__sub">
+                median {sla.medianHours == null ? "—" : `${sla.medianHours}h`}
+                {sla.withinTargetPct == null ? "" : ` · ${sla.withinTargetPct}% answered inside target`}
+              </span>
+            </div>
+
+            {sla.expected === 0 ? (
+              <p className="di-empty">
+                No message in this period expected a reply. Escalations and recovery proposals start the clock.
+              </p>
+            ) : (
+              <>
+                <div className="di-sla__bars">
+                  {sla.buckets.map((bucket) => {
+                    const label =
+                      bucket.bucket === "under4" ? "under 4h" : bucket.bucket === "4to8" ? "4–8h" : bucket.bucket === "8to24" ? "8–24h" : "over 24h";
+                    const worst = Math.max(...sla.buckets.map((entry) => entry.count), 1);
+                    return (
+                      <div className="di-bar" key={bucket.bucket}>
+                        <span className="di-bar__label">{label}</span>
+                        <span className="di-bar__track">
+                          <span className="di-bar__fill" style={{ width: `${Math.round((bucket.count / worst) * 100)}%` }} />
+                        </span>
+                        <span className="di-bar__n">{bucket.count}</span>
+                        <span className="di-bar__share" />
+                        <span className="di-bar__age">unanswered</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="di-foot">
+                  {sla.answered} of {sla.expected} answered · {sla.overdue24} waiting longer than 24h
+                  {" · "}
+                  each message is measured against its own target (an escalation expects a reply sooner than a recovery)
+                </p>
+              </>
+            )}
+
+            <div className="di-sla__actions">
+              <button
+                type="button"
+                className="di-period__btn"
+                disabled={!canSweep || !sla.remindersEnabled || sweeping}
+                title={
+                  !canSweep
+                    ? "Only a Project Manager or an administrator can run the reminders"
+                    : !sla.remindersEnabled
+                      ? "Reminders are switched off in this server's configuration, so the sweep would send nothing"
+                      : "Run the reminder and escalation ladder once, now"
+                }
+                onClick={async () => {
+                  setSweeping(true);
+                  setSweepNote(null);
+                  try {
+                    const result = await api<{ reminded: number; escalated: number }>("/conversations/sla/sweep", { method: "POST" });
+                    setSweepNote(`${result.reminded} reminded · ${result.escalated} escalated`);
+                  } catch (err) {
+                    setSweepNote(err instanceof Error ? err.message : "The sweep did not run.");
+                  } finally {
+                    setSweeping(false);
+                  }
+                }}
+              >
+                {sweeping ? "Running…" : "Run reminders now"}
+              </button>
+              <span className="di-sla__state">
+                {sla.remindersEnabled ? "reminders ON" : "reminders OFF"}
+                {sweepNote ? ` · ${sweepNote}` : ""}
+              </span>
+            </div>
+          </div>
         </>
       )}
     </Panel>

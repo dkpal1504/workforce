@@ -437,3 +437,40 @@ report together.
    WBS, Job Order required).
 
 Everything else is in this document and does not need another round.
+
+
+---
+
+## 14. Delivered
+
+### P1 — reasons became data (`3b7c760`)
+
+`delay_reasons` (eight codes, seeded), `job_order_messages.reason_code`, chips in the composer for the
+owner/PM/ADMIN, a cause chip on the collapsed row, a per-Job-Order strip in the drawer, and
+Reports → Delay insights with a calendar period, a deterministic sentence and relative bars.
+`CONVERSATION_REMINDERS_ENABLED` exists from this point, default OFF, and the drawer shows it.
+
+### P2 — the clock became visible and does something (`this commit`)
+
+`sla_policies` (ESCALATION 4/8/24, RECOVERY 24/48/72, department override), `response_due_at` and
+`answers_message_id` on the message, `ladder_step` on the rung. A reply records WHICH message it answers,
+so "responded in 6h" is one column and the median is one query. The sweep walks the ladder, writes the
+rung as a SYSTEM line, and mails the role it escalates to through the existing delivery path; the manual
+`POST /conversations/sla/sweep` refuses with 409 while reminders are off. Reports gained the Response
+time half: median, share inside target (each message against ITS OWN target), four ageing buckets and
+the 24h count.
+
+**Two bugs the rehearsal caught, both worth remembering:**
+
+1. `where: { ladderStep: { not: "ESCALATE_COO" } }` is SQL `<> 'ESCALATE_COO'`, which is NULL — and so not
+   true — for every message whose rung had never been taken. The first rung was unreachable and the sweep
+   reported `reminded: 0` on a nine-hour-old escalation. Written out as
+   `OR: [{ ladderStep: null }, { ladderStep: { not: "ESCALATE_COO" } }]`.
+2. The rung was recorded on the SYSTEM line only, so the source message still looked untouched and the
+   next sweep took the same rung again — two "reminded" lines one second apart. The guard now lives on the
+   source message; the line keeps its own copy for display.
+
+Measured end to end on the restored copy: a 9-hour-old escalation → `reminded: 1` then `0` on a second
+run, one REMIND_HOD line, recipients `NO_ADDRESS` where the HOD still has an `@employee.local` login; at
+26 hours → `escalated: 1` then `0`, one ESCALATE_COO line, the PM's real address QUEUED. With reminders
+off the endpoint answers 409 and the Reports button is disabled and reads `reminders OFF`.

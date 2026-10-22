@@ -14,62 +14,24 @@
 
 import { prisma } from "../db";
 import { remindersEnabled } from "./conversationReminders";
-import { escalationStep, DEFAULT_ESCALATION_CLOCK, type EscalationStep } from "./escalationClock";
+import { runSlaLadder } from "./slaLadder";
 import { isCommitmentDue } from "./commitmentExtraction";
 import { postSystemMessage } from "./conversations";
 import { sweepOrphanUploads } from "./attachments";
 
-const REMIND = (seq: number) => `Escalation #${seq} reminded to the Section HOD and HOD after ${DEFAULT_ESCALATION_CLOCK.remindHours}h without acknowledgement.`;
-const ESCALATE = (seq: number) => `Escalation #${seq} escalated to the COO and the Project Manager after ${DEFAULT_ESCALATION_CLOCK.escalateHours}h without acknowledgement.`;
+// The wording of a rung lives with the ladder that writes it (slaLadder.ts), so the line and the mail
+// that accompanies it cannot drift apart.
 
 export type SweepResult = { reminded: number; escalated: number; chased: number; orphans: number };
 
 export async function runConversationSweep(now: Date = new Date()): Promise<SweepResult> {
   const result: SweepResult = { reminded: 0, escalated: 0, chased: 0, orphans: 0 };
 
-  const open = await prisma.jobOrderMessage.findMany({
-    where: { kind: "ESCALATION", acknowledgedAt: null },
-    orderBy: { createdAt: "asc" },
-    take: 200,
-    select: {
-      id: true,
-      seq: true,
-      createdAt: true,
-      threadId: true,
-      thread: {
-        select: {
-          jobOrderId: true,
-          messages: { where: { kind: "SYSTEM" }, select: { body: true } },
-        },
-      },
-    },
-  });
-
-  for (const escalation of open) {
-    const bodies = escalation.thread.messages.map((message) => message.body);
-    const lastStep: EscalationStep = bodies.some((body) => body.startsWith(`Escalation #${escalation.seq} escalated`))
-      ? "ESCALATE_COO"
-      : bodies.some((body) => body.startsWith(`Escalation #${escalation.seq} reminded`))
-        ? "REMIND_HOD"
-        : "NONE";
-
-    const step = escalationStep({
-      postedAt: escalation.createdAt,
-      now,
-      acknowledgedAt: null,
-      lastStep,
-    });
-    if (step === "NONE") continue;
-
-    await postSystemMessage(
-      escalation.thread.jobOrderId,
-      step === "REMIND_HOD" ? REMIND(escalation.seq) : ESCALATE(escalation.seq),
-      { id: null, email: "system@workforce", name: "Workforce", role: "SYSTEM", source: "SYSTEM" },
-      now
-    );
-    if (step === "REMIND_HOD") result.reminded += 1;
-    else result.escalated += 1;
-  }
+  // The ladder lives in its own module: it is the only part that speaks to people, and it has to be
+  // testable without a timer. The sweep calls it and keeps doing the quiet housekeeping around it.
+  const ladder = await runSlaLadder(now);
+  result.reminded = ladder.reminded;
+  result.escalated = ladder.escalated;
 
   const due = await prisma.jobOrderCommitment.findMany({
     where: { state: "OPEN", chasedAt: null, dueOn: { lte: now } },

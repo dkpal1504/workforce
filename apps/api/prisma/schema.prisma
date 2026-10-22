@@ -100,6 +100,8 @@ model Department {
 
   timesheetEntries    TimesheetEntry[]    @relation("TimesheetEntryDepartment")
   employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationDepartment")
+  slaPolicies SlaPolicy[]
+
   @@map("departments")
 }
 
@@ -822,6 +824,26 @@ model DelayReason {
   @@map("delay_reasons")
 }
 
+/// How long a reply is expected to take, and when to nudge and to escalate.
+///
+/// Rows, not constants: `department_id` null is the default for everybody, and a department that
+/// negotiates a different clock adds its own row without a deploy. Hours are counted from the moment the
+/// message was posted; a reply that answers it stops the ladder.
+model SlaPolicy {
+  id            Int     @id @default(autoincrement())
+  /// ESCALATION | RECOVERY
+  kind          String
+  departmentId  Int?    @map("department_id")
+  department    Department? @relation(fields: [departmentId], references: [id])
+  responseHours Int     @map("response_hours")
+  remindHours   Int     @map("remind_hours")
+  escalateHours Int     @map("escalate_hours")
+  active        Boolean @default(true)
+
+  @@unique([kind, departmentId])
+  @@map("sla_policies")
+}
+
 model JobOrderThread {
   id              Int      @id @default(autoincrement())
   jobOrderId      Int      @unique @map("job_order_id")
@@ -883,6 +905,16 @@ model JobOrderMessage {
   escalationDueAt     DateTime? @map("escalation_due_at")
   acknowledgedAt      DateTime? @map("acknowledged_at")
   acknowledgedByEmail String?  @map("acknowledged_by_email")
+  /// When a reply is expected by, from the policy in force for this kind at the moment of posting.
+  /// Null means no clock (a decision, a system line, a reply that answers something).
+  responseDueAt    DateTime? @map("response_due_at")
+  /// The message this one answers. Set once, on the reply, so "responded in 6h" is a fact for ever.
+  answersMessageId Int?      @map("answers_message_id")
+  answersMessage   JobOrderMessage? @relation("MessageAnswers", fields: [answersMessageId], references: [id])
+  answeredBy       JobOrderMessage[] @relation("MessageAnswers")
+  /// REMIND_HOD | ESCALATE_COO on the SYSTEM line a rung writes. Null on everything else.
+  ladderStep       String?   @map("ladder_step")
+
   /// The cause of the delay this message reports, as a DelayReason code. Nullable: prose is still a
   /// valid reply, and a reason is offered, never demanded. Set once — messages are append-only.
   reasonCode String?      @map("reason_code")
@@ -902,6 +934,7 @@ model JobOrderMessage {
   @@index([threadId, createdAt])
   @@index([kind, escalationDueAt])
   @@index([reasonCode])
+  @@index([responseDueAt, answersMessageId])
   @@map("job_order_messages")
 }
 

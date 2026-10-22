@@ -15,6 +15,7 @@ import { escalationDueAt } from "./escalationClock";
 import type { ConversationScope } from "./conversationScope";
 import { jobOrderContextFor, resolveOwner } from "./jobOrderContext";
 import { isRoutableAddress } from "./mailIdentity";
+import { expectsReply, resolvePolicy } from "./sla";
 
 export type ConversationAuthor = {
   id: number | null;
@@ -72,6 +73,13 @@ export type PostMessageInput = {
   origin?: string | null;
   /** The cause of the delay, when the author is the owner or a PM. Validated against delay_reasons. */
   reasonCode?: string | null;
+  /**
+   * A SYSTEM line that is ALLOWED to speak to people: the rungs of the SLA ladder. A system line with no
+   * audience still e-mails nobody, which is what keeps every other automated note quiet.
+   */
+  audience?: Array<{ userId: number | null; email: string | null }>;
+  /** REMIND_HOD | ESCALATE_COO on a ladder line; makes a second sweep harmless. */
+  ladderStep?: "REMIND_HOD" | "ESCALATE_COO" | null;
   now?: Date;
 };
 
@@ -167,7 +175,36 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
       });
     }
 
-    const escalationDue = input.kind === "ESCALATION" ? escalationDueAt(now) : null;
+    // ── the clock ────────────────────────────────────────────────────────────────────────────────
+    // A message that expects a reply carries its own deadline and its own target, from the policy in force
+    // for its kind and the Job Order's department at the moment it was written. Storing the deadline (not
+    // just the policy) is what keeps an old message honest after somebody edits the policy.
+    let responseDueAt: Date | null = null;
+    let answersMessageId: number | null = null;
+    let escalationDue: Date | null = null;
+
+    if (expectsReply(input.kind)) {
+      const order = await tx.jobOrder.findUnique({ where: { id: input.jobOrderId }, select: { departmentId: true } });
+      const policies = await tx.slaPolicy.findMany({ where: { kind: input.kind, active: true } });
+      const policy = resolvePolicy(input.kind, policies, order?.departmentId ?? null);
+      responseDueAt = new Date(now.getTime() + policy.responseHours * 3_600_000);
+      escalationDue = new Date(now.getTime() + policy.escalateHours * 3_600_000);
+    } else if (input.kind !== "SYSTEM") {
+      // A reply stops the clock on the newest message that expected one and is still unanswered. One link,
+      // written once, so "responded in 6h" never has to be recomputed from the thread.
+      const candidates = await tx.jobOrderMessage.findMany({
+        where: {
+          threadId,
+          responseDueAt: { not: null },
+          createdAt: { lte: now },
+          authorEmail: { not: input.author.email.toLowerCase() },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { id: true, _count: { select: { answeredBy: true } } },
+      });
+      answersMessageId = candidates.find((candidate) => candidate._count.answeredBy === 0)?.id ?? null;
+    }
 
     const message = await tx.jobOrderMessage.create({
       data: {
@@ -175,6 +212,9 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
         seq,
         kind: input.kind,
         reasonCode: input.reasonCode ?? null,
+        responseDueAt,
+        answersMessageId,
+        ladderStep: input.ladderStep ?? null,
         authorUserId: input.author.id,
         authorEmail: input.author.email,
         authorName: input.author.name,
@@ -209,7 +249,18 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
     // A SYSTEM line is a record, not a message: it never e-mails anyone. Its participants still exist
     // for the badge, so the row is not "sent" in the abstract — there is simply nothing to deliver.
     if (input.kind === "SYSTEM") {
-      return { id: message.id, seq, recipients: [] as Array<{ email: string; state: string }>, commitments: [] as Array<{ id: number; dueOn: Date; text: string }> };
+      // A ladder rung is the ONE system line allowed to reach people: it exists to tell a named role that
+      // nobody answered. Everything else SYSTEM stays silent, and `audience` absent means silent.
+      const rows: Array<{ email: string; state: string }> = [];
+      for (const person of input.audience ?? []) {
+        const address = person.email?.trim().toLowerCase() ?? "";
+        const routable = isRoutableAddress(address);
+        await tx.jobOrderMessageRecipient.create({
+          data: { messageId: message.id, email: routable ? address : `${address || "unknown"}`, userId: person.userId, state: routable ? "QUEUED" : "NO_ADDRESS" },
+        });
+        rows.push({ email: address || "unknown", state: routable ? "QUEUED" : "NO_ADDRESS" });
+      }
+      return { id: message.id, seq, recipients: rows, commitments: [] as Array<{ id: number; dueOn: Date; text: string }> };
     }
 
     const participants = await tx.jobOrderThreadParticipant.findMany({
@@ -291,19 +342,29 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
 }
 
 /** A system line: assignment, acknowledgement, escalation rung, resolution. Never e-mailed. */
+/**
+ * A SYSTEM line.
+ *
+ * Returns the posted message because a LADDER rung needs its id to queue the mail that goes with it. The
+ * optional `ladder` argument is the only way a system line may address people; without it, a system line
+ * still e-mails nobody.
+ */
 export async function postSystemMessage(
   jobOrderId: number,
   body: string,
   author: ConversationAuthor,
-  now: Date = new Date()
-): Promise<void> {
-  await postMessage({
+  now: Date = new Date(),
+  ladder?: { audience?: Array<{ userId: number | null; email: string | null }>; ladderStep?: "REMIND_HOD" | "ESCALATE_COO" }
+): Promise<PostedMessage> {
+  return postMessage({
     jobOrderId,
     author: { ...author, source: "SYSTEM" },
     kind: "SYSTEM",
     body,
     emailOwner: false,
     now,
+    audience: ladder?.audience,
+    ladderStep: ladder?.ladderStep ?? null,
   });
 }
 
@@ -453,6 +514,10 @@ export async function threadFor(jobOrderId: number) {
           contextJson: true,
           proposalJson: true,
           reasonCode: true,
+          responseDueAt: true,
+          answersMessageId: true,
+          ladderStep: true,
+          answeredBy: { select: { id: true, createdAt: true, authorName: true }, take: 1, orderBy: { createdAt: "asc" } },
           escalationDueAt: true,
           acknowledgedAt: true,
           acknowledgedByEmail: true,
