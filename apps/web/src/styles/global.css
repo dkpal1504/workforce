@@ -2171,3 +2171,7 @@ tr:hover .pf-escalate-btn,
 .not-booked .table-wrap { overflow-x: auto; }
 .not-booked .chip--danger { margin-left: 6px; font-size: 0.65rem; padding: 1px 6px; border-radius: 999px; background: rgba(220, 80, 80, 0.15); color: #e88; }
 .not-booked .link-button { margin-top: 10px; background: none; border: none; color: var(--primary); font-size: 0.85rem; cursor: pointer; }
+
+.not-booked .pager { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 0.82rem; color: var(--text-muted); }
+.not-booked .pager button { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 5px 10px; cursor: pointer; }
+.not-booked .pager button:disabled { opacity: 0.4; cursor: default; }

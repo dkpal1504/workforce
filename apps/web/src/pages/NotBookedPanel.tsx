@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, getToken } from "../api/client";
 import { formatDay } from "./formatDate";
 
@@ -33,7 +33,12 @@ type Report = {
   to: string;
   rangeDays: number;
   maxDailyHours: number;
+  /** ONE PAGE of people — the server slices, the screen never holds the whole roster. */
   people: Person[];
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  rowTotal: number;
   totals: { roster: number; peopleWithAnyGap: number; notBookedDays: number; hours: number; cost: number };
   notes: string[];
 };
@@ -52,13 +57,13 @@ export function NotBookedPanel() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await api<Report>(`/reports/not-booked?from=${from}&to=${to}`);
+      const data = await api<Report>(`/reports/not-booked?from=${from}&to=${to}&page=${page}&pageSize=50`);
       setReport(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not build the report.");
@@ -66,16 +71,13 @@ export function NotBookedPanel() {
     } finally {
       setLoading(false);
     }
-  }, [from, to]);
+  }, [from, to, page]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const rows = useMemo(() => {
-    if (!report) return [];
-    return showAll ? report.people : report.people.slice(0, 50);
-  }, [report, showAll]);
+  const rows = report?.people ?? [];
 
   const download = async () => {
     try {
@@ -101,11 +103,11 @@ export function NotBookedPanel() {
       <div className="filter-row">
         <div className="filter-field">
           <label>From Date</label>
-          <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+          <input type="date" value={from} max={to} onChange={(e) => { setFrom(e.target.value); setPage(1); }} />
         </div>
         <div className="filter-field">
           <label>To Date</label>
-          <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+          <input type="date" value={to} min={from} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
         </div>
         <div className="filter-field">
           <label>&nbsp;</label>
@@ -183,10 +185,30 @@ export function NotBookedPanel() {
             </table>
           </div>
 
-          {report.people.length > rows.length && (
-            <button type="button" className="link-button" onClick={() => setShowAll(true)}>
-              Show all {report.people.length} people
-            </button>
+          {report.pageCount > 1 && (
+            <div className="pager">
+              <button type="button" onClick={() => setPage(1)} disabled={page === 1}>« First</button>
+              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
+                ‹ Prev
+              </button>
+              <span>
+                Page {report.page} of {report.pageCount} · {report.rowTotal.toLocaleString("en-IN")} people
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(report.pageCount, p + 1))}
+                disabled={page === report.pageCount}
+              >
+                Next ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage(report.pageCount)}
+                disabled={page === report.pageCount}
+              >
+                Last »
+              </button>
+            </div>
           )}
 
           <ul className="not-booked__notes">

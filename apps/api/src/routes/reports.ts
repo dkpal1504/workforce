@@ -361,16 +361,38 @@ async function buildNotBooked(req: Request) {
   return report;
 }
 
+/**
+ * Paged on the server: the screen asks for one page and gets one page.
+ *
+ * The roster is 601 people, so the unpaged response was ~600 rows of JSON for a table that shows 50 — pulled
+ * from the database's process, serialised, compressed and thrown away six times over. Totals still describe
+ * the WHOLE roster on every page (they are computed before the slice), because a total that changed as you
+ * paged would be worse than no total.
+ */
 reportsRouter.get("/not-booked", requireRoles(...COVERAGE_ROLES), async (req, res) => {
   const report = await buildNotBooked(req);
   if ("error" in report) return res.status(400).json({ error: report.error });
-  res.json(report);
+
+  const pageSize = Math.min(200, Math.max(10, Number(req.query.pageSize ?? 50) || 50));
+  const pageCount = Math.max(1, Math.ceil(report.people.length / pageSize));
+  const page = Math.min(pageCount, Math.max(1, Number(req.query.page ?? 1) || 1));
+  const start = (page - 1) * pageSize;
+
+  res.json({
+    ...report,
+    people: report.people.slice(start, start + pageSize),
+    page,
+    pageSize,
+    pageCount,
+    rowTotal: report.people.length,
+  });
 });
 
 reportsRouter.get("/not-booked.csv", requireRoles(...COVERAGE_ROLES), async (req, res) => {
   const report = await buildNotBooked(req);
   if ("error" in report) return res.status(400).json({ error: report.error });
   const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  // The FILE is never paged - a download that carried one page would be a trap.
   const csv = notBookedCsv(report).map((line) => line.map(quote).join(",")).join("\r\n");
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="not-booked-${report.from}_to_${report.to}.csv"`);
