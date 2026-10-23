@@ -111,6 +111,10 @@ async function main() {
     lines.push(`--   isWeeklyOff : ${census.weeklyOffValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}`);
     lines.push(`--   OriginalStatus : ${census.statusValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}`);
     lines.push(`--   CardType : ${census.cardTypeValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}`);
+    lines.push(`--   isHoliday : ${census.holidayValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}`);
+    lines.push(
+      `--   FUTURE-DATED rows (ignored by the reports): ${census.futureRows}   max date in view: ${census.maxDateAny ?? "?"}`
+    );
     lines.push(`--   IDNo shape  : alphanumeric=${census.idPatterns.alphanumeric}  numeric-only=${census.idPatterns.numericOnly}  empty=${census.idPatterns.other}`);
     lines.push("-- Sample rows (latest by the configured date column):");
     for (const row of described.sample) lines.push(JSON.stringify(row));

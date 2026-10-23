@@ -96,18 +96,19 @@ test("the four required columns are named, and their absence is what sends us lo
   ];
   assert.deepEqual(missingRequiredColumns(realView), [
     "isWeeklyOff",
+    "isHoliday",
     "OriginalStatus",
     "AcceptedManHrs",
     "AcceptedOT",
   ]);
   // Case-insensitively complete -> nothing missing.
   assert.deepEqual(
-    missingRequiredColumns(["isweeklyoff", "ORIGINALSTATUS", "acceptedmanhrs", "AcceptedOT"]),
+    missingRequiredColumns(["isweeklyoff", "ISHOLIDAY", "ORIGINALSTATUS", "acceptedmanhrs", "AcceptedOT"]),
     []
   );
   // Partially complete: only the absent ones are reported.
   assert.deepEqual(
-    missingRequiredColumns(["isWeeklyOff", "OriginalStatus", "AcceptedManHrs"]),
+    missingRequiredColumns(["isWeeklyOff", "isHoliday", "OriginalStatus", "AcceptedManHrs"]),
     ["AcceptedOT"]
   );
 });
@@ -133,4 +134,24 @@ test("the population filter targets the associates, and cannot be injected throu
     if (original === undefined) delete process.env.ATTENDANCE_REGISTER_CARD_TYPES;
     else process.env.ATTENDANCE_REGISTER_CARD_TYPES = original;
   }
+});
+
+test("today is the IST date, not the UTC date", async () => {
+  const { todayInAppZone } = await import("./attendanceRegisterSource");
+  // 20:15Z on 22 Oct is already 01:45 on 23 Oct in IST — the case a 02:00 job hits.
+  assert.equal(todayInAppZone(new Date("2026-10-22T20:15:00Z")), "2026-10-23");
+  assert.equal(todayInAppZone(new Date("2026-10-23T18:29:00Z")), "2026-10-23");
+  assert.equal(todayInAppZone(new Date("2026-10-23T18:31:00Z")), "2026-10-24");
+});
+
+test("a range is clamped to today, and says what was requested", async () => {
+  const { clampRangeToToday } = await import("./attendanceRegisterSource");
+  const clamped = clampRangeToToday({ from: "2026-09-01", to: "2026-12-31" }, "2026-10-23");
+  assert.equal(clamped.to, "2026-10-23");
+  assert.equal(clamped.requestedTo, "2026-12-31");
+  assert.equal(clamped.clamped, true);
+
+  const untouched = clampRangeToToday({ from: "2026-09-01", to: "2026-10-01" }, "2026-10-23");
+  assert.equal(untouched.to, "2026-10-01");
+  assert.equal(untouched.clamped, false);
 });

@@ -15,9 +15,11 @@ import { getMaxDailyHours } from "../config";
 import { prisma } from "../db";
 import { aggregateRegisterRows, clockedHoursOf, type AttendanceDayFact } from "./attendanceRegister";
 import {
+  clampRangeToToday,
   fetchRegisterRange,
   registerAggregate,
   suggestColumnNames,
+  todayInAppZone,
   type RegisterFetchResult,
 } from "./attendanceRegisterSource";
 import { bookedHoursFromEntry } from "./holidayHours";
@@ -37,6 +39,7 @@ import {
 } from "./holidayRecon";
 import { BOOKED_HOURS_STATUSES } from "./portfolioReporting";
 
+/** `to` is clamped to today: the register's future rows are planning rows, never attendance. */
 export type ReconOptions = { from: string; to: string };
 
 export type ReconAnomalies = {
@@ -52,7 +55,12 @@ export type ReconAnomalies = {
 
 export type ReconResult = {
   from: string;
+  /** The effective end date: never later than today. */
   to: string;
+  /** What the caller asked for, so a clamp is visible rather than silent. */
+  requestedTo: string;
+  clampedToToday: boolean;
+  skippedFutureDates: number;
   source: RegisterFetchResult["source"];
   aggregate: ReturnType<typeof registerAggregate>;
   registerRows: number;
@@ -76,8 +84,14 @@ export type ReconResult = {
  */
 export async function runHolidayRecon(options: ReconOptions): Promise<ReconResult> {
   const maxDailyHours = getMaxDailyHours();
-  const fromDate = new Date(`${options.from}T00:00:00.000Z`);
-  const toDate = new Date(`${options.to}T23:59:59.999Z`);
+  // A future date can only hold planning rows, so the whole run stops at today (IST — see
+  // `todayInAppZone`; the UTC date would be yesterday for a 02:00 job).
+  const range = clampRangeToToday({ from: options.from, to: options.to });
+  if (range.clamped && range.to < range.from) {
+    throw new Error(`--to ${options.to} is in the future and --from ${options.from} is after today (${range.to}).`);
+  }
+  const fromDate = new Date(`${range.from}T00:00:00.000Z`);
+  const toDate = new Date(`${range.to}T23:59:59.999Z`);
 
   const employees = await prisma.employee.findMany({
     where: { active: true, employmentType: "CLMS" },
@@ -101,7 +115,7 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
   }));
   const employeeByEcNo = new Map(people.map((person) => [person.ecNo, person]));
 
-  const register = await fetchRegisterRange({ dateFrom: options.from, dateTo: options.to });
+  const register = await fetchRegisterRange({ dateFrom: range.from, dateTo: range.to });
   const rawRows = [...register.byDate.values()].flat();
   if (rawRows.length === 0) {
     const firstError = register.errors[0]?.message ?? "no rows returned and no error reported";
@@ -188,8 +202,11 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
   const unmatchedIdNos = [...new Set(facts.filter((fact) => !employeeByEcNo.has(fact.idNo)).map((fact) => fact.idNo))].sort();
 
   return {
-    from: options.from,
-    to: options.to,
+    from: range.from,
+    to: range.to,
+    requestedTo: range.requestedTo,
+    clampedToToday: range.clamped,
+    skippedFutureDates: register.skippedFutureDates ?? 0,
     source: register.source,
     aggregate: registerAggregate(),
     registerRows: rawRows.length,
@@ -203,8 +220,8 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
     employeeDays: summariseEmployeeDays(bookings),
     jobOrders: summariseJobOrders(bookings),
     surfaces: summariseSurfaces({
-      from: options.from,
-      to: options.to,
+      from: range.from,
+      to: range.to,
       facts,
       bookings,
       people,
@@ -244,7 +261,12 @@ export function renderReconSummary(result: ReconResult): string[] {
   const lines: string[] = [];
   lines.push("");
   lines.push("HOLIDAY-HOURS RECONCILIATION (read-only — nothing was written to the databases)");
-  lines.push(`  range              ${result.from} .. ${result.to}`);
+  lines.push(
+    `  range              ${result.from} .. ${result.to}` +
+      (result.clampedToToday
+        ? `   (requested to ${result.requestedTo}; clamped to today — future rows are planning rows, not attendance)`
+        : "")
+  );
   lines.push(
     `  attendance source  ${result.source}${result.source === "FIXTURE" ? "  (SYNTHETIC — not the yard's data)" : ""}`
   );

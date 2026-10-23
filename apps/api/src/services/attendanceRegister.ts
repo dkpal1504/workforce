@@ -73,6 +73,11 @@ export type RawRegisterRow = {
   records?: number;
   /** COUNT(DISTINCT OriginalStatus) for the employee-day: > 1 is an anomaly worth reporting. */
   statusVariants?: number;
+  /**
+   * The view's own holiday flag (`isHoliday`, 1 = holiday). Present since 2026-10-23 and decisive: a
+   * declared holiday is a FACT from the source, not something to infer from an `A` status.
+   */
+  isHoliday?: unknown;
 };
 
 /** One employee-day, decided. */
@@ -101,6 +106,8 @@ export type AttendanceDayFact = {
    * weekly off). Kept so the reconciliation can list it instead of silently picking a branch.
    */
   statusDayTypeConflict: boolean;
+  /** The source's own holiday flag for this man-day. */
+  isHoliday: boolean;
 };
 
 /** `1`, `"1"`, `true`, `"Y"`, `"yes"` -> true. Everything else, including null, -> false. */
@@ -153,7 +160,14 @@ export function presenceRank(status: RegisterStatus): number {
  * so only the LABEL is at stake, and the holiday is the more specific fact. No rows at all means the
  * caller is looking at a date the register did not cover — the flag `isWeeklyOff` is then all we have.
  */
-export function dayTypeForStatuses(statuses: readonly RegisterStatus[], isWeeklyOff: boolean): DayType {
+export function dayTypeForStatuses(
+  statuses: readonly RegisterStatus[],
+  isWeeklyOff: boolean,
+  isHoliday = false
+): DayType {
+  // The source's own flag wins over everything: it is the only signal that can be known BEFORE the day and
+  // therefore the only one a booking screen could obey.
+  if (isHoliday) return "HOLIDAY";
   const carriesHoliday = statuses.some((status) => status === "P/HL" || status === "A/HL");
   if (carriesHoliday) return "HOLIDAY";
   return isWeeklyOff ? "WEEKLY_OFF" : "WORKING";
@@ -237,6 +251,7 @@ export function aggregateRegisterRows(
     idNo: string;
     statuses: Set<RegisterStatus>;
     isWeeklyOff: boolean;
+    isHoliday: boolean;
     sum: number | null;
     max: number | null;
     hourValues: Set<number>;
@@ -260,6 +275,7 @@ export function aggregateRegisterRows(
         idNo,
         statuses: new Set(),
         isWeeklyOff: false,
+        isHoliday: false,
         sum: null,
         max: null,
         hourValues: new Set(),
@@ -272,6 +288,7 @@ export function aggregateRegisterRows(
     }
     acc.statuses.add(normaliseRegisterStatus(row.originalStatus));
     acc.isWeeklyOff = acc.isWeeklyOff || parseWeeklyOff(row.isWeeklyOff);
+    acc.isHoliday = acc.isHoliday || parseWeeklyOff(row.isHoliday);
     const hours = parseHours(row.acceptedManHours);
     acc.sum = addNullable(acc.sum, hours);
     acc.max = maxNullable(acc.max, hours);
@@ -294,7 +311,7 @@ export function aggregateRegisterRows(
           : best,
       "UNKNOWN"
     );
-    const dayType = dayTypeForStatuses(statuses, acc.isWeeklyOff);
+    const dayType = dayTypeForStatuses(statuses, acc.isWeeklyOff, acc.isHoliday);
     const mixedStatus = statuses.filter((entry) => entry !== "UNKNOWN").length > 1 || acc.variants > 1;
     const statusDayTypeConflict =
       (status === "P/WO" && dayType !== "WEEKLY_OFF" && dayType !== "HOLIDAY") ||
@@ -318,6 +335,7 @@ export function aggregateRegisterRows(
       rawManHours: acc.raw,
       records: acc.records,
       statusDayTypeConflict,
+      isHoliday: acc.isHoliday,
     });
   }
 

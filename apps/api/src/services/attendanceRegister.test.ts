@@ -171,3 +171,21 @@ test("every status has a sentence a report can print", () => {
     assert.ok(registerStatusLabel(status).length > 0);
   }
 });
+
+test("the view's own holiday flag decides the day type, before any status is read", () => {
+  // The register carries isHoliday. A declared holiday with a full crew marked 'P' is still a holiday —
+  // the flag is the fact, and it is the only signal knowable before the day.
+  const facts = aggregateRegisterRows([
+    row({ originalStatus: "P", isHoliday: 1, acceptedManHours: 8 }),
+    row({ idNo: "BAPL9999", originalStatus: "A", isHoliday: 1, acceptedManHours: 0 }),
+  ]);
+  assert.equal(facts[0].isHoliday, true);
+  assert.equal(facts[0].dayType, "HOLIDAY");
+  assert.equal(facts[0].attendanceClass, "WORKED_HOLIDAY");
+  assert.equal(facts[1].attendanceClass, "OFF");
+
+  // Without the flag, the same rows are ordinary work.
+  const ordinary = aggregateRegisterRows([row({ originalStatus: "P", isHoliday: 0 })]);
+  assert.equal(ordinary[0].dayType, "WORKING");
+  assert.equal(ordinary[0].attendanceClass, "WORKED");
+});

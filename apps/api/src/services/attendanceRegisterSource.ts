@@ -54,6 +54,8 @@ export function registerColumns() {
     acceptedOt: envValue("ATTENDANCE_DB_ACCEPTED_OT_COLUMN") || "AcceptedOT",
     rawHours: envValue("ATTENDANCE_DB_HOURS_COLUMN") || "ManHours",
     cardType: envValue("ATTENDANCE_REGISTER_CARD_TYPE_COLUMN") || "CardType",
+    isHoliday: envValue("ATTENDANCE_DB_HOLIDAY_COLUMN") || "isHoliday",
+    isLeave: envValue("ATTENDANCE_DB_LEAVE_COLUMN") || "isLeave",
   };
 }
 
@@ -91,6 +93,37 @@ export function registerCardTypes(): string[] {
   return list;
 }
 
+/**
+ * Today, in the application's timezone (`APP_TIMEZONE`, default `Asia/Kolkata`).
+ *
+ * `new Date().toISOString().slice(0,10)` is the UTC date, which is YESTERDAY for every run between 00:00
+ * and 05:30 IST — and a job at 02:10 would settle or clamp the wrong day. This is the single conversion.
+ */
+export function todayInAppZone(now: Date = new Date()): string {
+  const timeZone = process.env.APP_TIMEZONE || "Asia/Kolkata";
+  try {
+    // en-CA renders ISO-like YYYY-MM-DD, which is why it is used rather than a hand-built string.
+    return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  } catch {
+    return now.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Drop the future from a date range.
+ *
+ * THE REGISTER HOLDS PLANNING ROWS: LabourWorks pre-generates an absence row per worker for dates that
+ * have not happened (observed: everyone absent on 2026-12-31, max date weeks ahead). Counting those would
+ * invent absences, so a future date is never read. Confirmed as a rule by the customer, 2026-10-23.
+ */
+export function clampRangeToToday(
+  range: { from: string; to: string },
+  today: string = todayInAppZone()
+): { from: string; to: string; requestedTo: string; clamped: boolean } {
+  const to = range.to > today ? today : range.to;
+  return { from: range.from, to, requestedTo: range.to, clamped: to !== range.to };
+}
+
 /** `IN ('ASSOCIATES', 'ASSOCIATE SEZ')` on the upper-cased column, or "" when the filter is off. */
 export function registerCardTypeFilter(): string {
   const cardTypes = registerCardTypes();
@@ -126,6 +159,7 @@ export function registerSql(): string {
     `SELECT ${id} AS IdNo, ` +
     `MAX(${weeklyOff}) AS IsWeeklyOff, ` +
     `MAX(${status}) AS OriginalStatus, ` +
+    `MAX(${quoteIdentifier(columns.isHoliday, "ATTENDANCE_DB_HOLIDAY_COLUMN")}) AS IsHoliday, ` +
     `COUNT(DISTINCT ${status}) AS StatusVariants, ` +
     `SUM(${acceptedHours}) AS AcceptedManHrs, ` +
     `SUM(${acceptedOt}) AS AcceptedOT, ` +
@@ -165,6 +199,7 @@ export function rowFromRecordset(record: Record<string, unknown>, workDate: stri
     rawManHours: pick(record, "RawManHours", "ManHours", "manHours"),
     records: Number(pick(record, "Records", "records") ?? 1) || 1,
     statusVariants: Number(pick(record, "StatusVariants", "statusVariants") ?? 1) || 1,
+    isHoliday: pick(record, "IsHoliday", "isHoliday", "isholiday"),
   };
 }
 
@@ -256,6 +291,8 @@ export type RegisterFetchResult = {
    * failure so the caller can print the real names instead of "check your column mapping".
    */
   availableColumns?: string[];
+  /** Dates dropped because they are in the future (planning rows, never attendance). */
+  skippedFutureDates?: number;
   /** Dates the source answered for; a date MISSING here was never read (not "empty"). */
   datesRead: string[];
   errors: Array<{ date: string; message: string }>;
@@ -275,7 +312,11 @@ export async function fetchRegisterRange(options: {
   dateTo: string;
   dates?: string[];
 }): Promise<RegisterFetchResult> {
-  const dates = options.dates ?? expandDates(options.dateFrom, options.dateTo);
+  const requestedDates = options.dates ?? expandDates(options.dateFrom, options.dateTo);
+  // Defence in depth: even if a caller asks for the future, the read stops at today.
+  const today = todayInAppZone();
+  const dates = requestedDates.filter((date) => date <= today);
+  const skippedFutureDates = requestedDates.length - dates.length;
   const errors: Array<{ date: string; message: string }> = [];
   const byDate = new Map<string, RawRegisterRow[]>();
   let availableColumns: string[] | undefined;
@@ -287,7 +328,7 @@ export async function fetchRegisterRange(options: {
       const rows = parsed.get(date);
       if (rows) byDate.set(date, rows);
     }
-    return { byDate, datesRead: [...byDate.keys()].sort(), errors, source: "FIXTURE" };
+    return { byDate, datesRead: [...byDate.keys()].sort(), errors, source: "FIXTURE", skippedFutureDates };
   }
 
   const config = attendanceSourceConfig();
@@ -342,7 +383,7 @@ export async function fetchRegisterRange(options: {
     if (pool) await pool.close();
   }
 
-  return { byDate, datesRead: [...byDate.keys()].sort(), errors, source: "SQL", availableColumns };
+  return { byDate, datesRead: [...byDate.keys()].sort(), errors, source: "SQL", availableColumns, skippedFutureDates };
 }
 
 /** Every ISO date from `dateFrom` to `dateTo`, inclusive. Refuses a backwards or absurd range. */
@@ -372,6 +413,7 @@ export type SourceColumn = { name: string; type: string; nullable: string };
  */
 export const REGISTER_REQUIRED_COLUMNS = [
   "isWeeklyOff",
+  "isHoliday",
   "OriginalStatus",
   "AcceptedManHrs",
   "AcceptedOT",
@@ -443,6 +485,10 @@ export async function describeRegisterSource(): Promise<{
     statusValues: Array<{ value: string; rows: number }>;
     /** The population filter in the data's own spelling, so a mismatch is visible rather than silent. */
     cardTypeValues: Array<{ value: string; rows: number }>;
+    holidayValues: Array<{ value: string; rows: number }>;
+    /** Rows dated AFTER today. LabourWorks pre-generates an absence row per worker for future dates. */
+    futureRows: number;
+    maxDateAny: string | null;
     idPatterns: { alphanumeric: number; numericOnly: number; other: number };
   };
   sql: string;
@@ -473,12 +519,15 @@ export async function describeRegisterSource(): Promise<{
     let sample: Array<Record<string, unknown>> = [];
     try {
       const response = await pool.request().query(
-        `SELECT TOP 5 * FROM [${schema}].[${table}] ORDER BY [${registerColumns().date}] DESC`
+        `SELECT TOP 5 * FROM [${schema}].[${table}] WHERE 1=1${registerCardTypeFilter()} ` +
+          `ORDER BY [${registerColumns().date}] DESC`
       );
       sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
     } catch {
       // The configured date column may itself be wrong; a sample without ORDER BY is still useful.
-      const response = await pool.request().query(`SELECT TOP 5 * FROM [${schema}].[${table}]`);
+      const response = await pool.request().query(
+        `SELECT TOP 5 * FROM [${schema}].[${table}] WHERE 1=1${registerCardTypeFilter()}`
+      );
       sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
     }
     const missingColumns = missingRequiredColumns(columns.map((column) => column.name));
@@ -519,6 +568,7 @@ export function suggestColumnNames(columns: readonly string[]): Record<string, s
     date: pickFirst([/^date$/i, /^att_?date$/i, /^attendance_?date$/i, /^work_?date$/i, /date/i]),
     weeklyOff: pickFirst([/^isweeklyoff$/i, /weekly_?off/i, /^is_?wo$/i]),
     status: pickFirst([/^originalstatus$/i, /original_?status/i, /^status$/i, /status/i]),
+    isHoliday: pickFirst([/^isholiday$/i, /is_?holiday/i, /holiday/i]),
     acceptedHours: pickFirst([/^acceptedmanhrs$/i, /accepted_?man_?h/i, /accepted_?hours/i, /accepted/i]),
     acceptedOt: pickFirst([/^acceptedot$/i, /accepted_?ot/i, /accepted_?othrs/i, /acceptedothours/i, /ot_?hours/i, /overtime/i, /^ot$/i]),
     rawHours: pickFirst([/^manhours$/i, /man_?hours/i, /^hours$/i]),
@@ -613,6 +663,9 @@ async function valueCensusOnPool(
   weeklyOffValues: Array<{ value: string; rows: number }>;
   statusValues: Array<{ value: string; rows: number }>;
   cardTypeValues: Array<{ value: string; rows: number }>;
+  holidayValues: Array<{ value: string; rows: number }>;
+  futureRows: number;
+  maxDateAny: string | null;
   idPatterns: { alphanumeric: number; numericOnly: number; other: number };
 }> {
   const empty = {
@@ -621,6 +674,9 @@ async function valueCensusOnPool(
     weeklyOffValues: [],
     statusValues: [],
     cardTypeValues: [],
+    holidayValues: [],
+    futureRows: 0,
+    maxDateAny: null,
     idPatterns: { alphanumeric: 0, numericOnly: 0, other: 0 },
   };
   if (skip) return empty; // the view lacks the columns; a census of them would fail too.
@@ -633,22 +689,33 @@ async function valueCensusOnPool(
   // weekly-off majority would be computed over the whole yard (contractors included) — the very mistake
   // that made every date look closed.
   const filter = registerCardTypeFilter();
+  // THE WINDOW IS ANCHORED ON TODAY, not on MAX(Date). LabourWorks pre-generates a row per worker for
+  // FUTURE dates (observed: every worker absent on 2026-12-31), so MAX(Date) sits weeks ahead and a
+  // "last 30 days" window built from it describes the future — which is exactly how the first census
+  // came to report nothing but `A`.
   const window = await pool.request().query(
-    `SELECT CONVERT(varchar(10), MIN(${dateColumn}), 23) AS windowFrom, CONVERT(varchar(10), MAX(${dateColumn}), 23) AS windowTo, ` +
-      `CONVERT(varchar(10), DATEADD(day, -30, MAX(${dateColumn})), 23) AS since FROM ${qualified} WHERE 1=1${filter}`
+    `SELECT CONVERT(varchar(10), MIN(${dateColumn}), 23) AS windowFrom, ` +
+      `CONVERT(varchar(10), MAX(CASE WHEN CAST(${dateColumn} AS date) <= CAST(GETDATE() AS date) THEN ${dateColumn} END), 23) AS windowTo, ` +
+      `CONVERT(varchar(10), DATEADD(day, -30, CAST(GETDATE() AS date)), 23) AS since, ` +
+      `CONVERT(varchar(10), MAX(${dateColumn}), 23) AS maxDateAny, ` +
+      `SUM(CASE WHEN CAST(${dateColumn} AS date) > CAST(GETDATE() AS date) THEN 1 ELSE 0 END) AS futureRows ` +
+      `FROM ${qualified} WHERE 1=1${filter}`
   );
   const row = (window.recordset as Array<Record<string, unknown>>)?.[0] ?? {};
   const windowFrom = row.windowFrom == null ? null : String(row.windowFrom);
   const windowTo = row.windowTo == null ? null : String(row.windowTo);
   const since = row.since == null ? null : String(row.since);
-  if (!since) return { ...empty, windowFrom, windowTo };
+  const maxDateAny = row.maxDateAny == null ? null : String(row.maxDateAny);
+  const futureRows = Number(row.futureRows ?? 0);
+  if (!since) return { ...empty, windowFrom, windowTo, maxDateAny, futureRows };
 
   const distribution = async (column: string): Promise<Array<{ value: string; rows: number }>> => {
     const request = pool.request();
     request.input("since", sql.VarChar(10), since);
     const response = await request.query(
       `SELECT CONVERT(varchar(40), ${column}) AS value, COUNT(*) AS rows FROM ${qualified} ` +
-        `WHERE CAST(${dateColumn} AS date) >= @since${filter} GROUP BY CONVERT(varchar(40), ${column}) ORDER BY COUNT(*) DESC`
+        `WHERE CAST(${dateColumn} AS date) >= @since AND CAST(${dateColumn} AS date) <= CAST(GETDATE() AS date)${filter} ` +
+        `GROUP BY CONVERT(varchar(40), ${column}) ORDER BY COUNT(*) DESC`
     );
     return (((response.recordset as Array<Record<string, unknown>>) || []).map((entry) => ({
       value: String(entry.value ?? "(null)"),
@@ -663,7 +730,8 @@ async function valueCensusOnPool(
       `SUM(CASE WHEN [${columns.id}] LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS alphanumeric, ` +
       `SUM(CASE WHEN [${columns.id}] NOT LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS numericOnly, ` +
       `SUM(CASE WHEN [${columns.id}] IS NULL OR LTRIM(RTRIM([${columns.id}])) = '' THEN 1 ELSE 0 END) AS other ` +
-      `FROM ${qualified} WHERE CAST(${dateColumn} AS date) >= @since${filter}`
+      `FROM ${qualified} WHERE CAST(${dateColumn} AS date) >= @since ` +
+        `AND CAST(${dateColumn} AS date) <= CAST(GETDATE() AS date)${filter}`
   );
   const idRow = (ids.recordset as Array<Record<string, unknown>>)?.[0] ?? {};
 
@@ -673,6 +741,9 @@ async function valueCensusOnPool(
     weeklyOffValues: await distribution(`[${columns.weeklyOff}]`),
     statusValues: await distribution(`[${columns.status}]`),
     cardTypeValues: await distribution(`[${columns.cardType}]`),
+    holidayValues: await distribution(`[${columns.isHoliday}]`),
+    futureRows,
+    maxDateAny,
     idPatterns: {
       alphanumeric: Number(idRow.alphanumeric ?? 0),
       numericOnly: Number(idRow.numericOnly ?? 0),

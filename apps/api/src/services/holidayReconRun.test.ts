@@ -7,6 +7,9 @@ function result(overrides: Partial<ReconResult> = {}): ReconResult {
   return {
     from: "2026-07-19",
     to: "2026-10-16",
+    requestedTo: "2026-10-16",
+    clampedToToday: false,
+    skippedFutureDates: 0,
     source: "SQL",
     aggregate: "SUM",
     registerRows: 56318,
