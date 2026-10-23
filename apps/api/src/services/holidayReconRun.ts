@@ -13,7 +13,7 @@
 
 import { getMaxDailyHours } from "../config";
 import { prisma } from "../db";
-import { aggregateRegisterRows, clockedHoursOf, type AttendanceDayFact } from "./attendanceRegister";
+import { aggregateRegisterRows, applyDateTypes, clockedHoursOf, type AttendanceDayFact } from "./attendanceRegister";
 import {
   clampRangeToToday,
   fetchRegisterRange,
@@ -24,6 +24,7 @@ import {
 } from "./attendanceRegisterSource";
 import { bookedHoursFromEntry } from "./holidayHours";
 import {
+  dateTypesFrom,
   dayKey,
   summariseDates,
   summariseEmployeeDays,
@@ -135,7 +136,11 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
         hint
     );
   }
-  const facts: AttendanceDayFact[] = aggregateRegisterRows(rawRows, registerAggregate());
+  // Resolve each DATE once, then derive every man's class from it. Without this pass a single row-level
+  // `isHoliday` on an ordinary day turns that day — and every hour booked on it — into holiday work.
+  const rawFacts: AttendanceDayFact[] = aggregateRegisterRows(rawRows, registerAggregate());
+  const dateTypes = dateTypesFrom(rawFacts);
+  const facts: AttendanceDayFact[] = applyDateTypes(rawFacts, dateTypes);
   const factByEcDay = new Map(facts.map((fact) => [dayKey(fact.idNo, fact.workDate), fact]));
 
   const [sheetRows, entryRows, rates] = await Promise.all([
@@ -361,6 +366,8 @@ export function reconCsvFiles(result: ReconResult): Array<{ name: string; rows: 
           "conflicts",
           "booked_hours_app",
           "clocked_hours_register",
+          "holiday_flag_rows",
+          "holiday_status_rows",
         ],
         ...result.dates.map((row) => [
           row.workDate,
@@ -380,6 +387,8 @@ export function reconCsvFiles(result: ReconResult): Array<{ name: string; rows: 
           row.conflicts,
           row.bookedHours,
           row.clockedHours,
+          row.holidayFlagRows,
+          row.holidayStatusRows,
         ]),
       ],
     },

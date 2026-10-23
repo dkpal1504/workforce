@@ -77,6 +77,10 @@ export type ReconDateRow = {
   clockedHours: number;
   /** Men whose accepted hours are 0 although the status says present (regularisation pending). */
   presentZeroHours: number;
+  /** Man-days carrying the source's isHoliday flag, so a HOLIDAY verdict is auditable. */
+  holidayFlagRows: number;
+  /** Man-days carrying an HL status — the decisive holiday signal. */
+  holidayStatusRows: number;
   /** Rows that disagree about the day's status, or whose status contradicts the day type. */
   conflicts: number;
 };
@@ -180,17 +184,24 @@ export function dayKey(left: number | string, workDate: string): string {
  * closed.
  */
 export function dateTypesFrom(facts: readonly AttendanceDayFact[]): Map<string, DayType> {
-  const roll = new Map<string, { rows: number; weeklyOffRows: number; holidayRows: number }>();
+  const roll = new Map<string, { rows: number; weeklyOffRows: number; holidayFlagRows: number; holidayStatusRows: number }>();
   for (const fact of facts) {
-    const entry = roll.get(fact.workDate) ?? { rows: 0, weeklyOffRows: 0, holidayRows: 0 };
+    const entry = roll.get(fact.workDate) ?? { rows: 0, weeklyOffRows: 0, holidayFlagRows: 0, holidayStatusRows: 0 };
     entry.rows += 1;
-    if (fact.dayType === "WEEKLY_OFF" || fact.isWeeklyOff) entry.weeklyOffRows += 1;
-    if (fact.dayType === "HOLIDAY") entry.holidayRows += 1;
+    if (fact.isWeeklyOff) entry.weeklyOffRows += 1;
+    // The two holiday signals are counted SEPARATELY, because they have different strength:
+    //   an HL STATUS is the source's own classification of that man's day and is decisive;
+    //   the isHoliday FLAG is a row attribute that can appear on a handful of rows of an ordinary day
+    //   (26 Aug 2026: 463 present, 58 absent, no HL status, one flagged row → the date was called a
+    //   holiday and every hour on it became holiday work).
+    if (fact.status === "P/HL" || fact.status === "A/HL") entry.holidayStatusRows += 1;
+    if (fact.isHoliday) entry.holidayFlagRows += 1;
     roll.set(fact.workDate, entry);
   }
   const byDate = new Map<string, DayType>();
   for (const [workDate, entry] of roll) {
-    if (entry.holidayRows > 0) byDate.set(workDate, "HOLIDAY");
+    if (entry.holidayStatusRows > 0) byDate.set(workDate, "HOLIDAY");
+    else if (entry.holidayFlagRows * 2 > entry.rows) byDate.set(workDate, "HOLIDAY");
     else if (entry.weeklyOffRows * 2 > entry.rows) byDate.set(workDate, "WEEKLY_OFF");
     else byDate.set(workDate, "WORKING");
   }
@@ -241,11 +252,15 @@ export function summariseDates(
         bookedHours: 0,
         clockedHours: 0,
         presentZeroHours: 0,
+        holidayFlagRows: 0,
+        holidayStatusRows: 0,
         conflicts: 0,
       };
       byDate.set(fact.workDate, acc);
     }
     acc.isWeeklyOff = acc.isWeeklyOff || fact.isWeeklyOff;
+    if (fact.isHoliday) acc.holidayFlagRows += 1;
+    if (fact.status === "P/HL" || fact.status === "A/HL") acc.holidayStatusRows += 1;
     acc.employeesWithRow += 1;
     acc.statusCounts[fact.status] = (acc.statusCounts[fact.status] ?? 0) + 1;
     if (fact.attendanceClass === "OFF") acc.off += 1;

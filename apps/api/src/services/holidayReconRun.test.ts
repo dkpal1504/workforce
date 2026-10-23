@@ -33,6 +33,8 @@ function result(overrides: Partial<ReconResult> = {}): ReconResult {
         bookedHours: 0,
         clockedHours: 0,
         presentZeroHours: 0,
+        holidayFlagRows: 0,
+        holidayStatusRows: 0,
         conflicts: 0,
       },
     ],

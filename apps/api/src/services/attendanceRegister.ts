@@ -364,6 +364,33 @@ export function workedHoursOnOffDay(
   return round2(Math.min(hours, 24));
 }
 
+/**
+ * Re-derive every man-day's type and class from the DATE's resolved type.
+ *
+ * WHY THIS EXISTS: `isHoliday` and `isWeeklyOff` are row-level flags, and on real data a handful of rows can
+ * carry them on a day the yard worked. The first production run proved it — 26 Aug 2026 had 463 present,
+ * 58 absent and NO holiday status at all, yet one flagged row declared the whole date a holiday and every
+ * hour booked on it counted as holiday work.
+ *
+ * The yard's day type is a property of the DATE (resolved once, by majority — see `dateTypesFrom`); the
+ * man's class is then simply his status on that date. Nothing here reads a row-level flag as if it were a
+ * calendar.
+ */
+export function applyDateTypes(
+  facts: readonly AttendanceDayFact[],
+  dateTypes: ReadonlyMap<string, DayType>
+): AttendanceDayFact[] {
+  return facts.map((fact) => {
+    const dayType = dateTypes.get(fact.workDate) ?? fact.dayType;
+    const attendanceClass = classFor(dayType, fact.status);
+    const statusDayTypeConflict =
+      (fact.status === "P/WO" && dayType === "WORKING") ||
+      (fact.status === "P/HL" && dayType !== "HOLIDAY") ||
+      (fact.status === "A/HL" && dayType !== "HOLIDAY");
+    return { ...fact, dayType, attendanceClass, statusDayTypeConflict };
+  });
+}
+
 /** The sentence a report prints for one man-day, in the register's own words. */
 export function registerStatusLabel(status: RegisterStatus): string {
   switch (status) {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aggregateRegisterRows, type RawRegisterRow } from "./attendanceRegister";
+import { aggregateRegisterRows, applyDateTypes, type RawRegisterRow } from "./attendanceRegister";
 import {
   dateTypesFrom,
   dayKey,
@@ -309,4 +309,58 @@ test("one man on a Sunday roster does not close the yard", () => {
     { workDate: "2026-10-02", idNo: "E2", isWeeklyOff: 0, originalStatus: "P", acceptedManHours: 8, acceptedOt: 0, rawManHours: 8, records: 1 },
   ]);
   assert.equal(dateTypesFrom(holiday).get("2026-10-02"), "HOLIDAY");
+});
+
+test("a handful of isHoliday rows on an ordinary day do NOT make it a holiday", () => {
+  // The regression the customer reported: 26 Aug 2026 had 463 present, 58 absent, no HL status at all,
+  // and the date was shown as a holiday because a few rows carried isHoliday = 1.
+  const rows = [];
+  for (let index = 0; index < 60; index++) {
+    rows.push({
+      workDate: "2026-08-26",
+      idNo: `E${index}`,
+      isWeeklyOff: 0,
+      // One single row flagged as a holiday — the false signal.
+      isHoliday: index === 0 ? 1 : 0,
+      originalStatus: index < 50 ? "P" : "A",
+      acceptedManHours: index < 50 ? 8 : 0,
+      acceptedOt: 0,
+      rawManHours: index < 50 ? 8 : 0,
+      records: 1,
+    });
+  }
+  const facts = aggregateRegisterRows(rows);
+  assert.equal(dateTypesFrom(facts).get("2026-08-26"), "WORKING");
+
+  // And the man himself is ordinary work, not holiday work.
+  const resolved = applyDateTypes(facts, dateTypesFrom(facts));
+  assert.equal(resolved[0].attendanceClass, "WORKED");
+  assert.equal(resolved[0].dayType, "WORKING");
+});
+
+test("a day flagged as a holiday on every row is a holiday even without an HL status", () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    workDate: "2026-09-04",
+    idNo: `E${index}`,
+    isWeeklyOff: 0,
+    isHoliday: 1,
+    originalStatus: "A",
+    acceptedManHours: 0,
+    acceptedOt: 0,
+    rawManHours: 0,
+    records: 1,
+  }));
+  assert.equal(dateTypesFrom(aggregateRegisterRows(rows)).get("2026-09-04"), "HOLIDAY");
+});
+
+test("an HL status is the source's own classification and still decides the date", () => {
+  const facts = aggregateRegisterRows([
+    { workDate: "2026-08-15", idNo: "E1", isWeeklyOff: 0, originalStatus: "P/HL", acceptedManHours: 8, acceptedOt: 8, rawManHours: 8, records: 1 },
+    { workDate: "2026-08-15", idNo: "E2", isWeeklyOff: 0, originalStatus: "A", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0, records: 1 },
+    { workDate: "2026-08-15", idNo: "E3", isWeeklyOff: 0, originalStatus: "A", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0, records: 1 },
+  ]);
+  assert.equal(dateTypesFrom(facts).get("2026-08-15"), "HOLIDAY");
+  const resolved = applyDateTypes(facts, dateTypesFrom(facts));
+  assert.equal(resolved[0].attendanceClass, "WORKED_HOLIDAY");
+  assert.equal(resolved[1].attendanceClass, "OFF");
 });
