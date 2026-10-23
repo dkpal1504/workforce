@@ -391,6 +391,18 @@ export async function describeRegisterSource(): Promise<{
   /** Non-empty only when the configured view lacks a required column: where those columns DO live. */
   missingColumns: string[];
   candidates: SourceCandidate[];
+  /**
+   * What the key columns actually CONTAIN over the last 30 days of the view, not what we assume.
+   * `isWeeklyOff` is the one that can silently invert the whole report (a per-man roster flag read as
+   * "the yard was closed" collapsed every date to weekly off on the first production run).
+   */
+  census: {
+    windowFrom: string | null;
+    windowTo: string | null;
+    weeklyOffValues: Array<{ value: string; rows: number }>;
+    statusValues: Array<{ value: string; rows: number }>;
+    idPatterns: { alphanumeric: number; numericOnly: number; other: number };
+  };
   sql: string;
 }> {
   const config = attendanceSourceConfig();
@@ -429,6 +441,7 @@ export async function describeRegisterSource(): Promise<{
     }
     const missingColumns = missingRequiredColumns(columns.map((column) => column.name));
     const candidates = missingColumns.length ? await findColumnsAcrossDatabases(pool, missingColumns) : [];
+    const census = await valueCensusOnPool(pool, missingColumns.length > 0);
     return {
       view: registerViewName(),
       columns,
@@ -436,6 +449,7 @@ export async function describeRegisterSource(): Promise<{
       mapping: suggestColumnNames(columns.map((column) => column.name)),
       missingColumns,
       candidates,
+      census,
       sql: registerSql(),
     };
   } finally {
@@ -538,4 +552,82 @@ async function findColumnsAcrossDatabases(
     }
   }
   return found.sort((a, b) => b.matched.length - a.matched.length || a.table.localeCompare(b.table));
+}
+
+/**
+ * The distribution of the values we make decisions on, over the view's last 30 days.
+ *
+ * WHY: "every date came out as a weekly off" is not answerable from a sample row — it is a question about
+ * how many rows carry 1 versus 0. This prints exactly that, plus the shape of the identifiers (numeric
+ * badge ids vs letter-prefixed ecNos), which is the other thing that silently breaks the join to
+ * `employees`.
+ */
+async function valueCensusOnPool(
+  pool: sql.ConnectionPool,
+  skip: boolean
+): Promise<{
+  windowFrom: string | null;
+  windowTo: string | null;
+  weeklyOffValues: Array<{ value: string; rows: number }>;
+  statusValues: Array<{ value: string; rows: number }>;
+  idPatterns: { alphanumeric: number; numericOnly: number; other: number };
+}> {
+  const empty = {
+    windowFrom: null,
+    windowTo: null,
+    weeklyOffValues: [],
+    statusValues: [],
+    idPatterns: { alphanumeric: 0, numericOnly: 0, other: 0 },
+  };
+  if (skip) return empty; // the view lacks the columns; a census of them would fail too.
+
+  const { schema, table } = splitViewName(registerViewName());
+  const columns = registerColumns();
+  const qualified = `[${schema}].[${table}]`;
+  const dateColumn = `[${columns.date}]`;
+  const window = await pool.request().query(
+    `SELECT CONVERT(varchar(10), MIN(${dateColumn}), 23) AS windowFrom, CONVERT(varchar(10), MAX(${dateColumn}), 23) AS windowTo, ` +
+      `CONVERT(varchar(10), DATEADD(day, -30, MAX(${dateColumn})), 23) AS since FROM ${qualified}`
+  );
+  const row = (window.recordset as Array<Record<string, unknown>>)?.[0] ?? {};
+  const windowFrom = row.windowFrom == null ? null : String(row.windowFrom);
+  const windowTo = row.windowTo == null ? null : String(row.windowTo);
+  const since = row.since == null ? null : String(row.since);
+  if (!since) return { ...empty, windowFrom, windowTo };
+
+  const distribution = async (column: string): Promise<Array<{ value: string; rows: number }>> => {
+    const request = pool.request();
+    request.input("since", sql.VarChar(10), since);
+    const response = await request.query(
+      `SELECT CONVERT(varchar(40), ${column}) AS value, COUNT(*) AS rows FROM ${qualified} ` +
+        `WHERE CAST(${dateColumn} AS date) >= @since GROUP BY CONVERT(varchar(40), ${column}) ORDER BY COUNT(*) DESC`
+    );
+    return (((response.recordset as Array<Record<string, unknown>>) || []).map((entry) => ({
+      value: String(entry.value ?? "(null)"),
+      rows: Number(entry.rows ?? 0),
+    })));
+  };
+
+  const idRequest = pool.request();
+  idRequest.input("since", sql.VarChar(10), since);
+  const ids = await idRequest.query(
+    `SELECT ` +
+      `SUM(CASE WHEN [${columns.id}] LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS alphanumeric, ` +
+      `SUM(CASE WHEN [${columns.id}] NOT LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS numericOnly, ` +
+      `SUM(CASE WHEN [${columns.id}] IS NULL OR LTRIM(RTRIM([${columns.id}])) = '' THEN 1 ELSE 0 END) AS other ` +
+      `FROM ${qualified} WHERE CAST(${dateColumn} AS date) >= @since`
+  );
+  const idRow = (ids.recordset as Array<Record<string, unknown>>)?.[0] ?? {};
+
+  return {
+    windowFrom,
+    windowTo,
+    weeklyOffValues: await distribution(`[${columns.weeklyOff}]`),
+    statusValues: await distribution(`[${columns.status}]`),
+    idPatterns: {
+      alphanumeric: Number(idRow.alphanumeric ?? 0),
+      numericOnly: Number(idRow.numericOnly ?? 0),
+      other: Number(idRow.other ?? 0),
+    },
+  };
 }

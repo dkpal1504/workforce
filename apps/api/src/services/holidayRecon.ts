@@ -165,18 +165,34 @@ export function dayKey(left: number | string, workDate: string): string {
 /**
  * The DATE-LEVEL day type, resolved once for every consumer.
  *
- * HOLIDAY beats WEEKLY_OFF beats WORKING: a date is non-working if ANY of its rows says so. A skeleton
- * crew present on a declared holiday does not turn the holiday into a working day — that is the whole
- * reason this feature exists. Per-man nuance lives in `attendanceClass`, not here.
+ * TWO DIFFERENT RULES, because the two signals have different strength:
+ *
+ *   HOLIDAY — ANY row carrying an `HL` status wins. A skeleton crew present on a declared holiday does not
+ *   turn the holiday into a working day; that is the whole reason this feature exists.
+ *
+ *   WEEKLY_OFF — a MAJORITY of the day's rows must carry the weekly-off flag. The flag is per MAN (rosters
+ *   and shift patterns differ), so "any row" would let one man on a Sunday roster declare the whole yard
+ *   closed. This was a real defect: the first production run classified all 90 dates as weekly off while
+ *   the same rows' classes said WORKED, so coverage denominators collapsed to zero and the report
+ *   contradicted itself.
+ *
+ * A date with no rows at all stays WORKING and is reported as "not covered"; it is never silently assumed
+ * closed.
  */
 export function dateTypesFrom(facts: readonly AttendanceDayFact[]): Map<string, DayType> {
-  const byDate = new Map<string, DayType>();
+  const roll = new Map<string, { rows: number; weeklyOffRows: number; holidayRows: number }>();
   for (const fact of facts) {
-    const current = byDate.get(fact.workDate);
-    if (current === "HOLIDAY") continue;
-    if (fact.dayType === "HOLIDAY") byDate.set(fact.workDate, "HOLIDAY");
-    else if (fact.dayType === "WEEKLY_OFF") byDate.set(fact.workDate, "WEEKLY_OFF");
-    else if (current == null) byDate.set(fact.workDate, "WORKING");
+    const entry = roll.get(fact.workDate) ?? { rows: 0, weeklyOffRows: 0, holidayRows: 0 };
+    entry.rows += 1;
+    if (fact.dayType === "WEEKLY_OFF" || fact.isWeeklyOff) entry.weeklyOffRows += 1;
+    if (fact.dayType === "HOLIDAY") entry.holidayRows += 1;
+    roll.set(fact.workDate, entry);
+  }
+  const byDate = new Map<string, DayType>();
+  for (const [workDate, entry] of roll) {
+    if (entry.holidayRows > 0) byDate.set(workDate, "HOLIDAY");
+    else if (entry.weeklyOffRows * 2 > entry.rows) byDate.set(workDate, "WEEKLY_OFF");
+    else byDate.set(workDate, "WORKING");
   }
   return byDate;
 }

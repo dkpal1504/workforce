@@ -281,3 +281,32 @@ test("fractions never divide by zero", () => {
   assert.equal(fraction(1, 0), 0);
   assert.equal(fraction(1, 3), 0.3333);
 });
+
+test("one man on a Sunday roster does not close the yard", () => {
+  // The production defect: `isWeeklyOff` is a PER-MAN flag, so "any row says weekly off" turned all 90
+  // dates into weekly off while the same rows' classes said WORKED -> denominators of zero.
+  const mixed = aggregateRegisterRows([
+    // four men working a normal Tuesday, one man whose roster has that day off
+    { workDate: "2026-10-06", idNo: "E1", isWeeklyOff: 0, originalStatus: "P", acceptedManHours: 8, acceptedOt: 0, rawManHours: 8, records: 1 },
+    { workDate: "2026-10-06", idNo: "E2", isWeeklyOff: 0, originalStatus: "P", acceptedManHours: 8, acceptedOt: 0, rawManHours: 8, records: 1 },
+    { workDate: "2026-10-06", idNo: "E3", isWeeklyOff: 0, originalStatus: "P", acceptedManHours: 8, acceptedOt: 0, rawManHours: 8, records: 1 },
+    { workDate: "2026-10-06", idNo: "E4", isWeeklyOff: 0, originalStatus: "P", acceptedManHours: 8, acceptedOt: 0, rawManHours: 8, records: 1 },
+    { workDate: "2026-10-06", idNo: "E5", isWeeklyOff: 1, originalStatus: "A", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0, records: 1 },
+  ]);
+  assert.equal(dateTypesFrom(mixed).get("2026-10-06"), "WORKING");
+
+  // A genuine weekly off: the majority carries the flag.
+  const closed = aggregateRegisterRows([
+    { workDate: "2026-10-04", idNo: "E1", isWeeklyOff: 1, originalStatus: "A", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0, records: 1 },
+    { workDate: "2026-10-04", idNo: "E2", isWeeklyOff: 1, originalStatus: "A", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0, records: 1 },
+    { workDate: "2026-10-04", idNo: "E3", isWeeklyOff: 0, originalStatus: "P/WO", acceptedManHours: 6, acceptedOt: 6, rawManHours: 6, records: 1 },
+  ]);
+  assert.equal(dateTypesFrom(closed).get("2026-10-04"), "WEEKLY_OFF", "two of three flagged is a weekly off");
+
+  // A holiday needs only ONE row: an HL status is decisive, even with a skeleton crew present.
+  const holiday = aggregateRegisterRows([
+    { workDate: "2026-10-02", idNo: "E1", isWeeklyOff: 0, originalStatus: "A/HL", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0, records: 1 },
+    { workDate: "2026-10-02", idNo: "E2", isWeeklyOff: 0, originalStatus: "P", acceptedManHours: 8, acceptedOt: 0, rawManHours: 8, records: 1 },
+  ]);
+  assert.equal(dateTypesFrom(holiday).get("2026-10-02"), "HOLIDAY");
+});
