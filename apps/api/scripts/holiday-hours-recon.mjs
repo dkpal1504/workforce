@@ -113,6 +113,10 @@ async function main() {
     lines.push(`--   CardType : ${census.cardTypeValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}`);
     lines.push(`--   isHoliday : ${census.holidayValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}`);
     lines.push(
+      `--   IsTerminated : ${census.terminatedValues.map((entry) => `${entry.value}=${entry.rows}`).join("  ") || "(none)"}` +
+        "   (NULL is treated as 0 = not terminated; the filter is applied before this window)"
+    );
+    lines.push(
       `--   FUTURE-DATED rows (ignored by the reports): ${census.futureRows}   max date in view: ${census.maxDateAny ?? "?"}`
     );
     lines.push(`--   IDNo shape  : alphanumeric=${census.idPatterns.alphanumeric}  numeric-only=${census.idPatterns.numericOnly}  empty=${census.idPatterns.other}`);

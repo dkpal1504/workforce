@@ -56,6 +56,7 @@ export function registerColumns() {
     cardType: envValue("ATTENDANCE_REGISTER_CARD_TYPE_COLUMN") || "CardType",
     isHoliday: envValue("ATTENDANCE_DB_HOLIDAY_COLUMN") || "isHoliday",
     isLeave: envValue("ATTENDANCE_DB_LEAVE_COLUMN") || "isLeave",
+    isTerminated: envValue("ATTENDANCE_REGISTER_TERMINATED_COLUMN") || "IsTerminated",
   };
 }
 
@@ -124,13 +125,27 @@ export function clampRangeToToday(
   return { from: range.from, to, requestedTo: range.to, clamped: to !== range.to };
 }
 
-/** `IN ('ASSOCIATES', 'ASSOCIATE SEZ')` on the upper-cased column, or "" when the filter is off. */
-export function registerCardTypeFilter(): string {
+/**
+ * The population filter: card type = associates, and the worker is not terminated.
+ *
+ * Customer's rule (2026-10-23): `[CardType]` must be `Associates` or `ASSOCIATE SEZ`, and `[IsTerminated]`
+ * must be 0. A terminated worker has no attendance rows, so leaving his rows in would put a man on the
+ * roster who can never be present — which reads in the reports as a permanent absence.
+ *
+ * NULL IS TREATED AS NOT TERMINATED (`ISNULL(col,0) = 0`). `IsTerminated` is a nullable bit, and `= 0`
+ * alone would silently drop every row whose flag is unset — the same three-valued-logic trap this codebase
+ * already documents for `inOutSource != 'MANUAL'`. If the business wants unset treated as terminated, that
+ * is one word here; the census prints the distribution so the choice is visible, not assumed.
+ */
+export function registerPopulationFilter(): string {
   const cardTypes = registerCardTypes();
-  if (!cardTypes.length) return "";
-  const column = quoteIdentifier(registerColumns().cardType, "ATTENDANCE_REGISTER_CARD_TYPE_COLUMN");
-  const values = cardTypes.map((value) => `'${value.toUpperCase()}'`).join(", ");
-  return ` AND UPPER(LTRIM(RTRIM(${column}))) IN (${values})`;
+  const terminatedColumn = quoteIdentifier(registerColumns().isTerminated, "ATTENDANCE_REGISTER_TERMINATED_COLUMN");
+  const cardClause = cardTypes.length
+    ? ` AND UPPER(LTRIM(RTRIM(${quoteIdentifier(registerColumns().cardType, "ATTENDANCE_REGISTER_CARD_TYPE_COLUMN")}))) IN (${cardTypes
+        .map((value) => `'${value.toUpperCase()}'`)
+        .join(", ")})`
+    : "";
+  return `${cardClause} AND ISNULL(${terminatedColumn}, 0) = 0`;
 }
 
 /**
@@ -166,7 +181,7 @@ export function registerSql(): string {
     `SUM(${rawHours}) AS RawManHours, ` +
     `COUNT(*) AS Records ` +
     `FROM ${view} WHERE CAST(${date} AS date) = CAST(@workDate AS date)` +
-    registerCardTypeFilter() +
+    registerPopulationFilter() +
     ` GROUP BY ${id}`
   );
 }
@@ -417,6 +432,7 @@ export const REGISTER_REQUIRED_COLUMNS = [
   "OriginalStatus",
   "AcceptedManHrs",
   "AcceptedOT",
+  "IsTerminated",
 ] as const;
 
 /** Which of the required columns the given column list does NOT have (case-insensitive). PURE. */
@@ -486,6 +502,8 @@ export async function describeRegisterSource(): Promise<{
     /** The population filter in the data's own spelling, so a mismatch is visible rather than silent. */
     cardTypeValues: Array<{ value: string; rows: number }>;
     holidayValues: Array<{ value: string; rows: number }>;
+    /** 0 / 1 / NULL for the termination flag, so "NULL means not terminated" is a visible decision. */
+    terminatedValues: Array<{ value: string; rows: number }>;
     /** Rows dated AFTER today. LabourWorks pre-generates an absence row per worker for future dates. */
     futureRows: number;
     maxDateAny: string | null;
@@ -519,14 +537,14 @@ export async function describeRegisterSource(): Promise<{
     let sample: Array<Record<string, unknown>> = [];
     try {
       const response = await pool.request().query(
-        `SELECT TOP 5 * FROM [${schema}].[${table}] WHERE 1=1${registerCardTypeFilter()} ` +
+        `SELECT TOP 5 * FROM [${schema}].[${table}] WHERE 1=1${registerPopulationFilter()} ` +
           `ORDER BY [${registerColumns().date}] DESC`
       );
       sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
     } catch {
       // The configured date column may itself be wrong; a sample without ORDER BY is still useful.
       const response = await pool.request().query(
-        `SELECT TOP 5 * FROM [${schema}].[${table}] WHERE 1=1${registerCardTypeFilter()}`
+        `SELECT TOP 5 * FROM [${schema}].[${table}] WHERE 1=1${registerPopulationFilter()}`
       );
       sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
     }
@@ -664,6 +682,7 @@ async function valueCensusOnPool(
   statusValues: Array<{ value: string; rows: number }>;
   cardTypeValues: Array<{ value: string; rows: number }>;
   holidayValues: Array<{ value: string; rows: number }>;
+  terminatedValues: Array<{ value: string; rows: number }>;
   futureRows: number;
   maxDateAny: string | null;
   idPatterns: { alphanumeric: number; numericOnly: number; other: number };
@@ -675,6 +694,7 @@ async function valueCensusOnPool(
     statusValues: [],
     cardTypeValues: [],
     holidayValues: [],
+    terminatedValues: [],
     futureRows: 0,
     maxDateAny: null,
     idPatterns: { alphanumeric: 0, numericOnly: 0, other: 0 },
@@ -688,7 +708,7 @@ async function valueCensusOnPool(
   // The census describes THIS APP'S population, so the same card-type filter applies. Without it the
   // weekly-off majority would be computed over the whole yard (contractors included) — the very mistake
   // that made every date look closed.
-  const filter = registerCardTypeFilter();
+  const filter = registerPopulationFilter();
   // THE WINDOW IS ANCHORED ON TODAY, not on MAX(Date). LabourWorks pre-generates a row per worker for
   // FUTURE dates (observed: every worker absent on 2026-12-31), so MAX(Date) sits weeks ahead and a
   // "last 30 days" window built from it describes the future — which is exactly how the first census
@@ -742,6 +762,7 @@ async function valueCensusOnPool(
     statusValues: await distribution(`[${columns.status}]`),
     cardTypeValues: await distribution(`[${columns.cardType}]`),
     holidayValues: await distribution(`[${columns.isHoliday}]`),
+    terminatedValues: await distribution(`[${columns.isTerminated}]`),
     futureRows,
     maxDateAny,
     idPatterns: {

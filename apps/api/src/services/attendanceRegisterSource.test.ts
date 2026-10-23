@@ -100,32 +100,44 @@ test("the four required columns are named, and their absence is what sends us lo
     "OriginalStatus",
     "AcceptedManHrs",
     "AcceptedOT",
+    "IsTerminated",
   ]);
   // Case-insensitively complete -> nothing missing.
   assert.deepEqual(
-    missingRequiredColumns(["isweeklyoff", "ISHOLIDAY", "ORIGINALSTATUS", "acceptedmanhrs", "AcceptedOT"]),
+    missingRequiredColumns([
+      "isweeklyoff",
+      "ISHOLIDAY",
+      "ORIGINALSTATUS",
+      "acceptedmanhrs",
+      "AcceptedOT",
+      "isterminated",
+    ]),
     []
   );
   // Partially complete: only the absent ones are reported.
   assert.deepEqual(
-    missingRequiredColumns(["isWeeklyOff", "isHoliday", "OriginalStatus", "AcceptedManHrs"]),
+    missingRequiredColumns(["isWeeklyOff", "isHoliday", "OriginalStatus", "AcceptedManHrs", "IsTerminated"]),
     ["AcceptedOT"]
   );
 });
 
 test("the population filter targets the associates, and cannot be injected through", async () => {
-  const { registerCardTypeFilter, registerCardTypes } = await import("./attendanceRegisterSource");
+  const { registerPopulationFilter, registerCardTypes } = await import("./attendanceRegisterSource");
   const original = process.env.ATTENDANCE_REGISTER_CARD_TYPES;
   try {
     delete process.env.ATTENDANCE_REGISTER_CARD_TYPES;
     assert.deepEqual(registerCardTypes(), ["Associates", "ASSOCIATE SEZ"]);
-    const filter = registerCardTypeFilter();
+    const filter = registerPopulationFilter();
     assert.match(filter, /UPPER\(LTRIM\(RTRIM\(\[CardType\]\)\)\) IN \('ASSOCIATES', 'ASSOCIATE SEZ'\)/);
+    // Terminated workers are excluded, and NULL is NOT silently treated as terminated.
+    assert.match(filter, /ISNULL\(\[IsTerminated\], 0\) = 0/);
 
-    // ALL disables the filter; it is never the fall-through of an empty value.
+    // ALL disables the CARD-TYPE clause only; termination still applies.
     process.env.ATTENDANCE_REGISTER_CARD_TYPES = "ALL";
     assert.deepEqual(registerCardTypes(), []);
-    assert.equal(registerCardTypeFilter(), "");
+    const wildcard = registerPopulationFilter();
+    assert.doesNotMatch(wildcard, /CardType/);
+    assert.match(wildcard, /ISNULL\(\[IsTerminated\], 0\) = 0/);
 
     // A value that could break out of the literal is refused outright.
     process.env.ATTENDANCE_REGISTER_CARD_TYPES = "Associates') OR 1=1 --";
