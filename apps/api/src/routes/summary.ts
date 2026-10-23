@@ -406,6 +406,197 @@ summaryRouter.get("/decisions", async (req, res) => {
   res.json({ items });
 });
 
+/**
+ * The date window and the approval stage, shared by the screen and the CSV.
+ *
+ * `from`/`to` are the screen's contract now: a user picks a range, not a frequency. `date`+`frequency` are
+ * still honoured when no range is given, so an older bundle or a bookmarked link keeps working rather than
+ * silently reporting one day as if it were the whole period.
+ */
+function summaryWindow(req: { query: Record<string, unknown> }): { start: Date; end: Date; error?: string } {
+  const fromStr = String(req.query.from ?? "");
+  const toStr = String(req.query.to ?? "");
+  const isDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+  if (isDate(fromStr) && isDate(toStr)) {
+    const start = parseDateOnly(fromStr);
+    const end = parseDateOnly(toStr);
+    if (start.getTime() > end.getTime()) return { start, end, error: "from must be on or before to" };
+    return { start, end };
+  }
+
+  const frequency = String(req.query.frequency || "daily") as "daily" | "weekly" | "monthly";
+  const dateStr = String(req.query.date || "");
+  if (!dateStr) return { start: new Date(), end: new Date(), error: "from and to are required (YYYY-MM-DD)" };
+  const anchor = parseDateOnly(dateStr);
+  return { start: startOfFrequency(anchor, frequency), end: endOfFrequency(anchor, frequency) };
+}
+
+/** HOD = everything a Section HOD has signed, including what a PM has since completed. PM = PM only. */
+function approvedStatusesFor(req: { query: Record<string, unknown> }): string[] {
+  return String(req.query.approvedBy ?? "HOD").toUpperCase() === "PM"
+    ? ["PM_APPROVED"]
+    : ["HOD_APPROVED", "PM_APPROVED"];
+}
+
+/**
+ * GET /api/summary/export.csv — every row behind the Summary, for the range and stage on screen.
+ *
+ * The file states ONE ROW PER TIMESHEET ENTRY (plus one per payroll allocation day), not the aggregated
+ * grid: a spreadsheet that reproduces the screen's cells is only useful for printing it, while the rows are
+ * what somebody reconciles against. Hours are counted the way the screen counts them — a shift slot is two
+ * hours, an hour slot one, an allocation day two — so the column totals add up to the grid's grand total.
+ *
+ * THE SCOPE IS THE SAME SCOPE. The role branches below mirror the screen's exactly; if one changes, this
+ * one changes with it, which is why they sit next to each other in this file.
+ */
+summaryRouter.get("/export.csv", async (req, res) => {
+  const window = summaryWindow(req);
+  if (window.error) return res.status(400).json({ error: window.error });
+  const { start, end } = window;
+  const statuses = approvedStatusesFor(req);
+  const approvedBy = String(req.query.approvedBy ?? "HOD").toUpperCase() === "PM" ? "PM" : "HOD";
+
+  let projectCodes: string[] | null = null;
+  if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
+    projectCodes = req.query.projectIds.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  }
+
+  const role = req.user!.role;
+  const userId = req.user!.id;
+  const employeeId = req.user!.employeeId;
+  const departmentId = req.user!.departmentId ?? -1;
+  const departmentWide = isDepartmentWideViewer(role, req.user!.sectionScope);
+
+  let entryScope: Prisma.TimesheetEntryWhereInput = { status: { in: statuses } };
+  let allocationScope: Prisma.EmployeeAllocationWhereInput = { allocationDay: { status: { in: statuses } } };
+
+  if (role === "EMPLOYEE") {
+    entryScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
+    allocationScope = { allocationDay: { employeeId: employeeId ?? -1, status: "PM_APPROVED" } };
+  } else if (role === "SUPERVISOR") {
+    entryScope = { taggedById: userId, status: { in: statuses } };
+    allocationScope = { allocatedById: userId, allocationDay: { status: { in: statuses } } };
+  } else if (departmentWide) {
+    entryScope = {
+      status: { in: statuses },
+      OR: [{ departmentId }, { departmentId: null, employee: { departmentId } }],
+    };
+    allocationScope = {
+      allocationDay: { status: { in: statuses } },
+      OR: [{ departmentId }, { departmentId: null, employee: { departmentId } }],
+    };
+  } else if (role === "HOD" || role === "PM") {
+    entryScope = {
+      status: { in: statuses },
+      timesheetDay: { approvals: { some: { approverId: userId } } },
+    };
+    allocationScope = {
+      allocationDay: { status: { in: statuses }, approvals: { some: { approverId: userId } } },
+    };
+  } else if (role === "FINANCE") {
+    entryScope = { status: "PM_APPROVED" };
+    allocationScope = { allocationDay: { status: "PM_APPROVED" } };
+  }
+
+  const [entries, allocations, rates] = await Promise.all([
+    prisma.timesheetEntry.findMany({
+      where: { workDate: { gte: start, lte: end }, AND: [{ OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] }, entryScope] },
+      include: {
+        employee: { include: { department: true } },
+        taggedBy: true,
+        project: true,
+        department: true,
+        jobOrder: { include: { project: true } },
+        timesheetDay: { include: { approvals: { include: { approver: true }, orderBy: { createdAt: "asc" } } } },
+      },
+      orderBy: [{ workDate: "asc" }, { id: "asc" }],
+    }),
+    prisma.employeeAllocation.findMany({
+      where: { workDate: { gte: start, lte: end }, ...allocationScope },
+      include: { employee: { include: { department: true } }, allocatedBy: true, project: true, department: true, jobOrder: true, allocationDay: true },
+      orderBy: [{ workDate: "asc" }, { id: "asc" }],
+    }),
+    prisma.costRate.findMany({ where: { effectiveFrom: { lte: end }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: start } }] }, orderBy: { effectiveFrom: "desc" } }),
+  ]);
+
+  const rateFor = (category: string) => {
+    const row = rates.find((r) => r.category === category);
+    return row ? Number(row.ratePerHour) : 0;
+  };
+  const day = (value: Date | null) => (value ? formatDateOnly(value) : "");
+  const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const kept = (codeKey: string | null | undefined) =>
+    !projectCodes?.length || (codeKey != null && projectCodes.includes(String(codeKey).toUpperCase()));
+
+  const header = [
+    "Source", "Work date", "Project", "Job order code", "Job order", "Department", "Employee", "Category",
+    "Tagged / allocated by", "Status", "Regular hours", "OT hours", "Cost", "Approved by HOD on",
+    "HOD approver", "Approved by PM on", "PM approver", "Remarks",
+  ];
+
+  const rows: string[][] = [];
+  for (const entry of entries) {
+    const project = entry.project ?? entry.jobOrder?.project ?? null;
+    if (!kept(project?.colorKey)) continue;
+    const approvals = entry.timesheetDay?.approvals ?? [];
+    const hod = approvals.find((a) => a.action === "APPROVE" && a.approver.role === "HOD");
+    const pm = approvals.find((a) => a.action === "APPROVE" && a.approver.role === "PM");
+    const regular = entry.otHours != null ? 0 : entry.shiftSlot != null ? 2 : entry.hourSlot != null ? 1 : 0;
+    const ot = entry.otHours ?? 0;
+    rows.push([
+      "TIMESHEET",
+      day(entry.workDate),
+      project?.name ?? "",
+      entry.jobOrder?.code ?? "",
+      entry.jobOrder?.name ?? "",
+      entry.department?.name ?? entry.employee.department.name,
+      entry.employee.name,
+      entry.employee.category,
+      entry.taggedBy.name,
+      entry.status,
+      String(regular),
+      String(ot),
+      (regular * rateFor(entry.employee.category) + ot * rateFor(entry.employee.category)).toFixed(2),
+      day(hod?.createdAt ?? null),
+      hod?.approver.name ?? "",
+      day(pm?.createdAt ?? null),
+      pm?.approver.name ?? "",
+      entry.timesheetDay?.remarks ?? "",
+    ]);
+  }
+
+  for (const allocation of allocations) {
+    if (!kept(allocation.project?.colorKey)) continue;
+    rows.push([
+      "ALLOCATION",
+      day(allocation.workDate),
+      allocation.project?.name ?? "",
+      allocation.jobOrder?.code ?? "",
+      allocation.jobOrder?.name ?? "",
+      allocation.department?.name ?? allocation.employee.department.name,
+      allocation.employee.name,
+      allocation.employee.category,
+      allocation.allocatedBy.name,
+      allocation.allocationDay?.status ?? "",
+      "2",
+      "0",
+      (2 * rateFor(allocation.employee.category)).toFixed(2),
+      "",
+      "",
+      "",
+      "",
+      "",
+    ]);
+  }
+
+  const csv = [header, ...rows].map((line) => line.map(quote).join(",")).join("\r\n");
+  const filename = `summary-${day(start)}_to_${day(end)}-${approvedBy.toLowerCase()}.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send("\uFEFF" + csv);
+});
+
 summaryRouter.get("/", async (req, res) => {
   const frequency = (String(req.query.frequency || "daily") as "daily" | "weekly" | "monthly");
   const groupBy = String(req.query.groupBy || "supervisor") as
@@ -414,12 +605,10 @@ summaryRouter.get("/", async (req, res) => {
     | "department"
     | "totals";
   const view = String(req.query.view || "hours") as "hours" | "cost";
-  const dateStr = String(req.query.date || "");
-  if (!dateStr) return res.status(400).json({ error: "date required" });
-
-  const anchor = parseDateOnly(dateStr);
-  const start = startOfFrequency(anchor, frequency);
-  const end = endOfFrequency(anchor, frequency);
+  const window = summaryWindow(req);
+  if (window.error) return res.status(400).json({ error: window.error });
+  const { start, end } = window;
+  const approvedBy = String(req.query.approvedBy ?? "HOD").toUpperCase() === "PM" ? "PM" : "HOD";
 
   let projectIds: string[] | undefined;
   if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
@@ -431,7 +620,10 @@ summaryRouter.get("/", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
   const employeeId = req.user!.employeeId;
-  const visibleStatuses = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
+  // THE STAGE THE USER TICKED, and only that stage. This used to also admit REJECTED / RETURNED rows,
+  // which meant a rejected day contributed regular hours to an "approved hours" report. The radio is now
+  // the definition: HOD = signed by the Section HOD (PM completion included), PM = completed by the PM.
+  const visibleStatuses = approvedStatusesFor(req);
   let entryScope: Prisma.TimesheetEntryWhereInput = { status: { in: visibleStatuses } };
   if (role === "EMPLOYEE") entryScope = { employeeId: employeeId ?? -1, status: "PM_APPROVED" };
   else if (role === "SUPERVISOR") entryScope = {
@@ -779,6 +971,8 @@ summaryRouter.get("/", async (req, res) => {
     groupBy,
     view,
     frequency,
+    /** Which stage produced these hours — echoed so the screen can say it in words. */
+    approvedBy,
     scope: role === "SUPERVISOR" ? "own" : isDepartmentViewRole(role) ? "department" : "organization",
     dateFrom: start.toISOString().slice(0, 10),
     dateTo: end.toISOString().slice(0, 10),

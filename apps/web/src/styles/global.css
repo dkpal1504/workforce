@@ -2147,3 +2147,13 @@ tr:hover .pf-escalate-btn,
 .hr-table tr:last-child td { border-bottom: 0; }
 .hr-stale { color: var(--danger); font-weight: 600; }
 .hr-actions { display: flex; gap: 6px; }
+
+
+/* ---- Summary: the range filter, the approval-stage radios and the CSV link ----------------------- */
+.filter-field--stage { min-width: 260px; }
+.stage-radios { display: flex; gap: 14px; align-items: center; padding: 6px 0; }
+.stage-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-muted); cursor: pointer; }
+.stage-radio input { accent-color: var(--primary); }
+.stage-radio--on { color: var(--text); font-weight: 600; }
+.csv-link { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 600; color: var(--primary); text-decoration: none; border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; background: var(--bg-elevated); }
+.csv-link:hover { border-color: var(--primary); }

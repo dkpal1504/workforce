@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../api/client";
+import { api, getToken } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { todayDateString } from "../utils/date";
 import { formatDay } from "./formatDate";
@@ -86,6 +86,15 @@ export function SummaryPage() {
   // Project Summary state
   const [date, setDate] = useState(todayDateString);
   const [frequency, setFrequency] = useState<Frequency>("daily");
+  // The screen's contract is a RANGE now: the frequency picker was a hidden assumption about which days
+  // the reader meant, and two dates say it without guessing.
+  const [fromDate, setFromDate] = useState(() => {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+  });
+  const [toDate, setToDate] = useState(todayDateString);
+  /** Which approval stage the hours are counted at. HOD is the default: it is the first signature. */
+  const [approvedBy, setApprovedBy] = useState<"HOD" | "PM">("HOD");
   const [groupBy, setGroupBy] = useState<GroupBy>("supervisor");
   const [view, setView] = useState<View>("hours");
   const [allProjects, setAllProjects] = useState<Project[]>([]);
@@ -137,8 +146,9 @@ export function SummaryPage() {
     setError("");
     try {
       const qs = new URLSearchParams({
-        date,
-        frequency,
+        from: fromDate,
+        to: toDate,
+        approvedBy,
         groupBy,
         view,
       });
@@ -163,7 +173,7 @@ export function SummaryPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load summary");
     }
-  }, [date, frequency, groupBy, view, selectedProjectIds]);
+  }, [fromDate, toDate, approvedBy, groupBy, view, selectedProjectIds]);
 
   useEffect(() => {
     if (tab === "project") load();
@@ -318,12 +328,22 @@ export function SummaryPage() {
         <>
           <div className="filter-row">
             <div className="filter-field">
-              <label>Frequency</label>
-              <select value={frequency} onChange={(e) => setFrequency(e.target.value as Frequency)}>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
+              <label>From Date</label>
+              <input
+                type="date"
+                value={fromDate}
+                max={toDate}
+                onChange={(e) => setFromDate(e.target.value)}
+              />
+            </div>
+            <div className="filter-field">
+              <label>To Date</label>
+              <input
+                type="date"
+                value={toDate}
+                min={fromDate}
+                onChange={(e) => setToDate(e.target.value)}
+              />
             </div>
             <div className="filter-field">
               <label>Select Projects</label>
@@ -343,9 +363,72 @@ export function SummaryPage() {
                 ))}
               </select>
             </div>
+
+            <div className="filter-field filter-field--stage" role="radiogroup" aria-label="Approval stage">
+              <label>Approved by</label>
+              <div className="stage-radios">
+                {(
+                  [
+                    ["HOD", "Approved by HOD"],
+                    ["PM", "Approved by PM"],
+                  ] as const
+                ).map(([value, text]) => (
+                  <label key={value} className={`stage-radio${approvedBy === value ? " stage-radio--on" : ""}`}>
+                    <input
+                      type="radio"
+                      name="approvedBy"
+                      value={value}
+                      checked={approvedBy === value}
+                      onChange={() => setApprovedBy(value)}
+                    />
+                    {text}
+                  </label>
+                ))}
+              </div>
+            </div>
+
             <div className="filter-field">
-              <label>Date</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <label>&nbsp;</label>
+              <a
+                className="csv-link"
+                href={`/api/summary/export.csv?${new URLSearchParams({
+                  from: fromDate,
+                  to: toDate,
+                  approvedBy,
+                  ...(selectedProjectIds.length ? { projectIds: selectedProjectIds.join(",") } : {}),
+                }).toString()}`}
+                onClick={(event) => {
+                  // The link is a plain GET, but the session lives in sessionStorage, so the browser cannot
+                  // attach the token by itself: fetch it, then hand the blob to the browser.
+                  event.preventDefault();
+                  void (async () => {
+                    try {
+                      const token = getToken();
+                      const query = new URLSearchParams({
+                        from: fromDate,
+                        to: toDate,
+                        approvedBy,
+                        ...(selectedProjectIds.length ? { projectIds: selectedProjectIds.join(",") } : {}),
+                      }).toString();
+                      const response = await fetch(`/api/summary/export.csv?${query}`, {
+                        headers: token ? { Authorization: `Bearer ${token}` } : {},
+                      });
+                      if (!response.ok) throw new Error(`Export failed (${response.status}).`);
+                      const blob = await response.blob();
+                      const url = URL.createObjectURL(blob);
+                      const anchor = document.createElement("a");
+                      anchor.href = url;
+                      anchor.download = `summary-${fromDate}_to_${toDate}-${approvedBy.toLowerCase()}.csv`;
+                      anchor.click();
+                      URL.revokeObjectURL(url);
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Export failed.");
+                    }
+                  })();
+                }}
+              >
+                ⤓ Export CSV
+              </a>
             </div>
           </div>
 
