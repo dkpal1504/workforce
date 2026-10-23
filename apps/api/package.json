@@ -12,7 +12,9 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:push": "prisma db push",
     "test": "node --import tsx --test src/services/*.test.ts",
-    "db:seed:demo": "tsx prisma/seed-demo.ts"
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
+    "recon:holiday-hours": "npm run build --silent && node ./scripts/holiday-hours-recon.mjs",
+    "print:holiday-recon-sql": "npm run build --silent && node ./scripts/holiday-hours-recon.mjs --print-sql"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

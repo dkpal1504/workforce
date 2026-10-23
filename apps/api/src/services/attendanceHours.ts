@@ -98,7 +98,7 @@ export type ClockedHoursReading = {
 };
 
 /** `dbo.Report_Attendance_Intermediate` -> `[dbo].[Report_Attendance_Intermediate]`. */
-function quoteIdentifier(value: string, label: string): string {
+export function quoteIdentifier(value: string, label: string): string {
   const trimmed = value.trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
     throw new Error(`${label} must be a plain identifier, got "${value}".`);
@@ -106,7 +106,7 @@ function quoteIdentifier(value: string, label: string): string {
   return `[${trimmed}]`;
 }
 
-function quoteView(view: string): string {
+export function quoteView(view: string): string {
   const parts = view.trim().split(".");
   if (parts.length > 2 || !parts.every((part) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(part))) {
     throw new Error(`ATTENDANCE_DB_VIEW must be "view" or "schema.view", got "${view}".`);
