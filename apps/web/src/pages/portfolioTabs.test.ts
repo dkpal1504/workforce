@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   COVERAGE_TAB,
+  NOT_BOOKED_TAB,
   DELAY_INSIGHTS_TAB,
   HINDRANCE_TAB,
   DEFAULT_TAB,
@@ -110,19 +111,27 @@ test("every tab wears a tone from the closed set, so no tab can render colourles
   assert.ok(new Set(PORTFOLIO_TABS.map((tab) => tab.tone)).size >= 4);
 });
 
-test("the REPORTS strip is the portfolio sections PLUS the two Reports-only reports", () => {
+test("the REPORTS strip is the portfolio sections PLUS the four Reports-only reports", () => {
   // The dashboard renders PORTFOLIO_TABS (its own filters cannot produce a timesheet report, and its
   // query cannot produce delay insights), and Reports renders REPORTS_TABS. Pinning the difference stops
   // a Reports-only tab leaking onto the dashboard, where its dataset does not exist.
-  assert.deepEqual(REPORTS_TAB_IDS, [...PORTFOLIO_TAB_IDS, "timesheet-coverage", "delay-insights", "hindrances"]);
-  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 3);
+  assert.deepEqual(REPORTS_TAB_IDS, [
+    ...PORTFOLIO_TAB_IDS,
+    "timesheet-coverage",
+    "not-booked",
+    "delay-insights",
+    "hindrances",
+  ]);
+  assert.equal(REPORTS_TAB_IDS.length, PORTFOLIO_TAB_IDS.length + 4);
   assert.equal(COVERAGE_TAB.label, "Timesheet coverage");
   assert.ok((TAB_TONES as readonly string[]).includes(COVERAGE_TAB.tone));
   assert.equal(DELAY_INSIGHTS_TAB.label, "Delay insights");
   assert.ok((TAB_TONES as readonly string[]).includes(DELAY_INSIGHTS_TAB.tone));
   assert.equal(HINDRANCE_TAB.label, "Hindrances");
   assert.ok((TAB_TONES as readonly string[]).includes(HINDRANCE_TAB.tone));
-  for (const reportsOnly of ["timesheet-coverage", "delay-insights", "hindrances"]) {
+  assert.equal(NOT_BOOKED_TAB.label, "Not booked");
+  assert.ok((TAB_TONES as readonly string[]).includes(NOT_BOOKED_TAB.tone));
+  for (const reportsOnly of ["timesheet-coverage", "not-booked", "delay-insights", "hindrances"]) {
     assert.equal(PORTFOLIO_TAB_IDS.includes(reportsOnly as never), false, `${reportsOnly} is not a portfolio section`);
     assert.ok(isReportsTabId(reportsOnly));
   }
@@ -147,7 +156,8 @@ test("the keyboard walk follows the STRIP IT IS GIVEN, so Reports reaches both e
   // Reports: the two Reports-only tabs sit at the end, in strip order, and the walk wraps off the last
   // one back to the first section.
   assert.equal(tabForKey("exceptions", "ArrowRight", REPORTS_TAB_IDS), "timesheet-coverage");
-  assert.equal(tabForKey("timesheet-coverage", "ArrowRight", REPORTS_TAB_IDS), "delay-insights");
+  assert.equal(tabForKey("timesheet-coverage", "ArrowRight", REPORTS_TAB_IDS), "not-booked");
+  assert.equal(tabForKey("not-booked", "ArrowRight", REPORTS_TAB_IDS), "delay-insights");
   assert.equal(tabForKey("delay-insights", "ArrowRight", REPORTS_TAB_IDS), "hindrances");
   assert.equal(tabForKey("hindrances", "ArrowRight", REPORTS_TAB_IDS), "needs-push");
   assert.equal(tabForKey("needs-push", "ArrowLeft", REPORTS_TAB_IDS), "hindrances");
@@ -156,6 +166,7 @@ test("the keyboard walk follows the STRIP IT IS GIVEN, so Reports reaches both e
   for (const current of PORTFOLIO_TAB_IDS) {
     const next = tabForKey(current, "ArrowRight", PORTFOLIO_TAB_IDS);
     assert.notEqual(next, "timesheet-coverage");
+    assert.notEqual(next, "not-booked");
     assert.notEqual(next, "delay-insights");
     assert.ok(PORTFOLIO_TAB_IDS.includes(next));
   }
