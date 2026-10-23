@@ -33,7 +33,12 @@ import {
   renderReconSummary,
   runHolidayRecon,
 } from "../dist/services/holidayReconRun.js";
-import { describeRegisterSource, registerColumns, registerSql } from "../dist/services/attendanceRegisterSource.js";
+import {
+  describeRegisterSource,
+  registerColumns,
+  registerSql,
+  registerViewName,
+} from "../dist/services/attendanceRegisterSource.js";
 
 function parseArgs(argv) {
   const read = (name) => {
@@ -81,13 +86,17 @@ async function main() {
       lines.push("");
       lines.push(`-- MISSING required column(s) on THIS view: ${described.missingColumns.join(", ")}`);
       if (described.candidates.length) {
-        lines.push("-- Objects in this database that DO have them (most matching first):");
+        lines.push("-- Objects that DO have them (most matching first):");
         for (const candidate of described.candidates) {
           lines.push(
-            `--   ${candidate.schema}.${candidate.table}  [${candidate.objectType || "unknown type"}]  matched: ${candidate.matched.join(", ")}`
+            `--   [${candidate.database}] ${candidate.schema}.${candidate.table}  ` +
+              `[${candidate.objectType || "unknown type"}]  matched: ${candidate.matched.join(", ")}`
           );
         }
-        lines.push("-- Re-run with -e \"ATTENDANCE_DB_VIEW=<schema.table from above>\" (no rebuild needed).");
+        const best = described.candidates[0];
+        lines.push(
+          `-- Next (no rebuild needed): -e "ATTENDANCE_DB_NAME=${best.database}" -e "ATTENDANCE_DB_VIEW=${best.schema}.${best.table}"`
+        );
       } else {
         lines.push("-- No readable object in this database carries them — ask IT which database/schema holds the register.");
       }
@@ -107,7 +116,7 @@ async function main() {
     process.stdout.write(
       [
         `-- Register SQL for ${args.from} .. ${args.to}`,
-        `-- View: ${process.env.ATTENDANCE_DB_VIEW || "dbo.Report_Attendance_Intermediate"}`,
+        `-- Register view: ${registerViewName()}  (the Clocked Hours screen keeps ATTENDANCE_DB_VIEW)`,
         `-- Columns: ${JSON.stringify(registerColumns())}`,
         registerSql(),
         "",

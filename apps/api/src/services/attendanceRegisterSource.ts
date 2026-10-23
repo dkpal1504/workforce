@@ -30,6 +30,19 @@ function envValue(name: string): string {
   return (process.env[name] ?? "").trim();
 }
 
+/**
+ * The view this reader uses.
+ *
+ * SEPARATE from `ATTENDANCE_DB_VIEW` on purpose: that variable belongs to the Clocked Hours screen, which
+ * reads `Report_Attendance_Intermediate` — an attendance LOG holding one row per punch (`ManHours`). The
+ * register needs `Report_Attendance_View`, the object that also carries the day type and the accepted
+ * figures. Pointing both at one variable would silently swap the object under the existing screen the next
+ * time either side changes its view. Confirmed by the customer on 2026-10-23.
+ */
+export function registerViewName(): string {
+  return envValue("ATTENDANCE_REGISTER_DB_VIEW") || "dbo.Report_Attendance_View";
+}
+
 /** The register's columns, resolved from configuration with the confirmed defaults. */
 export function registerColumns() {
   return {
@@ -61,8 +74,7 @@ export function registerAggregate(): HoursAggregate {
 export function registerSql(): string {
   const override = envValue("ATTENDANCE_REGISTER_QUERY");
   if (override) return override;
-  const config = attendanceSourceConfig();
-  const view = quoteView(config.view);
+  const view = quoteView(registerViewName());
   const columns = registerColumns();
   const id = quoteIdentifier(columns.id, "ATTENDANCE_DB_ID_COLUMN");
   const date = quoteIdentifier(columns.date, "ATTENDANCE_DB_DATE_COLUMN");
@@ -331,8 +343,10 @@ export function missingRequiredColumns(columns: readonly string[]): string[] {
   return REGISTER_REQUIRED_COLUMNS.filter((required) => !lowered.has(required.toLowerCase()));
 }
 
-/** Another object in the source database that carries the columns we need. */
+/** Another object in the source SERVER that carries the columns we need. */
 export type SourceCandidate = {
+  /** The database it lives in — the register may not be in the configured one at all. */
+  database: string;
   schema: string;
   table: string;
   /** VIEW | TABLE | … */
@@ -351,8 +365,7 @@ export function splitViewName(view: string): { schema: string; table: string } {
 
 /** The columns of the configured view, read from the same database the reader uses. */
 async function describeColumnsOnPool(pool: sql.ConnectionPool): Promise<SourceColumn[]> {
-  const config = attendanceSourceConfig();
-  const { schema, table } = splitViewName(config.view);
+  const { schema, table } = splitViewName(registerViewName());
   const request = pool.request();
   request.input("schema", sql.VarChar(128), schema);
   request.input("table", sql.VarChar(128), table);
@@ -402,7 +415,7 @@ export async function describeRegisterSource(): Promise<{
   }).connect();
   try {
     const columns = await describeColumnsOnPool(pool);
-    const { schema, table } = splitViewName(config.view);
+    const { schema, table } = splitViewName(registerViewName());
     let sample: Array<Record<string, unknown>> = [];
     try {
       const response = await pool.request().query(
@@ -415,9 +428,9 @@ export async function describeRegisterSource(): Promise<{
       sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
     }
     const missingColumns = missingRequiredColumns(columns.map((column) => column.name));
-    const candidates = missingColumns.length ? await findColumnsOnPool(pool, missingColumns) : [];
+    const candidates = missingColumns.length ? await findColumnsAcrossDatabases(pool, missingColumns) : [];
     return {
-      view: config.view,
+      view: registerViewName(),
       columns,
       sample,
       mapping: suggestColumnNames(columns.map((column) => column.name)),
@@ -457,42 +470,72 @@ export function suggestColumnNames(columns: readonly string[]): Record<string, s
 }
 
 /**
- * Find the objects in the source database that hold the given columns.
+ * Find the objects in the source SERVER that hold the given columns.
  *
- * THIS IS THE ANSWER TO "the view you named does not have AcceptedOT". The view belongs to another team,
- * its name changes, and the columns proved to live somewhere else — so rather than asking a human to hunt
- * through SSMS, the reader asks the database which object has them. Read-only, INFORMATION_SCHEMA only.
+ * THIS IS THE ANSWER TO "the view you named does not have AcceptedOT". The view belongs to another team, its
+ * name changes, and the columns may live in a different database entirely — so rather than asking a human to
+ * hunt through SSMS, the reader asks the server. Read-only: INFORMATION_SCHEMA only, and a database the login
+ * cannot open is skipped rather than failing the whole search.
+ *
+ * The configured database is searched first; only if it has nothing do the other ONLINE user databases get a
+ * pass, so the common case costs one query.
  */
-async function findColumnsOnPool(pool: sql.ConnectionPool, columnNames: readonly string[]): Promise<SourceCandidate[]> {
+async function findColumnsAcrossDatabases(
+  pool: sql.ConnectionPool,
+  columnNames: readonly string[]
+): Promise<SourceCandidate[]> {
   if (!columnNames.length) return [];
-  const request = pool.request();
-  // Compare in ONE case on both sides: the parameter carries the lower-cased name, the column is lowered in
-  // SQL. Without that the search silently finds nothing (the same class of bug as the alias mismatch).
-  const placeholders = columnNames.map((_, index) => `@c${index}`).join(", ");
-  columnNames.forEach((name, index) => request.input(`c${index}`, sql.VarChar(128), name.toLowerCase()));
-  const response = await request.query(
-    "SELECT c.TABLE_SCHEMA AS schemaName, c.TABLE_NAME AS tableName, o.type_desc AS objectType, c.COLUMN_NAME AS columnName " +
-      "FROM INFORMATION_SCHEMA.COLUMNS c " +
-      "LEFT JOIN sys.objects o ON o.object_id = OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)) " +
-      `WHERE LOWER(c.COLUMN_NAME) IN (${placeholders}) ` +
-      "ORDER BY c.TABLE_NAME, c.COLUMN_NAME"
-  );
-  const grouped = new Map<string, SourceCandidate>();
-  for (const row of (response.recordset as Array<Record<string, unknown>>) || []) {
-    const schema = String(row.schemaName ?? "");
-    const table = String(row.tableName ?? "");
-    if (!schema || !table) continue;
-    const key = `${schema}.${table}`;
-    const existing = grouped.get(key);
-    const columnName = String(row.columnName ?? "");
-    if (existing) existing.matched.push(columnName);
-    else
-      grouped.set(key, {
-        schema,
-        table,
-        objectType: String(row.objectType ?? ""),
-        matched: [columnName],
-      });
+
+  const searchOne = async (database: string | null): Promise<SourceCandidate[]> => {
+    if (database != null && !/^[A-Za-z0-9_]+$/.test(database)) return [];
+    const request = pool.request();
+    // Compare in ONE case on both sides: the parameter carries the lower-cased name, the column is lowered
+    // in SQL. Without that the search silently finds nothing — the same class of bug as the alias mismatch.
+    const placeholders = columnNames.map((_, index) => `@c${index}`).join(", ");
+    columnNames.forEach((name, index) => request.input(`c${index}`, sql.VarChar(128), name.toLowerCase()));
+    // A database name can only be interpolated, never parameterised; it is therefore validated against a
+    // strict identifier pattern before it gets near the SQL.
+    const prefix = database == null ? "" : `[${database}].`;
+    const response = await request.query(
+      "SELECT c.TABLE_SCHEMA AS schemaName, c.TABLE_NAME AS tableName, o.type_desc AS objectType, c.COLUMN_NAME AS columnName " +
+        `FROM ${prefix}INFORMATION_SCHEMA.COLUMNS c ` +
+        `LEFT JOIN ${prefix}sys.objects o ON o.object_id = OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)) ` +
+        `WHERE LOWER(c.COLUMN_NAME) IN (${placeholders}) ` +
+        "ORDER BY c.TABLE_NAME, c.COLUMN_NAME"
+    );
+    const grouped = new Map<string, SourceCandidate>();
+    for (const row of (response.recordset as Array<Record<string, unknown>>) || []) {
+      const schema = String(row.schemaName ?? "");
+      const table = String(row.tableName ?? "");
+      if (!schema || !table) continue;
+      const key = `${schema}.${table}`;
+      const existing = grouped.get(key);
+      const columnName = String(row.columnName ?? "");
+      if (existing) existing.matched.push(columnName);
+      else grouped.set(key, { database: database ?? "", schema, table, objectType: String(row.objectType ?? ""), matched: [columnName] });
+    }
+    return [...grouped.values()];
+  };
+
+  const currentDbRows = ((await pool.request().query("SELECT DB_NAME() AS name")).recordset as Array<{ name?: unknown }>) || [];
+  const currentDb = String(currentDbRows[0]?.name ?? "");
+  const local = (await searchOne(null)).map((candidate) => ({ ...candidate, database: currentDb }));
+  if (local.length) return local.sort((a, b) => b.matched.length - a.matched.length || a.table.localeCompare(b.table));
+
+  const otherRows = ((await pool.request().query(
+    "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND database_id > 4"
+  )).recordset as Array<{ name?: unknown }>) || [];
+  const names = otherRows
+    .map((row) => String(row.name ?? ""))
+    .filter((name) => name && name !== currentDb && /^[A-Za-z0-9_]+$/.test(name));
+
+  const found: SourceCandidate[] = [];
+  for (const name of names) {
+    try {
+      found.push(...(await searchOne(name)));
+    } catch {
+      // No permission on that database, or it went offline mid-run: keep looking.
+    }
   }
-  return [...grouped.values()].sort((a, b) => b.matched.length - a.matched.length || a.table.localeCompare(b.table));
+  return found.sort((a, b) => b.matched.length - a.matched.length || a.table.localeCompare(b.table));
 }
