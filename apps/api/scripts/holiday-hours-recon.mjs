@@ -18,6 +18,7 @@
  *   --from / --to   inclusive ISO dates (default: the 90 days ending yesterday)
  *   --out           output directory (default: ./recon-out)
  *   --print-sql     print the register SQL for the DBA and exit (runs no queries)
+ *   --describe-source  print the view's real columns, a suggested mapping and a few sample rows, then exit
  *
  * Environment:
  *   ATTENDANCE_REGISTER_FIXTURE  offline fixture (JSON/CSV) instead of SQL Server; refused in production
@@ -32,7 +33,7 @@ import {
   renderReconSummary,
   runHolidayRecon,
 } from "../dist/services/holidayReconRun.js";
-import { registerColumns, registerSql } from "../dist/services/attendanceRegisterSource.js";
+import { describeRegisterSource, registerColumns, registerSql } from "../dist/services/attendanceRegisterSource.js";
 
 function parseArgs(argv) {
   const read = (name) => {
@@ -42,7 +43,13 @@ function parseArgs(argv) {
   const utcDate = (offsetDays) => new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
   const to = read("to") ?? utcDate(-1);
   const from = read("from") ?? new Date(Date.parse(`${to}T00:00:00Z`) - 89 * 86_400_000).toISOString().slice(0, 10);
-  return { from, to, out: read("out") ?? "recon-out", printSql: argv.includes("--print-sql") };
+  return {
+    from,
+    to,
+    out: read("out") ?? "recon-out",
+    printSql: argv.includes("--print-sql"),
+    describeSource: argv.includes("--describe-source"),
+  };
 }
 
 function csvCell(value) {
@@ -58,6 +65,28 @@ async function writeCsv(file, rows) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.describeSource) {
+    // Prints what the view ACTUALLY holds (columns, a few real rows, the generated SQL) and a suggested
+    // column mapping. Read-only. This is the answer to "Invalid column name" without opening a SQL prompt.
+    const described = await describeRegisterSource();
+    const lines = [];
+    lines.push(`-- Source: ${described.view}`);
+    lines.push(`-- Columns (${described.columns.length}):`);
+    for (const column of described.columns) {
+      lines.push(`--   ${column.name}  ${column.type}  nullable=${column.nullable}`);
+    }
+    lines.push(`-- Suggested mapping (confirm before using): ${JSON.stringify(described.mapping)}`);
+    lines.push("");
+    lines.push("-- Generated register SQL:");
+    lines.push(described.sql);
+    lines.push("");
+    lines.push("-- Sample rows (latest by the configured date column):");
+    for (const row of described.sample) lines.push(JSON.stringify(row));
+    lines.push("");
+    process.stdout.write(lines.join("\n"));
+    return;
+  }
 
   if (args.printSql) {
     process.stdout.write(

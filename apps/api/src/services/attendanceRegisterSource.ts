@@ -199,6 +199,11 @@ export function parseRegisterFixture(text: string): Map<string, RawRegisterRow[]
 
 export type RegisterFetchResult = {
   byDate: Map<string, RawRegisterRow[]>;
+  /**
+   * Columns the view actually has, when every read failed on an unknown column. Populated only on that
+   * failure so the caller can print the real names instead of "check your column mapping".
+   */
+  availableColumns?: string[];
   /** Dates the source answered for; a date MISSING here was never read (not "empty"). */
   datesRead: string[];
   errors: Array<{ date: string; message: string }>;
@@ -221,6 +226,7 @@ export async function fetchRegisterRange(options: {
   const dates = options.dates ?? expandDates(options.dateFrom, options.dateTo);
   const errors: Array<{ date: string; message: string }> = [];
   const byDate = new Map<string, RawRegisterRow[]>();
+  let availableColumns: string[] | undefined;
 
   const fixture = registerFixturePath();
   if (fixture) {
@@ -265,14 +271,26 @@ export async function fetchRegisterRange(options: {
           .filter((row): row is RawRegisterRow => row != null);
         byDate.set(date, rows);
       } catch (error) {
-        errors.push({ date, message: explainSourceError(error, config) });
+        const message = explainSourceError(error, config);
+        errors.push({ date, message });
+        // DIAGNOSE, DON'T GUESS: the first unknown-column failure is answered by reading the view's own
+        // column list once, on the same pool. "Invalid column name 'AcceptedOT'" then arrives with the
+        // real names beside it, and nobody has to run SQL by hand from a Windows prompt.
+        if (!availableColumns && /invalid column name/i.test(message)) {
+          try {
+            const described = await describeColumnsOnPool(pool);
+            availableColumns = described.map((column) => column.name);
+          } catch {
+            // A failed diagnosis must not mask the original read error.
+          }
+        }
       }
     }
   } finally {
     if (pool) await pool.close();
   }
 
-  return { byDate, datesRead: [...byDate.keys()].sort(), errors, source: "SQL" };
+  return { byDate, datesRead: [...byDate.keys()].sort(), errors, source: "SQL", availableColumns };
 }
 
 /** Every ISO date from `dateFrom` to `dateTo`, inclusive. Refuses a backwards or absurd range. */
@@ -287,4 +305,118 @@ export function expandDates(dateFrom: string, dateTo: string, maxDays = 400): st
     dates.push(new Date(at).toISOString().slice(0, 10));
   }
   return dates;
+}
+
+/* --------------------------------------------------------------------------- *
+ * Source description — what the view ACTUALLY contains
+ * ------------------------------------------------------------------------- */
+
+export type SourceColumn = { name: string; type: string; nullable: string };
+
+/** `dbo.Report_Attendance_Intermediate` -> `{ schema: "dbo", table: "Report_Attendance_Intermediate" }`. */
+export function splitViewName(view: string): { schema: string; table: string } {
+  const parts = view.replace(/[\[\]]/g, "").trim().split(".").filter(Boolean);
+  if (parts.length === 0) return { schema: "dbo", table: view };
+  if (parts.length === 1) return { schema: "dbo", table: parts[0] };
+  return { schema: parts[parts.length - 2], table: parts[parts.length - 1] };
+}
+
+/** The columns of the configured view, read from the same database the reader uses. */
+async function describeColumnsOnPool(pool: sql.ConnectionPool): Promise<SourceColumn[]> {
+  const config = attendanceSourceConfig();
+  const { schema, table } = splitViewName(config.view);
+  const request = pool.request();
+  request.input("schema", sql.VarChar(128), schema);
+  request.input("table", sql.VarChar(128), table);
+  const response = await request.query(
+    "SELECT COLUMN_NAME AS name, DATA_TYPE AS type, IS_NULLABLE AS nullable " +
+      "FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @table " +
+      "ORDER BY ORDINAL_POSITION"
+  );
+  return ((response.recordset as SourceColumn[]) || []).map((row) => ({ ...row }));
+}
+
+/**
+ * What the source holds, plus a best-guess mapping to the five columns this reader needs.
+ *
+ * The guesses are suggestions printed for a human to confirm, never applied silently: a wrong guess about
+ * the overtime column would put real money in the wrong bucket.
+ */
+export async function describeRegisterSource(): Promise<{
+  view: string;
+  columns: SourceColumn[];
+  sample: Array<Record<string, unknown>>;
+  mapping: Record<string, string | null>;
+  sql: string;
+}> {
+  const config = attendanceSourceConfig();
+  if (!config.server || !config.user) {
+    throw new Error(
+      "BADGEVIEW_DB_HOST and BADGEVIEW_DB_USER (or ATTENDANCE_DB_USER) must be set to describe the source."
+    );
+  }
+  const pool = await new sql.ConnectionPool({
+    server: config.server,
+    port: config.port,
+    user: config.user,
+    password: envValue("ATTENDANCE_DB_PASSWORD") || envValue("BADGEVIEW_DB_PASSWORD"),
+    database: config.database,
+    options: {
+      encrypt: String(process.env.BADGEVIEW_DB_ENCRYPT || "false").toLowerCase() === "true",
+      trustServerCertificate: true,
+      readOnlyIntent: true,
+    },
+    connectionTimeout: 15000,
+    requestTimeout: 60000,
+  }).connect();
+  try {
+    const columns = await describeColumnsOnPool(pool);
+    const { schema, table } = splitViewName(config.view);
+    let sample: Array<Record<string, unknown>> = [];
+    try {
+      const response = await pool.request().query(
+        `SELECT TOP 5 * FROM [${schema}].[${table}] ORDER BY [${registerColumns().date}] DESC`
+      );
+      sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
+    } catch {
+      // The configured date column may itself be wrong; a sample without ORDER BY is still useful.
+      const response = await pool.request().query(`SELECT TOP 5 * FROM [${schema}].[${table}]`);
+      sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
+    }
+    return {
+      view: config.view,
+      columns,
+      sample,
+      mapping: suggestColumnNames(columns.map((column) => column.name)),
+      sql: registerSql(),
+    };
+  } finally {
+    await pool.close();
+  }
+}
+
+/**
+ * Best-guess mapping from the view's real columns to the ones this reader needs.
+ *
+ * PURE, and deliberately conservative: each candidate list is ordered from most to least specific, so the
+ * printed suggestion is a starting point for a human, not an authority. `null` means "nothing plausible —
+ * you must name it".
+ */
+export function suggestColumnNames(columns: readonly string[]): Record<string, string | null> {
+  const pickFirst = (patterns: RegExp[]): string | null => {
+    for (const pattern of patterns) {
+      const hit = columns.find((column) => pattern.test(column));
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return {
+    id: pickFirst([/^id_?no$/i, /^idcardno$/i, /^ec_?no$/i, /id/i]),
+    date: pickFirst([/^date$/i, /^att_?date$/i, /^attendance_?date$/i, /^work_?date$/i, /date/i]),
+    weeklyOff: pickFirst([/^isweeklyoff$/i, /weekly_?off/i, /^is_?wo$/i]),
+    status: pickFirst([/^originalstatus$/i, /original_?status/i, /^status$/i, /status/i]),
+    acceptedHours: pickFirst([/^acceptedmanhrs$/i, /accepted_?man_?h/i, /accepted_?hours/i, /accepted/i]),
+    acceptedOt: pickFirst([/^acceptedot$/i, /accepted_?ot/i, /accepted_?othrs/i, /acceptedothours/i, /ot_?hours/i, /overtime/i, /^ot$/i]),
+    rawHours: pickFirst([/^manhours$/i, /man_?hours/i, /^hours$/i]),
+  };
 }

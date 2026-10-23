@@ -17,6 +17,7 @@ import { aggregateRegisterRows, clockedHoursOf, type AttendanceDayFact } from ".
 import {
   fetchRegisterRange,
   registerAggregate,
+  suggestColumnNames,
   type RegisterFetchResult,
 } from "./attendanceRegisterSource";
 import { bookedHoursFromEntry } from "./holidayHours";
@@ -104,10 +105,20 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
   const rawRows = [...register.byDate.values()].flat();
   if (rawRows.length === 0) {
     const firstError = register.errors[0]?.message ?? "no rows returned and no error reported";
+    // When the failure was an unknown column, print the column list the view DOES have plus a suggested
+    // mapping. That turns "check your column names" into a copy-paste answer, and every one of these is an
+    // ENV override — so fixing it needs no rebuild.
+    const columns = register.availableColumns ?? [];
+    const hint = columns.length
+      ? `\n\nThe view has these columns: ${columns.join(", ")}\n` +
+        `Suggested mapping (confirm before using): ${JSON.stringify(suggestColumnNames(columns))}\n` +
+        "Set the matching ATTENDANCE_DB_*_COLUMN variable(s) and re-run — no rebuild required."
+      : "";
     throw new Error(
       `The attendance register returned NO rows for ${options.from}..${options.to} (source ${register.source}, ` +
         `dates read ${register.datesRead.length}, errors ${register.errors.length}). First error: ${firstError}. ` +
-        "A reconciliation over no attendance would be fiction, so nothing was produced."
+        "A reconciliation over no attendance would be fiction, so nothing was produced." +
+        hint
     );
   }
   const facts: AttendanceDayFact[] = aggregateRegisterRows(rawRows, registerAggregate());
