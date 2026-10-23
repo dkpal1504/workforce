@@ -507,14 +507,23 @@ summaryRouter.get("/export.csv", async (req, res) => {
         taggedBy: true,
         project: true,
         department: true,
-        jobOrder: { include: { project: true } },
+        projectWbs: true,
+        jobOrder: { include: { project: true, projectWbs: true, network: true } },
         timesheetDay: { include: { approvals: { include: { approver: true }, orderBy: { createdAt: "asc" } } } },
       },
       orderBy: [{ workDate: "asc" }, { id: "asc" }],
     }),
     prisma.employeeAllocation.findMany({
       where: { workDate: { gte: start, lte: end }, ...allocationScope },
-      include: { employee: { include: { department: true } }, allocatedBy: true, project: true, department: true, jobOrder: true, allocationDay: true },
+      include: {
+        employee: { include: { department: true } },
+        allocatedBy: true,
+        project: true,
+        department: true,
+        projectWbs: true,
+        jobOrder: { include: { projectWbs: true, network: true } },
+        allocationDay: true,
+      },
       orderBy: [{ workDate: "asc" }, { id: "asc" }],
     }),
     prisma.costRate.findMany({ where: { effectiveFrom: { lte: end }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: start } }] }, orderBy: { effectiveFrom: "desc" } }),
@@ -530,7 +539,7 @@ summaryRouter.get("/export.csv", async (req, res) => {
     !projectCodes?.length || (codeKey != null && projectCodes.includes(String(codeKey).toUpperCase()));
 
   const header = [
-    "Source", "Work date", "Project", "Job order code", "Job order", "Department", "Employee", "Category",
+    "Source", "Work date", "Project", "WBS", "NetworkID", "Job order code", "Job order", "Department", "Employee", "Category",
     "Tagged / allocated by", "Status", "Regular hours", "OT hours", "Cost", "Approved by HOD on",
     "HOD approver", "Approved by PM on", "PM approver", "Remarks",
   ];
@@ -548,6 +557,11 @@ summaryRouter.get("/export.csv", async (req, res) => {
       "TIMESHEET",
       day(entry.workDate),
       project?.name ?? "",
+      // The WBS the hours were booked against: the row's own node, falling back to the Job Order's when the
+      // booking predates the WBS column. The Network comes from the Job Order — a timesheet row has no
+      // network of its own, and the Job Order is what carries it.
+      entry.projectWbs?.wbsCode ?? entry.jobOrder?.projectWbs?.wbsCode ?? "",
+      entry.jobOrder?.network?.code ?? "",
       entry.jobOrder?.code ?? "",
       entry.jobOrder?.name ?? "",
       entry.department?.name ?? entry.employee.department.name,
@@ -572,6 +586,8 @@ summaryRouter.get("/export.csv", async (req, res) => {
       "ALLOCATION",
       day(allocation.workDate),
       allocation.project?.name ?? "",
+      allocation.projectWbs?.wbsCode ?? allocation.jobOrder?.projectWbs?.wbsCode ?? "",
+      allocation.jobOrder?.network?.code ?? "",
       allocation.jobOrder?.code ?? "",
       allocation.jobOrder?.name ?? "",
       allocation.department?.name ?? allocation.employee.department.name,
