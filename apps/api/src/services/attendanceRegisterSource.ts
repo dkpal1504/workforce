@@ -313,6 +313,34 @@ export function expandDates(dateFrom: string, dateTo: string, maxDays = 400): st
 
 export type SourceColumn = { name: string; type: string; nullable: string };
 
+/**
+ * The columns the register reader REQUIRES. If the configured view lacks any of them, the view is not the
+ * attendance register we were told about — and the useful answer is not "check your mapping" but "here is
+ * the object in this database that does have these columns".
+ */
+export const REGISTER_REQUIRED_COLUMNS = [
+  "isWeeklyOff",
+  "OriginalStatus",
+  "AcceptedManHrs",
+  "AcceptedOT",
+] as const;
+
+/** Which of the required columns the given column list does NOT have (case-insensitive). PURE. */
+export function missingRequiredColumns(columns: readonly string[]): string[] {
+  const lowered = new Set(columns.map((column) => column.toLowerCase()));
+  return REGISTER_REQUIRED_COLUMNS.filter((required) => !lowered.has(required.toLowerCase()));
+}
+
+/** Another object in the source database that carries the columns we need. */
+export type SourceCandidate = {
+  schema: string;
+  table: string;
+  /** VIEW | TABLE | … */
+  objectType: string;
+  /** Which of the searched columns it has. */
+  matched: string[];
+};
+
 /** `dbo.Report_Attendance_Intermediate` -> `{ schema: "dbo", table: "Report_Attendance_Intermediate" }`. */
 export function splitViewName(view: string): { schema: string; table: string } {
   const parts = view.replace(/[\[\]]/g, "").trim().split(".").filter(Boolean);
@@ -347,6 +375,9 @@ export async function describeRegisterSource(): Promise<{
   columns: SourceColumn[];
   sample: Array<Record<string, unknown>>;
   mapping: Record<string, string | null>;
+  /** Non-empty only when the configured view lacks a required column: where those columns DO live. */
+  missingColumns: string[];
+  candidates: SourceCandidate[];
   sql: string;
 }> {
   const config = attendanceSourceConfig();
@@ -383,11 +414,15 @@ export async function describeRegisterSource(): Promise<{
       const response = await pool.request().query(`SELECT TOP 5 * FROM [${schema}].[${table}]`);
       sample = ((response.recordset as Record<string, unknown>[]) || []).map((row) => ({ ...row }));
     }
+    const missingColumns = missingRequiredColumns(columns.map((column) => column.name));
+    const candidates = missingColumns.length ? await findColumnsOnPool(pool, missingColumns) : [];
     return {
       view: config.view,
       columns,
       sample,
       mapping: suggestColumnNames(columns.map((column) => column.name)),
+      missingColumns,
+      candidates,
       sql: registerSql(),
     };
   } finally {
@@ -419,4 +454,45 @@ export function suggestColumnNames(columns: readonly string[]): Record<string, s
     acceptedOt: pickFirst([/^acceptedot$/i, /accepted_?ot/i, /accepted_?othrs/i, /acceptedothours/i, /ot_?hours/i, /overtime/i, /^ot$/i]),
     rawHours: pickFirst([/^manhours$/i, /man_?hours/i, /^hours$/i]),
   };
+}
+
+/**
+ * Find the objects in the source database that hold the given columns.
+ *
+ * THIS IS THE ANSWER TO "the view you named does not have AcceptedOT". The view belongs to another team,
+ * its name changes, and the columns proved to live somewhere else — so rather than asking a human to hunt
+ * through SSMS, the reader asks the database which object has them. Read-only, INFORMATION_SCHEMA only.
+ */
+async function findColumnsOnPool(pool: sql.ConnectionPool, columnNames: readonly string[]): Promise<SourceCandidate[]> {
+  if (!columnNames.length) return [];
+  const request = pool.request();
+  // Compare in ONE case on both sides: the parameter carries the lower-cased name, the column is lowered in
+  // SQL. Without that the search silently finds nothing (the same class of bug as the alias mismatch).
+  const placeholders = columnNames.map((_, index) => `@c${index}`).join(", ");
+  columnNames.forEach((name, index) => request.input(`c${index}`, sql.VarChar(128), name.toLowerCase()));
+  const response = await request.query(
+    "SELECT c.TABLE_SCHEMA AS schemaName, c.TABLE_NAME AS tableName, o.type_desc AS objectType, c.COLUMN_NAME AS columnName " +
+      "FROM INFORMATION_SCHEMA.COLUMNS c " +
+      "LEFT JOIN sys.objects o ON o.object_id = OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)) " +
+      `WHERE LOWER(c.COLUMN_NAME) IN (${placeholders}) ` +
+      "ORDER BY c.TABLE_NAME, c.COLUMN_NAME"
+  );
+  const grouped = new Map<string, SourceCandidate>();
+  for (const row of (response.recordset as Array<Record<string, unknown>>) || []) {
+    const schema = String(row.schemaName ?? "");
+    const table = String(row.tableName ?? "");
+    if (!schema || !table) continue;
+    const key = `${schema}.${table}`;
+    const existing = grouped.get(key);
+    const columnName = String(row.columnName ?? "");
+    if (existing) existing.matched.push(columnName);
+    else
+      grouped.set(key, {
+        schema,
+        table,
+        objectType: String(row.objectType ?? ""),
+        matched: [columnName],
+      });
+  }
+  return [...grouped.values()].sort((a, b) => b.matched.length - a.matched.length || a.table.localeCompare(b.table));
 }

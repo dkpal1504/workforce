@@ -77,6 +77,21 @@ async function main() {
       lines.push(`--   ${column.name}  ${column.type}  nullable=${column.nullable}`);
     }
     lines.push(`-- Suggested mapping (confirm before using): ${JSON.stringify(described.mapping)}`);
+    if (described.missingColumns.length) {
+      lines.push("");
+      lines.push(`-- MISSING required column(s) on THIS view: ${described.missingColumns.join(", ")}`);
+      if (described.candidates.length) {
+        lines.push("-- Objects in this database that DO have them (most matching first):");
+        for (const candidate of described.candidates) {
+          lines.push(
+            `--   ${candidate.schema}.${candidate.table}  [${candidate.objectType || "unknown type"}]  matched: ${candidate.matched.join(", ")}`
+          );
+        }
+        lines.push("-- Re-run with -e \"ATTENDANCE_DB_VIEW=<schema.table from above>\" (no rebuild needed).");
+      } else {
+        lines.push("-- No readable object in this database carries them — ask IT which database/schema holds the register.");
+      }
+    }
     lines.push("");
     lines.push("-- Generated register SQL:");
     lines.push(described.sql);

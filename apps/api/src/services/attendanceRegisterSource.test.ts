@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRegisterFixture, splitViewName, suggestColumnNames } from "./attendanceRegisterSource";
+import {
+  missingRequiredColumns,
+  parseRegisterFixture,
+  splitViewName,
+  suggestColumnNames,
+} from "./attendanceRegisterSource";
 
 test("the confirmed column names map cleanly", () => {
   const mapping = suggestColumnNames([
@@ -79,4 +84,30 @@ test("a well-formed fixture parses, with the view's own column spelling", () => 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].idNo, "A1");
   assert.equal(rows[0].originalStatus, "P");
+});
+
+test("the four required columns are named, and their absence is what sends us looking elsewhere", () => {
+  // The real view as inspected on 2026-10-23: an attendance log with hours, but none of the day-type or
+  // accepted-hours columns. This must be reported as "wrong object", not "wrong mapping".
+  const realView = [
+    "Contractor", "Workmen", "WorkorderNo", "IDNo", "Barcode", "Workskill", "BusinessUnit", "Section",
+    "CardType", "Division", "NOW", "Date", "CheckinDateTime", "CheckoutDateTime", "ManHours", "ManHrsMin",
+    "Plant", "PlantName",
+  ];
+  assert.deepEqual(missingRequiredColumns(realView), [
+    "isWeeklyOff",
+    "OriginalStatus",
+    "AcceptedManHrs",
+    "AcceptedOT",
+  ]);
+  // Case-insensitively complete -> nothing missing.
+  assert.deepEqual(
+    missingRequiredColumns(["isweeklyoff", "ORIGINALSTATUS", "acceptedmanhrs", "AcceptedOT"]),
+    []
+  );
+  // Partially complete: only the absent ones are reported.
+  assert.deepEqual(
+    missingRequiredColumns(["isWeeklyOff", "OriginalStatus", "AcceptedManHrs"]),
+    ["AcceptedOT"]
+  );
 });
