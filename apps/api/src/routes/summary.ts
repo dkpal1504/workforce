@@ -544,67 +544,216 @@ summaryRouter.get("/export.csv", async (req, res) => {
     "HOD approver", "Approved by PM on", "PM approver", "Remarks",
   ];
 
-  const rows: string[][] = [];
+  /**
+   * ONE ROW PER WORKER, PER DAY, PER KIND OF HOURS.
+   *
+   * A day is four 2-hour slots, so the raw entries arrive as up to four rows for the same person on the
+   * same date and the spreadsheet reader had to add them up by eye. The file now does that addition:
+   *
+   *   REGULAR   the booked project / job-work hours, summed across that day's slots
+   *   OVERTIME  the overtime hours, only when there are any
+   *   OVERHEAD  the day's unused regular capacity (the Overhead Total column on the screen), only when > 0
+   *
+   * A row that would carry zero hours is not written at all, so a normal 8-hour day is one line and an
+   * 8+2 day is two. REGULAR is grouped by job order as well as by person and day: a day genuinely split
+   * between two job orders keeps two lines, because collapsing them would have to invent one job order for
+   * hours that belong to two.
+   */
+  type Line = {
+    source: string;
+    date: Date;
+    employeeId: number;
+    project: string;
+    wbs: string;
+    network: string;
+    joCode: string;
+    joName: string;
+    department: string;
+    employee: string;
+    category: string;
+    taggedBy: string;
+    statuses: Set<string>;
+    hours: number;
+    ot: number;
+    cost: number;
+    hodOn: string;
+    hodBy: string;
+    pmOn: string;
+    pmBy: string;
+    remarks: Set<string>;
+  };
+
+  const lines = new Map<string, Line>();
+  const addLine = (
+    key: string,
+    seed: Omit<Line, "statuses" | "remarks" | "hours" | "ot" | "cost">,
+    hours: number,
+    ot: number,
+    status: string,
+    taggedBy: string,
+    cost: number,
+    remark: string
+  ) => {
+    let line = lines.get(key);
+    if (!line) {
+      line = { ...seed, statuses: new Set(), remarks: new Set(), hours: 0, ot: 0, cost: 0 };
+      lines.set(key, line);
+    }
+    line.hours += hours;
+    line.ot += ot;
+    line.cost += cost;
+    if (status) line.statuses.add(status);
+    if (taggedBy && !line.taggedBy) line.taggedBy = taggedBy;
+    if (remark) line.remarks.add(remark);
+    return line;
+  };
+
+  const rate = (category: string) => rateFor(category);
+  const dayKey = (employeeId: number, date: Date) => `${employeeId}|${day(date)}`;
+
+  // Per timesheet day totals drive the overhead line, exactly as the screen's Overhead column does.
+  const dayTotals = new Map<string, { regular: number; overtime: number; keptRegular: number }>();
+
   for (const entry of entries) {
     const project = entry.project ?? entry.jobOrder?.project ?? null;
-    if (!kept(project?.colorKey)) continue;
+    const keep = kept(project?.colorKey);
     const approvals = entry.timesheetDay?.approvals ?? [];
     const hod = approvals.find((a) => a.action === "APPROVE" && a.approver.role === "HOD");
     const pm = approvals.find((a) => a.action === "APPROVE" && a.approver.role === "PM");
     const regular = entry.otHours != null ? 0 : entry.shiftSlot != null ? 2 : entry.hourSlot != null ? 1 : 0;
     const ot = entry.otHours ?? 0;
-    rows.push([
-      "TIMESHEET",
-      day(entry.workDate),
-      project?.name ?? "",
-      // The WBS the hours were booked against: the row's own node, falling back to the Job Order's when the
-      // booking predates the WBS column. The Network comes from the Job Order — a timesheet row has no
-      // network of its own, and the Job Order is what carries it.
-      entry.projectWbs?.wbsCode ?? entry.jobOrder?.projectWbs?.wbsCode ?? "",
-      entry.jobOrder?.network?.code ?? "",
-      entry.jobOrder?.code ?? "",
-      entry.jobOrder?.name ?? "",
-      entry.department?.name ?? entry.employee.department.name,
-      entry.employee.name,
-      entry.employee.category,
-      entry.taggedBy.name,
-      entry.status,
-      String(regular),
-      String(ot),
-      (regular * rateFor(entry.employee.category) + ot * rateFor(entry.employee.category)).toFixed(2),
-      day(hod?.createdAt ?? null),
-      hod?.approver.name ?? "",
-      day(pm?.createdAt ?? null),
-      pm?.approver.name ?? "",
-      entry.timesheetDay?.remarks ?? "",
-    ]);
+    const money = (regular + ot) * rate(entry.employee.category);
+    const dk = dayKey(entry.employee.id, entry.workDate);
+    const totals = dayTotals.get(dk) ?? { regular: 0, overtime: 0, keptRegular: 0 };
+    totals.regular += regular;
+    totals.overtime += ot;
+    if (keep) totals.keptRegular += regular;
+    dayTotals.set(dk, totals);
+    if (!keep) continue;
+
+    const seed = {
+      date: entry.workDate,
+      employeeId: entry.employee.id,
+      project: project?.name ?? "",
+      wbs: entry.projectWbs?.wbsCode ?? entry.jobOrder?.projectWbs?.wbsCode ?? "",
+      network: entry.jobOrder?.network?.code ?? "",
+      joCode: entry.jobOrder?.code ?? "",
+      joName: entry.jobOrder?.name ?? "",
+      department: entry.department?.name ?? entry.employee.department.name,
+      employee: entry.employee.name,
+      category: entry.employee.category,
+      taggedBy: entry.taggedBy.name,
+      hodOn: day(hod?.createdAt ?? null),
+      hodBy: hod?.approver.name ?? "",
+      pmOn: day(pm?.createdAt ?? null),
+      pmBy: pm?.approver.name ?? "",
+    };
+    const identity = `${dk}|${entry.jobOrder?.id ?? "none"}`;
+
+    if (regular > 0) {
+      addLine(`R|${identity}`, { ...seed, source: "REGULAR" }, regular, 0, entry.status, entry.taggedBy.name, money, entry.timesheetDay?.remarks ?? "");
+    }
+    if (ot > 0) {
+      addLine(`O|${identity}`, { ...seed, source: "OVERTIME" }, 0, ot, entry.status, entry.taggedBy.name, money, entry.timesheetDay?.remarks ?? "");
+    }
   }
 
   for (const allocation of allocations) {
     if (!kept(allocation.project?.colorKey)) continue;
-    rows.push([
-      "ALLOCATION",
-      day(allocation.workDate),
-      allocation.project?.name ?? "",
-      allocation.projectWbs?.wbsCode ?? allocation.jobOrder?.projectWbs?.wbsCode ?? "",
-      allocation.jobOrder?.network?.code ?? "",
-      allocation.jobOrder?.code ?? "",
-      allocation.jobOrder?.name ?? "",
-      allocation.department?.name ?? allocation.employee.department.name,
-      allocation.employee.name,
-      allocation.employee.category,
-      allocation.allocatedBy.name,
+    const seed = {
+      date: allocation.workDate,
+      employeeId: allocation.employee.id,
+      project: allocation.project?.name ?? "",
+      wbs: allocation.projectWbs?.wbsCode ?? allocation.jobOrder?.projectWbs?.wbsCode ?? "",
+      network: allocation.jobOrder?.network?.code ?? "",
+      joCode: allocation.jobOrder?.code ?? "",
+      joName: allocation.jobOrder?.name ?? "",
+      department: allocation.department?.name ?? allocation.employee.department.name,
+      employee: allocation.employee.name,
+      category: allocation.employee.category,
+      taggedBy: allocation.allocatedBy.name,
+      hodOn: "",
+      hodBy: "",
+      pmOn: "",
+      pmBy: "",
+    };
+    addLine(
+      `A|${dayKey(allocation.employee.id, allocation.workDate)}|${allocation.jobOrder?.id ?? "none"}`,
+      { ...seed, source: "ALLOCATION" },
+      2,
+      0,
       allocation.allocationDay?.status ?? "",
-      "2",
-      "0",
-      (2 * rateFor(allocation.employee.category)).toFixed(2),
-      "",
-      "",
-      "",
-      "",
-      "",
-    ]);
+      allocation.allocatedBy.name,
+      2 * rate(allocation.employee.category),
+      ""
+    );
   }
+
+  // Overhead: the unused part of the contractual day, one line per worker per day, never negative and never
+  // shown for an OT-only holiday booking (see contractOverheadHours).
+  const maxDailyHours = getMaxDailyHours();
+  for (const [dk, totals] of dayTotals) {
+    // A worker whose only hours that day belong to projects filtered out of this file has no line at all,
+    // so an overhead line for him would be a row about a person the report is not showing.
+    if (totals.keptRegular === 0) continue;
+    const overhead = contractOverheadHours(maxDailyHours, totals.regular, totals.overtime);
+    if (overhead <= 0) continue;
+    const [employeeIdText, dateText] = dk.split("|");
+    const sample = [...lines.values()].find((l) => l.employeeId === Number(employeeIdText) && day(l.date) === dateText);
+    if (!sample) continue;
+    addLine(
+      `H|${dk}`,
+      {
+        ...sample,
+        source: "OVERHEAD",
+        project: "",
+        wbs: "",
+        network: "",
+        joCode: "",
+        joName: "",
+        statuses: new Set(),
+        remarks: new Set(),
+      } as never,
+      overhead,
+      0,
+      [...sample.statuses][0] ?? "",
+      sample.taggedBy,
+      overhead * rate(sample.category),
+      ""
+    );
+  }
+
+  const order = { REGULAR: 0, OVERTIME: 1, OVERHEAD: 2, ALLOCATION: 3 } as Record<string, number>;
+  const rows: string[][] = [...lines.values()]
+    .sort(
+      (a, b) =>
+        a.date.getTime() - b.date.getTime() ||
+        a.employee.localeCompare(b.employee) ||
+        (order[a.source] ?? 9) - (order[b.source] ?? 9) ||
+        a.joCode.localeCompare(b.joCode)
+    )
+    .map((line) => [
+      line.source,
+      day(line.date),
+      line.project,
+      line.wbs,
+      line.network,
+      line.joCode,
+      line.joName,
+      line.department,
+      line.employee,
+      line.category,
+      line.taggedBy,
+      [...line.statuses].join(" / "),
+      String(line.hours),
+      String(line.ot),
+      line.cost.toFixed(2),
+      line.hodOn,
+      line.hodBy,
+      line.pmOn,
+      line.pmBy,
+      [...line.remarks].join(" | "),
+    ]);
 
   const csv = [header, ...rows].map((line) => line.map(quote).join(",")).join("\r\n");
   const filename = `summary-${day(start)}_to_${day(end)}-${approvedBy.toLowerCase()}.csv`;
