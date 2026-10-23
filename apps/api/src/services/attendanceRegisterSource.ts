@@ -53,12 +53,51 @@ export function registerColumns() {
     acceptedHours: envValue("ATTENDANCE_DB_ACCEPTED_HOURS_COLUMN") || "AcceptedManHrs",
     acceptedOt: envValue("ATTENDANCE_DB_ACCEPTED_OT_COLUMN") || "AcceptedOT",
     rawHours: envValue("ATTENDANCE_DB_HOURS_COLUMN") || "ManHours",
+    cardType: envValue("ATTENDANCE_REGISTER_CARD_TYPE_COLUMN") || "CardType",
   };
 }
 
 /** The aggregation policy, from `ATTENDANCE_HOURS_AGGREGATE` (SUM default, MAX on request). */
 export function registerAggregate(): HoursAggregate {
   return envValue("ATTENDANCE_HOURS_AGGREGATE").toUpperCase() === "MAX" ? "MAX" : "SUM";
+}
+
+/**
+ * Which card types belong to this application's population.
+ *
+ * THE REGISTER IS BIGGER THAN THIS APP. It also carries EOU contractors and other card types, which is why
+ * the first production run reported 4,620 identifiers with no `Employee` row. The people this app reports
+ * on are the associates, confirmed by the customer on 2026-10-23: `Associates` and `ASSOCIATE SEZ`.
+ *
+ * `ATTENDANCE_REGISTER_CARD_TYPES` overrides the list (comma-separated); the single value `ALL` disables the
+ * filter. An empty list never silently means "everything" — it means the filter is off only when asked.
+ */
+export function registerCardTypes(): string[] {
+  const raw = envValue("ATTENDANCE_REGISTER_CARD_TYPES");
+  const list = (raw === "" ? "Associates,ASSOCIATE SEZ" : raw)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (list.length === 1 && list[0].toUpperCase() === "ALL") return [];
+  for (const value of list) {
+    // The value is interpolated into SQL, so it may only contain characters a card type can hold.
+    if (!/^[A-Za-z0-9 .&_-]+$/.test(value)) {
+      throw new Error(
+        `ATTENDANCE_REGISTER_CARD_TYPES contains an unsupported value ${JSON.stringify(value)} — letters, ` +
+          "digits, spaces, dot, ampersand, underscore and hyphen only."
+      );
+    }
+  }
+  return list;
+}
+
+/** `IN ('ASSOCIATES', 'ASSOCIATE SEZ')` on the upper-cased column, or "" when the filter is off. */
+export function registerCardTypeFilter(): string {
+  const cardTypes = registerCardTypes();
+  if (!cardTypes.length) return "";
+  const column = quoteIdentifier(registerColumns().cardType, "ATTENDANCE_REGISTER_CARD_TYPE_COLUMN");
+  const values = cardTypes.map((value) => `'${value.toUpperCase()}'`).join(", ");
+  return ` AND UPPER(LTRIM(RTRIM(${column}))) IN (${values})`;
 }
 
 /**
@@ -92,8 +131,9 @@ export function registerSql(): string {
     `SUM(${acceptedOt}) AS AcceptedOT, ` +
     `SUM(${rawHours}) AS RawManHours, ` +
     `COUNT(*) AS Records ` +
-    `FROM ${view} WHERE CAST(${date} AS date) = CAST(@workDate AS date) ` +
-    `GROUP BY ${id}`
+    `FROM ${view} WHERE CAST(${date} AS date) = CAST(@workDate AS date)` +
+    registerCardTypeFilter() +
+    ` GROUP BY ${id}`
   );
 }
 
@@ -401,6 +441,8 @@ export async function describeRegisterSource(): Promise<{
     windowTo: string | null;
     weeklyOffValues: Array<{ value: string; rows: number }>;
     statusValues: Array<{ value: string; rows: number }>;
+    /** The population filter in the data's own spelling, so a mismatch is visible rather than silent. */
+    cardTypeValues: Array<{ value: string; rows: number }>;
     idPatterns: { alphanumeric: number; numericOnly: number; other: number };
   };
   sql: string;
@@ -570,6 +612,7 @@ async function valueCensusOnPool(
   windowTo: string | null;
   weeklyOffValues: Array<{ value: string; rows: number }>;
   statusValues: Array<{ value: string; rows: number }>;
+  cardTypeValues: Array<{ value: string; rows: number }>;
   idPatterns: { alphanumeric: number; numericOnly: number; other: number };
 }> {
   const empty = {
@@ -577,6 +620,7 @@ async function valueCensusOnPool(
     windowTo: null,
     weeklyOffValues: [],
     statusValues: [],
+    cardTypeValues: [],
     idPatterns: { alphanumeric: 0, numericOnly: 0, other: 0 },
   };
   if (skip) return empty; // the view lacks the columns; a census of them would fail too.
@@ -585,9 +629,13 @@ async function valueCensusOnPool(
   const columns = registerColumns();
   const qualified = `[${schema}].[${table}]`;
   const dateColumn = `[${columns.date}]`;
+  // The census describes THIS APP'S population, so the same card-type filter applies. Without it the
+  // weekly-off majority would be computed over the whole yard (contractors included) — the very mistake
+  // that made every date look closed.
+  const filter = registerCardTypeFilter();
   const window = await pool.request().query(
     `SELECT CONVERT(varchar(10), MIN(${dateColumn}), 23) AS windowFrom, CONVERT(varchar(10), MAX(${dateColumn}), 23) AS windowTo, ` +
-      `CONVERT(varchar(10), DATEADD(day, -30, MAX(${dateColumn})), 23) AS since FROM ${qualified}`
+      `CONVERT(varchar(10), DATEADD(day, -30, MAX(${dateColumn})), 23) AS since FROM ${qualified} WHERE 1=1${filter}`
   );
   const row = (window.recordset as Array<Record<string, unknown>>)?.[0] ?? {};
   const windowFrom = row.windowFrom == null ? null : String(row.windowFrom);
@@ -600,7 +648,7 @@ async function valueCensusOnPool(
     request.input("since", sql.VarChar(10), since);
     const response = await request.query(
       `SELECT CONVERT(varchar(40), ${column}) AS value, COUNT(*) AS rows FROM ${qualified} ` +
-        `WHERE CAST(${dateColumn} AS date) >= @since GROUP BY CONVERT(varchar(40), ${column}) ORDER BY COUNT(*) DESC`
+        `WHERE CAST(${dateColumn} AS date) >= @since${filter} GROUP BY CONVERT(varchar(40), ${column}) ORDER BY COUNT(*) DESC`
     );
     return (((response.recordset as Array<Record<string, unknown>>) || []).map((entry) => ({
       value: String(entry.value ?? "(null)"),
@@ -615,7 +663,7 @@ async function valueCensusOnPool(
       `SUM(CASE WHEN [${columns.id}] LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS alphanumeric, ` +
       `SUM(CASE WHEN [${columns.id}] NOT LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS numericOnly, ` +
       `SUM(CASE WHEN [${columns.id}] IS NULL OR LTRIM(RTRIM([${columns.id}])) = '' THEN 1 ELSE 0 END) AS other ` +
-      `FROM ${qualified} WHERE CAST(${dateColumn} AS date) >= @since`
+      `FROM ${qualified} WHERE CAST(${dateColumn} AS date) >= @since${filter}`
   );
   const idRow = (ids.recordset as Array<Record<string, unknown>>)?.[0] ?? {};
 
@@ -624,6 +672,7 @@ async function valueCensusOnPool(
     windowTo,
     weeklyOffValues: await distribution(`[${columns.weeklyOff}]`),
     statusValues: await distribution(`[${columns.status}]`),
+    cardTypeValues: await distribution(`[${columns.cardType}]`),
     idPatterns: {
       alphanumeric: Number(idRow.alphanumeric ?? 0),
       numericOnly: Number(idRow.numericOnly ?? 0),

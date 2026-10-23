@@ -111,3 +111,26 @@ test("the four required columns are named, and their absence is what sends us lo
     ["AcceptedOT"]
   );
 });
+
+test("the population filter targets the associates, and cannot be injected through", async () => {
+  const { registerCardTypeFilter, registerCardTypes } = await import("./attendanceRegisterSource");
+  const original = process.env.ATTENDANCE_REGISTER_CARD_TYPES;
+  try {
+    delete process.env.ATTENDANCE_REGISTER_CARD_TYPES;
+    assert.deepEqual(registerCardTypes(), ["Associates", "ASSOCIATE SEZ"]);
+    const filter = registerCardTypeFilter();
+    assert.match(filter, /UPPER\(LTRIM\(RTRIM\(\[CardType\]\)\)\) IN \('ASSOCIATES', 'ASSOCIATE SEZ'\)/);
+
+    // ALL disables the filter; it is never the fall-through of an empty value.
+    process.env.ATTENDANCE_REGISTER_CARD_TYPES = "ALL";
+    assert.deepEqual(registerCardTypes(), []);
+    assert.equal(registerCardTypeFilter(), "");
+
+    // A value that could break out of the literal is refused outright.
+    process.env.ATTENDANCE_REGISTER_CARD_TYPES = "Associates') OR 1=1 --";
+    assert.throws(() => registerCardTypes(), /unsupported value/);
+  } finally {
+    if (original === undefined) delete process.env.ATTENDANCE_REGISTER_CARD_TYPES;
+    else process.env.ATTENDANCE_REGISTER_CARD_TYPES = original;
+  }
+});
