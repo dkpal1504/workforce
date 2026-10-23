@@ -21,6 +21,9 @@ import {
 import { buildTimesheetCoverageXlsx, timesheetCoverageFilename } from "../services/timesheetCoverageExport";
 import { parseCoverageStatuses } from "../services/timesheetCoverage";
 import { writeAudit } from "../audit";
+import { prisma } from "../db";
+import { getMaxDailyHours } from "../config";
+import { notBookedCsv, summariseNotBooked } from "../services/notBooked";
 
 export const reportsRouter = Router();
 
@@ -268,6 +271,112 @@ function coverageActor(req: Request): CoverageActor {
  * to the browser to page there would push megabytes for one screenful. The coverage figures are
  * computed over ALL rows before the page is cut, so the summary never changes with the page.
  */
+
+/**
+ * GET /api/reports/not-booked — the CLMS men nobody booked, folded per person.
+ *
+ * The coverage report already lists every unfilled employee-day; this is the same fact asked as a payroll
+ * question, so it uses the SAME roster rule (`employmentType: "CLMS"`, active) and the SAME idea of "booked"
+ * (a day with any sheet, whatever its status). Payroll staff are outside it by construction: they are paid
+ * by allocation, not by timesheet.
+ */
+function readNotBookedRange(req: Request): { from: string; to: string } | { error: string } {
+  const today = new Date();
+  const firstOfMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)).toISOString().slice(0, 10);
+  const from = String(req.query.from ?? firstOfMonth);
+  const to = String(req.query.to ?? today.toISOString().slice(0, 10));
+  const shape = /^\d{4}-\d{2}-\d{2}$/;
+  if (!shape.test(from) || !shape.test(to)) return { error: "from and to must be YYYY-MM-DD" };
+  if (from > to) return { error: "from must be on or before to" };
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+  if (days > 62) return { error: "the range is longer than 62 days; pick a shorter one" };
+  return { from, to };
+}
+
+async function buildNotBooked(req: Request) {
+  const range = readNotBookedRange(req);
+  if ("error" in range) return range;
+
+  const role = req.user!.role;
+  const departmentScoped = role === "HOD" || role === "DEPT_HEAD";
+  const people = await prisma.employee.findMany({
+    where: {
+      active: true,
+      employmentType: "CLMS",
+      ...(departmentScoped && req.user!.departmentId ? { departmentId: req.user!.departmentId } : {}),
+    },
+    select: {
+      id: true,
+      ecNo: true,
+      name: true,
+      category: true,
+      department: { select: { name: true } },
+      sectionAssignment: { select: { section: { select: { name: true } } } },
+    },
+  });
+
+  const fromDate = new Date(`${range.from}T00:00:00.000Z`);
+  const toDate = new Date(`${range.to}T00:00:00.000Z`);
+  const [sheets, rates] = await Promise.all([
+    prisma.timesheetDay.findMany({
+      where: { workDate: { gte: fromDate, lte: toDate }, employeeId: { in: people.map((p) => p.id) } },
+      select: { employeeId: true, workDate: true },
+    }),
+    prisma.costRate.findMany({ orderBy: { effectiveFrom: "desc" } }),
+  ]);
+
+  const booked = new Map<number, Set<string>>();
+  for (const sheet of sheets) {
+    const key = sheet.workDate.toISOString().slice(0, 10);
+    const set = booked.get(sheet.employeeId) ?? new Set<string>();
+    set.add(key);
+    booked.set(sheet.employeeId, set);
+  }
+
+  const report = summariseNotBooked({
+    from: range.from,
+    to: range.to,
+    maxDailyHours: getMaxDailyHours(),
+    people: people.map((p) => ({
+      id: p.id,
+      ecNo: p.ecNo,
+      name: p.name,
+      department: p.department.name,
+      section: p.sectionAssignment?.section.name ?? "",
+      category: p.category,
+    })),
+    booked,
+    rateFor: (category) => {
+      const row = rates.find((r) => r.category === category);
+      return row ? Number(row.ratePerHour) : 0;
+    },
+  });
+  // An empty cost-rate table is a data gap, not a zero: saying "Idle cost 0" would read as "these men cost
+  // nothing", which is the opposite of the point.
+  if (rates.length === 0) {
+    report.notes.unshift(
+      "No cost rate is configured, so Idle cost reads 0. Set a rate per category under Cost rates and this column prices the gap."
+    );
+  }
+  return report;
+}
+
+reportsRouter.get("/not-booked", requireRoles(...COVERAGE_ROLES), async (req, res) => {
+  const report = await buildNotBooked(req);
+  if ("error" in report) return res.status(400).json({ error: report.error });
+  res.json(report);
+});
+
+reportsRouter.get("/not-booked.csv", requireRoles(...COVERAGE_ROLES), async (req, res) => {
+  const report = await buildNotBooked(req);
+  if ("error" in report) return res.status(400).json({ error: report.error });
+  const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const csv = notBookedCsv(report).map((line) => line.map(quote).join(",")).join("\r\n");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="not-booked-${report.from}_to_${report.to}.csv"`);
+  res.send("\uFEFF" + csv);
+});
+
 reportsRouter.get("/timesheet-coverage", requireRoles(...COVERAGE_ROLES), async (req, res) => {
   const filters = parseCoverageFilters(req.query as Record<string, unknown>);
   if ("error" in filters) return res.status(400).json(filters.error);

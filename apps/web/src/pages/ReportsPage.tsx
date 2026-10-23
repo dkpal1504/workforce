@@ -43,6 +43,7 @@ import {
   type ReportsTabId,
 } from "./portfolioTabs";
 import { TimesheetCoveragePanel } from "./TimesheetCoveragePanel";
+import { NotBookedPanel } from "./NotBookedPanel";
 import "../styles/portfolio.css";
 
 /**
@@ -84,7 +85,9 @@ export function ReportsPage() {
    * reader loses a tab to a stale session.
    */
   const canCoverage = user?.capabilities.viewTimesheetCoverage !== false;
-  const tabs = canCoverage ? REPORTS_TABS : REPORTS_TABS.filter((entry) => entry.id !== "timesheet-coverage");
+  const tabs = canCoverage
+    ? REPORTS_TABS
+    : REPORTS_TABS.filter((entry) => entry.id !== "timesheet-coverage" && entry.id !== "not-booked");
 
   const { report, loading, error, query } = usePortfolioReport(filters);
 
@@ -174,7 +177,9 @@ export function ReportsPage() {
   );
 
   /** Which strip is on screen: the portfolio sections, or the coverage report. */
-  const coverageTab = canCoverage && tab === "timesheet-coverage";
+  // Both of these tabs are roster reports, not portfolio cuts, so they share the coverage branch: their
+  // content comes from /reports/*, not from the portfolio report the filter bar drives.
+  const coverageTab = canCoverage && (tab === "timesheet-coverage" || tab === "not-booked");
   // Delay insights reads an entirely different endpoint, so it renders like coverage: its own panel,
   // without waiting for the portfolio report.
   const delayTab = tab === "delay-insights";
@@ -249,7 +254,7 @@ export function ReportsPage() {
             }}
           />
           <div className="pf-tabpanel" role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}>
-            <TimesheetCoveragePanel />
+            {tab === "not-booked" ? <NotBookedPanel /> : <TimesheetCoveragePanel />}
           </div>
         </>
       ) : loading && !report ? (

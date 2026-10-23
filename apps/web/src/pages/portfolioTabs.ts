@@ -75,6 +75,13 @@ export const PORTFOLIO_TAB_IDS: readonly PortfolioTabId[] = PORTFOLIO_TABS.map((
 export const COVERAGE_TAB = { id: "timesheet-coverage", label: "Timesheet coverage", tone: "primary" } as const;
 
 /**
+ * The same fact as coverage, asked as a payroll question: which CLMS men nobody booked, folded per person
+ * with the cost of their idle days. It sits immediately after coverage because a reader looking for a gap in
+ * one will be looking for the price of it in the other.
+ */
+export const NOT_BOOKED_TAB = { id: "not-booked", label: "Not booked", tone: "danger" } as const;
+
+/**
  * Delay insights — the causes recorded in conversations, counted.
  *
  * Reports-only for the same reason coverage is: it is not a section of the portfolio report and its
@@ -91,7 +98,7 @@ export const DELAY_INSIGHTS_TAB = { id: "delay-insights", label: "Delay insights
 export const HINDRANCE_TAB = { id: "hindrances", label: "Hindrances", tone: "danger" } as const;
 
 /** The tab strip the REPORTS screen renders: the six portfolio sections, plus the three Reports reports. */
-export const REPORTS_TABS = [...PORTFOLIO_TABS, COVERAGE_TAB, DELAY_INSIGHTS_TAB, HINDRANCE_TAB] as const;
+export const REPORTS_TABS = [...PORTFOLIO_TABS, COVERAGE_TAB, NOT_BOOKED_TAB, DELAY_INSIGHTS_TAB, HINDRANCE_TAB] as const;
 export type ReportsTabId = (typeof REPORTS_TABS)[number]["id"];
 export const REPORTS_TAB_IDS: readonly ReportsTabId[] = REPORTS_TABS.map((tab) => tab.id);
 

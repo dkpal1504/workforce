@@ -2157,3 +2157,17 @@ tr:hover .pf-escalate-btn,
 .stage-radio--on { color: var(--text); font-weight: 600; }
 .csv-link { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 600; color: var(--primary); text-decoration: none; border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; background: var(--bg-elevated); }
 .csv-link:hover { border-color: var(--primary); }
+
+
+/* ---- Reports: "Not booked" --------------------------------------------------------------------- */
+.not-booked { padding: 16px 0; }
+.not-booked__totals { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.not-booked__totals > div { display: flex; flex-direction: column; gap: 2px; min-width: 140px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); }
+.not-booked__totals span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.not-booked__totals strong { font-size: 1.1rem; }
+.not-booked__note { margin: 0 0 12px; font-size: 0.82rem; color: var(--text-muted); }
+.not-booked__notes { margin: 14px 0 0; padding-left: 18px; font-size: 0.8rem; color: var(--text-muted); }
+.not-booked__notes li { margin-bottom: 4px; }
+.not-booked .table-wrap { overflow-x: auto; }
+.not-booked .chip--danger { margin-left: 6px; font-size: 0.65rem; padding: 1px 6px; border-radius: 999px; background: rgba(220, 80, 80, 0.15); color: #e88; }
+.not-booked .link-button { margin-top: 10px; background: none; border: none; color: var(--primary); font-size: 0.85rem; cursor: pointer; }
