@@ -34,6 +34,7 @@ import { remindersState } from "./services/conversationReminders";
 import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./services/badgeViewSyncScheduler";
 import { attendanceHoursRouter } from "./routes/attendanceHours";
 import { startAttendanceHoursScheduler, stopAttendanceHoursScheduler } from "./services/attendanceHoursScheduler";
+import { startAttendanceSettlementScheduler, stopAttendanceSettlementScheduler } from "./services/attendanceSettlementScheduler";
 import { prisma } from "./db";
 import { assertBootstrapPasswordUsable, bootstrapPasswordNotice } from "./services/defaultLoginCredentials";
 
@@ -196,6 +197,7 @@ const server = app.listen(port, host, () => {
   console.log(remindersState());
   startBadgeViewSyncScheduler();
   startAttendanceHoursScheduler();
+  startAttendanceSettlementScheduler();
   startConversationScheduler();
 });
 
@@ -205,6 +207,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`${signal} received; shutting down.`);
   stopBadgeViewSyncScheduler();
   stopAttendanceHoursScheduler();
+  stopAttendanceSettlementScheduler();
   server.close(async () => {
     await prisma.$disconnect();
     process.exit(0);

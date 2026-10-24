@@ -14,7 +14,8 @@
     "test": "node --import tsx --test src/services/*.test.ts",
     "db:seed:demo": "tsx prisma/seed-demo.ts",
     "recon:holiday-hours": "npm run build --silent && node ./scripts/holiday-hours-recon.mjs",
-    "print:holiday-recon-sql": "npm run build --silent && node ./scripts/holiday-hours-recon.mjs --print-sql"
+    "print:holiday-recon-sql": "npm run build --silent && node ./scripts/holiday-hours-recon.mjs --print-sql",
+    "settle:attendance": "npm run build --silent && node ./scripts/settle-attendance.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
