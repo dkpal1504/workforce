@@ -41,8 +41,11 @@ type Report = {
   rowTotal: number;
   totals: { roster: number; peopleWithAnyGap: number; notBookedDays: number; hours: number; cost: number };
   notes: string[];
-  /** Which dates the figures divided by: calendar days, or the settled working days. */
-  calendar?: { mode: "CALENDAR" | "SETTLED"; workingDays: number; fellBack: boolean; unsettledDates: string[] };
+  /**
+   * What the figures divided by. SETTLED means each man's own attendance decided which days he owed a
+   * sheet — a weekly off is a roster fact per person, so no yard-wide calendar can answer it.
+   */
+  denominator?: { mode: "CALENDAR" | "SETTLED"; employeeDays: number; employeesOnCalendarDays: number };
 };
 
 type DepartmentOption = { id: number; name: string };
@@ -202,9 +205,11 @@ export function NotBookedPanel() {
           </div>
 
           <p className="not-booked__note">
-            {report.rangeDays} {report.calendar?.mode === "SETTLED" ? "working days" : "days"} in range
-            {report.calendar?.mode === "SETTLED" ? " (settled calendar — Sundays and holidays excluded)" : ""} · a
-            day with ANY sheet counts as booked, whatever its status ·
+            {report.rangeDays} days in range
+            {report.denominator?.mode === "SETTLED"
+              ? ` · counting only the days each man was actually present (${report.denominator.employeeDays.toLocaleString("en-IN")} man-days)`
+              : " · every calendar day counts for every man"}{" "}
+            · a day with ANY sheet counts as booked, whatever its status ·
             idle hours are {report.maxDailyHours} per unbooked day at each person's category rate · payroll
             staff are not in this report.
           </p>

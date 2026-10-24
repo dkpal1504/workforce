@@ -36,7 +36,7 @@ import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
 import { intersectDepartmentFilter, reportScopeFor } from "./roleAccess";
 import { projectHoursFromEntries, type BookingEntryLike } from "./contractWorkHours";
-import { reportCalendarFor } from "./reportCalendar";
+import { settledCoverageFor } from "./settledWorkDays";
 import {
   NOT_FILLED,
   buildCoverage,
@@ -107,16 +107,18 @@ export type TimesheetCoverageReport = {
     notes: string[];
   };
   /**
-   * Which dates the figures divide by. Present since the work calendar: a reader must be able to see
-   * that a figure was divided by 70 working days rather than 90 calendar days, and that a partial
-   * calendar fell back instead of quietly shrinking the denominator.
+   * What the figures divide by.
+   *
+   * SETTLED means every man's own attendance decided which days he owed a sheet (the customer's rule: each
+   * worker can have a different weekly off, so no yard-wide calendar can answer it). CALENDAR means the old
+   * behaviour — every man owes every calendar day — and is what you get with the flag off.
    */
-  calendar?: {
+  denominator?: {
     mode: "CALENDAR" | "SETTLED";
-    workingDays: number;
-    days: string[];
-    unsettledDates: string[];
-    fellBack: boolean;
+    /** (employee, date) pairs the report divides by. */
+    employeeDays: number;
+    /** Employees with no settled attendance in the range: they keep their calendar days. */
+    employeesOnCalendarDays: number;
   };
   /** The Project columns of this report, in display order. */
   projects: Array<{ colorKey: string; name: string }>;
@@ -183,12 +185,6 @@ export async function buildTimesheetCoverageReport(
   const range = coverageRange(filters.from, filters.to);
   if (!range.ok) throw new CoverageRequestError(range.code, range.error);
 
-  // Which dates this report divides by. Calendar days unless the settled work calendar answered for the
-  // whole range — see reportCalendar.ts, which also explains why a partial calendar falls back to the
-  // LARGER denominator instead of flattering the coverage.
-  const calendar = await reportCalendarFor(range.days);
-  const reportDays = calendar.days;
-
   const maxDailyHours = getMaxDailyHours();
 
   // ---- Scope: derived server-side, intersected with the request, never trusted from it --------
@@ -221,6 +217,10 @@ export async function buildTimesheetCoverageReport(
   const fromDate = dayToDate(range.from);
   const toDate = dayToDate(range.to);
   const employeeIds = employees.map((employee) => employee.id);
+
+  // Which (employee, date) pairs this report divides by: each man's own attendance decides whether he owed
+  // a sheet that day, because a weekly off is a roster fact per person.
+  const settled = await settledCoverageFor(employeeIds, range.days);
 
   // ---- The sheets, and the bookings on them --------------------------------------------------
   const sheets = employeeIds.length
@@ -266,12 +266,12 @@ export async function buildTimesheetCoverageReport(
     .filter((project) => project.colorKey)
     .map((project) => ({ colorKey: String(project.colorKey).toUpperCase(), name: project.name }));
 
-  // ---- One row per (date x employee) ---------------------------------------------------------
-  // `reportDays`, not `range.days`: on a settled calendar the yard's non-working days are not days anyone
-  // failed to fill in, so they must not appear as gaps.
+  // ---- One row per (date x employee) the man actually owed ------------------------------------
+  // A day he was absent, on his own weekly off, or on a holiday is not a day he failed to fill in.
   const rows: CoverageRow[] = [];
-  for (const day of reportDays) {
+  for (const day of range.days) {
     for (const employee of employees) {
+      if (settled.pairs && !settled.pairs.has(`${employee.id}:${day}`)) continue;
       const daySheets = sheetsByEmployeeDay.get(`${employee.id}:${day}`) ?? [];
       const entries: BookingEntryLike[] = daySheets.flatMap((sheet) => sheet.entries);
       // NO SHEET MEANS NO HOURS — including no overheads. Overheads are UNUSED CAPACITY on a day the
@@ -334,12 +334,10 @@ export async function buildTimesheetCoverageReport(
     to: range.to,
     days: range.days,
     generatedAt: new Date().toISOString(),
-    calendar: {
-      mode: calendar.mode,
-      workingDays: reportDays.length,
-      days: reportDays,
-      unsettledDates: calendar.unsettledDates,
-      fellBack: calendar.fellBack,
+    denominator: {
+      mode: settled.mode,
+      employeeDays: rows.length,
+      employeesOnCalendarDays: settled.employeesOnCalendarDays.length,
     },
     provenance: {
       filters: [
@@ -347,11 +345,12 @@ export async function buildTimesheetCoverageReport(
         {
           label: "Denominator",
           value:
-            calendar.mode === "SETTLED"
-              ? `${reportDays.length} settled working day(s) of ${range.days.length} calendar day(s)`
-              : calendar.unsettledDates.length
-                ? `all ${range.days.length} calendar day(s) — ${calendar.unsettledDates.length} not settled yet`
-                : `all ${range.days.length} calendar day(s)`,
+            settled.mode === "SETTLED"
+              ? `${settled.pairCount.toLocaleString("en-IN")} man-day(s) each man actually owed, from settled attendance` +
+                (settled.employeesOnCalendarDays.length
+                  ? ` (${settled.employeesOnCalendarDays.length} man/men had no settled attendance — calendar days used for them)`
+                  : "")
+              : `all ${range.days.length} calendar day(s) per employee`,
         },
         {
           label: "Department",
@@ -446,15 +445,8 @@ function emptyReport(
     to: range.to,
     days: range.days,
     generatedAt: new Date().toISOString(),
-    // A disjoint scope was refused before any calendar was read, so there is no denominator to report:
-    // the report is empty for a reason that has nothing to do with days.
-    calendar: {
-      mode: "CALENDAR",
-      workingDays: range.days.length,
-      days: range.days,
-      unsettledDates: [],
-      fellBack: false,
-    },
+    // A disjoint scope was refused before any roster was read, so the emptiness has nothing to do with days.
+    denominator: { mode: "CALENDAR", employeeDays: 0, employeesOnCalendarDays: 0 },
     provenance: {
       filters: [
         { label: "Period", value: `${range.from} to ${range.to} (${range.days.length} day(s))` },

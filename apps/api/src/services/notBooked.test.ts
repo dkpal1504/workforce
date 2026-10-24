@@ -84,7 +84,7 @@ test("a caller that passes the settled working days does not count a Sunday as a
   const withWorkingDays = summariseNotBooked({
     from: "2026-09-21",
     to: "2026-09-27",
-    days: workingDays,
+    workingDaysByEmployee: new Map([[1, workingDays]]),
     maxDailyHours: 8,
     people,
     booked,
@@ -93,6 +93,7 @@ test("a caller that passes the settled working days does not count a Sunday as a
 
   assert.equal(withCalendar.people[0].notBookedDays, 6, "7 calendar days minus the one booked day");
   assert.equal(withWorkingDays.people[0].notBookedDays, 2, "3 working days minus the one booked day");
+  // rangeDays states the LENGTH OF THE PERIOD; how many of those days a man owed is his own business.
   assert.equal(withCalendar.rangeDays, 7);
-  assert.equal(withWorkingDays.rangeDays, 3);
+  assert.equal(withWorkingDays.rangeDays, 7);
 });

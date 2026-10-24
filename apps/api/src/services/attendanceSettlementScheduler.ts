@@ -7,11 +7,14 @@ import { settleAttendance, settleWindow } from "./attendanceSettlementRun";
  * Gated by ATTENDANCE_SETTLEMENT_ENABLED (default false, like every other external integration here: a
  * job that writes thousands of rows is switched on deliberately, never by a deploy).
  *
- * Each tick settles TODAY and the ATTENDANCE_SETTLEMENT_LOOKBACK_DAYS days before it (default 7). The
- * window exists for the same reason the hours refresh has one: LabourWorks receives punches, regularisations
- * and OT approvals AFTER the shift, so yesterday's answer can change for days. Re-settling is safe by
- * construction — every row is upserted on its natural key — so a corrected punch simply overwrites the
- * settled value and nothing is duplicated.
+ * Runs at 06:00 IST (the owner's instruction, 2026-10-24): the previous day's attendance is final in
+ * LabourWorks by then, and a shift that ended at 22:00 has been regularised overnight.
+ *
+ * Each tick settles TODAY and the ATTENDANCE_SETTLEMENT_LOOKBACK_DAYS days before it (default 7), so a day
+ * that was not final yesterday is picked up by the next run without anyone chasing it — the customer's own
+ * words: "cases which are unsettled will fetch in next cron job". Re-settling is safe by construction:
+ * every row is upserted on its natural key, so a corrected punch overwrites the settled value and nothing
+ * is duplicated.
  *
  * Overlap guard: a tick is skipped while the previous pass is still running, so a slow source cannot stack
  * two settlements on top of each other.
@@ -59,7 +62,7 @@ export function startAttendanceSettlementScheduler(): void {
     console.log("[attendanceSettlement] Disabled (ATTENDANCE_SETTLEMENT_ENABLED is not true).");
     return;
   }
-  const expr = process.env.ATTENDANCE_SETTLEMENT_CRON || "10 2 * * *";
+  const expr = process.env.ATTENDANCE_SETTLEMENT_CRON || "0 6 * * *";
   if (!cron.validate(expr)) {
     console.error(`[attendanceSettlement] Invalid ATTENDANCE_SETTLEMENT_CRON: "${expr}".`);
     return;

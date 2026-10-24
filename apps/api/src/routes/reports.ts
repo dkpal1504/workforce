@@ -24,7 +24,7 @@ import { writeAudit } from "../audit";
 import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
 import { notBookedCsv, summariseNotBooked , eachDay } from "../services/notBooked";
-import { reportCalendarFor } from "../services/reportCalendar";
+import { settledCoverageFor } from "../services/settledWorkDays";
 
 export const reportsRouter = Router();
 
@@ -360,14 +360,13 @@ async function buildNotBooked(req: Request) {
     booked.set(sheet.employeeId, set);
   }
 
-  // The dates this report divides by: calendar days, or the settled working days when the work calendar
-  // answered for the whole range (SETTLE_REPORTS). Same seam as Timesheet coverage, same fail-safe.
-  const calendar = await reportCalendarFor(eachDay(range.from, range.to));
+  // Which days each man owed a sheet: his own attendance decides, because a weekly off is per person.
+  const settled = await settledCoverageFor(people.map((person) => person.id), eachDay(range.from, range.to));
 
   const report = summariseNotBooked({
     from: range.from,
     to: range.to,
-    days: calendar.days,
+    workingDaysByEmployee: settled.daysByEmployee ?? undefined,
     maxDailyHours: getMaxDailyHours(),
     people: people.map((p) => ({
       id: p.id,
@@ -390,8 +389,15 @@ async function buildNotBooked(req: Request) {
       "No cost rate is configured, so Idle cost reads 0. Set a rate per category under Cost rates and this column prices the gap."
     );
   }
-  // The denominator travels with the report, so the screen can state which days it divided by.
-  return { ...report, calendar };
+  // The denominator travels with the report, so the screen can state what it divided by.
+  return {
+    ...report,
+    denominator: {
+      mode: settled.mode,
+      employeeDays: settled.pairCount,
+      employeesOnCalendarDays: settled.employeesOnCalendarDays.length,
+    },
+  };
 }
 
 /**

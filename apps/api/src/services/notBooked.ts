@@ -65,10 +65,11 @@ export function summariseNotBooked(input: {
   from: string;
   to: string;
   /**
-   * The dates this report divides by. Defaults to every calendar day, but a caller that has the settled
-   * work calendar passes the WORKING days instead — a Sunday is not a day anybody failed to book.
+   * The dates THIS MAN owes a sheet, when his settled attendance is known. A day he was absent, on his own
+   * weekly off or on a holiday is not a day he failed to book — and because a weekly off is a roster fact
+   * per person, the caller passes one list per employee rather than one for the yard.
    */
-  days?: string[];
+  workingDaysByEmployee?: Map<number, string[]>;
   maxDailyHours: number;
   people: Array<{
     id: number;
@@ -82,10 +83,11 @@ export function summariseNotBooked(input: {
   booked: Map<number, Set<string>>;
   rateFor: (category: string) => number;
 }): NotBookedReport {
-  const days = input.days ?? eachDay(input.from, input.to);
+  const calendarDays = eachDay(input.from, input.to);
   const people: NotBookedPerson[] = [];
 
   for (const person of input.people) {
+    const days = input.workingDaysByEmployee?.get(person.id) ?? calendarDays;
     const had = input.booked.get(person.id) ?? new Set<string>();
     const missing: string[] = [];
     let run = 0;
@@ -105,7 +107,8 @@ export function summariseNotBooked(input: {
     people.push({
       ...person,
       notBookedDays: missing.length,
-      rangeDays: days.length,
+      // The widest day count in the report: the yard's calendar length, so a reader can see the period.
+    rangeDays: calendarDays.length,
       firstDay: missing[0],
       lastDay: missing[missing.length - 1],
       longestRun: longest,
@@ -134,7 +137,8 @@ export function summariseNotBooked(input: {
   return {
     from: input.from,
     to: input.to,
-    rangeDays: days.length,
+    // The widest day count in the report: the yard's calendar length, so a reader can see the period.
+    rangeDays: calendarDays.length,
     maxDailyHours: input.maxDailyHours,
     people,
     totals,
