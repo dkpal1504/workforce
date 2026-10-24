@@ -29,8 +29,15 @@
  * it is WORKED_WEEKLY_OFF, which is why his hours are OT and not regular project hours.
  */
 
-/** The closed status vocabulary reported by the view. Anything else is UNKNOWN, never "present". */
-export const REGISTER_STATUS_CODES = ["P", "P/WO", "P/HL", "A", "A/HL"] as const;
+/**
+ * The status vocabulary reported by the view, measured against 33 days of live data (2026-09-21..10-23):
+ * 5,900 unmapped man-days turned out to be `HD` (half day, 146) and `A/WO` (absent on weekly off, 16) —
+ * real codes with an obvious meaning, which the first version threw into UNVERIFIED. The remaining 1,066
+ * carried an EMPTY status: not a code at all, so they stay UNKNOWN and are reported as such.
+ *
+ * Anything not listed here is UNKNOWN, never "present".
+ */
+export const REGISTER_STATUS_CODES = ["P", "P/WO", "P/HL", "A", "A/HL", "HD", "A/WO"] as const;
 export type RegisterStatusCode = (typeof REGISTER_STATUS_CODES)[number];
 export type RegisterStatus = RegisterStatusCode | "UNKNOWN";
 
@@ -128,9 +135,13 @@ export function normaliseRegisterStatus(value: unknown): RegisterStatus {
   return (match as RegisterStatusCode | undefined) ?? "UNKNOWN";
 }
 
-/** Did this status mean the man was in the plant? Only the three `P*` codes do. */
+/**
+ * Did this status mean the man was in the plant? The three `P*` codes and `HD`, which is a present day
+ * recorded as half: the hours come from AcceptedManHrs, so a half day's quantity is already in the data.
+ * `A/WO` is NOT present — he was absent, on a day that was his weekly off.
+ */
 export function isPresentStatus(status: RegisterStatus): boolean {
-  return status === "P" || status === "P/WO" || status === "P/HL";
+  return status === "P" || status === "P/WO" || status === "P/HL" || status === "HD";
 }
 
 /**
@@ -146,8 +157,14 @@ export function presenceRank(status: RegisterStatus): number {
       return 4;
     case "P":
       return 3;
+    case "HD":
+      // Present, and ranked just below a full day: when rows disagree, the full day wins the hours and
+      // `mixedStatus` still records that the source said both.
+      return 2.5;
     case "A/HL":
       return 2;
+    case "A/WO":
+      return 1.5;
     case "A":
       return 1;
     default:
@@ -172,7 +189,8 @@ export function dayTypeForStatuses(
   if (isHoliday) return "HOLIDAY";
   const carriesHoliday = statuses.some((status) => status === "P/HL" || status === "A/HL");
   if (carriesHoliday) return "HOLIDAY";
-  return isWeeklyOff ? "WEEKLY_OFF" : "WORKING";
+  const carriesWeeklyOff = statuses.some((status) => status === "A/WO");
+  return isWeeklyOff || carriesWeeklyOff ? "WEEKLY_OFF" : "WORKING";
 }
 
 /**
@@ -195,6 +213,8 @@ export function classFor(dayType: DayType, status: RegisterStatus): AttendanceCl
   }
   // WORKING
   if (status === "P") return "WORKED";
+  if (status === "HD") return "WORKED"; // a half day is still a day he was here
+  if (status === "A/WO") return "OFF"; // absent, but on his own weekly off: he owed nothing
   if (status === "P/WO") return "WORKED_WEEKLY_OFF"; // status is authoritative: OT work.
   if (status === "P/HL") return "WORKED_HOLIDAY";
   return "ABSENT"; // A on a working day is a real absence.

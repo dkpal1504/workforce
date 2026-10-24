@@ -28,6 +28,8 @@ export type SettledCoverage = {
   daysByEmployee: Map<number, string[]> | null;
   /** Employees with no settled attendance at all in the range: they keep their calendar days. */
   employeesOnCalendarDays: number[];
+  /** Employees whose settled rows show no worked day at all: they owe nothing, and are named. */
+  employeesWithNoWorkedDay: number[];
   /** How many (employee, date) pairs the report now divides by. */
   pairCount: number;
 };
@@ -58,6 +60,7 @@ export function chooseSettledCoverage(input: {
       pairs: null,
       daysByEmployee: null,
       employeesOnCalendarDays: [],
+      employeesWithNoWorkedDay: [],
       pairCount: employeeIds.length * rangeDays.length,
     };
   }
@@ -74,6 +77,7 @@ export function chooseSettledCoverage(input: {
   const pairs = new Set<string>();
   const daysByEmployee = new Map<number, string[]>();
   const employeesOnCalendarDays: number[] = [];
+  const employeesWithNoWorkedDay: number[] = [];
 
   for (const employeeId of employeeIds) {
     if (!settledIds.has(employeeId)) {
@@ -84,12 +88,13 @@ export function chooseSettledCoverage(input: {
       daysByEmployee.set(employeeId, [...rangeDays]);
       continue;
     }
+    // The register answered for this man: his own days decide, even when the answer is "none". A man absent
+    // or on leave for the whole range owed no timesheet, so he contributes no employee-days — counting his
+    // calendar days instead would invent a debt he never had and quietly depress every Section's coverage.
     const days = byEmployee.get(employeeId) ?? [];
-    // An employee whose settled rows say he worked no day at all keeps his calendar days too: a report that
-    // silently showed him owing nothing would hide the very gap this report exists to find.
-    const effective = days.length ? days : [...rangeDays];
-    daysByEmployee.set(employeeId, effective);
-    for (const day of effective) pairs.add(`${employeeId}:${day}`);
+    if (!days.length) employeesWithNoWorkedDay.push(employeeId);
+    daysByEmployee.set(employeeId, days);
+    for (const day of days) pairs.add(`${employeeId}:${day}`);
   }
 
   // Everyone fell back: say so, and behave exactly like calendar mode so no number is left ambiguous.
@@ -99,6 +104,7 @@ export function chooseSettledCoverage(input: {
       pairs: null,
       daysByEmployee: null,
       employeesOnCalendarDays,
+      employeesWithNoWorkedDay,
       pairCount: employeeIds.length * rangeDays.length,
     };
   }
@@ -108,6 +114,7 @@ export function chooseSettledCoverage(input: {
     pairs,
     daysByEmployee,
     employeesOnCalendarDays,
+    employeesWithNoWorkedDay,
     pairCount: pairs.size,
   };
 }

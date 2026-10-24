@@ -146,8 +146,8 @@ test("anomalies are counted, not swallowed", () => {
     row({ workDate: "2026-10-05", idNo: "BAPL0053", acceptedManHours: 0, rawManHours: 0 }),
     // a status that contradicts a working day
     row({ workDate: "2026-10-05", idNo: "FRNEGJ007", originalStatus: "P/WO", acceptedManHours: 4, acceptedOt: 4 }),
-    // an unmapped status
-    row({ workDate: "2026-10-05", idNo: "BAPL9999", originalStatus: "HD", acceptedManHours: 4 }),
+    // an EMPTY status — the shape 1,066 real man-days have in the live view
+    row({ workDate: "2026-10-05", idNo: "BAPL9999", originalStatus: "", acceptedManHours: 4 }),
   ]);
   const plan = planSettlement({
     facts,

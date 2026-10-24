@@ -189,3 +189,23 @@ test("the view's own holiday flag decides the day type, before any status is rea
   assert.equal(ordinary[0].dayType, "WORKING");
   assert.equal(ordinary[0].attendanceClass, "WORKED");
 });
+
+test("HD is a present half day and A/WO is a day he owed nothing", () => {
+  // Measured on live data: 146 HD and 16 A/WO man-days in 33 days were being thrown into UNVERIFIED.
+  const facts = aggregateRegisterRows([
+    row({ originalStatus: "HD", acceptedManHours: 4 }),
+    row({ idNo: "BAPL0002", originalStatus: "A/WO", acceptedManHours: 0, rawManHours: 0 }),
+  ]);
+  const half = facts.find((fact) => fact.idNo === "BAPL0123");
+  const weeklyOff = facts.find((fact) => fact.idNo === "BAPL0002");
+  assert.equal(half?.status, "HD");
+  assert.equal(half?.attendanceClass, "WORKED", "a half day is still a day he was here");
+  assert.equal(weeklyOff?.status, "A/WO");
+  assert.equal(weeklyOff?.dayType, "WEEKLY_OFF", "his own weekly off, whatever the date-level rule says");
+  assert.equal(weeklyOff?.attendanceClass, "OFF");
+
+  // A blank status is not a code: it stays UNVERIFIED rather than being guessed as present.
+  const blank = aggregateRegisterRows([row({ originalStatus: "" })]);
+  assert.equal(blank[0].status, "UNKNOWN");
+  assert.equal(blank[0].attendanceClass, "UNVERIFIED");
+});
