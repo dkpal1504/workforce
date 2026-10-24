@@ -64,3 +64,35 @@ test("eachDay includes both ends and refuses an inverted range", () => {
   assert.deepEqual(eachDay("2026-09-01", "2026-09-03"), ["2026-09-01", "2026-09-02", "2026-09-03"]);
   assert.deepEqual(eachDay("2026-09-03", "2026-09-01"), []);
 });
+
+test("a caller that passes the settled working days does not count a Sunday as a day nobody booked", () => {
+  const people = [
+    { id: 1, ecNo: "BAPL1", name: "A", department: "Civil", section: "Civil", category: "UNSKILLED" },
+  ];
+  // The period is 21-27 Sep: seven calendar days, of which the 27th is the Sunday.
+  const workingDays = ["2026-09-21", "2026-09-22", "2026-09-23"];
+  const booked = new Map([[1, new Set(["2026-09-21"])]]);
+
+  const withCalendar = summariseNotBooked({
+    from: "2026-09-21",
+    to: "2026-09-27",
+    maxDailyHours: 8,
+    people,
+    booked,
+    rateFor: () => 0,
+  });
+  const withWorkingDays = summariseNotBooked({
+    from: "2026-09-21",
+    to: "2026-09-27",
+    days: workingDays,
+    maxDailyHours: 8,
+    people,
+    booked,
+    rateFor: () => 0,
+  });
+
+  assert.equal(withCalendar.people[0].notBookedDays, 6, "7 calendar days minus the one booked day");
+  assert.equal(withWorkingDays.people[0].notBookedDays, 2, "3 working days minus the one booked day");
+  assert.equal(withCalendar.rangeDays, 7);
+  assert.equal(withWorkingDays.rangeDays, 3);
+});

@@ -23,7 +23,8 @@ import { parseCoverageStatuses } from "../services/timesheetCoverage";
 import { writeAudit } from "../audit";
 import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
-import { notBookedCsv, summariseNotBooked } from "../services/notBooked";
+import { notBookedCsv, summariseNotBooked , eachDay } from "../services/notBooked";
+import { reportCalendarFor } from "../services/reportCalendar";
 
 export const reportsRouter = Router();
 
@@ -280,6 +281,20 @@ function coverageActor(req: Request): CoverageActor {
  * (a day with any sheet, whatever its status). Payroll staff are outside it by construction: they are paid
  * by allocation, not by timesheet.
  */
+/** `?departmentIds=4,7` -> [4, 7]. Non-numeric tokens are dropped, never turned into a zero-row report. */
+function idList(raw: unknown): number[] {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  const ids = new Set<number>();
+  for (const token of text.split(",")) {
+    const trimmed = token.trim();
+    if (!/^\d+$/.test(trimmed)) continue;
+    const id = Number(trimmed);
+    if (Number.isSafeInteger(id) && id > 0) ids.add(id);
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
 function readNotBookedRange(req: Request): { from: string; to: string } | { error: string } {
   const today = new Date();
   const firstOfMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)).toISOString().slice(0, 10);
@@ -299,11 +314,23 @@ async function buildNotBooked(req: Request) {
 
   const role = req.user!.role;
   const departmentScoped = role === "HOD" || role === "DEPT_HEAD";
+  // Department and Section narrow the roster the way every other Reports filter does: a scoped user can
+  // only narrow inside his own Department, and a request outside it is an honest empty report rather than
+  // a silent widening to his own.
+  const roleDepartment = departmentScoped ? req.user!.departmentId : null;
+  const askedDepartments = idList(req.query.departmentIds);
+  const departmentIds = roleDepartment
+    ? askedDepartments.length
+      ? askedDepartments.filter((id) => id === roleDepartment)
+      : [roleDepartment]
+    : askedDepartments;
+  const sectionIds = idList(req.query.sectionIds);
   const people = await prisma.employee.findMany({
     where: {
       active: true,
       employmentType: "CLMS",
-      ...(departmentScoped && req.user!.departmentId ? { departmentId: req.user!.departmentId } : {}),
+      ...(departmentIds.length ? { departmentId: { in: departmentIds } } : {}),
+      ...(sectionIds.length ? { sectionAssignment: { sectionId: { in: sectionIds } } } : {}),
     },
     select: {
       id: true,
@@ -333,9 +360,14 @@ async function buildNotBooked(req: Request) {
     booked.set(sheet.employeeId, set);
   }
 
+  // The dates this report divides by: calendar days, or the settled working days when the work calendar
+  // answered for the whole range (SETTLE_REPORTS). Same seam as Timesheet coverage, same fail-safe.
+  const calendar = await reportCalendarFor(eachDay(range.from, range.to));
+
   const report = summariseNotBooked({
     from: range.from,
     to: range.to,
+    days: calendar.days,
     maxDailyHours: getMaxDailyHours(),
     people: people.map((p) => ({
       id: p.id,
@@ -358,7 +390,8 @@ async function buildNotBooked(req: Request) {
       "No cost rate is configured, so Idle cost reads 0. Set a rate per category under Cost rates and this column prices the gap."
     );
   }
-  return report;
+  // The denominator travels with the report, so the screen can state which days it divided by.
+  return { ...report, calendar };
 }
 
 /**

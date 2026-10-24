@@ -64,6 +64,11 @@ export function eachDay(from: string, to: string): string[] {
 export function summariseNotBooked(input: {
   from: string;
   to: string;
+  /**
+   * The dates this report divides by. Defaults to every calendar day, but a caller that has the settled
+   * work calendar passes the WORKING days instead — a Sunday is not a day anybody failed to book.
+   */
+  days?: string[];
   maxDailyHours: number;
   people: Array<{
     id: number;
@@ -77,7 +82,7 @@ export function summariseNotBooked(input: {
   booked: Map<number, Set<string>>;
   rateFor: (category: string) => number;
 }): NotBookedReport {
-  const days = eachDay(input.from, input.to);
+  const days = input.days ?? eachDay(input.from, input.to);
   const people: NotBookedPerson[] = [];
 
   for (const person of input.people) {

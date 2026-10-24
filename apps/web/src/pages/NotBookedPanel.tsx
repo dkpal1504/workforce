@@ -41,7 +41,12 @@ type Report = {
   rowTotal: number;
   totals: { roster: number; peopleWithAnyGap: number; notBookedDays: number; hours: number; cost: number };
   notes: string[];
+  /** Which dates the figures divided by: calendar days, or the settled working days. */
+  calendar?: { mode: "CALENDAR" | "SETTLED"; workingDays: number; fellBack: boolean; unsettledDates: string[] };
 };
+
+type DepartmentOption = { id: number; name: string };
+type SectionOption = { id: number; departmentId: number; name: string };
 
 const money = (value: number) =>
   value.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -58,12 +63,40 @@ export function NotBookedPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  // Department and Section narrow the roster, exactly as they do on the other Reports tabs.
+  const [departmentId, setDepartmentId] = useState<number | "">("");
+  const [sectionId, setSectionId] = useState<number | "">("");
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+  const [sections, setSections] = useState<SectionOption[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [departmentData, sectionData] = await Promise.all([
+          api<{ departments: DepartmentOption[] }>("/departments"),
+          api<{ sections: SectionOption[] }>("/sections"),
+        ]);
+        setDepartments(departmentData.departments);
+        setSections(sectionData.sections);
+      } catch {
+        // The pickers are optional: the report still builds without them.
+      }
+    })();
+  }, []);
+
+  /** The filters as a query string, shared by the screen and the export so they cannot disagree. */
+  const filterQuery = [
+    departmentId === "" ? "" : `&departmentIds=${departmentId}`,
+    sectionId === "" ? "" : `&sectionIds=${sectionId}`,
+  ].join("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await api<Report>(`/reports/not-booked?from=${from}&to=${to}&page=${page}&pageSize=50`);
+      const data = await api<Report>(
+        `/reports/not-booked?from=${from}&to=${to}${filterQuery}&page=${page}&pageSize=50`
+      );
       setReport(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not build the report.");
@@ -71,7 +104,7 @@ export function NotBookedPanel() {
     } finally {
       setLoading(false);
     }
-  }, [from, to, page]);
+  }, [from, to, page, departmentId, sectionId]);
 
   useEffect(() => {
     void load();
@@ -82,7 +115,7 @@ export function NotBookedPanel() {
   const download = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`/api/reports/not-booked.csv?from=${from}&to=${to}`, {
+      const response = await fetch(`/api/reports/not-booked.csv?from=${from}&to=${to}${filterQuery}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!response.ok) throw new Error(`Export failed (${response.status}).`);
@@ -110,6 +143,44 @@ export function NotBookedPanel() {
           <input type="date" value={to} min={from} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
         </div>
         <div className="filter-field">
+          <label>Department</label>
+          <select
+            value={departmentId}
+            onChange={(e) => {
+              setDepartmentId(e.target.value === "" ? "" : Number(e.target.value));
+              // A section belongs to a department, so a department change clears a section it excludes.
+              setSectionId("");
+              setPage(1);
+            }}
+          >
+            <option value="">All departments</option>
+            {departments.map((department) => (
+              <option key={department.id} value={department.id}>
+                {department.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="filter-field">
+          <label>Section</label>
+          <select
+            value={sectionId}
+            onChange={(e) => {
+              setSectionId(e.target.value === "" ? "" : Number(e.target.value));
+              setPage(1);
+            }}
+          >
+            <option value="">All sections</option>
+            {sections
+              .filter((section) => departmentId === "" || section.departmentId === departmentId)
+              .map((section) => (
+                <option key={section.id} value={section.id}>
+                  {section.name}
+                </option>
+              ))}
+          </select>
+        </div>
+        <div className="filter-field">
           <label>&nbsp;</label>
           <button type="button" className="csv-link" onClick={() => void download()} disabled={!report}>
             ⤓ Export CSV
@@ -131,7 +202,9 @@ export function NotBookedPanel() {
           </div>
 
           <p className="not-booked__note">
-            {report.rangeDays} days in range · a day with ANY sheet counts as booked, whatever its status ·
+            {report.rangeDays} {report.calendar?.mode === "SETTLED" ? "working days" : "days"} in range
+            {report.calendar?.mode === "SETTLED" ? " (settled calendar — Sundays and holidays excluded)" : ""} · a
+            day with ANY sheet counts as booked, whatever its status ·
             idle hours are {report.maxDailyHours} per unbooked day at each person's category rate · payroll
             staff are not in this report.
           </p>
