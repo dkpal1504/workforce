@@ -36,6 +36,7 @@ import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
 import { intersectDepartmentFilter, reportScopeFor } from "./roleAccess";
 import { projectHoursFromEntries, type BookingEntryLike } from "./contractWorkHours";
+import { reportCalendarFor } from "./reportCalendar";
 import {
   NOT_FILLED,
   buildCoverage,
@@ -105,6 +106,18 @@ export type TimesheetCoverageReport = {
     duplicateSheets: string;
     notes: string[];
   };
+  /**
+   * Which dates the figures divide by. Present since the work calendar: a reader must be able to see
+   * that a figure was divided by 70 working days rather than 90 calendar days, and that a partial
+   * calendar fell back instead of quietly shrinking the denominator.
+   */
+  calendar?: {
+    mode: "CALENDAR" | "SETTLED";
+    workingDays: number;
+    days: string[];
+    unsettledDates: string[];
+    fellBack: boolean;
+  };
   /** The Project columns of this report, in display order. */
   projects: Array<{ colorKey: string; name: string }>;
   /** The page of rows (JSON) or every row (export). */
@@ -169,6 +182,12 @@ export async function buildTimesheetCoverageReport(
 ): Promise<TimesheetCoverageReport> {
   const range = coverageRange(filters.from, filters.to);
   if (!range.ok) throw new CoverageRequestError(range.code, range.error);
+
+  // Which dates this report divides by. Calendar days unless the settled work calendar answered for the
+  // whole range — see reportCalendar.ts, which also explains why a partial calendar falls back to the
+  // LARGER denominator instead of flattering the coverage.
+  const calendar = await reportCalendarFor(range.days);
+  const reportDays = calendar.days;
 
   const maxDailyHours = getMaxDailyHours();
 
@@ -248,8 +267,10 @@ export async function buildTimesheetCoverageReport(
     .map((project) => ({ colorKey: String(project.colorKey).toUpperCase(), name: project.name }));
 
   // ---- One row per (date x employee) ---------------------------------------------------------
+  // `reportDays`, not `range.days`: on a settled calendar the yard's non-working days are not days anyone
+  // failed to fill in, so they must not appear as gaps.
   const rows: CoverageRow[] = [];
-  for (const day of range.days) {
+  for (const day of reportDays) {
     for (const employee of employees) {
       const daySheets = sheetsByEmployeeDay.get(`${employee.id}:${day}`) ?? [];
       const entries: BookingEntryLike[] = daySheets.flatMap((sheet) => sheet.entries);
@@ -313,9 +334,25 @@ export async function buildTimesheetCoverageReport(
     to: range.to,
     days: range.days,
     generatedAt: new Date().toISOString(),
+    calendar: {
+      mode: calendar.mode,
+      workingDays: reportDays.length,
+      days: reportDays,
+      unsettledDates: calendar.unsettledDates,
+      fellBack: calendar.fellBack,
+    },
     provenance: {
       filters: [
         { label: "Period", value: `${range.from} to ${range.to} (${range.days.length} day(s))` },
+        {
+          label: "Denominator",
+          value:
+            calendar.mode === "SETTLED"
+              ? `${reportDays.length} settled working day(s) of ${range.days.length} calendar day(s)`
+              : calendar.unsettledDates.length
+                ? `all ${range.days.length} calendar day(s) — ${calendar.unsettledDates.length} not settled yet`
+                : `all ${range.days.length} calendar day(s)`,
+        },
         {
           label: "Department",
           value: effectiveDepartmentIds === null ? "All (no filter)" : effectiveDepartmentIds.join(", ") || "None",
@@ -409,9 +446,19 @@ function emptyReport(
     to: range.to,
     days: range.days,
     generatedAt: new Date().toISOString(),
+    // A disjoint scope was refused before any calendar was read, so there is no denominator to report:
+    // the report is empty for a reason that has nothing to do with days.
+    calendar: {
+      mode: "CALENDAR",
+      workingDays: range.days.length,
+      days: range.days,
+      unsettledDates: [],
+      fellBack: false,
+    },
     provenance: {
       filters: [
         { label: "Period", value: `${range.from} to ${range.to} (${range.days.length} day(s))` },
+        { label: "Denominator", value: `all ${range.days.length} calendar day(s)` },
         { label: "Department", value: "None — the request is outside your scope" },
       ],
       scope,
