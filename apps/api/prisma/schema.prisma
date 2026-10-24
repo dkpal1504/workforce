@@ -52,6 +52,7 @@ model User {
   delegationsAsDelegator     HodDelegation[] @relation("HodDelegationDelegator")
   delegationsAsDelegate      HodDelegation[] @relation("HodDelegationDelegate")
   delegationsCreated         HodDelegation[] @relation("HodDelegationCreator")
+  calendarExceptionsApproved CalendarException[] @relation("CalendarExceptionApprover")
 
   jobOrderProgressPunched   JobOrderProgress[]         @relation("JobOrderProgressPunchedBy")
   jobOrderProgressApproved  JobOrderProgress[]         @relation("JobOrderProgressApprovedBy")
@@ -146,6 +147,7 @@ model Employee {
   sectionAssignment      EmployeeSectionAssignment?
   supervisorOverride     SupervisorOverride?
   organisationOverride   EmployeeOrganisationOverride?
+  attendanceDays         AttendanceDay[]
 
   @@index([source])
   @@index([mobile])
@@ -398,6 +400,11 @@ model ProjectWbs {
   wbsCode   String   @map("wbs_code")
   name      String?
   sortOrder Int      @default(0) @map("sort_order")
+  /// Share of its Project's planned hours that this WBS contributes to the S-curve. NULL means
+  /// "equal share" — today's rule, where every active WBS of a project weighs the same. Deliberately a
+  /// relative weight and never a percentage that must sum to 100: the curve normalises by the weights
+  /// actually present, so a half-configured project still plots instead of dividing by zero.
+  plannedWeight Float? @map("planned_weight")
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1214,4 +1221,137 @@ model JobOrderProgressRemark {
 
   @@index([progressId, createdAt])
   @@map("job_order_progress_remarks")
+}
+
+/// The plant's work calendar: one row per calendar date, resolved once and shared by every report.
+///
+/// Before this table every denominator was CALENDAR days, which is why a six-day yard reported attendance
+/// expected seven days a week and every Sunday read as 599 absences. `dayType` is WORKING, WEEKLY_OFF or
+/// HOLIDAY. The evidence counts are stored beside the verdict so a wrong day can be argued with numbers
+/// instead of opinion — that is how the 26 Aug 2026 false holiday was found.
+model WorkCalendarDate {
+  id                Int       @id @default(autoincrement())
+  /// UTC midnight of the day: one kind of value, no time-of-day noise.
+  workDate          DateTime  @unique @map("work_date")
+  /// WORKING | WEEKLY_OFF | HOLIDAY
+  dayType           String    @map("day_type")
+  /// REGISTER (inferred from the attendance view), DECLARED (the plant calendar), or OVERRIDE (a human said so).
+  source            String    @default("REGISTER")
+  employeeRows      Int       @default(0) @map("employee_rows")
+  presentRows       Int       @default(0) @map("present_rows")
+  absentRows        Int       @default(0) @map("absent_rows")
+  weeklyOffRows     Int       @default(0) @map("weekly_off_rows")
+  holidayFlagRows   Int       @default(0) @map("holiday_flag_rows")
+  holidayStatusRows Int       @default(0) @map("holiday_status_rows")
+  /// When the attendance source last answered for this date. NULL means "never settled": a report must
+  /// say UNKNOWN for that date, never zero.
+  settledAt         DateTime? @map("settled_at")
+  note              String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@index([dayType, workDate])
+  @@map("work_calendar_date")
+}
+
+/// A human decision about a date, which beats whatever the attendance source inferred.
+///
+/// 4 Sep 2026 is Janmashtami and the register marks it a holiday while the yard may have worked it;
+/// 14 Sep 2026 is Ganesh Chaturthi yet 457 men were marked present with no holiday status at all. Neither
+/// is a bug to be argued inside a classifier — the decision belongs to the yard, with a reason and a name
+/// against it, and every report obeys it from then on.
+model CalendarException {
+  id         Int      @id @default(autoincrement())
+  workDate   DateTime @map("work_date")
+  /// WORKING | WEEKLY_OFF | HOLIDAY — what the date IS, per the person entitled to say so.
+  dayType    String   @map("day_type")
+  /// PLANT for now. SECTION / EMPLOYEE are reserved for a yard that runs more than one calendar.
+  scopeType  String   @default("PLANT") @map("scope_type")
+  /// 0 for PLANT, never NULL: PostgreSQL treats NULLs as distinct in a unique index, so a nullable scope
+  /// would allow two conflicting PLANT decisions for the same date.
+  scopeId    Int      @default(0) @map("scope_id")
+  reason     String
+  approvedBy Int?     @map("approved_by")
+  approved   User?    @relation("CalendarExceptionApprover", fields: [approvedBy], references: [id])
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([workDate, scopeType, scopeId])
+  @@index([workDate])
+  @@map("calendar_exception")
+}
+
+/// One settlement pass over a date range. A FAILED or PARTIAL run is the reason a report can say
+/// "not settled" instead of printing a confident zero.
+model AttendanceSettlementRun {
+  id           Int            @id @default(autoincrement())
+  scopeFrom    DateTime       @map("scope_from")
+  scopeTo      DateTime       @map("scope_to")
+  startedAt    DateTime       @default(now()) @map("started_at")
+  finishedAt   DateTime?      @map("finished_at")
+  /// RUNNING | OK | PARTIAL | FAILED
+  status       String         @default("RUNNING")
+  /// SQL or FIXTURE. A fixture run can never be mistaken for real attendance.
+  source       String         @default("SQL")
+  datesSettled Int            @default(0) @map("dates_settled")
+  datesFailed  Int            @default(0) @map("dates_failed")
+  rowsWritten  Int            @default(0) @map("rows_written")
+  /// Per-date anomalies as read: unmatched register ids, status/day-type contradictions, mixed statuses.
+  anomalies    Json?
+  error        String?
+  days         AttendanceDay[]
+
+  @@index([startedAt])
+  @@map("attendance_settlement_run")
+}
+
+/// One settled man-day: the single answer to "was he at work that day, and for how long".
+///
+/// Stored rather than recomputed because a report and a review must divide by the same facts, and because
+/// LabourWorks rewrites history — a settled row is what the yard believed on the day it settled.
+model AttendanceDay {
+  id              Int      @id @default(autoincrement())
+  /// The view's IDNo. Always present: it is the evidence, even when no Employee matches it.
+  registerId      String   @map("register_id")
+  /// NULL when the register id has no Employee row — an anomaly that is recorded, never invented away.
+  employeeId      Int?     @map("employee_id")
+  employee        Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  workDate        DateTime @map("work_date")
+  /// Copied from the date's resolved type so a single row is readable on its own.
+  dayType         String   @map("day_type")
+  /// WORKED | WORKED_HOLIDAY | ABSENT | OFF | UNVERIFIED
+  attendanceClass String   @map("attendance_class")
+  /// The view's OriginalStatus as read (P, P/WO, P/HL, A, A/HL — or whatever the source invents next).
+  status          String   @map("status")
+  acceptedHours   Float    @default(0) @map("accepted_hours")
+  acceptedOtHours Float    @default(0) @map("accepted_ot_hours")
+  clockedHours    Float    @default(0) @map("clocked_hours")
+  /// How many view rows produced this man-day, and whether they disagreed about the status.
+  registerRows    Int      @default(1) @map("register_rows")
+  statusVariants  Int      @default(1) @map("status_variants")
+  runId           Int?     @map("run_id")
+  run             AttendanceSettlementRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  settledAt       DateTime @default(now()) @map("settled_at")
+
+  @@unique([registerId, workDate])
+  @@index([workDate, attendanceClass])
+  @@index([employeeId, workDate])
+  @@map("attendance_day")
+}
+
+/// A frozen review pack. Reviews read this, not the live tables, so a number quoted in a meeting cannot
+/// change under it afterwards. `contentHash` proves two copies are the same pack.
+model ReportSnapshot {
+  id          Int      @id @default(autoincrement())
+  /// WEEKLY | MONTHLY | ADHOC
+  kind        String
+  periodFrom  DateTime @map("period_from")
+  periodTo    DateTime @map("period_to")
+  frozenAt    DateTime @default(now()) @map("frozen_at")
+  frozenById  Int?     @map("frozen_by")
+  payload     Json
+  contentHash String   @map("content_hash")
+
+  @@unique([kind, periodFrom, periodTo])
+  @@index([frozenAt])
+  @@map("report_snapshot")
 }

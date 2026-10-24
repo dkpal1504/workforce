@@ -88,6 +88,8 @@ export type AttendanceDayFact = {
   status: RegisterStatus;
   /** More than one distinct status was seen for this man-day. Reported, never averaged away. */
   mixedStatus: boolean;
+  /** How many distinct statuses the source reported (1 when they all agreed), for the settled row. */
+  statusVariants: number;
   isWeeklyOff: boolean;
   dayType: DayType;
   attendanceClass: AttendanceClass;
@@ -323,6 +325,7 @@ export function aggregateRegisterRows(
       idNo: acc.idNo,
       status,
       mixedStatus,
+      statusVariants: Math.max(1, acc.variants, statuses.filter((entry) => entry !== "UNKNOWN").length),
       isWeeklyOff: acc.isWeeklyOff,
       dayType,
       attendanceClass: classFor(dayType, status),
