@@ -95,9 +95,12 @@ export function slowScore(facts: JobOrderFacts, extras: SlowExtras): SlowScore {
   const projectedSlip = hasPlan ? positive(facts.projectedSlipDays) : 0;
   const slipDays = Math.round(Math.max(overdueDays, projectedSlip) * 100) / 100;
 
+  // `scheduleGapPct` and `qtyCompletePct` are FRACTIONS on the facts (0.45 = 45 percentage points), while the
+  // printed components are points. Mixing the two units put "0.45 point(s) behind" on a row that was 45 points
+  // behind — a demo with real progress data is what surfaced it.
   const components: SlowComponents = {
     slipDays,
-    scheduleGapPct: Math.round(positive(facts.scheduleGapPct) * 100) / 100,
+    scheduleGapPct: Math.round(positive(facts.scheduleGapPct) * 100 * 100) / 100,
     noActivityDays: hasPlan ? Math.round(positive(facts.daysSinceActivity) * 100) / 100 : 0,
     openEscalations: Math.max(0, Math.round(extras.openEscalations || 0)),
     unapprovedAgingDays: facts.oldestUnapprovedAt
@@ -105,7 +108,7 @@ export function slowScore(facts: JobOrderFacts, extras: SlowExtras): SlowScore {
       : 0,
     qtyBehindPct:
       facts.measurableOnQuantity && Number.isFinite(facts.qtyCompletePct)
-        ? Math.round(Math.max(0, 100 - facts.qtyCompletePct) * 100) / 100
+        ? Math.round(Math.min(100, Math.max(0, (1 - facts.qtyCompletePct) * 100)) * 100) / 100
         : 0,
   };
 
@@ -119,8 +122,15 @@ export function slowScore(facts: JobOrderFacts, extras: SlowExtras): SlowScore {
     : 0;
 
   const reasons: string[] = [];
-  if (overdueDays > 0) reasons.push(`${overdueDays.toFixed(0)} day(s) past the planned end`);
-  else if (projectedSlip > 0) reasons.push(`projected to land ${projectedSlip.toFixed(0)} day(s) late`);
+  // The slip COLUMN is the worse of the two, so the reason must name the same one — otherwise the row shows
+  // 102 days late beside a sentence about 12.
+  if (slipDays > 0) {
+    reasons.push(
+      projectedSlip > overdueDays
+        ? `projected to land ${projectedSlip.toFixed(0)} day(s) late`
+        : `${overdueDays.toFixed(0)} day(s) past the planned end`
+    );
+  }
   if (components.scheduleGapPct > 0) {
     reasons.push(`${components.scheduleGapPct.toFixed(0)} point(s) behind the calendar`);
   }

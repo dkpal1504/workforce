@@ -130,11 +130,22 @@ export async function loadReviewProjects(actor: ReviewActor, now = new Date()): 
   });
   const jobOrderIds = jobOrders.map((order) => order.id);
 
+  // The list shows the same last-month window the dashboard opens on. Summing all time here instead made the
+  // list say 68% burn beside a dashboard saying 53% for the same project, which a reader rightly reads as a bug.
+  const listWindow = defaultPeriod(now, "MONTHLY");
+
   const [hourRows, escalationRows, itemRows, snapshotRows] = await Promise.all([
     jobOrderIds.length
       ? prisma.timesheetEntry.groupBy({
           by: ["jobOrderId"],
-          where: { jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } },
+          where: {
+            jobOrderId: { in: jobOrderIds },
+            status: { in: [...BOOKED_HOURS_STATUSES] },
+            workDate: {
+              gte: new Date(`${listWindow.start}T00:00:00.000Z`),
+              lte: new Date(`${listWindow.end}T23:59:59.999Z`),
+            },
+          },
           _sum: { otHours: true },
           _count: { shiftSlot: true, hourSlot: true },
         })
@@ -149,7 +160,7 @@ export async function loadReviewProjects(actor: ReviewActor, now = new Date()): 
             authorEmail: true,
             escalationDueAt: true,
             acknowledgedAt: true,
-            thread: { select: { status: true, jobOrderId: true } },
+            thread: { select: { status: true, jobOrderId: true, jobOrder: { select: { code: true } } } },
           },
         })
       : Promise.resolve([] as Array<{
@@ -159,7 +170,7 @@ export async function loadReviewProjects(actor: ReviewActor, now = new Date()): 
           authorEmail: string;
           escalationDueAt: Date | null;
           acknowledgedAt: Date | null;
-          thread: { status: string; jobOrderId: number };
+          thread: { status: string; jobOrderId: number; jobOrder: { code: string } };
         }>),
     prisma.reviewItem.findMany({
       where: { projectId: { in: projects.map((project) => project.id) }, kind: "ACTION" },
@@ -249,7 +260,7 @@ function toEscalationMessage(row: {
   authorEmail: string;
   escalationDueAt: Date | null;
   acknowledgedAt: Date | null;
-  thread: { status: string; jobOrderId: number };
+  thread: { status: string; jobOrderId: number; jobOrder: { code: string } };
 }): EscalationMessage {
   return {
     id: row.id,
@@ -261,7 +272,7 @@ function toEscalationMessage(row: {
     acknowledgedAt: row.acknowledgedAt,
     // A thread belongs to exactly one Job Order, so the escalation's job order is the thread's.
     jobOrderId: row.thread.jobOrderId,
-    jobOrderCode: null,
+    jobOrderCode: row.thread.jobOrder.code,
   };
 }
 
@@ -424,7 +435,7 @@ export async function loadReviewDashboard(input: {
         authorEmail: true,
         escalationDueAt: true,
         acknowledgedAt: true,
-        thread: { select: { status: true, jobOrderId: true } },
+        thread: { select: { status: true, jobOrderId: true, jobOrder: { select: { code: true } } } },
       },
     }),
     prisma.reviewItem

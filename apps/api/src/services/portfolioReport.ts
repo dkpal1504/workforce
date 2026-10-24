@@ -328,7 +328,11 @@ function dateKey(date: Date): string {
 }
 
 function dateKeyOrNull(date: Date | null): string | null {
-  return date === null ? null : dateKey(date);
+  // Defence in depth: a Date that is not a date must print as "no date" rather than throw and take the whole
+  // report down. The fix at the source is in `jobOrderSchedule`, where an invalid projection is now null.
+  if (date === null) return null;
+  if (Number.isNaN(date.getTime())) return null;
+  return dateKey(date);
 }
 
 /**

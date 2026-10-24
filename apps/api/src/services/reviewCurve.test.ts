@@ -137,3 +137,45 @@ test("weekly buckets start on Monday and never run past the requested end", () =
   assert.equal(buckets[buckets.length - 1].end, "2026-10-27");
   assert.equal(buckets.length, 3);
 });
+
+test("a WBS whose Job Orders carry no budget still contributes its weighted share of the plan", () => {
+  // The bug this pins: the node's share was allocated from its weight, then DROPPED because the divisor (the sum
+  // of its Job Orders' budgets) was zero. Five of nine nodes on a real project vanished from the planned line —
+  // about 4,900 hours of plan that the screen never showed.
+  const buckets = [{ key: "2026-01-31", start: iso(1), end: iso(31) }];
+  const curve = buildSCurve({
+    buckets,
+    wbs: [
+      wbs({ id: 1, plannedWeight: 1, jobOrders: [{ id: 10, budgetHours: 100, plannedStartDate: jan(1), plannedEndDate: jan(31) }] }),
+      wbs({
+        id: 2,
+        plannedWeight: 1,
+        jobOrders: [
+          { id: 20, budgetHours: 0, plannedStartDate: jan(1), plannedEndDate: jan(31) },
+          { id: 21, budgetHours: 0, plannedStartDate: jan(1), plannedEndDate: jan(31) },
+        ],
+      }),
+    ],
+    budgetHours: 200,
+    actualHoursByBucket: [],
+  });
+  // Both nodes weigh the same, so each holds half the budget and the plan reaches all of it.
+  assert.equal(curve.points[0].plannedCum, 200);
+  assert.equal(curve.coverage.plannedInCurveHours, 200, "no share is silently dropped");
+  assert.equal(curve.coverage.unscheduledHours, 0);
+});
+
+test("a WBS with no scheduled Job Order at all is still excluded, and counted", () => {
+  const curve = buildSCurve({
+    buckets: [{ key: "2026-01-31", start: iso(1), end: iso(31) }],
+    wbs: [
+      wbs({ id: 1, plannedWeight: 1, jobOrders: [{ id: 10, budgetHours: 100, plannedStartDate: jan(1), plannedEndDate: jan(31) }] }),
+      wbs({ id: 2, plannedWeight: 1, jobOrders: [{ id: 20, budgetHours: 100, plannedStartDate: null, plannedEndDate: null }] }),
+    ],
+    budgetHours: 200,
+    actualHoursByBucket: [],
+  });
+  assert.equal(curve.points[0].plannedCum, 100, "only the scheduled node's share can accrue");
+  assert.equal(curve.coverage.wbsUnscheduled, 1);
+  assert.equal(curve.coverage.unscheduledHours, 100);
+});

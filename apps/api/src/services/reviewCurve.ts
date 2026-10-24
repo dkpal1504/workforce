@@ -172,10 +172,19 @@ export function buildSCurve(input: {
     for (const node of input.wbs) {
       const share = shares.get(node.id) ?? 0;
       if (share <= 0) continue;
+      // A node's planned share is its WEIGHT of the project budget. A node whose Job Orders were never given a
+      // budget still exists and still holds a share — skipping it because `nodeBudget` is zero silently deleted
+      // that share from the plan (five of nine nodes on a real project, ~4,900 hours). So the share is split
+      // EQUALLY across its scheduled Job Orders instead of being dropped.
+      const scheduled = node.jobOrders.filter((order) => order.plannedStartDate && order.plannedEndDate);
+      if (!scheduled.length) continue;
+      const allocated = share * budget;
       const nodeBudget = node.jobOrders.reduce((sum, order) => sum + finiteOrZero(order.budgetHours), 0);
-      if (nodeBudget <= 0) continue;
-      for (const order of node.jobOrders) {
-        const slice = share * budget * (finiteOrZero(order.budgetHours) / nodeBudget);
+      for (const order of scheduled) {
+        const slice =
+          nodeBudget > 0
+            ? allocated * (finiteOrZero(order.budgetHours) / nodeBudget)
+            : allocated / scheduled.length;
         total += spreadLinear(slice, order.plannedStartDate, order.plannedEndDate, at);
       }
     }

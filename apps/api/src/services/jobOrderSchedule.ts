@@ -184,9 +184,17 @@ export function scheduleFor(input: ScheduleInput): ScheduleFacts {
     facts.requiredRate = roundTo(balance / facts.daysToEnd, 2);
   }
   if (facts.actualRate !== null && balance > 0) {
-    const projectedFinish = addDays(now, Math.ceil(balance / facts.actualRate));
-    facts.projectedFinish = projectedFinish;
-    if (plannedEnd) facts.projectedSlipDays = daysBetween(plannedEnd, projectedFinish);
+    // A projection is a DATE, and a date built from a division that is not finite is not a date: it is an
+    // Invalid Date, and `toISOString()` on one throws — which took the whole portfolio report down with a 500
+    // the moment a Job Order carried a progress row but no quantity budget. An unprojectable finish is null.
+    const daysToFinish = balance / facts.actualRate;
+    if (Number.isFinite(daysToFinish)) {
+      const projectedFinish = addDays(now, Math.ceil(daysToFinish));
+      if (Number.isFinite(projectedFinish.getTime())) {
+        facts.projectedFinish = projectedFinish;
+        if (plannedEnd) facts.projectedSlipDays = daysBetween(plannedEnd, projectedFinish);
+      }
+    }
   }
 
   // ── The band, most serious first. Only facts that cannot be argued with produce a flag. ──────────

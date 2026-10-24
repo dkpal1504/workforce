@@ -64,7 +64,7 @@ test("a Job Order past its window outranks a busy one that is merely burning its
       projectedSlipDays: null,
       projectedFinish: null,
       daysSinceActivity: 1,
-      qtyCompletePct: 80,
+      qtyCompletePct: 0.8,
     }),
     { openEscalations: 0, now }
   );
@@ -135,8 +135,8 @@ test("every returned reason is derived from a component that is non-zero", () =>
       daysSinceActivity: 20,
       unapprovedHours: 30,
       oldestUnapprovedAt: day("2026-10-04"),
-      qtyCompletePct: 40,
-      scheduleGapPct: 15,
+      qtyCompletePct: 0.4,
+      scheduleGapPct: 0.15,
     }),
     { openEscalations: 2, openHindrances: 1, now }
   );
