@@ -8,77 +8,84 @@ datasource db {
 }
 
 model User {
-  id                      Int         @id @default(autoincrement())
-  email                   String      @unique
-  passwordHash            String      @map("password_hash")
+  id                      Int                @id @default(autoincrement())
+  email                   String             @unique
+  passwordHash            String             @map("password_hash")
   name                    String
   role                    String
   /// 'SYNC' = provisioned from LabourWorks; 'MANUAL' = application-managed account.
-  source                  String      @default("MANUAL")
-  employeeId              Int?        @unique @map("employee_id")
-  employee                Employee?   @relation(fields: [employeeId], references: [id])
-  departmentId            Int?        @map("department_id")
-  department              Department? @relation(fields: [departmentId], references: [id])
-  sectionId               Int?        @map("section_id")
-  scopeSection            Section?    @relation("UserScopeSection", fields: [sectionId], references: [id])
+  source                  String             @default("MANUAL")
+  employeeId              Int?               @unique @map("employee_id")
+  employee                Employee?          @relation(fields: [employeeId], references: [id])
+  departmentId            Int?               @map("department_id")
+  department              Department?        @relation(fields: [departmentId], references: [id])
+  sectionId               Int?               @map("section_id")
+  scopeSection            Section?           @relation("UserScopeSection", fields: [sectionId], references: [id])
   /// The Sections this user may act within. EMPTY means every Section of `departmentId`.
   /// `sectionId` above is the legacy mirror (first section, or null) — see UserScopeSection.
   scopeSections           UserScopeSection[] @relation("UserScopeSections")
-  active                  Boolean     @default(true)
-  mustChangePassword      Boolean     @default(false) @map("must_change_password")
-  tokenVersion            Int         @default(0) @map("token_version")
-  passwordExpiresAt       DateTime?   @map("password_expires_at")
-  credentialProvisionedAt DateTime?   @map("credential_provisioned_at")
-  credentialSentAt        DateTime?   @map("credential_sent_at")
-  createdAt               DateTime    @default(now()) @map("created_at")
-  updatedAt               DateTime    @updatedAt @map("updated_at")
+  active                  Boolean            @default(true)
+  mustChangePassword      Boolean            @default(false) @map("must_change_password")
+  tokenVersion            Int                @default(0) @map("token_version")
+  passwordExpiresAt       DateTime?          @map("password_expires_at")
+  credentialProvisionedAt DateTime?          @map("credential_provisioned_at")
+  credentialSentAt        DateTime?          @map("credential_sent_at")
+  createdAt               DateTime           @default(now()) @map("created_at")
+  updatedAt               DateTime           @updatedAt @map("updated_at")
 
-  teamSelections             DailyTeamSelection[]
-  timesheetDays              TimesheetDay[]          @relation("TaggedBy")
-  timesheetEntries           TimesheetEntry[]        @relation("TaggedBy")
-  approvalsGiven             Approval[]              @relation("Approver")
-  conflictsAsSup1            Conflict[]              @relation("Supervisor1")
-  conflictsAsSup2            Conflict[]              @relation("Supervisor2")
-  conflictsResolved          Conflict[]              @relation("ResolvedBy")
-  auditLogs                  AuditLog[]
-  allocationsGiven           EmployeeAllocation[]    @relation("EmployeeAllocationAllocatedBy")
-  allocationDaysApproved     EmployeeAllocationDay[]      @relation("EmployeeAllocationApprover")
-  allocationApprovalsGiven   EmployeeAllocationApproval[] @relation("EmployeeAllocationApprovalApprover")
-  manpowerRequestsRequested  ManpowerRequest[]       @relation("RequestedBy")
-  manpowerRequestsAssigned   ManpowerRequest[]       @relation("AssignedBy")
-  supervisorOverridesCreated SupervisorOverride[]    @relation("SupervisorOverrideCreator")
-  credentialDeliveries       CredentialDelivery[]
+  teamSelections               DailyTeamSelection[]
+  timesheetDays                TimesheetDay[]                 @relation("TaggedBy")
+  timesheetEntries             TimesheetEntry[]               @relation("TaggedBy")
+  approvalsGiven               Approval[]                     @relation("Approver")
+  conflictsAsSup1              Conflict[]                     @relation("Supervisor1")
+  conflictsAsSup2              Conflict[]                     @relation("Supervisor2")
+  conflictsResolved            Conflict[]                     @relation("ResolvedBy")
+  auditLogs                    AuditLog[]
+  allocationsGiven             EmployeeAllocation[]           @relation("EmployeeAllocationAllocatedBy")
+  allocationDaysApproved       EmployeeAllocationDay[]        @relation("EmployeeAllocationApprover")
+  allocationApprovalsGiven     EmployeeAllocationApproval[]   @relation("EmployeeAllocationApprovalApprover")
+  manpowerRequestsRequested    ManpowerRequest[]              @relation("RequestedBy")
+  manpowerRequestsAssigned     ManpowerRequest[]              @relation("AssignedBy")
+  supervisorOverridesCreated   SupervisorOverride[]           @relation("SupervisorOverrideCreator")
+  credentialDeliveries         CredentialDelivery[]
   organisationOverridesCreated EmployeeOrganisationOverride[] @relation("OrganisationOverrideCreator")
-  delegationsAsDelegator     HodDelegation[] @relation("HodDelegationDelegator")
-  delegationsAsDelegate      HodDelegation[] @relation("HodDelegationDelegate")
-  delegationsCreated         HodDelegation[] @relation("HodDelegationCreator")
-  calendarExceptionsApproved CalendarException[] @relation("CalendarExceptionApprover")
+  delegationsAsDelegator       HodDelegation[]                @relation("HodDelegationDelegator")
+  delegationsAsDelegate        HodDelegation[]                @relation("HodDelegationDelegate")
+  delegationsCreated           HodDelegation[]                @relation("HodDelegationCreator")
+  calendarExceptionsApproved   CalendarException[]            @relation("CalendarExceptionApprover")
 
-  jobOrderProgressPunched   JobOrderProgress[]         @relation("JobOrderProgressPunchedBy")
-  jobOrderProgressApproved  JobOrderProgress[]         @relation("JobOrderProgressApprovedBy")
-  budgetRevisionsCreated    JobOrderBudgetRevision[]   @relation("JobOrderBudgetRevisionCreator")
-  jobOrderProgressRemarks   JobOrderProgressRemark[]   @relation("JobOrderProgressRemarkAuthor")
-  @@index([sectionId])
+  jobOrderProgressPunched          JobOrderProgress[]         @relation("JobOrderProgressPunchedBy")
+  jobOrderProgressApproved         JobOrderProgress[]         @relation("JobOrderProgressApprovedBy")
+  budgetRevisionsCreated           JobOrderBudgetRevision[]   @relation("JobOrderBudgetRevisionCreator")
+  jobOrderProgressRemarks          JobOrderProgressRemark[]   @relation("JobOrderProgressRemarkAuthor")
   projectManagerAssignments        ProjectManagerAssignment[] @relation("ProjectManagerAssignments")
   projectManagerAssignmentsCreated ProjectManagerAssignment[] @relation("ProjectManagerAssignmentCreator")
 
-    /// Where Workforce writes to this person (the login e-mail may be a <ecno>@employee.local handle).
+  /// Where Workforce writes to this person (the login e-mail may be a <ecno>@employee.local handle).
   notificationEmail String? @map("notification_email")
 
-  jobOrdersOwned        JobOrder[] @relation("JobOrderOwner")
-  threadsOpened         JobOrderThread[] @relation("ThreadOpenedBy")
-  threadsResolved       JobOrderThread[] @relation("ThreadResolvedBy")
-  threadsLastMessage    JobOrderThread[] @relation("ThreadLastMessageBy")
-  messagesAuthored      JobOrderMessage[] @relation("MessageAuthor")
-  messagesEdited        JobOrderMessage[] @relation("MessageEditor")
-  threadParticipations  JobOrderThreadParticipant[] @relation("ThreadParticipant")
+  jobOrdersOwned          JobOrder[]                  @relation("JobOrderOwner")
+  threadsOpened           JobOrderThread[]            @relation("ThreadOpenedBy")
+  threadsResolved         JobOrderThread[]            @relation("ThreadResolvedBy")
+  threadsLastMessage      JobOrderThread[]            @relation("ThreadLastMessageBy")
+  messagesAuthored        JobOrderMessage[]           @relation("MessageAuthor")
+  messagesEdited          JobOrderMessage[]           @relation("MessageEditor")
+  threadParticipations    JobOrderThreadParticipant[] @relation("ThreadParticipant")
   threadParticipantsAdded JobOrderThreadParticipant[] @relation("ThreadParticipantAddedBy")
-  replyTokensCreated    JobOrderReplyToken[] @relation("ReplyTokenCreator")
-  commitmentsOwned      JobOrderCommitment[] @relation("CommitmentOwner")
-  attachmentsUploaded   JobOrderMessageAttachment[] @relation("AttachmentUploader")
-  assistantUsage        AssistantUsage[] @relation("AssistantUsageUser")
+  replyTokensCreated      JobOrderReplyToken[]        @relation("ReplyTokenCreator")
+  commitmentsOwned        JobOrderCommitment[]        @relation("CommitmentOwner")
+  attachmentsUploaded     JobOrderMessageAttachment[] @relation("AttachmentUploader")
+  assistantUsage          AssistantUsage[]            @relation("AssistantUsageUser")
 
-@@map("users")
+  reportSnapshotsFrozen ReportSnapshot[]  @relation("ReportSnapshotFrozenBy")
+  reviewSessionsOpened  ReviewSession[]   @relation("ReviewSessionOpener")
+  reviewSessionsClosed  ReviewSession[]   @relation("ReviewSessionCloser")
+  reviewItemsOwned      ReviewItem[]      @relation("ReviewItemOwner")
+  reviewItemsAuthored   ReviewItem[]      @relation("ReviewItemAuthor")
+  reviewItemEvents      ReviewItemEvent[] @relation("ReviewItemEventActor")
+
+  @@index([sectionId])
+  @@map("users")
 }
 
 model Department {
@@ -91,17 +98,17 @@ model Department {
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
 
-  employees        Employee[]
-  users            User[]
-  manpowerRequests ManpowerRequest[]
-  jobOrders        JobOrder[]
-  sections         Section[]
+  employees             Employee[]
+  users                 User[]
+  manpowerRequests      ManpowerRequest[]
+  jobOrders             JobOrder[]
+  sections              Section[]
   organisationOverrides EmployeeOrganisationOverride[]
-  hodDelegations   HodDelegation[]
+  hodDelegations        HodDelegation[]
 
-  timesheetEntries    TimesheetEntry[]    @relation("TimesheetEntryDepartment")
+  timesheetEntries    TimesheetEntry[]     @relation("TimesheetEntryDepartment")
   employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationDepartment")
-  slaPolicies SlaPolicy[]
+  slaPolicies         SlaPolicy[]
 
   @@map("departments")
 }
@@ -141,7 +148,7 @@ model Employee {
   timesheetEntries       TimesheetEntry[]
   conflicts              Conflict[]
   attendanceFeed         AttendanceFeed[]
-  manpowerAssignments    ManpowerRequest[]          @relation("AssignedEmployee")
+  manpowerAssignments    ManpowerRequest[]             @relation("AssignedEmployee")
   employeeAllocations    EmployeeAllocation[]
   employeeAllocationDays EmployeeAllocationDay[]
   sectionAssignment      EmployeeSectionAssignment?
@@ -166,17 +173,18 @@ model Section {
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
 
-  costCenter          CostCenter?
-  employeeAssignments EmployeeSectionAssignment[]
-  scopedUsers         User[] @relation("UserScopeSection")
-  scopeGrants         UserScopeSection[] @relation("SectionScopeUsers")
+  costCenter            CostCenter?
+  employeeAssignments   EmployeeSectionAssignment[]
+  scopedUsers           User[]                         @relation("UserScopeSection")
+  scopeGrants           UserScopeSection[]             @relation("SectionScopeUsers")
   organisationOverrides EmployeeOrganisationOverride[]
-  hodDelegations      HodDelegation[]
+  hodDelegations        HodDelegation[]
 
   jobOrders           JobOrder[]
   jobOrderProgress    JobOrderProgress[]
-  timesheetEntries    TimesheetEntry[]    @relation("TimesheetEntrySection")
+  timesheetEntries    TimesheetEntry[]     @relation("TimesheetEntrySection")
   employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationSection")
+
   @@unique([departmentId, code])
   @@unique([departmentId, name])
   @@index([departmentId, active])
@@ -392,25 +400,25 @@ model EmployeeAllocation {
 }
 
 model ProjectWbs {
-  id        Int      @id @default(autoincrement())
-  projectId Int      @map("project_id")
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id            Int      @id @default(autoincrement())
+  projectId     Int      @map("project_id")
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   /// WBS number issued by the PM team (the CSV `WBS_NO` column). Unique per
   /// project, not globally. A WBS only groups Job Orders and carries no budget.
-  wbsCode   String   @map("wbs_code")
-  name      String?
-  sortOrder Int      @default(0) @map("sort_order")
+  wbsCode       String   @map("wbs_code")
+  name          String?
+  sortOrder     Int      @default(0) @map("sort_order")
   /// Share of its Project's planned hours that this WBS contributes to the S-curve. NULL means
   /// "equal share" — today's rule, where every active WBS of a project weighs the same. Deliberately a
   /// relative weight and never a percentage that must sum to 100: the curve normalises by the weights
   /// actually present, so a half-configured project still plots instead of dividing by zero.
-  plannedWeight Float? @map("planned_weight")
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  plannedWeight Float?   @map("planned_weight")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
   jobOrders           JobOrder[]
-  jobOrdersByProject  JobOrder[]        @relation("JobOrderWbsProject")
+  jobOrdersByProject  JobOrder[]           @relation("JobOrderWbsProject")
   networks            Network[]
   timesheetEntries    TimesheetEntry[]
   employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationProjectWbs")
@@ -446,6 +454,9 @@ model Project {
   wbsRows             ProjectWbs[]
   networks            Network[]
   jobOrders           JobOrder[]
+  reportSnapshots     ReportSnapshot[]
+  reviewSessions      ReviewSession[]
+  reviewItems         ReviewItem[]
   employeeAllocations EmployeeAllocation[]
   timesheetEntries    TimesheetEntry[]     @relation("TimesheetEntryProject")
 
@@ -458,11 +469,11 @@ model Project {
 /// `status` is one of: active, closed, on_hold.
 /// `budgetedHours` is in clock hours; null for Non-Project / Standing JOs.
 model JobOrder {
-  id               Int         @id @default(autoincrement())
-  projectId        Int         @map("project_id")
-  project          Project     @relation(fields: [projectId], references: [id])
-  projectWbsId     Int         @map("project_wbs_id")
-  projectWbs       ProjectWbs  @relation(fields: [projectWbsId], references: [id])
+  id                  Int        @id @default(autoincrement())
+  projectId           Int        @map("project_id")
+  project             Project    @relation(fields: [projectId], references: [id])
+  projectWbsId        Int        @map("project_wbs_id")
+  projectWbs          ProjectWbs @relation(fields: [projectWbsId], references: [id])
   /// Declared ONLY so the database enforces that the Job Order's Project owns its WBS
   /// (a composite foreign key on (project_wbs_id, project_id)). Never navigate through
   /// this field in code - use `projectWbs` and `project`. Removing it would drop the
@@ -470,33 +481,33 @@ model JobOrder {
   projectWbsOfProject ProjectWbs @relation("JobOrderWbsProject", fields: [projectWbsId, projectId], references: [id, projectId])
   /// SAP-sourced network, validated against the per-project Network master.
   /// Several Job Orders may share one network; Non-Project rows use a dummy.
-  networkId        Int         @map("network_id")
-  network          Network     @relation(fields: [networkId], references: [id])
+  networkId           Int        @map("network_id")
+  network             Network    @relation(fields: [networkId], references: [id])
   /// Job Order number, generated manually by the PM team. It repeats across
   /// projects, so it is unique per project only - never globally.
-  code             String
+  code                String
   /// `Job_Description` from the CSV.
-  name             String
-  uomId            Int         @map("uom_id")
-  uom              Uom         @relation(fields: [uomId], references: [id])
-  budgetedQuantity Float       @default(0) @map("budgeted_quantity")
-  budgetedHours    Float       @default(0) @map("budgeted_hours")
-  departmentId     Int         @map("department_id")
-  department       Department  @relation(fields: [departmentId], references: [id])
+  name                String
+  uomId               Int        @map("uom_id")
+  uom                 Uom        @relation(fields: [uomId], references: [id])
+  budgetedQuantity    Float      @default(0) @map("budgeted_quantity")
+  budgetedHours       Float      @default(0) @map("budgeted_hours")
+  departmentId        Int        @map("department_id")
+  department          Department @relation(fields: [departmentId], references: [id])
   /// Required for project Job Orders. Null only for standing / Non-Project Job
   /// Orders, which any section of the department may book.
-  sectionId        Int?        @map("section_id")
-  section          Section?    @relation(fields: [sectionId], references: [id])
+  sectionId           Int?       @map("section_id")
+  section             Section?   @relation(fields: [sectionId], references: [id])
   /// active | inactive
-  status           String      @default("active")
+  status              String     @default("active")
   /// OPTIONAL planned window, from the template's Start_Date / End_Date columns. NULL means
   /// "no plan" - continual / standing work - which every report shows as NOT SCHEDULED and never
   /// as on-time. Always UTC midnight on the day named: one kind of value, no time-of-day noise.
   /// The CURRENT plan only (v1): a date that moves is not versioned against a baseline.
-  plannedStartDate DateTime? @map("planned_start_date")
-  plannedEndDate   DateTime? @map("planned_end_date")
-  createdAt        DateTime    @default(now()) @map("created_at")
-  updatedAt        DateTime    @updatedAt @map("updated_at")
+  plannedStartDate    DateTime?  @map("planned_start_date")
+  plannedEndDate      DateTime?  @map("planned_end_date")
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
 
   timesheetEntries    TimesheetEntry[]
   employeeAllocations EmployeeAllocation[]
@@ -507,21 +518,22 @@ model JobOrder {
   /// department HOD (resolved in services/conversationScope.ts). Explicit beats derived.
   ownerUserId       Int?      @map("owner_user_id")
   owner             User?     @relation("JobOrderOwner", fields: [ownerUserId], references: [id])
-  ownerAssignedById Int?     @map("owner_assigned_by")
+  ownerAssignedById Int?      @map("owner_assigned_by")
   ownerAssignedAt   DateTime? @map("owner_assigned_at")
 
-  thread       JobOrderThread?
-  commitments  JobOrderCommitment[] @relation("JobOrderCommitments")
+  thread      JobOrderThread?
+  commitments JobOrderCommitment[] @relation("JobOrderCommitments")
 
-  @@unique([projectId, code])
-  @@index([projectWbsId, status])
+  reviewItems         ReviewItem[]
   /// What the application COMMITTED to when a recovery was accepted. Deliberately a separate column from
   /// `plannedEndDate`: the Job Order CSV upload writes the plan from the file and would silently undo an
   /// accepted commitment. Both are shown; a warning appears when they diverge.
-  committedFinishDate DateTime? @map("committed_finish_date")
-  committedSetAt      DateTime? @map("committed_set_at")
-  committedRecoveryId Int?      @map("committed_recovery_id")
+  committedFinishDate DateTime?    @map("committed_finish_date")
+  committedSetAt      DateTime?    @map("committed_set_at")
+  committedRecoveryId Int?         @map("committed_recovery_id")
 
+  @@unique([projectId, code])
+  @@index([projectWbsId, status])
   @@index([departmentId, status])
   @@index([sectionId])
   @@index([networkId])
@@ -545,30 +557,30 @@ model DailyTeamSelection {
 }
 
 model TimesheetDay {
-  id         Int      @id @default(autoincrement())
-  employeeId Int      @map("employee_id")
-  employee   Employee @relation(fields: [employeeId], references: [id])
-  workDate   DateTime @map("work_date")
-  taggedById Int      @map("tagged_by")
-  taggedBy   User     @relation("TaggedBy", fields: [taggedById], references: [id])
-  status     String   @default("DRAFT")
-  remarks    String?
+  id             Int       @id @default(autoincrement())
+  employeeId     Int       @map("employee_id")
+  employee       Employee  @relation(fields: [employeeId], references: [id])
+  workDate       DateTime  @map("work_date")
+  taggedById     Int       @map("tagged_by")
+  taggedBy       User      @relation("TaggedBy", fields: [taggedById], references: [id])
+  status         String    @default("DRAFT")
+  remarks        String?
   /// Clocked attendance hours for this employee-day, read from the LabourWorks
   /// attendance view (`ManHours` for `IDNo` = the employee ecNo). NULL means
   /// "not fetched yet": every submit resets it, and only an Admin refresh or the
   /// 09:00 / 21:00 job fills it in. Never written by a supervisor, never part of
   /// the booked-hours arithmetic.
-  inOutHours Float?   @map("in_out_hours")
+  inOutHours     Float?    @map("in_out_hours")
   /// Where `inOutHours` came from: null (never fetched), LABOURWORKS or MANUAL.
   /// A MANUAL value is an Admin decision and no refresh ever overwrites it.
-  inOutSource String?  @map("in_out_source")
+  inOutSource    String?   @map("in_out_source")
   /// When a refresh last consulted the source for this day, and how many times it has
   /// been consulted. Together they are the "still pending" evidence: a day that is
   /// still 0 after six checks is a regularization nobody has done yet, not a bug.
   inOutCheckedAt DateTime? @map("in_out_checked_at")
-  inOutAttempts  Int      @default(0) @map("in_out_attempts")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
+  inOutAttempts  Int       @default(0) @map("in_out_attempts")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   entries   TimesheetEntry[]
   approvals Approval[]
@@ -820,7 +832,6 @@ model ProjectManagerAssignment {
   @@map("project_manager_assignments")
 }
 
-
 /// One conversation per Job Order (docs/plans/2026-10-19-job-order-conversations.md).
 /// Created lazily on the first message. RESOLVED is not deleted: it stays readable and reopens.
 /// The eight causes of a delay, as CODES.
@@ -828,7 +839,7 @@ model ProjectManagerAssignment {
 /// The code is what reports count and it never changes; `label` may be reworded from the header of a
 /// report without rewriting history. Seeded by migration, so a fresh database and production agree.
 model DelayReason {
-  code      String @id
+  code      String  @id
   label     String
   sortOrder Int     @map("sort_order")
   active    Boolean @default(true)
@@ -844,15 +855,15 @@ model DelayReason {
 /// negotiates a different clock adds its own row without a deploy. Hours are counted from the moment the
 /// message was posted; a reply that answers it stops the ladder.
 model SlaPolicy {
-  id            Int     @id @default(autoincrement())
+  id            Int         @id @default(autoincrement())
   /// ESCALATION | RECOVERY
   kind          String
-  departmentId  Int?    @map("department_id")
+  departmentId  Int?        @map("department_id")
   department    Department? @relation(fields: [departmentId], references: [id])
-  responseHours Int     @map("response_hours")
-  remindHours   Int     @map("remind_hours")
-  escalateHours Int     @map("escalate_hours")
-  active        Boolean @default(true)
+  responseHours Int         @map("response_hours")
+  remindHours   Int         @map("remind_hours")
+  escalateHours Int         @map("escalate_hours")
+  active        Boolean     @default(true)
 
   @@unique([kind, departmentId])
   @@map("sla_policies")
@@ -864,28 +875,28 @@ model SlaPolicy {
 /// Scalars rather than relations on purpose: this is an append-only record whose whole value is that it
 /// survives. A cascade from a thread edit would erase the negotiation that explains a committed date.
 model JobOrderRecovery {
-  id                Int      @id @default(autoincrement())
-  threadId          Int      @map("thread_id")
-  messageId         Int      @unique @map("message_id")
-  jobOrderId        Int      @map("job_order_id")
-  projectWbsId      Int?     @map("project_wbs_id")
-  proposedByUserId  Int?     @map("proposed_by_user_id")
-  proposedByName    String   @map("proposed_by_name")
-  proposedByEmail   String   @map("proposed_by_email")
-  revisedFinishDate DateTime @map("revised_finish_date")
+  id                Int       @id @default(autoincrement())
+  threadId          Int       @map("thread_id")
+  messageId         Int       @unique @map("message_id")
+  jobOrderId        Int       @map("job_order_id")
+  projectWbsId      Int?      @map("project_wbs_id")
+  proposedByUserId  Int?      @map("proposed_by_user_id")
+  proposedByName    String    @map("proposed_by_name")
+  proposedByEmail   String    @map("proposed_by_email")
+  revisedFinishDate DateTime  @map("revised_finish_date")
   /// [{ trade, headcount, hoursPerDay, fromDate, toDate }] — recorded, never enforced.
-  manpowerPlanJson  String?  @map("manpower_plan_json")
+  manpowerPlanJson  String?   @map("manpower_plan_json")
   note              String?
   /// PROPOSED | ACCEPTED | REJECTED | SUPERSEDED
-  state             String   @default("PROPOSED")
-  decidedByUserId   Int?     @map("decided_by_user_id")
-  decidedByName     String?  @map("decided_by_name")
+  state             String    @default("PROPOSED")
+  decidedByUserId   Int?      @map("decided_by_user_id")
+  decidedByName     String?   @map("decided_by_name")
   decidedAt         DateTime? @map("decided_at")
-  decisionNote      String?  @map("decision_note")
+  decisionNote      String?   @map("decision_note")
   /// What the commitment replaced and what it set, so an undo restores the exact previous value.
   appliedFrom       DateTime? @map("applied_from")
   appliedTo         DateTime? @map("applied_to")
-  createdAt         DateTime @default(now()) @map("created_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
 
   @@index([jobOrderId, state])
   @@map("job_order_recoveries")
@@ -896,27 +907,27 @@ model JobOrderRecovery {
 /// The register Central Planning reads. Ageing is `now - raised_at` for OPEN rows; `impactDays` is what the
 /// raiser STATED, never derived, because a guess dressed as a number is worse than no number.
 model WbsHindrance {
-  id             Int      @id @default(autoincrement())
-  projectWbsId   Int      @map("project_wbs_id")
-  jobOrderId     Int?     @map("job_order_id")
-  threadId       Int?     @map("thread_id")
-  messageId      Int?     @map("message_id")
+  id             Int       @id @default(autoincrement())
+  projectWbsId   Int       @map("project_wbs_id")
+  jobOrderId     Int?      @map("job_order_id")
+  threadId       Int?      @map("thread_id")
+  messageId      Int?      @map("message_id")
   /// A delay_reasons code, or OTHER.
   category       String
   description    String
-  raisedByUserId Int?     @map("raised_by_user_id")
-  raisedByEmail  String   @map("raised_by_email")
-  raisedAt       DateTime @default(now()) @map("raised_at")
-  ownerUserId    Int?     @map("owner_user_id")
-  ownerEmail     String?  @map("owner_email")
+  raisedByUserId Int?      @map("raised_by_user_id")
+  raisedByEmail  String    @map("raised_by_email")
+  raisedAt       DateTime  @default(now()) @map("raised_at")
+  ownerUserId    Int?      @map("owner_user_id")
+  ownerEmail     String?   @map("owner_email")
   targetDate     DateTime? @map("target_date")
-  impactDays     Int?     @map("impact_days")
+  impactDays     Int?      @map("impact_days")
   /// OPEN | CLOSED | VOID
-  state          String   @default("OPEN")
-  closedByUserId Int?     @map("closed_by_user_id")
-  closedByName   String?  @map("closed_by_name")
+  state          String    @default("OPEN")
+  closedByUserId Int?      @map("closed_by_user_id")
+  closedByName   String?   @map("closed_by_name")
   closedAt       DateTime? @map("closed_at")
-  closureNote    String?  @map("closure_note")
+  closureNote    String?   @map("closure_note")
 
   @@index([projectWbsId, state])
   @@index([state, raisedAt])
@@ -924,29 +935,29 @@ model WbsHindrance {
 }
 
 model JobOrderThread {
-  id              Int      @id @default(autoincrement())
-  jobOrderId      Int      @unique @map("job_order_id")
-  jobOrder        JobOrder @relation(fields: [jobOrderId], references: [id], onDelete: Cascade)
+  id              Int       @id @default(autoincrement())
+  jobOrderId      Int       @unique @map("job_order_id")
+  jobOrder        JobOrder  @relation(fields: [jobOrderId], references: [id], onDelete: Cascade)
   /// OPEN | RESOLVED
-  status          String   @default("OPEN")
-  openedById      Int?     @map("opened_by")
-  openedBy        User?    @relation("ThreadOpenedBy", fields: [openedById], references: [id])
-  openedAt        DateTime @default(now()) @map("opened_at")
-  resolvedById    Int?     @map("resolved_by")
-  resolvedBy      User?    @relation("ThreadResolvedBy", fields: [resolvedById], references: [id])
+  status          String    @default("OPEN")
+  openedById      Int?      @map("opened_by")
+  openedBy        User?     @relation("ThreadOpenedBy", fields: [openedById], references: [id])
+  openedAt        DateTime  @default(now()) @map("opened_at")
+  resolvedById    Int?      @map("resolved_by")
+  resolvedBy      User?     @relation("ThreadResolvedBy", fields: [resolvedById], references: [id])
   resolvedAt      DateTime? @map("resolved_at")
-  lastMessageAt   DateTime @default(now()) @map("last_message_at")
-  lastMessageById Int?     @map("last_message_by")
-  lastMessageBy   User?    @relation("ThreadLastMessageBy", fields: [lastMessageById], references: [id])
+  lastMessageAt   DateTime  @default(now()) @map("last_message_at")
+  lastMessageById Int?      @map("last_message_by")
+  lastMessageBy   User?     @relation("ThreadLastMessageBy", fields: [lastMessageById], references: [id])
   /// Denormalised for the list and the bell; maintained in the same transaction as a message.
-  messageCount    Int      @default(0) @map("message_count")
+  messageCount    Int       @default(0) @map("message_count")
 
   messages     JobOrderMessage[]
   participants JobOrderThreadParticipant[]
   tokens       JobOrderReplyToken[]
   commitments  JobOrderCommitment[]
 
-  attachments  JobOrderMessageAttachment[]
+  attachments JobOrderMessageAttachment[]
 
   @@index([status, lastMessageAt])
   @@map("job_order_threads")
@@ -955,44 +966,44 @@ model JobOrderThread {
 /// Append-only conversation entry. An edit bumps `bodyRevision` and is recorded as a system line;
 /// a row is never deleted, and `seq` is the quotable number ("per #7").
 model JobOrderMessage {
-  id                  Int      @id @default(autoincrement())
-  threadId            Int      @map("thread_id")
-  thread              JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  id                  Int               @id @default(autoincrement())
+  threadId            Int               @map("thread_id")
+  thread              JobOrderThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   seq                 Int
   /// FOLLOW_UP | INSTRUCTION | ESCALATION | REPLY | DECISION | SYSTEM
   kind                String
-  authorUserId        Int?     @map("author_user_id")
-  author              User?    @relation("MessageAuthor", fields: [authorUserId], references: [id])
+  authorUserId        Int?              @map("author_user_id")
+  author              User?             @relation("MessageAuthor", fields: [authorUserId], references: [id])
   /// Always present, even for a magic-link reply: who spoke, in one field.
-  authorEmail         String   @map("author_email")
-  authorName          String   @map("author_name")
-  authorRole          String   @map("author_role")
+  authorEmail         String            @map("author_email")
+  authorName          String            @map("author_name")
+  authorRole          String            @map("author_role")
   /// APP | MAGIC_LINK | SYSTEM
-  source              String   @default("APP")
+  source              String            @default("APP")
   body                String
-  bodyRevision        Int      @default(1) @map("body_revision")
-  editedAt            DateTime? @map("edited_at")
-  editedById          Int?     @map("edited_by")
-  editedBy            User?    @relation("MessageEditor", fields: [editedById], references: [id])
-  replyToId           Int?     @map("reply_to_id")
-  replyTo             JobOrderMessage? @relation("MessageReply", fields: [replyToId], references: [id])
+  bodyRevision        Int               @default(1) @map("body_revision")
+  editedAt            DateTime?         @map("edited_at")
+  editedById          Int?              @map("edited_by")
+  editedBy            User?             @relation("MessageEditor", fields: [editedById], references: [id])
+  replyToId           Int?              @map("reply_to_id")
+  replyTo             JobOrderMessage?  @relation("MessageReply", fields: [replyToId], references: [id])
   replies             JobOrderMessage[] @relation("MessageReply")
   /// The Job Order's operational snapshot at the moment of writing (see the plan, 4.2).
-  contextJson         String?  @map("context_json")
+  contextJson         String?           @map("context_json")
   /// A DECISION's proposed change (see 4.3).
-  proposalJson        String?  @map("proposal_json")
-  escalationDueAt     DateTime? @map("escalation_due_at")
-  acknowledgedAt      DateTime? @map("acknowledged_at")
-  acknowledgedByEmail String?  @map("acknowledged_by_email")
+  proposalJson        String?           @map("proposal_json")
+  escalationDueAt     DateTime?         @map("escalation_due_at")
+  acknowledgedAt      DateTime?         @map("acknowledged_at")
+  acknowledgedByEmail String?           @map("acknowledged_by_email")
   /// When a reply is expected by, from the policy in force for this kind at the moment of posting.
   /// Null means no clock (a decision, a system line, a reply that answers something).
-  responseDueAt    DateTime? @map("response_due_at")
+  responseDueAt       DateTime?         @map("response_due_at")
   /// The message this one answers. Set once, on the reply, so "responded in 6h" is a fact for ever.
-  answersMessageId Int?      @map("answers_message_id")
-  answersMessage   JobOrderMessage? @relation("MessageAnswers", fields: [answersMessageId], references: [id])
-  answeredBy       JobOrderMessage[] @relation("MessageAnswers")
+  answersMessageId    Int?              @map("answers_message_id")
+  answersMessage      JobOrderMessage?  @relation("MessageAnswers", fields: [answersMessageId], references: [id])
+  answeredBy          JobOrderMessage[] @relation("MessageAnswers")
   /// REMIND_HOD | ESCALATE_COO on the SYSTEM line a rung writes. Null on everything else.
-  ladderStep       String?   @map("ladder_step")
+  ladderStep          String?           @map("ladder_step")
 
   /// The cause of the delay this message reports, as a DelayReason code. Nullable: prose is still a
   /// valid reply, and a reason is offered, never demanded. Set once — messages are append-only.
@@ -1001,9 +1012,9 @@ model JobOrderMessage {
 
   /// Where the message was raised from when it was not the conversation screen itself
   /// (a Portfolio row, a structure node). Null means the drawer. Closed list in services/conversationOrigins.ts.
-  origin              String?
-  ipHash              String?  @map("ip_hash")
-  createdAt           DateTime @default(now()) @map("created_at")
+  origin    String?
+  ipHash    String?  @map("ip_hash")
+  createdAt DateTime @default(now()) @map("created_at")
 
   recipients  JobOrderMessageRecipient[]
   attachments JobOrderMessageAttachment[]
@@ -1018,20 +1029,20 @@ model JobOrderMessage {
 }
 
 model JobOrderThreadParticipant {
-  id         Int      @id @default(autoincrement())
-  threadId   Int      @map("thread_id")
-  thread     JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  userId     Int?     @map("user_id")
-  user       User?    @relation("ThreadParticipant", fields: [userId], references: [id])
-  email      String
-  roleAtJoin String   @map("role_at_join")
-  addedById  Int?     @map("added_by")
-  addedBy    User?    @relation("ThreadParticipantAddedBy", fields: [addedById], references: [id])
-  addedAt    DateTime @default(now()) @map("added_at")
-  mutedAt    DateTime? @map("muted_at")
-  lastReadAt DateTime? @map("last_read_at")
+  id          Int            @id @default(autoincrement())
+  threadId    Int            @map("thread_id")
+  thread      JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  userId      Int?           @map("user_id")
+  user        User?          @relation("ThreadParticipant", fields: [userId], references: [id])
+  email       String
+  roleAtJoin  String         @map("role_at_join")
+  addedById   Int?           @map("added_by")
+  addedBy     User?          @relation("ThreadParticipantAddedBy", fields: [addedById], references: [id])
+  addedAt     DateTime       @default(now()) @map("added_at")
+  mutedAt     DateTime?      @map("muted_at")
+  lastReadAt  DateTime?      @map("last_read_at")
   /// The highest `seq` this person has seen; unread = thread.messageCount - lastReadSeq.
-  lastReadSeq Int     @default(0) @map("last_read_seq")
+  lastReadSeq Int            @default(0) @map("last_read_seq")
 
   @@unique([threadId, email])
   @@index([userId])
@@ -1041,14 +1052,14 @@ model JobOrderThreadParticipant {
 /// Per-recipient delivery truth, shown on the message ("emailed to X · delivered 14:32"
 /// or "not emailed — no address"). A message is never "sent" in the abstract.
 model JobOrderMessageRecipient {
-  id        Int      @id @default(autoincrement())
-  messageId Int      @map("message_id")
+  id        Int             @id @default(autoincrement())
+  messageId Int             @map("message_id")
   message   JobOrderMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
   email     String
-  userId    Int?     @map("user_id")
+  userId    Int?            @map("user_id")
   /// QUEUED | SENT | FAILED | NO_ADDRESS | MUTED
-  state     String   @default("QUEUED")
-  sentAt    DateTime? @map("sent_at")
+  state     String          @default("QUEUED")
+  sentAt    DateTime?       @map("sent_at")
   error     String?
 
   @@index([messageId])
@@ -1058,19 +1069,19 @@ model JobOrderMessageRecipient {
 /// A signed, expiring link that lets the holder reply from e-mail without an account.
 /// Stored HASHED, bound to one address and one thread, revocable.
 model JobOrderReplyToken {
-  id          Int      @id @default(autoincrement())
-  tokenHash   String   @unique @map("token_hash")
-  threadId    Int      @map("thread_id")
+  id          Int            @id @default(autoincrement())
+  tokenHash   String         @unique @map("token_hash")
+  threadId    Int            @map("thread_id")
   thread      JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
   email       String
-  userId      Int?     @map("user_id")
-  createdById Int?     @map("created_by")
-  createdBy   User?    @relation("ReplyTokenCreator", fields: [createdById], references: [id])
-  createdAt   DateTime @default(now()) @map("created_at")
-  expiresAt   DateTime @map("expires_at")
-  revokedAt   DateTime? @map("revoked_at")
-  useCount    Int      @default(0) @map("use_count")
-  lastUsedAt  DateTime? @map("last_used_at")
+  userId      Int?           @map("user_id")
+  createdById Int?           @map("created_by")
+  createdBy   User?          @relation("ReplyTokenCreator", fields: [createdById], references: [id])
+  createdAt   DateTime       @default(now()) @map("created_at")
+  expiresAt   DateTime       @map("expires_at")
+  revokedAt   DateTime?      @map("revoked_at")
+  useCount    Int            @default(0) @map("use_count")
+  lastUsedAt  DateTime?      @map("last_used_at")
 
   @@index([threadId, email])
   @@map("job_order_reply_tokens")
@@ -1078,22 +1089,22 @@ model JobOrderReplyToken {
 
 /// A promise found in a reply ("spools resume Friday"), chased on its due day (see the plan, A4).
 model JobOrderCommitment {
-  id                  Int      @id @default(autoincrement())
-  threadId            Int      @map("thread_id")
-  thread              JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  messageId           Int      @map("message_id")
-  message             JobOrderMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  jobOrderId          Int      @map("job_order_id")
-  jobOrder            JobOrder @relation("JobOrderCommitments", fields: [jobOrderId], references: [id], onDelete: Cascade)
-  ownerEmail          String   @map("owner_email")
-  ownerUserId         Int?     @map("owner_user_id")
-  owner               User?    @relation("CommitmentOwner", fields: [ownerUserId], references: [id])
-  dueOn               DateTime @map("due_on")
-  text                String
+  id          Int             @id @default(autoincrement())
+  threadId    Int             @map("thread_id")
+  thread      JobOrderThread  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messageId   Int             @map("message_id")
+  message     JobOrderMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  jobOrderId  Int             @map("job_order_id")
+  jobOrder    JobOrder        @relation("JobOrderCommitments", fields: [jobOrderId], references: [id], onDelete: Cascade)
+  ownerEmail  String          @map("owner_email")
+  ownerUserId Int?            @map("owner_user_id")
+  owner       User?           @relation("CommitmentOwner", fields: [ownerUserId], references: [id])
+  dueOn       DateTime        @map("due_on")
+  text        String
   /// OPEN | KEPT | MISSED | DISMISSED
-  state               String   @default("OPEN")
-  resolvedAt          DateTime? @map("resolved_at")
-  chasedAt            DateTime? @map("chased_at")
+  state       String          @default("OPEN")
+  resolvedAt  DateTime?       @map("resolved_at")
+  chasedAt    DateTime?       @map("chased_at")
 
   @@index([state, dueOn])
   @@index([jobOrderId])
@@ -1126,25 +1137,26 @@ model AssistantUsage {
 /// integrity hash and the access record. A row with `messageId = null` is an upload that has not been
 /// sent yet, so an abandoned compose never leaves an orphan on a thread.
 model JobOrderMessageAttachment {
-  id           Int      @id @default(autoincrement())
-  threadId     Int      @map("thread_id")
-  thread       JobOrderThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  messageId    Int?     @map("message_id")
+  id           Int              @id @default(autoincrement())
+  threadId     Int              @map("thread_id")
+  thread       JobOrderThread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messageId    Int?             @map("message_id")
   message      JobOrderMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
   filename     String
-  mimeType     String   @map("mime_type")
-  sizeBytes    Int      @map("size_bytes")
+  mimeType     String           @map("mime_type")
+  sizeBytes    Int              @map("size_bytes")
   /// The name on disk (opaque); the user-facing name is `filename`.
-  storageKey   String   @unique @map("storage_key")
+  storageKey   String           @unique @map("storage_key")
   sha256       String
-  uploadedById Int?     @map("uploaded_by")
-  uploadedBy   User?    @relation("AttachmentUploader", fields: [uploadedById], references: [id])
-  createdAt    DateTime @default(now()) @map("created_at")
+  uploadedById Int?             @map("uploaded_by")
+  uploadedBy   User?            @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+  createdAt    DateTime         @default(now()) @map("created_at")
 
   @@index([messageId])
   @@index([threadId])
   @@map("job_order_message_attachments")
 }
+
 /// Effective-dated budget revision. Revision 1 is the budget set when the Job
 /// Order was created. Consumption is always compared against the revision in
 /// force on the WORK DATE, so a past month keeps the budget it was measured
@@ -1195,7 +1207,7 @@ model JobOrderProgress {
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  remarkHistory      JobOrderProgressRemark[]
+  remarkHistory JobOrderProgressRemark[]
 
   @@unique([jobOrderId, progressDate, revisionNo])
   @@index([status, progressDate])
@@ -1283,18 +1295,18 @@ model CalendarException {
 /// One settlement pass over a date range. A FAILED or PARTIAL run is the reason a report can say
 /// "not settled" instead of printing a confident zero.
 model AttendanceSettlementRun {
-  id           Int            @id @default(autoincrement())
-  scopeFrom    DateTime       @map("scope_from")
-  scopeTo      DateTime       @map("scope_to")
-  startedAt    DateTime       @default(now()) @map("started_at")
-  finishedAt   DateTime?      @map("finished_at")
+  id           Int             @id @default(autoincrement())
+  scopeFrom    DateTime        @map("scope_from")
+  scopeTo      DateTime        @map("scope_to")
+  startedAt    DateTime        @default(now()) @map("started_at")
+  finishedAt   DateTime?       @map("finished_at")
   /// RUNNING | OK | PARTIAL | FAILED
-  status       String         @default("RUNNING")
+  status       String          @default("RUNNING")
   /// SQL or FIXTURE. A fixture run can never be mistaken for real attendance.
-  source       String         @default("SQL")
-  datesSettled Int            @default(0) @map("dates_settled")
-  datesFailed  Int            @default(0) @map("dates_failed")
-  rowsWritten  Int            @default(0) @map("rows_written")
+  source       String          @default("SQL")
+  datesSettled Int             @default(0) @map("dates_settled")
+  datesFailed  Int             @default(0) @map("dates_failed")
+  rowsWritten  Int             @default(0) @map("rows_written")
   /// Per-date anomalies as read: unmatched register ids, status/day-type contradictions, mixed statuses.
   anomalies    Json?
   error        String?
@@ -1309,28 +1321,28 @@ model AttendanceSettlementRun {
 /// Stored rather than recomputed because a report and a review must divide by the same facts, and because
 /// LabourWorks rewrites history — a settled row is what the yard believed on the day it settled.
 model AttendanceDay {
-  id              Int      @id @default(autoincrement())
+  id              Int                      @id @default(autoincrement())
   /// The view's IDNo. Always present: it is the evidence, even when no Employee matches it.
-  registerId      String   @map("register_id")
+  registerId      String                   @map("register_id")
   /// NULL when the register id has no Employee row — an anomaly that is recorded, never invented away.
-  employeeId      Int?     @map("employee_id")
-  employee        Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
-  workDate        DateTime @map("work_date")
+  employeeId      Int?                     @map("employee_id")
+  employee        Employee?                @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  workDate        DateTime                 @map("work_date")
   /// Copied from the date's resolved type so a single row is readable on its own.
-  dayType         String   @map("day_type")
+  dayType         String                   @map("day_type")
   /// WORKED | WORKED_HOLIDAY | ABSENT | OFF | UNVERIFIED
-  attendanceClass String   @map("attendance_class")
+  attendanceClass String                   @map("attendance_class")
   /// The view's OriginalStatus as read (P, P/WO, P/HL, A, A/HL — or whatever the source invents next).
-  status          String   @map("status")
-  acceptedHours   Float    @default(0) @map("accepted_hours")
-  acceptedOtHours Float    @default(0) @map("accepted_ot_hours")
-  clockedHours    Float    @default(0) @map("clocked_hours")
+  status          String                   @map("status")
+  acceptedHours   Float                    @default(0) @map("accepted_hours")
+  acceptedOtHours Float                    @default(0) @map("accepted_ot_hours")
+  clockedHours    Float                    @default(0) @map("clocked_hours")
   /// How many view rows produced this man-day, and whether they disagreed about the status.
-  registerRows    Int      @default(1) @map("register_rows")
-  statusVariants  Int      @default(1) @map("status_variants")
-  runId           Int?     @map("run_id")
+  registerRows    Int                      @default(1) @map("register_rows")
+  statusVariants  Int                      @default(1) @map("status_variants")
+  runId           Int?                     @map("run_id")
   run             AttendanceSettlementRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
-  settledAt       DateTime @default(now()) @map("settled_at")
+  settledAt       DateTime                 @default(now()) @map("settled_at")
 
   @@unique([registerId, workDate])
   @@index([workDate, attendanceClass])
@@ -1340,18 +1352,150 @@ model AttendanceDay {
 
 /// A frozen review pack. Reviews read this, not the live tables, so a number quoted in a meeting cannot
 /// change under it afterwards. `contentHash` proves two copies are the same pack.
+/// ONE frozen payload for one period. Read by the pack and by "what did we know on <date>";
+/// never recomputed. `kind` decides the period convention, `projectId` the subject: NULL is an
+/// organisation-wide freeze (a future portfolio pack), a review snapshot always names its project.
 model ReportSnapshot {
-  id          Int      @id @default(autoincrement())
-  /// WEEKLY | MONTHLY | ADHOC
-  kind        String
-  periodFrom  DateTime @map("period_from")
-  periodTo    DateTime @map("period_to")
-  frozenAt    DateTime @default(now()) @map("frozen_at")
-  frozenById  Int?     @map("frozen_by")
-  payload     Json
-  contentHash String   @map("content_hash")
+  id                Int      @id @default(autoincrement())
+  projectId         Int?     @map("project_id")
+  project           Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// WEEKLY | MONTHLY | MONTHLY_REVIEW | ADHOC — REVIEW_CLOSE moments are WEEKLY with captureTrigger REVIEW_CLOSE.
+  kind              String
+  periodFrom        DateTime @map("period_from")
+  periodTo          DateTime @map("period_to")
+  /// Append-only: a re-capture writes revision n+1 and never edits revision n. Two packs from
+  /// different months can therefore be compared without wondering which one was overwritten.
+  revision          Int      @default(1)
+  /// SCHEDULED | ON_DEMAND | REVIEW_CLOSE | BACKFILL
+  captureTrigger    String   @default("ON_DEMAND") @map("capture_trigger")
+  /// True when the period had not ended at capture time. A mid-week pack must never read as final.
+  provisional       Boolean  @default(false)
+  frozenAt          DateTime @default(now()) @map("frozen_at")
+  frozenById        Int?     @map("frozen_by")
+  frozenBy          User?    @relation("ReportSnapshotFrozenBy", fields: [frozenById], references: [id])
+  payload           Json
+  /// sha256 of the canonical payload text: "same frozen numbers" becomes an assertion, not a promise.
+  contentHash       String   @map("content_hash")
+  payloadBytes      Int      @default(0) @map("payload_bytes")
+  schemaVersion     Int      @default(1) @map("schema_version")
+  /// Summary columns, so a trend query never parses a single payload.
+  jobOrders         Int      @default(0) @map("job_orders")
+  budgetHours       Float    @default(0) @map("budget_hours")
+  actualHours       Float    @default(0) @map("actual_hours")
+  burnPct           Float?   @map("burn_pct")
+  scheduledCount    Int      @default(0) @map("scheduled_count")
+  delayedCount      Int      @default(0) @map("delayed_count")
+  openEscalations   Int      @default(0) @map("open_escalations")
+  escalationsOver30 Int      @default(0) @map("escalations_over_30d")
+  actionsOpen       Int      @default(0) @map("actions_open")
+  actionsOverdue    Int      @default(0) @map("actions_overdue")
+  headcountPeak     Int      @default(0) @map("headcount_peak")
 
-  @@unique([kind, periodFrom, periodTo])
+  sessions ReviewSession[]
+
+  /// projectId is nullable, and Postgres treats NULLs as distinct, so organisation-wide freezes are
+  /// not deduplicated by this index — the project path always sets it, and that is the path with a rule.
+  @@unique([projectId, kind, periodFrom, periodTo, revision])
+  @@index([projectId, periodFrom])
   @@index([frozenAt])
   @@map("report_snapshot")
+}
+
+/// One held review meeting. UNIQUE per project + period, so re-opening a review resumes the same row
+/// instead of leaving two half-finished minutes for the same week.
+model ReviewSession {
+  id            Int             @id @default(autoincrement())
+  projectId     Int             @map("project_id")
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  periodKind    String          @map("period_kind")
+  periodStart   DateTime        @map("period_start")
+  title         String
+  /// IN_PROGRESS | CLOSED | CANCELLED
+  status        String          @default("IN_PROGRESS")
+  /// The frozen numbers the meeting was held against (NULL until a snapshot exists for the period).
+  snapshotId    Int?            @map("snapshot_id")
+  snapshot      ReportSnapshot? @relation(fields: [snapshotId], references: [id])
+  openedById    Int             @map("opened_by")
+  openedBy      User            @relation("ReviewSessionOpener", fields: [openedById], references: [id])
+  openedAt      DateTime        @default(now()) @map("opened_at")
+  closedById    Int?            @map("closed_by")
+  closedBy      User?           @relation("ReviewSessionCloser", fields: [closedById], references: [id])
+  closedAt      DateTime?       @map("closed_at")
+  /// Where the walk got to, so a half-done review resumes at the same WBS node.
+  lastWbsId     Int?            @map("last_wbs_id")
+  attendeesJson String?         @map("attendees_json")
+  notes         String?
+  items         ReviewItem[]
+
+  @@unique([projectId, periodKind, periodStart])
+  @@index([projectId, status])
+  @@map("review_sessions")
+}
+
+/// A decision, an action or a note recorded against a WBS node or a Job Order.
+model ReviewItem {
+  id              Int               @id @default(autoincrement())
+  sessionId       Int               @map("session_id")
+  session         ReviewSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  projectId       Int               @map("project_id")
+  project         Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectWbsId    Int?              @map("project_wbs_id")
+  jobOrderId      Int?              @map("job_order_id")
+  jobOrder        JobOrder?         @relation(fields: [jobOrderId], references: [id], onDelete: SetNull)
+  /// DECISION | ACTION | NOTE
+  kind            String
+  body            String
+  /// DECISION only: APPROVED | REJECTED | DEFERRED | NOTED.
+  decisionOutcome String?           @map("decision_outcome")
+  /// ACTION only: who owes it. `ownerEmail` is always stored, because the reply path needs an address
+  /// even when the owner has no account.
+  ownerUserId     Int?              @map("owner_user_id")
+  owner           User?             @relation("ReviewItemOwner", fields: [ownerUserId], references: [id])
+  ownerEmail      String?           @map("owner_email")
+  ownerName       String?           @map("owner_name")
+  dueOn           DateTime?         @map("due_on")
+  /// OPEN | DONE | CANCELLED. OVERDUE IS DERIVED (dueOn < today && OPEN) and never stored, so a
+  /// snapshot can never disagree with an item's own history.
+  status          String            @default("OPEN")
+  /// The carry chain: closing period N copies still-open items into N+1. `carriedFromId` is unique,
+  /// so an item can be carried at most once even if the carry step is re-run.
+  carriedFromId   Int?              @unique @map("carried_from_id")
+  carriedFrom     ReviewItem?       @relation("ReviewItemCarry", fields: [carriedFromId], references: [id])
+  carriedTo       ReviewItem?       @relation("ReviewItemCarry")
+  carryCount      Int               @default(0) @map("carry_count")
+  /// Set when the item was published into the Job Order conversation.
+  sourceMessageId Int?              @map("source_message_id")
+  createdById     Int               @map("created_by")
+  createdBy       User              @relation("ReviewItemAuthor", fields: [createdById], references: [id])
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  closedAt        DateTime?         @map("closed_at")
+  closedById      Int?              @map("closed_by")
+  closedNote      String?           @map("closed_note")
+  events          ReviewItemEvent[]
+
+  @@index([projectId, status, dueOn])
+  @@index([sessionId, kind])
+  @@index([jobOrderId])
+  @@map("review_items")
+}
+
+/// Append-only audit of an item's own life: created, status, owner, due, carried, published, comment.
+/// The item row carries the current value; this table carries how it got there, which is what a
+/// reviewer reads when an action has been open for three cycles.
+model ReviewItemEvent {
+  id        Int        @id @default(autoincrement())
+  itemId    Int        @map("item_id")
+  item      ReviewItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  /// CREATED | STATUS | OWNER | DUE | CARRIED | PUBLISHED | COMMENT
+  kind      String
+  fromValue String?    @map("from_value")
+  toValue   String?    @map("to_value")
+  note      String?
+  actorId   Int?       @map("actor_id")
+  actor     User?      @relation("ReviewItemEventActor", fields: [actorId], references: [id])
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@index([itemId, createdAt])
+  @@map("review_item_events")
 }
