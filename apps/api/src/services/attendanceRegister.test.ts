@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   aggregateRegisterRows,
   classFor,
+  isPresentStatus,
   clockedHoursOf,
   dayTypeForStatuses,
   normaliseRegisterStatus,
@@ -204,8 +205,30 @@ test("HD is a present half day and A/WO is a day he owed nothing", () => {
   assert.equal(weeklyOff?.dayType, "WEEKLY_OFF", "his own weekly off, whatever the date-level rule says");
   assert.equal(weeklyOff?.attendanceClass, "OFF");
 
-  // A blank status is not a code: it stays UNVERIFIED rather than being guessed as present.
-  const blank = aggregateRegisterRows([row({ originalStatus: "" })]);
+  // A blank status with NO hours is not a code and not evidence: it stays UNVERIFIED.
+  const blank = aggregateRegisterRows([row({ originalStatus: "", acceptedManHours: 0, rawManHours: 0 })]);
   assert.equal(blank[0].status, "UNKNOWN");
   assert.equal(blank[0].attendanceClass, "UNVERIFIED");
+});
+
+test("an empty status with accepted hours is present, and says it was inferred", () => {
+  // Owner's rule, 2026-10-24: the view sometimes carries no status; a man with accepted hours on such a
+  // day was plainly at work. 1,067 real man-days in a 33-day window looked like this.
+  const facts = aggregateRegisterRows([
+    row({ originalStatus: "", acceptedManHours: 8, rawManHours: 8 }),
+    row({ idNo: "BAPL0002", originalStatus: "", acceptedManHours: 0, acceptedOt: 0, rawManHours: 0 }),
+    row({ idNo: "BAPL0003", originalStatus: "", acceptedManHours: 0, acceptedOt: 3, rawManHours: 0 }),
+  ]);
+
+  const inferred = facts.find((fact) => fact.idNo === "BAPL0123");
+  assert.equal(inferred?.status, "P/HRS", "present, but labelled as inferred rather than as a P the source never sent");
+  assert.equal(inferred?.attendanceClass, "WORKED");
+  assert.equal(isPresentStatus("P/HRS"), true);
+
+  const silent = facts.find((fact) => fact.idNo === "BAPL0002");
+  assert.equal(silent?.status, "UNKNOWN", "no status and no hours is still unknown");
+  assert.equal(silent?.attendanceClass, "UNVERIFIED");
+
+  const overtime = facts.find((fact) => fact.idNo === "BAPL0003");
+  assert.equal(overtime?.status, "P/HRS", "clocked overtime is the same evidence as accepted hours");
 });

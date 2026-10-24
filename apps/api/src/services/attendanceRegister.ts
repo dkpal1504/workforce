@@ -35,9 +35,14 @@
  * real codes with an obvious meaning, which the first version threw into UNVERIFIED. The remaining 1,066
  * carried an EMPTY status: not a code at all, so they stay UNKNOWN and are reported as such.
  *
+ * `P/HRS` is the one code this application ADDS rather than reads: the view sometimes carries an EMPTY
+ * status, and a man with accepted hours on such a day was plainly at work (owner's rule, 2026-10-24).
+ * Labelling it `P/HRS` keeps the inference visible in the stored row instead of dressing it as a `P` the
+ * source never sent.
+ *
  * Anything not listed here is UNKNOWN, never "present".
  */
-export const REGISTER_STATUS_CODES = ["P", "P/WO", "P/HL", "A", "A/HL", "HD", "A/WO"] as const;
+export const REGISTER_STATUS_CODES = ["P", "P/WO", "P/HL", "A", "A/HL", "HD", "A/WO", "P/HRS"] as const;
 export type RegisterStatusCode = (typeof REGISTER_STATUS_CODES)[number];
 export type RegisterStatus = RegisterStatusCode | "UNKNOWN";
 
@@ -141,7 +146,7 @@ export function normaliseRegisterStatus(value: unknown): RegisterStatus {
  * `A/WO` is NOT present — he was absent, on a day that was his weekly off.
  */
 export function isPresentStatus(status: RegisterStatus): boolean {
-  return status === "P" || status === "P/WO" || status === "P/HL" || status === "HD";
+  return status === "P" || status === "P/WO" || status === "P/HL" || status === "HD" || status === "P/HRS";
 }
 
 /**
@@ -161,6 +166,9 @@ export function presenceRank(status: RegisterStatus): number {
       // Present, and ranked just below a full day: when rows disagree, the full day wins the hours and
       // `mixedStatus` still records that the source said both.
       return 2.5;
+    case "P/HRS":
+      // Present by inference from accepted hours, so it ranks below every status the source actually said.
+      return 2.2;
     case "A/HL":
       return 2;
     case "A/WO":
@@ -214,6 +222,7 @@ export function classFor(dayType: DayType, status: RegisterStatus): AttendanceCl
   // WORKING
   if (status === "P") return "WORKED";
   if (status === "HD") return "WORKED"; // a half day is still a day he was here
+  if (status === "P/HRS") return "WORKED"; // no status in the view, but hours were accepted
   if (status === "A/WO") return "OFF"; // absent, but on his own weekly off: he owed nothing
   if (status === "P/WO") return "WORKED_WEEKLY_OFF"; // status is authoritative: OT work.
   if (status === "P/HL") return "WORKED_HOLIDAY";
@@ -325,7 +334,7 @@ export function aggregateRegisterRows(
   for (const acc of byKey.values()) {
     const statuses = [...acc.statuses];
     // Presence precedence; ties broken by the code order so the result is deterministic.
-    const status = statuses.reduce<RegisterStatus>(
+    const chosen = statuses.reduce<RegisterStatus>(
       (best, current) =>
         presenceRank(current) > presenceRank(best) ||
         (presenceRank(current) === presenceRank(best) && current > best)
@@ -333,6 +342,13 @@ export function aggregateRegisterRows(
           : best,
       "UNKNOWN"
     );
+    // A day the source gave NO status for, but accepted hours for, is a day the man was at work (owner's
+    // rule, 2026-10-24). It is labelled P/HRS rather than P so the stored row still shows that the status
+    // was inferred, and a day with neither a status nor hours stays UNVERIFIED.
+    const hoursForPresence = effectiveHours(acc.sum, acc.max, policy);
+    const hasHourEvidence = (hoursForPresence ?? 0) > 0 || (acc.ot ?? 0) > 0;
+    const status: RegisterStatus =
+      chosen === "UNKNOWN" && hasHourEvidence ? "P/HRS" : chosen;
     const dayType = dayTypeForStatuses(statuses, acc.isWeeklyOff, acc.isHoliday);
     const mixedStatus = statuses.filter((entry) => entry !== "UNKNOWN").length > 1 || acc.variants > 1;
     const statusDayTypeConflict =
