@@ -54,6 +54,12 @@ export type SettlementAnomalies = {
   unmatchedRegisterIds: string[];
   /** Dates inside the range that the register never answered for. A report must say UNKNOWN for these. */
   missingDates: string[];
+  /**
+   * Dates the register ANSWERED for but returned no rows for. Nothing can be asserted about such a date,
+   * so it is left unsettled — and because a settled report needs every date, one of these is enough to make
+   * the range fall back to calendar days. Named here so that fallback is explainable instead of mysterious.
+   */
+  emptyDates: string[];
   /** Man-days whose rows disagreed about the status. */
   mixedStatusManDays: number;
   /** Statuses that contradict the date's type (P/WO on a working day, an HL status on a non-holiday). */
@@ -93,6 +99,8 @@ export function planSettlement(input: {
   dateTypes: ReadonlyMap<string, DayType>;
   /** Employee master, keyed by ec number (which is the register's IDNo for associates). */
   employeeIdByRegisterId: ReadonlyMap<string, number>;
+  /** Every date the register actually answered for, so a zero-row date is visible as one. */
+  datesRead?: readonly string[];
   /** Dates a human has ruled on. Their type wins over the register's, and the row says so. */
   overrides?: ReadonlyMap<string, DayType>;
 }): SettlementPlan {
@@ -165,6 +173,9 @@ export function planSettlement(input: {
 
   // A date the register never answered for is a hole, not a working day with zero attendance.
   const missingDates = [...dateTypes.keys()].filter((workDate) => !byDate.has(workDate));
+  // A date the source answered for, with nothing in it, is not a working day with zero attendance: it is a
+  // date about which this settlement knows nothing.
+  const emptyDates = (input.datesRead ?? []).filter((workDate) => !byDate.has(workDate)).sort();
 
   // Deterministic order: the writer's upserts and any later content hash depend on it.
   days.sort((left, right) =>
@@ -180,6 +191,7 @@ export function planSettlement(input: {
     anomalies: {
       unmatchedRegisterIds: [...unmatched].sort(),
       missingDates: missingDates.sort(),
+      emptyDates,
       mixedStatusManDays,
       statusDayTypeConflicts,
       presentWithZeroHours,

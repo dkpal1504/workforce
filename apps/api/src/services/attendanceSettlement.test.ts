@@ -61,6 +61,7 @@ test("a settled working day becomes one row per man and one calendar row", () =>
   assert.deepEqual(plan.anomalies, {
     unmatchedRegisterIds: [],
     missingDates: [],
+    emptyDates: [],
     mixedStatusManDays: 0,
     statusDayTypeConflicts: 0,
     presentWithZeroHours: 0,
@@ -162,4 +163,17 @@ test("anomalies are counted, not swallowed", () => {
   const unknown = plan.days.find((day) => day.registerId === "BAPL9999");
   assert.equal(unknown?.attendanceClass, "UNVERIFIED");
   assert.equal(unknown?.status, "UNKNOWN");
+});
+
+test("a date the register answered for but left empty is named, not silently missing", () => {
+  const facts = aggregateRegisterRows([row({ workDate: "2026-10-05", idNo: "BAPL0053" })]);
+  const plan = planSettlement({
+    facts,
+    dateTypes: new Map([["2026-10-05", "WORKING"]]),
+    employeeIdByRegisterId: new Map([["BAPL0053", 11]]),
+    // The register answered for the 6th and had nothing in it — a shutdown, or a feed that dropped a day.
+    datesRead: ["2026-10-05", "2026-10-06"],
+  });
+  assert.deepEqual(plan.anomalies.emptyDates, ["2026-10-06"]);
+  assert.equal(plan.calendar.length, 1, "no verdict is invented for a date with no rows");
 });

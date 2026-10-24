@@ -205,7 +205,7 @@ export async function settleAttendance(options: SettleOptions): Promise<SettleRe
   for (const [workDate, dayType] of overrides) dateTypes.set(workDate, dayType);
 
   const employeeIdByRegisterId = await loadEmployeeIds([...new Set(facts.map((fact) => fact.idNo))]);
-  const plan = planSettlement({ facts, dateTypes, employeeIdByRegisterId, overrides });
+  const plan = planSettlement({ facts, dateTypes, employeeIdByRegisterId, overrides, datesRead: register.datesRead });
 
   const base = {
     from: range.from,
@@ -250,6 +250,8 @@ export async function settleAttendance(options: SettleOptions): Promise<SettleRe
           unmatchedRegisterIdsTotal: plan.anomalies.unmatchedRegisterIds.length,
           missingDates: plan.anomalies.missingDates.slice(0, ANOMALY_ID_LIMIT),
           missingDatesTotal: plan.anomalies.missingDates.length,
+          emptyDates: plan.anomalies.emptyDates.slice(0, ANOMALY_ID_LIMIT),
+          emptyDatesTotal: plan.anomalies.emptyDates.length,
           mixedStatusManDays: plan.anomalies.mixedStatusManDays,
           statusDayTypeConflicts: plan.anomalies.statusDayTypeConflicts,
           presentWithZeroHours: plan.anomalies.presentWithZeroHours,
@@ -297,6 +299,10 @@ export function formatSettlementSummary(result: SettleResult): string {
   lines.push("ANOMALIES RECORDED WITH THE RUN");
   lines.push(`  register id not in Employee master   ${anomalies.unmatchedRegisterIds.length}`);
   lines.push(`  dates the register did not answer    ${anomalies.missingDates.length}`);
+  if (anomalies.emptyDates.length) {
+    lines.push(`  dates answered but EMPTY (unsettled)  ${anomalies.emptyDates.length}`);
+    for (const day of anomalies.emptyDates.slice(0, 5)) lines.push(`      ${day}`);
+  }
   lines.push(`  mixed status on one man-day          ${anomalies.mixedStatusManDays}`);
   lines.push(`  status contradicts the day type      ${anomalies.statusDayTypeConflicts}`);
   lines.push(`  present with 0 accepted hours        ${anomalies.presentWithZeroHours}`);
