@@ -139,6 +139,14 @@ const RAIL_GROUPS: Array<{ label: string; items: RailItem[] }> = [
     ],
   },
   {
+    // Its own menu, by the owner's instruction: a review is a meeting about a project, not another tab
+    // of the reporting screen. The API decides what each role may see inside it.
+    label: "Review",
+    items: [
+      { to: "/review", label: "Review", cap: "viewProjectReview", icon: "reports" },
+    ],
+  },
+  {
     label: "Project setup",
     items: [
       { to: "/master-data", label: "Project master", cap: "manageJobOrderMaster", icon: "folder" },

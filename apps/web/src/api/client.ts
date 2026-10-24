@@ -41,6 +41,13 @@ export type AuthCapabilities = {
   viewTimesheetCoverage?: boolean;
   /** The Job Order conversations screen and the header bell. Absent on an older bundle means "no". */
   viewConversations?: boolean;
+  /**
+   * The Project Review screens. Read by PM, COO, Admin, an HOD or Department Head (narrowed to their own
+   * department's Job Orders) and a Project Manager (assigned projects). `runProjectReview` decides who may
+   * open and close a review, which is the PM team and the COO.
+   */
+  viewProjectReview?: boolean;
+  runProjectReview?: boolean;
 };
 
 export type AuthUser = {

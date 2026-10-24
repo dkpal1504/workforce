@@ -55,6 +55,13 @@ export type CapabilityMap = {
    */
   viewPortfolioDashboard: boolean;
   /**
+   * The Project Review screens. Reading is open to the PM team, the COO, Admin, and — narrowed to their own
+   * Department's Job Orders — an HOD or Department Head; a Project Manager reads the projects assigned to
+   * them. RUNNING a review (opening and closing the meeting) is the PM team's and the COO's call.
+   */
+  viewProjectReview: boolean;
+  runProjectReview: boolean;
+  /**
    * Assign accounts to Projects (the Project Managers panel). ADMIN only: an assignment IS a
    * read scope over work, so granting it is an administrative act, not an operational one.
    */
@@ -116,6 +123,11 @@ export function capabilitiesFor(role: string, employmentType: string | null | un
     // PROJECT_MANAGER is admitted here and NARROWED to its assigned projects by `reportScopeFor`;
     // the flag is only the door (see the `viewPortfolioDashboard` note above).
     viewPortfolioDashboard: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD" || role === "PROJECT_MANAGER",
+    // The review follows the same door as the portfolio dashboard: the same six roles may READ it, and the
+    // scope each of them reads is decided server-side (see `routes/review.ts`). Only the PM team, the COO
+    // and Admin may RUN a review — holding the meeting is a decision, not an observation.
+    viewProjectReview: admin || role === "PM" || role === "COO" || role === "HOD" || role === "DEPT_HEAD" || role === "PROJECT_MANAGER",
+    runProjectReview: admin || role === "PM" || role === "COO",
     // Assigning a person to a Project is an administrative act; the panel is Admin-only.
     manageProjectManagers: admin,
     // Every existing reader of the Reports screen keeps the coverage report; a project scope does

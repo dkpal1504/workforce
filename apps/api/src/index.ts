@@ -16,6 +16,7 @@ import { teamsRouter } from "./routes/teams";
 import { timesheetRouter } from "./routes/timesheet";
 import { summaryRouter } from "./routes/summary";
 import { reportsRouter } from "./routes/reports";
+import { reviewRouter } from "./routes/review";
 import { adminRouter } from "./routes/admin";
 import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
@@ -165,6 +166,7 @@ api.use("/timesheet", timesheetRouter);
 api.use("/summary", summaryRouter);
 // Operations dashboard (portfolio burn, attention ranking) — PM / ADMIN / COO only.
 api.use("/reports", reportsRouter);
+api.use("/review", reviewRouter);
 api.use("/approvals", approvalsRouter);
 // Project Manager assignments (which account manages which Projects) — ADMIN only.
 // Mounted BEFORE the /admin router so the path is resolved by its own router rather than falling

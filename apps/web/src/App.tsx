@@ -22,6 +22,8 @@ import { JobOrderUploadPage } from "./pages/JobOrderUploadPage";
 import { AttendanceHoursPage } from "./pages/AttendanceHoursPage";
 import { PortfolioDashboardPage } from "./pages/PortfolioDashboardPage";
 import { ReportsPage } from "./pages/ReportsPage";
+import { ReviewHomePage } from "./pages/review/ReviewHomePage";
+import { ProjectReviewPage } from "./pages/review/ProjectReviewPage";
 import { ConversationsPage } from "./pages/ConversationsPage";
 import { PublicThreadPage } from "./pages/PublicThreadPage";
 
@@ -129,6 +131,14 @@ export function App() {
           <Route element={<RequireCapability capability="viewPortfolioDashboard" />}>
             <Route path="/portfolio" element={<PortfolioDashboardPage />} />
             <Route path="/reports" element={<ReportsPage />} />
+          </Route>
+          {/* Project Review — its own menu, not a Reports tab. Read by the six roles whose scope the API
+              decides (PM/COO/Admin organisation-wide, HOD and Department Head their own department's Job
+              Orders, a Project Manager the projects assigned to them). Running a review is gated separately
+              on `runProjectReview` inside the screens. */}
+          <Route element={<RequireCapability capability="viewProjectReview" />}>
+            <Route path="/review" element={<ReviewHomePage />} />
+            <Route path="/review/:projectId" element={<ProjectReviewPage />} />
           </Route>
           {/* Offered, not forced: accounts on the shared dev password can change it
               whenever they like, and are not trapped in the flow. */}
