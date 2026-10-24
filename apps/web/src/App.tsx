@@ -139,6 +139,7 @@ export function App() {
           <Route element={<RequireCapability capability="viewProjectReview" />}>
             <Route path="/review" element={<ReviewHomePage />} />
             <Route path="/review/:projectId" element={<ProjectReviewPage />} />
+            <Route path="/review/:projectId/snapshot/:snapshotId" element={<ProjectReviewPage />} />
           </Route>
           {/* Offered, not forced: accounts on the shared dev password can change it
               whenever they like, and are not trapped in the flow. */}

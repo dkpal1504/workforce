@@ -595,3 +595,43 @@
     padding: 8px 6px;
   }
 }
+
+/* ---- frozen snapshot ---- */
+.review-frozen-banner {
+  background: color-mix(in srgb, var(--warning) 18%, var(--bg-elevated));
+  border: 1px solid var(--warning);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 0.84rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.review-freeze {
+  align-self: flex-end;
+  padding: 8px 14px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: #fff;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: var(--touch-min);
+}
+
+.review-freeze:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.review-freeze-note {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+}

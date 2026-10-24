@@ -17,6 +17,7 @@ import { timesheetRouter } from "./routes/timesheet";
 import { summaryRouter } from "./routes/summary";
 import { reportsRouter } from "./routes/reports";
 import { reviewRouter } from "./routes/review";
+import { startReviewSnapshotScheduler, stopReviewSnapshotScheduler } from "./services/reviewSnapshotScheduler";
 import { adminRouter } from "./routes/admin";
 import { approvalsRouter } from "./routes/approvals";
 import { supervisorRegistrationRouter } from "./routes/supervisorRegistration";
@@ -200,6 +201,7 @@ const server = app.listen(port, host, () => {
   startBadgeViewSyncScheduler();
   startAttendanceHoursScheduler();
   startAttendanceSettlementScheduler();
+startReviewSnapshotScheduler();
   startConversationScheduler();
 });
 
@@ -210,6 +212,7 @@ async function shutdown(signal: string): Promise<void> {
   stopBadgeViewSyncScheduler();
   stopAttendanceHoursScheduler();
   stopAttendanceSettlementScheduler();
+  stopReviewSnapshotScheduler();
   server.close(async () => {
     await prisma.$disconnect();
     process.exit(0);

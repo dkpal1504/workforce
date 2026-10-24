@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { prisma } from "../db";
+import { captureReviewSnapshot, loadSnapshot, SnapshotCorrupt, SnapshotMissing } from "../services/reviewSnapshot";
 import {
   ReviewNotFound,
   loadJobOrderCurve,
@@ -37,7 +38,27 @@ function actorOf(request: Request): ReviewActor {
   };
 }
 
+/** Running a review (freezing it) is not the same door as reading one. */
+function requireRunRole(request: Request, response: Response): boolean {
+  const role = (request.user as { role?: string } | undefined)?.role ?? "";
+  if (!(REVIEW_RUN_ROLES as readonly string[]).includes(role)) {
+    response.status(403).json({ error: "FORBIDDEN", code: "REVIEW_RUN_REQUIRED" });
+    return false;
+  }
+  return true;
+}
+
 function fail(response: Response, error: unknown): void {
+  if (error instanceof SnapshotMissing) {
+    response.status(404).json({ error: "SNAPSHOT_NOT_FOUND" });
+    return;
+  }
+  if (error instanceof SnapshotCorrupt) {
+    // A stored payload that no longer matches its hash was edited outside this application. Rendering it
+    // would publish numbers nobody can vouch for, which is the one thing a frozen pack exists to prevent.
+    response.status(500).json({ error: "SNAPSHOT_CORRUPT" });
+    return;
+  }
   if (error instanceof ReviewNotFound) {
     const code = error.message;
     // BAD_PERIOD is the caller's fault; an out-of-scope project id is reported as absent, because an id
@@ -87,6 +108,115 @@ reviewRouter.get("/projects/:id/dashboard", async (request: Request, response: R
       scope: dashboard.scope,
       window: { ...window, days: windowDays(window) },
     });
+  } catch (error) {
+    fail(response, error);
+  }
+});
+
+/**
+ * Freeze this project's review for a period. Re-capturing appends a revision; a provisional snapshot (the
+ * period has not ended) is REPLACED instead, because a running week is not history yet.
+ */
+reviewRouter.post("/projects/:id/snapshots", async (request: Request, response: Response) => {
+  try {
+    if (!requireRunRole(request, response)) return;
+    const projectId = Number(request.params.id);
+    if (!Number.isInteger(projectId) || projectId <= 0) throw new ReviewNotFound();
+    const body = (request.body ?? {}) as { kind?: string; from?: string; to?: string; force?: boolean };
+    const kind = String(body.kind ?? "MONTHLY").toUpperCase() === "WEEKLY" ? "WEEKLY" : "MONTHLY";
+    const result = await captureReviewSnapshot({
+      projectId,
+      actor: actorOf(request),
+      period: { kind: kind as "WEEKLY" | "MONTHLY", start: body.from, end: body.to },
+      trigger: "ON_DEMAND",
+      force: body.force === true,
+    });
+    response.status(result.created ? 201 : 200).json(result);
+  } catch (error) {
+    fail(response, error);
+  }
+});
+
+/** The frozen history list: summary columns only, newest revision of each period first. */
+reviewRouter.get("/projects/:id/snapshots", async (request: Request, response: Response) => {
+  try {
+    const projectId = Number(request.params.id);
+    if (!Number.isInteger(projectId) || projectId <= 0) throw new ReviewNotFound();
+    const projects = await loadReviewProjects(actorOf(request));
+    if (!projects.projects.some((project) => project.id === projectId)) throw new ReviewNotFound();
+    const limit = Math.min(200, Math.max(1, Number(request.query.limit ?? 50) || 50));
+    const rows = await prisma.reportSnapshot.findMany({
+      where: { projectId },
+      select: {
+        id: true,
+        kind: true,
+        periodFrom: true,
+        periodTo: true,
+        revision: true,
+        provisional: true,
+        captureTrigger: true,
+        frozenAt: true,
+        payloadBytes: true,
+        contentHash: true,
+        jobOrders: true,
+        budgetHours: true,
+        actualHours: true,
+        burnPct: true,
+        delayedCount: true,
+        openEscalations: true,
+        actionsOpen: true,
+        actionsOverdue: true,
+        headcountPeak: true,
+      },
+      orderBy: [{ periodTo: "desc" }, { revision: "desc" }],
+      take: limit,
+    });
+    response.json({
+      projectId,
+      snapshots: rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        periodFrom: row.periodFrom.toISOString().slice(0, 10),
+        periodTo: row.periodTo.toISOString().slice(0, 10),
+        revision: row.revision,
+        provisional: row.provisional,
+        trigger: row.captureTrigger,
+        capturedAt: row.frozenAt.toISOString(),
+        payloadBytes: row.payloadBytes,
+        contentHash: row.contentHash,
+        jobOrders: row.jobOrders,
+        budgetHours: row.budgetHours,
+        actualHours: row.actualHours,
+        burnPct: row.burnPct,
+        delayed: row.delayedCount,
+        openEscalations: row.openEscalations,
+        actionsOpen: row.actionsOpen,
+        actionsOverdue: row.actionsOverdue,
+        headcountPeak: row.headcountPeak,
+      })),
+    });
+  } catch (error) {
+    fail(response, error);
+  }
+});
+
+/**
+ * The frozen payload itself. One query, on report_snapshot only: if this path ever touched a live table, the
+ * freeze would be a promise rather than a fact.
+ */
+reviewRouter.get("/snapshots/:id", async (request: Request, response: Response) => {
+  try {
+    const snapshotId = Number(request.params.id);
+    if (!Number.isInteger(snapshotId) || snapshotId <= 0) throw new SnapshotMissing();
+    const frozen = await loadSnapshot(snapshotId);
+    // Scope: a snapshot of a project this account cannot review does not exist for them.
+    if (frozen.snapshot.projectId !== null) {
+      const projects = await loadReviewProjects(actorOf(request));
+      if (!projects.projects.some((project) => project.id === frozen.snapshot.projectId)) {
+        throw new SnapshotMissing();
+      }
+    }
+    response.json({ ...frozen.payload, frozenSnapshot: frozen.snapshot });
   } catch (error) {
     fail(response, error);
   }
