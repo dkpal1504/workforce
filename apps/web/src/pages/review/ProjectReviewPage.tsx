@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { SCurveChart, ManpowerHistogram } from "../../components/review/ReviewCharts";
+import { ManpowerHistogram } from "../../components/review/ReviewCharts";
+import { CurvePanel } from "../../components/review/CurvePanel";
 import { EscalationAgeBars, SlowJobOrderTable } from "../../components/review/ReviewTables";
 import type { ReviewPayload } from "./types";
 import "../../styles/review.css";
@@ -18,7 +19,8 @@ export function ProjectReviewPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [payload, setPayload] = useState<ReviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<"WEEKLY" | "MONTHLY">("WEEKLY");
+  // The review window is the last MONTH by default (owner's instruction); 12 weeks is the alternative.
+  const [kind, setKind] = useState<"WEEKLY" | "MONTHLY">("MONTHLY");
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
 
@@ -91,8 +93,8 @@ export function ProjectReviewPage() {
           <label>
             Period
             <select value={kind} onChange={(event) => setKind(event.target.value as "WEEKLY" | "MONTHLY")}>
+              <option value="MONTHLY">Last one month</option>
               <option value="WEEKLY">Last 12 weeks</option>
-              <option value="MONTHLY">Last 30 days</option>
             </select>
           </label>
           <label>
@@ -155,10 +157,7 @@ export function ProjectReviewPage() {
         </div>
       ) : null}
 
-      <section className="review-section">
-        <h2>S-curve — planned against actual hours</h2>
-        <SCurveChart curve={payload.sCurve} />
-      </section>
+      <CurvePanel payload={payload} />
 
       <section className="review-section">
         <h2>Slowest Job Orders</h2>

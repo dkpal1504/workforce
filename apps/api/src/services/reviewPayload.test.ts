@@ -176,3 +176,32 @@ test("readiness counts what cannot be judged, and never hides it behind a green 
   assert.ok(payload.readiness.sentences.some((line) => line.includes("1 of 2 Job Order(s) have no planned")));
   assert.equal(payload.pulse.notScheduled, 1);
 });
+
+test("per-WBS curves are carried and their planned hours do not exceed the project's", () => {
+  const payload = buildReviewPayload(
+    input({
+      wbsCurves: [
+        {
+          wbsId: 1,
+          wbsCode: "WBS-1",
+          name: "WBS-1",
+          plannedWeight: null,
+          share: 1,
+          budgetHours: 100,
+          plannedToDate: 100,
+          actualToDate: 50,
+          variance: -50,
+          jobOrders: 1,
+          jobOrdersScheduled: 1,
+          curve: buildReviewPayload(input()).sCurve,
+        },
+      ],
+    })
+  );
+  assert.equal(payload.wbsCurves.length, 1);
+  assert.equal(payload.wbsCurves[0].variance, -50, "variance is actual minus planned: negative means behind");
+  assert.ok(
+    payload.wbsCurves.reduce((sum, row) => sum + row.budgetHours, 0) <= payload.pulse.budgetHours,
+    "the parts never add up to more than the whole"
+  );
+});

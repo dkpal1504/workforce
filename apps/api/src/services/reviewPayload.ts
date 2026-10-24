@@ -54,6 +54,35 @@ export type ReviewSnapshotRef = {
  * attendance settlement existed, and it is `null` (with a reason) whenever that data is not available —
  * never a zero that reads as "nobody worked".
  */
+export type JobOrderIndexRow = {
+  id: number;
+  code: string;
+  name: string;
+  wbsCode: string;
+  budgetHours: number;
+  /** False when the Job Order has no planned window, so its curve cannot have a planned line. */
+  scheduled: boolean;
+};
+
+export type WbsCurveRow = {
+  wbsId: number;
+  wbsCode: string;
+  name: string;
+  /** NULL = equal share (the shipped default). */
+  plannedWeight: number | null;
+  /** This node's share of the project budget, 0..1. */
+  share: number;
+  /** The node's planned hours for the window, i.e. its share of the budget in force. */
+  budgetHours: number;
+  plannedToDate: number;
+  actualToDate: number;
+  /** actual − planned at the end of the window: negative means behind the plan. */
+  variance: number;
+  jobOrders: number;
+  jobOrdersScheduled: number;
+  curve: SCurve;
+};
+
 export type AttendanceGrounding = {
   presentManDays: number;
   bookedManDays: number;
@@ -89,6 +118,19 @@ export type ReviewPayload = {
     budgetRevision: string | null;
   };
   sCurve: SCurve;
+  /**
+   * One curve per WBS node, plus the row numbers a reviewer compares: planned to date, actual to date and
+   * the variance between them. The project curve answers "are we behind"; these answer "which part is".
+   * The project budget is split between the nodes by the same weights the project curve uses, so the
+   * per-WBS planned figures add up to the project line rather than contradicting it.
+   */
+  wbsCurves: WbsCurveRow[];
+  /**
+   * Every Job Order's identity, so the S-curve's Job Order level can offer the whole project rather than
+   * only the ten that happen to be ranked. Names and codes only — no curve is computed here, because a
+   * project may hold hundreds and the screen draws one at a time.
+   */
+  jobOrderIndex: JobOrderIndexRow[];
   slowest: SlowRanking;
   manpower: ManpowerHistogram;
   escalations: EscalationAgeSummary;
@@ -129,6 +171,8 @@ export type ReviewPayloadInput = {
   snapshot?: ReviewSnapshotRef | null;
   slowLimit?: number;
   now?: Date;
+  /** Per-WBS curves, built by the loader where the weights and per-WBS hours are known. */
+  wbsCurves?: WbsCurveRow[];
 };
 
 export function buildReviewPayload(input: ReviewPayloadInput): ReviewPayload {
@@ -182,6 +226,15 @@ export function buildReviewPayload(input: ReviewPayloadInput): ReviewPayload {
       budgetRevision: input.budgetRevisionLabel ?? null,
     },
     sCurve,
+    wbsCurves: input.wbsCurves ?? [],
+    jobOrderIndex: input.facts.map((facts) => ({
+      id: facts.id,
+      code: facts.code,
+      name: facts.displayName,
+      wbsCode: facts.wbs.wbsCode,
+      budgetHours: facts.budgetHours,
+      scheduled: Boolean(facts.plannedStartDate && facts.plannedEndDate),
+    })),
     slowest,
     manpower,
     escalations: input.escalations,

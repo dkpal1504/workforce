@@ -3,6 +3,7 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { prisma } from "../db";
 import {
   ReviewNotFound,
+  loadJobOrderCurve,
   loadReviewDashboard,
   loadReviewProjects,
   resolveWindow,
@@ -69,7 +70,8 @@ reviewRouter.get("/projects/:id/dashboard", async (request: Request, response: R
   try {
     const projectId = Number(request.params.id);
     if (!Number.isInteger(projectId) || projectId <= 0) throw new ReviewNotFound();
-    const kind = String(request.query.kind ?? "WEEKLY").toUpperCase() === "MONTHLY" ? "MONTHLY" : "WEEKLY";
+    // Last month is the default review window (owner's instruction); `kind=weekly` asks for 12 weeks instead.
+    const kind = String(request.query.kind ?? "MONTHLY").toUpperCase() === "WEEKLY" ? "WEEKLY" : "MONTHLY";
     const period = {
       kind: kind as "WEEKLY" | "MONTHLY",
       start: typeof request.query.from === "string" ? request.query.from : undefined,
@@ -85,6 +87,39 @@ reviewRouter.get("/projects/:id/dashboard", async (request: Request, response: R
       scope: dashboard.scope,
       window: { ...window, days: windowDays(window) },
     });
+  } catch (error) {
+    fail(response, error);
+  }
+});
+
+/**
+ * One curve at one level: the project, a WBS node, or a single Job Order.
+ *
+ * The project and WBS levels travel with the dashboard payload, because a WBS list is small and bounded. A
+ * Job Order level cannot: a project may hold four hundred of them, and shipping four hundred curves to draw
+ * one would make the screen slow to answer a question nobody asked. So this endpoint exists for the third
+ * kind, and it enforces the same scope as the dashboard — an HOD may not plot another department's Job
+ * Order curve just because they guessed its id.
+ */
+reviewRouter.get("/projects/:id/curve", async (request: Request, response: Response) => {
+  try {
+    const projectId = Number(request.params.id);
+    if (!Number.isInteger(projectId) || projectId <= 0) throw new ReviewNotFound();
+    const jobOrderId = Number(request.query.jobOrderId);
+    if (!Number.isInteger(jobOrderId) || jobOrderId <= 0) throw new ReviewNotFound("BAD_PERIOD");
+    const kind = String(request.query.kind ?? "MONTHLY").toUpperCase() === "WEEKLY" ? "WEEKLY" : "MONTHLY";
+    const curve = await loadJobOrderCurve({
+      projectId,
+      jobOrderId,
+      actor: actorOf(request),
+      period: {
+        kind: kind as "WEEKLY" | "MONTHLY",
+        start: typeof request.query.from === "string" ? request.query.from : undefined,
+        end: typeof request.query.to === "string" ? request.query.to : undefined,
+        granularity: request.query.granularity === "day" ? "day" : "week",
+      },
+    });
+    response.json(curve);
   } catch (error) {
     fail(response, error);
   }

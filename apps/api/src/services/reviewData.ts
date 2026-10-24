@@ -3,8 +3,8 @@ import { assignedProjectIdsFor } from "./projectScope";
 import { intersectProjectFilter, reportScopeFor, type ReportScope } from "./roleAccess";
 import { hoursOf, UNAPPROVED_STATUSES } from "./portfolioReport";
 import { BOOKED_HOURS_STATUSES, buildJobOrderFacts, type JobOrderFacts } from "./portfolioReporting";
-import { bucketsBetween, type CurveBucket, type CurveWbs } from "./reviewCurve";
-import { buildReviewPayload, type ReviewPayload } from "./reviewPayload";
+import { bucketsBetween, buildSCurve, normaliseWeights, type CurveBucket, type CurveWbs } from "./reviewCurve";
+import { buildReviewPayload, type ReviewPayload, type WbsCurveRow } from "./reviewPayload";
 import { summariseEscalationsByAge, type EscalationMessage, type ThreadReply } from "./reviewEscalations";
 import type { ManpowerRow } from "./reviewManpower";
 import { settleReportsEnabled } from "./settledWorkDays";
@@ -281,10 +281,14 @@ export type ReviewPeriodRequest = {
   granularity?: "day" | "week";
 };
 
-/** Last 12 ISO weeks by default, ending today — the review horizon that matches a monthly pack. */
-export function defaultPeriod(now: Date, kind: "WEEKLY" | "MONTHLY" = "WEEKLY"): { start: string; end: string } {
+/**
+ * The default review window is the LAST MONTH, ending today (owner's instruction, 2026-10-24) — a review
+ * meeting discusses the month that just happened, not a quarter. `WEEKLY` remains available as an explicit
+ * request: 12 ISO weeks, for a project that wants a longer memory.
+ */
+export function defaultPeriod(now: Date, kind: "WEEKLY" | "MONTHLY" = "MONTHLY"): { start: string; end: string } {
   const end = startOfDay(now);
-  const days = kind === "MONTHLY" ? 30 : 84;
+  const days = kind === "WEEKLY" ? 84 : 30;
   const start = new Date(end.getTime() - (days - 1) * DAY_MS);
   return { start: iso(start), end: iso(end) };
 }
@@ -364,6 +368,7 @@ export async function loadReviewDashboard(input: {
     hourRows,
     unapprovedRows,
     manDayRows,
+    wbsHourRows,
     allocationRows,
     escalationRows,
     itemRows,
@@ -393,6 +398,14 @@ export async function loadReviewDashboard(input: {
     }),
     prisma.timesheetEntry.groupBy({
       by: ["workDate", "employeeId"],
+      where: { jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } },
+      _sum: { otHours: true },
+      _count: { shiftSlot: true, hourSlot: true },
+    }),
+    // Actual hours per WBS per date: the per-WBS curves below are built from this, so a WBS curve can
+    // never disagree with the project curve that contains it.
+    prisma.timesheetEntry.groupBy({
+      by: ["projectWbsId", "workDate"],
       where: { jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } },
       _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
@@ -518,6 +531,46 @@ export async function loadReviewDashboard(input: {
   }));
 
   const budgetHours = jobOrders.reduce((sum, order) => sum + order.budgetedHours, 0);
+
+  // Per-WBS curves. The weights are the ones the project curve uses, so the parts add up to the whole:
+  // a node's planned hours are its share of the budget, not the whole budget.
+  const shares = normaliseWeights(curveWbs);
+  const actualByWbsDay = new Map<number, Map<string, number>>();
+  for (const row of wbsHourRows) {
+    if (row.projectWbsId === null) continue;
+    const byDay = actualByWbsDay.get(row.projectWbsId) ?? new Map<string, number>();
+    const day = iso(row.workDate);
+    byDay.set(day, (byDay.get(day) ?? 0) + hoursOf(row._count, row._sum.otHours));
+    actualByWbsDay.set(row.projectWbsId, byDay);
+  }
+  const wbsCurves: WbsCurveRow[] = curveWbs.map((node) => {
+    const share = shares.get(node.id) ?? 0;
+    const nodeBudget = round2(share * budgetHours);
+    const byDay = actualByWbsDay.get(node.id) ?? new Map<string, number>();
+    const curve = buildSCurve({
+      buckets,
+      wbs: [node],
+      budgetHours: nodeBudget,
+      actualHoursByBucket: buckets.map((bucket) => sumRange(byDay, bucket)),
+    });
+    const last = curve.points[curve.points.length - 1];
+    const plannedToDate = last ? last.plannedCum : 0;
+    const actualToDate = last ? last.actualCum : 0;
+    return {
+      wbsId: node.id,
+      wbsCode: node.wbsCode,
+      name: curveWbs.find((row) => row.id === node.id)?.wbsCode ?? node.wbsCode,
+      plannedWeight: node.plannedWeight,
+      share: Math.round(share * 10_000) / 10_000,
+      budgetHours: nodeBudget,
+      plannedToDate,
+      actualToDate,
+      variance: round2(actualToDate - plannedToDate),
+      jobOrders: node.jobOrders.length,
+      jobOrdersScheduled: node.jobOrders.filter((order) => order.plannedStartDate && order.plannedEndDate).length,
+      curve,
+    };
+  });
   const attendance = await loadAttendanceGrounding(jobOrderIds, window, manDayRows, now);
 
   const payload = buildReviewPayload({
@@ -563,6 +616,7 @@ export async function loadReviewDashboard(input: {
     }),
     items: itemRows,
     attendance,
+    wbsCurves,
     budgetRevisionLabel: latestRevisionLabel(revisionRows),
   });
 
@@ -605,6 +659,101 @@ async function loadAttendanceGrounding(
       basis: "SETTLED_ATTENDANCE",
     },
     gap: null,
+  };
+}
+
+/**
+ * One Job Order's own S-curve: its budget spread across its own planned window, against the hours booked to
+ * it. Fetched on demand because a project can hold hundreds of Job Orders and the screen draws one.
+ *
+ * The scope check is the same one the dashboard performs — a foreign project is NOT FOUND, and an HOD may
+ * only plot a Job Order of their own department.
+ */
+export async function loadJobOrderCurve(input: {
+  projectId: number;
+  jobOrderId: number;
+  actor: ReviewActor;
+  period: ReviewPeriodRequest;
+  now?: Date;
+}): Promise<{
+  jobOrder: { id: number; code: string; name: string; wbsCode: string; budgetHours: number };
+  curve: ReturnType<typeof buildSCurve>;
+  window: { start: string; end: string };
+}> {
+  const now = input.now ?? new Date();
+  const scope = await resolveReviewScope(input.actor);
+  if (!scope.ok) throw new ReviewNotFound();
+  if (scope.scope.kind === "PROJECTS" && !scope.scope.projectIds.includes(input.projectId)) {
+    throw new ReviewNotFound();
+  }
+
+  const jobOrder = await prisma.jobOrder.findFirst({
+    where: {
+      id: input.jobOrderId,
+      projectId: input.projectId,
+      ...(scope.scope.kind === "DEPARTMENT" ? { departmentId: scope.scope.departmentId } : {}),
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      budgetedHours: true,
+      plannedStartDate: true,
+      plannedEndDate: true,
+      projectWbs: { select: { id: true, wbsCode: true } },
+    },
+  });
+  if (!jobOrder) throw new ReviewNotFound();
+
+  const window = resolveWindow(input.period, now);
+  const buckets = bucketsBetween(
+    new Date(`${window.start}T00:00:00Z`),
+    new Date(`${window.end}T00:00:00Z`),
+    input.period.granularity ?? "week"
+  );
+
+  const rows = await prisma.timesheetEntry.groupBy({
+    by: ["workDate"],
+    where: { jobOrderId: jobOrder.id, status: { in: [...BOOKED_HOURS_STATUSES] } },
+    _sum: { otHours: true },
+    _count: { shiftSlot: true, hourSlot: true },
+  });
+  const byDay = new Map<string, number>();
+  for (const row of rows) {
+    byDay.set(iso(row.workDate), (byDay.get(iso(row.workDate)) ?? 0) + hoursOf(row._count, row._sum.otHours));
+  }
+
+  const curve = buildSCurve({
+    buckets,
+    wbs: [
+      {
+        id: jobOrder.projectWbs.id,
+        wbsCode: jobOrder.projectWbs.wbsCode,
+        plannedWeight: null,
+        jobOrders: [
+          {
+            id: jobOrder.id,
+            budgetHours: jobOrder.budgetedHours,
+            plannedStartDate: jobOrder.plannedStartDate,
+            plannedEndDate: jobOrder.plannedEndDate,
+          },
+        ],
+      },
+    ],
+    budgetHours: jobOrder.budgetedHours,
+    actualHoursByBucket: buckets.map((bucket) => sumRange(byDay, bucket)),
+  });
+
+  return {
+    jobOrder: {
+      id: jobOrder.id,
+      code: jobOrder.code,
+      name: jobOrder.name,
+      wbsCode: jobOrder.projectWbs.wbsCode,
+      budgetHours: jobOrder.budgetedHours,
+    },
+    curve,
+    window,
   };
 }
 
@@ -656,14 +805,23 @@ export function resolveWindow(period: ReviewPeriodRequest, now: Date): { start: 
   return { start, end };
 }
 
-function periodLabel(window: { start: string; end: string }, kind: "WEEKLY" | "MONTHLY"): string {
+export function periodLabel(window: { start: string; end: string }, kind: "WEEKLY" | "MONTHLY"): string {
   const start = new Date(`${window.start}T00:00:00Z`);
   const end = new Date(`${window.end}T00:00:00Z`);
-  if (kind === "MONTHLY") {
-    return start.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
-  }
   const format = (date: Date) =>
     date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  const lastDayOfEndMonth = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0));
+  // A rolling window is NOT a calendar month: naming it "September 2026" while it ends on 24 October would
+  // mislabel a month's worth of numbers, so only an exact calendar month gets the month's name.
+  const isCalendarMonth =
+    kind === "MONTHLY" &&
+    start.getUTCDate() === 1 &&
+    start.getUTCFullYear() === end.getUTCFullYear() &&
+    start.getUTCMonth() === end.getUTCMonth() &&
+    end.getUTCDate() === lastDayOfEndMonth.getUTCDate();
+  if (isCalendarMonth) {
+    return start.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+  }
   return `${format(start)} – ${format(end)}`;
 }
 

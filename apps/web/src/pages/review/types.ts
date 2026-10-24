@@ -53,6 +53,30 @@ export type SCurve = {
   empty: boolean;
 };
 
+export type WbsCurveRow = {
+  wbsId: number;
+  wbsCode: string;
+  name: string;
+  plannedWeight: number | null;
+  share: number;
+  budgetHours: number;
+  plannedToDate: number;
+  actualToDate: number;
+  variance: number;
+  jobOrders: number;
+  jobOrdersScheduled: number;
+  curve: SCurve;
+};
+
+export type JobOrderIndexRow = {
+  id: number;
+  code: string;
+  name: string;
+  wbsCode: string;
+  budgetHours: number;
+  scheduled: boolean;
+};
+
 export type SlowRow = {
   jobOrderId: number;
   code: string;
@@ -135,6 +159,8 @@ export type ReviewPayload = {
     budgetRevision: string | null;
   };
   sCurve: SCurve;
+  wbsCurves: WbsCurveRow[];
+  jobOrderIndex: JobOrderIndexRow[];
   slowest: SlowRanking;
   manpower: ManpowerHistogram;
   escalations: EscalationAgeSummary;
