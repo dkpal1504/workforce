@@ -163,6 +163,11 @@ match the employee's own Section.
 
 ## 6. Open items
 
+- **Project Review — the pack and the action register are the two remaining phases.** The dashboard, the
+  three-level S-curve, the frozen snapshots and the WBS weight editor are live; PDF/PPTX packs and the
+  WBS-by-WBS review mode with decisions (`review_session`, `review_item`, both created and empty) are not. Every
+  "Actions" figure on the review screens is therefore structurally 0. Definitions and the freeze contract:
+  `docs/PROJECT_REVIEW.md`.
 - **`networks.wbs_id` does not enforce that the WBS belongs to the Network's own project** at
   the database level; the application does (screen and upload). The same composite-key trick
   used for the Job Order/WBS pair would close it.

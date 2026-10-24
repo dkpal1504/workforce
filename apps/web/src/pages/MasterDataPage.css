@@ -419,3 +419,77 @@
     vertical-align: -2px;
   }
 }
+
+/* ---- Planned weights (WBS tab) ----
+   A three-column row: what the node is, what share it carries now, and the box to change it. Below 768px the
+   grid collapses to one column, so the input never squeezes to an unusable width. */
+.modal--wide {
+  max-width: 780px;
+  width: calc(100vw - 32px);
+}
+
+.md-weight-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+}
+
+.md-weight-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 110px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.md-weight-row:last-child {
+  border-bottom: none;
+}
+
+.md-weight-row__name strong {
+  font-size: 0.86rem;
+}
+
+.md-weight-row__name .muted {
+  font-size: 0.76rem;
+}
+
+.md-weight-row__share {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-weight-row__share .muted {
+  font-size: 0.7rem;
+}
+
+.md-weight-row__input input {
+  width: 100%;
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-height: var(--touch-min);
+}
+
+@media (max-width: 767px) {
+  .md-weight-row {
+    grid-template-columns: minmax(0, 1fr) 84px;
+    grid-template-areas:
+      "name share"
+      "input input";
+    row-gap: 6px;
+  }
+
+  .md-weight-row__name { grid-area: name; }
+  .md-weight-row__share { grid-area: share; }
+  .md-weight-row__input { grid-area: input; }
+}

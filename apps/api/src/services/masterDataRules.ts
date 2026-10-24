@@ -159,6 +159,10 @@ export function validateProjectInput(payload: Record<string, unknown>): Validati
   }
   const sortOrder = optionalSortOrder(payload.sortOrder, 0);
   if (typeof sortOrder !== "number") errors.push(sortOrder);
+  // Absent means "leave the weight alone" is NOT expressible here: the caller passes the current value back in,
+  // so an absent field honestly reads as "no weight" (null) rather than quietly keeping the old one.
+  const weight = parseWbsWeight(payload.plannedWeight);
+  if (!weight.ok) errors.push(weight.error);
 
   if (errors.length) return { ok: false, errors };
   return {
@@ -173,7 +177,35 @@ export function validateProjectInput(payload: Record<string, unknown>): Validati
   };
 }
 
-export type WbsInput = { wbsCode: string; name: string | null; sortOrder: number };
+export type WbsInput = { wbsCode: string; name: string | null; sortOrder: number; plannedWeight: number | null };
+
+/** A WBS weight is a RELATIVE number, so the ceiling only catches typos (10,000 for 100). */
+export const MAX_WBS_WEIGHT = 10_000;
+
+/**
+ * Parse a WBS planned weight.
+ *
+ * Three values mean three different things, and the difference is the whole point:
+ *   - a number > 0   the operator's own weight for this node
+ *   - `null` / blank no opinion — the node takes the average of the configured weights
+ *   - 0              the node is planned to carry no share (it is still counted, never plotted)
+ * A negative weight is refused: the S-curve's shares are a division, and a negative share would flip a
+ * cumulative curve downwards.
+ */
+export function parseWbsWeight(value: unknown): { ok: true; value: number | null } | { ok: false; error: FieldError } {
+  if (value === null || value === undefined || value === "") return { ok: true, value: null };
+  const numeric = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(numeric)) {
+    return { ok: false, error: { field: "plannedWeight", message: "Planned weight must be a number." } };
+  }
+  if (numeric < 0) {
+    return { ok: false, error: { field: "plannedWeight", message: "Planned weight cannot be negative." } };
+  }
+  if (numeric > MAX_WBS_WEIGHT) {
+    return { ok: false, error: { field: "plannedWeight", message: `Planned weight must be ${MAX_WBS_WEIGHT.toLocaleString("en-IN")} or less.` } };
+  }
+  return { ok: true, value: Math.round(numeric * 1000) / 1000 };
+}
 
 export function validateWbsInput(payload: Record<string, unknown>): Validation<WbsInput> {
   const wbsCode = normalizeCode(payload.wbsCode);
@@ -187,9 +219,21 @@ export function validateWbsInput(payload: Record<string, unknown>): Validation<W
   }
   const sortOrder = optionalSortOrder(payload.sortOrder, 0);
   if (typeof sortOrder !== "number") errors.push(sortOrder);
+  // Absent means "leave the weight alone" is NOT expressible here: the caller passes the current value back in,
+  // so an absent field honestly reads as "no weight" (null) rather than quietly keeping the old one.
+  const weight = parseWbsWeight(payload.plannedWeight);
+  if (!weight.ok) errors.push(weight.error);
 
   if (errors.length) return { ok: false, errors };
-  return { ok: true, data: { wbsCode, name: name || null, sortOrder: sortOrder as number } };
+  return {
+    ok: true,
+    data: {
+      wbsCode,
+      name: name || null,
+      sortOrder: sortOrder as number,
+      plannedWeight: weight.ok ? weight.value : null,
+    },
+  };
 }
 
 export type UomInput = { code: string; name: string; example: string | null };

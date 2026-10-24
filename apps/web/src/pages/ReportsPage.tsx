@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import {
@@ -205,6 +206,15 @@ export function ReportsPage() {
           extra={downloads}
         />
       )}
+
+      {/* A LINK, not a tab. The reports measure what happened; the review decides what to do about it, on its own
+          menu, with a frozen pack. Rendering it as a seventh tab would suggest it was one more cut of the same data. */}
+      {user?.capabilities.viewProjectReview ? (
+        <p className="pf-review-link pf-review-link--reports">
+          <Link to="/review">Project review →</Link>
+          <span className="pf-cell-sub"> The same numbers, then the slowest Job Orders, the decisions and the frozen packs.</span>
+        </p>
+      ) : null}
 
       {coverageTab || delayTab || hindranceTab ? null : error && <div className="error-banner">{error}</div>}
       {coverageTab || delayTab || hindranceTab ? null : downloadError && <div className="error-banner">{downloadError}</div>}

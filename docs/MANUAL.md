@@ -2,7 +2,7 @@
 
 > **Version:** Project → WBS → Job Order master data and quantity progress (working tree on `feature/cr2-unified-employee`, HEAD `56f0910`), on top of CR#2 unified Employee + HOD scope + HOD approval cover
 > **Scope:** End-user guide + developer/admin reference for the Workforce timesheet, approvals, OT, summary, the Project / WBS / Job Order master data screens and Job Order quantity progress, CR#2 unified-Employee + slot-based payroll allocations, HOD registration/scope and HOD approval cover (delegation).
-> **Databases:** local development/testing runs on **SQLite**; production runs on **PostgreSQL** (`prisma migrate deploy`). See [21](#21-database--migrations) and [docs/DEV_SQLITE_TESTING.md](DEV_SQLITE_TESTING.md).
+> **Databases:** local development/testing runs on **SQLite**; production runs on **PostgreSQL** (`prisma migrate deploy`). See [22](#22-database--migrations) and [docs/DEV_SQLITE_TESTING.md](DEV_SQLITE_TESTING.md).
 
 ---
 
@@ -25,19 +25,20 @@
 14. [Project Master Data (ADMIN/PM)](#14-project-master-data-adminpm)
 15. [Job Order Upload (ADMIN/PM)](#15-job-order-upload-adminpm)
 16. [Quantity Progress (HOD / DEPT_HEAD / PM)](#16-quantity-progress-hod--dept_head--pm)
+17. [Project Review (Review menu)](#17-project-review-review-menu)
 
 **Part II — Developer / Admin Reference**
-17. [Architecture & stack](#17-architecture--stack)
-18. [Repository layout](#18-repository-layout)
-19. [Local setup (WSL Ubuntu)](#19-local-setup-wsl-ubuntu)
-20. [Local setup (PowerShell / Windows)](#20-local-setup-powershell--windows)
-21. [Database & migrations](#21-database--migrations)
-22. [Environment variables](#22-environment-variables)
-23. [Ports & proxy](#23-ports--proxy)
-24. [Schema overview (Prisma)](#24-schema-overview-prisma)
-25. [API endpoints](#25-api-endpoints)
-26. [Security model](#26-security-model)
-27. [Troubleshooting](#27-troubleshooting)
+18. [Architecture & stack](#18-architecture--stack)
+19. [Repository layout](#19-repository-layout)
+20. [Local setup (WSL Ubuntu)](#20-local-setup-wsl-ubuntu)
+21. [Local setup (PowerShell / Windows)](#21-local-setup-powershell--windows)
+22. [Database & migrations](#22-database--migrations)
+23. [Environment variables](#23-environment-variables)
+24. [Ports & proxy](#24-ports--proxy)
+25. [Schema overview (Prisma)](#25-schema-overview-prisma)
+26. [API endpoints](#26-api-endpoints)
+27. [Security model](#27-security-model)
+28. [Troubleshooting](#28-troubleshooting)
 
 ---
 
@@ -809,9 +810,113 @@ Where it appears:
 entries, no advance between them, or no quantity budget — the projection is left blank and the row is NOT
 flagged. A Job Order nobody has punched is *unknown*, not delayed.
 
+## 17. Project Review (Review menu)
+
+Reports tell you what happened. A **review** is where the few Job Orders that need a decision are chosen, the
+decisions are written down, and the numbers are frozen so that next month's pack can be compared with this
+month's.
+
+The review has its own menu — **Review** in the left rail — because it is not one more cut of the same report.
+
+### 17.1 Who sees what
+
+| You are | You see |
+|---|---|
+| PM, Admin, COO | Every project. PM, COO and Admin can also freeze a review |
+| HOD, Department Head | Your own department's Job Orders inside each project. A project with none of your Job Orders is not listed, and its address answers "not found" |
+| Project Manager | Only the projects assigned to your account |
+| Supervisor, Employee | No Review menu |
+
+### 17.2 The project list
+
+**Review** lists every project in your scope with its budget, booked hours, burn, delayed Job Orders, Job Orders
+without a plan, open escalations and the number of actions. Pick the worst one — that is the project the review
+is for.
+
+### 17.3 Reading one project
+
+The review opens on the **last one month**. "Last 12 weeks" is one click away. Everything on the screen is over
+that window, not all time.
+
+- **Pulse** — Job Orders, budget, booked, burn, delayed, at risk, no plan, open escalations, peak manpower,
+  actions open and overdue.
+- **S-curve** — planned against actual (see §17.4).
+- **Slowest Job Orders** — the ten that most need a decision, each with its reasons in words: "projected to land
+  102 day(s) late", "45 point(s) behind the calendar", "nothing booked for 20 day(s)". The weights that produce
+  the ranking are printed in the panel.
+- **Manpower** — a weekly histogram with two series: hours from timesheets and hours from My Hours
+  (allocations). They are never added together, because they count the same day twice.
+- **Escalations by age** — how long the open escalations have been open. Acknowledging an escalation does not
+  close it; only an answer does.
+- **Attendance grounding** — present man-days against booked man-days for the crews on this project, and the
+  days the yard paid for that no project was charged. This panel is blank until the daily attendance settlement
+  has run.
+- **Readiness** — one sentence per missing number, saying where to fix it.
+
+### 17.4 The S-curve at three levels
+
+Above the chart is a three-way switch: **Project**, **WBS**, **Job Order**. It changes the lens, not the period
+or the rest of the screen.
+
+- **Project** — the whole project against its plan.
+- **WBS** — the same curve, plus a table of every WBS element: its share of the plan, its budget, planned to
+  date, actual to date, the variance, and how many of its Job Orders have a plan. Sorted worst variance first.
+- **Job Order** — one Job Order's own curve.
+
+The **planned** line is *derived*, not imported: each WBS element carries a weight, its share of the budget is
+spread across its Job Orders in proportion to their budgeted hours, and each Job Order's share is spread
+linearly across its own planned window. The chart says so on the panel, and it states how much of the budget the
+plan can speak for.
+
+A Job Order needs **both** a planned start and a planned end. A start with no end is not a plan.
+
+### 17.5 Setting WBS weights
+
+**Master Data → WBS → Planned weights.** The dialog lists every WBS element of the selected project with the
+share it currently carries, and a box to change its weight.
+
+- **Blank** — no opinion; the element takes the average of the weighted ones.
+- **0** — planned to carry no share. It is still counted and shown, just not plotted.
+- **A positive number** — your own weight. Only the ratio matters: 3 / 2 / 1 draws the same curve as 30 / 20 / 10.
+
+The share column is computed by the server with the same rule the chart uses, so the number you see is the
+number the curve will draw. Every weight with a positive value is required: the dialog refuses to save when every
+weight is zero, because that would draw an empty plan while every screen still said "planned".
+
+### 17.6 Freezing a review
+
+A review that will be discussed in a meeting should be **frozen**: PM, COO and Admin see **Freeze this review**.
+A frozen review is a snapshot of the numbers exactly as they stood, and it can never change — a Job Order deleted
+next month does not disappear from last month's pack.
+
+- Freezing a period that has ended appends a **revision**; the older revision stays readable.
+- Freezing a period that is still running is marked **PROVISIONAL** and is replaced by the next freeze of the
+  same period, because a running month is not history yet.
+- Freezing twice without a change writes nothing and says so.
+- **Frozen history** at the bottom of the page lists every revision; **Open frozen** shows it with an amber
+  banner and the period pickers hidden, so a frozen page cannot be mistaken for a live one.
+
+Weekly and monthly freezes can also run on their own, at Monday 00:30 and on the 1st at 01:30, once an Admin sets
+`REVIEW_SNAPSHOT_ENABLED=true`.
+
+### 17.7 When a panel is empty
+
+Nothing on this screen is blank by accident, and the Readiness panel says which lever is missing:
+
+| What you see | What is missing |
+|---|---|
+| A flat planned line | Job Orders have no planned start and end dates (Master Data → Job orders) |
+| `NOT MEASURABLE` Job Orders | Neither a plan nor a booking |
+| A blank burn | No budgeted hours on that Job Order |
+| No attendance panel | The attendance settlement has not run for this window |
+| Actions at 0 | The decision register is not built yet — no action can exist to count |
+
+For the definitions behind every number — the score weights, the escalation rule, the snapshot hash — see
+[docs/PROJECT_REVIEW.md](PROJECT_REVIEW.md).
+
 # Part II — Developer / Admin Reference
 
-## 17. Architecture & stack
+## 18. Architecture & stack
 
 - **Monorepo**: npm workspaces (`apps/api`, `apps/web`, `apps/jobs`, `packages/shared`).
 - **Backend**: Node 22 + Express + TypeScript + Prisma. Auth: bcrypt + JWT. Slot-based timesheets + slot-based allocations.
@@ -820,7 +925,7 @@ flagged. A Job Order nobody has punched is *unknown*, not delayed.
 - **Shared types**: Zod schemas and TS types in `packages/shared` (consumed by both api and web).
 - **Sync**: in-process cron (`node-cron` inside the API process) for the BadgeView source.
 
-## 18. Repository layout
+## 19. Repository layout
 
 ```
 workforce/
@@ -846,7 +951,7 @@ workforce/
 └── package.json    # workspaces, db:setup, db:seed, db:seed:demo, dev:api, dev:web
 ```
 
-## 19. Local setup (WSL Ubuntu)
+## 20. Local setup (WSL Ubuntu)
 
 ```bash
 cd /mnt/c/data/comp/workforce
@@ -875,7 +980,7 @@ npm run dev:web          # Vite picks a free port (5173 → 5174 if 5173 is take
 
 Open `http://localhost:5174/` (or whichever port Vite reports) and log in as a seeded account: after `npm run db:seed` the four office accounts exist (`admin@company.com`, `pm@company.com`, `hr@company.com`, `finance@company.com`). The HOD, supervisor and employee logins of section 1 need `npm run db:seed:demo`.
 
-## 20. Local setup (PowerShell / Windows)
+## 21. Local setup (PowerShell / Windows)
 
 ```powershell
 cd C:\data\comp\workforce
@@ -896,7 +1001,7 @@ npm run dev:web
 # (the proxy target must match the API_PORT).
 ```
 
-## 21. Database & migrations
+## 22. Database & migrations
 
 **Development / testing runs on SQLite; production runs on PostgreSQL.**
 
@@ -923,7 +1028,7 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 - **`CredentialDelivery`** — durable queue for one-time credentials (no password is ever stored in it).
 - Latest migrations: `20260913000000_postgresql_baseline`, `20260914000000_role_based_access`, `20260915000000_hod_section_and_org_transfer`, `20260916000000_hod_approval_delegation`, `20260918000000_project_wbs_job_order_master` (renames `projects_wbs` to `project_wbs`, adds `uom`, `networks`, `job_order_budget_revisions`, `job_order_progress` and the attribution snapshot columns, maps `closed`/`on_hold` to `inactive`, and writes revision 1 of every existing Job Order), `20260918000001_job_order_progress_remarks` (one row per quantity remark), `20260918000002_job_order_wbs_project_fk` (composite key so a Job Order's Project must own its WBS), `20260918000003_network_wbs_scope` (adds the required `networks.wbs_id`: each existing Network is backfilled onto its project's first WBS row — lowest sort order, then lowest WBS code, **not** limited to active rows — and the migration stops with the offending Network codes when a Network's project has no WBS row at all).
 
-## 22. Environment variables
+## 23. Environment variables
 
 `.env` (root) and `apps/api/.env`:
 
@@ -953,14 +1058,14 @@ Full dev-on-SQLite recipe, helper scripts and rollback notes: [`docs/DEV_SQLITE_
 | `CREDENTIAL_DELIVERY_RECIPIENT` | Default recipient for queued credentials | IT Support mailbox |
 | `SMTP_*` | Mail transport for credential delivery | unset ⇒ delivery stays pending |
 
-## 23. Ports & proxy
+## 24. Ports & proxy
 
 - **API**: `API_PORT` (default `4000`; use `4100` if `4000` is OS-occupied).
 - **Vite web**: `apps/web/vite.config.ts` `server.port` (default `5173`; Vite auto-falls-back to `5174` if taken).
 - **Vite proxy target**: must match `API_PORT`. If you change one, change the other.
 - Common Windows issue: `4000` and `5173` may be held by `svchost` — pick free ports (`4100`, `5174`) and update the proxy.
 
-## 24. Schema overview (Prisma)
+## 25. Schema overview (Prisma)
 
 Key models in `apps/api/prisma/schema.prisma`:
 
@@ -974,7 +1079,7 @@ Key models in `apps/api/prisma/schema.prisma`:
 - `Approval`, `AuditLog`, `DailyTeamSelection`, `ManpowerRequest`, `CostRate`, `AttendanceFeed`, `Conflict`
 - `CredentialDelivery`, `SyncException`, `Section`, `CostCenter`
 
-## 25. API endpoints
+## 26. API endpoints
 
 Selected routes (all under `/api/`):
 
@@ -1038,7 +1143,7 @@ Selected routes (all under `/api/`):
 
 All write routes enforce **owner + role + status-lock + audit** via shared middleware.
 
-## 26. Security model
+## 27. Security model
 
 - **Owner enforcement** — supervisors only edit their own timesheets/allocations (`NOT_OWNER` 403 otherwise). HOD/PM/Admin can act on behalf.
 - **Status lock** — once `SUBMITTED` / approved, the day is locked from edits except via HOD/PM reject.
@@ -1077,7 +1182,7 @@ Before exposing this app to any network beyond localhost, complete every item be
 - Source DB credentials (`BADGEVIEW_DB_PASSWORD`) belong only in the runtime `.env` of the deploy host — never in code, comments, or transcripts.
 - If a credential is exposed (e.g. typed into chat), revoke it immediately and rotate.
 
-## 27. Troubleshooting
+## 28. Troubleshooting
 
 ### App won't start — `EADDRINUSE` on 4000 or 5173
 - On Windows, `svchost` often holds 4000 and 5173. Use `API_PORT=4100` and let Vite auto-fallback to `5174`. Update `apps/web/vite.config.ts` proxy target to match.

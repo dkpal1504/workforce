@@ -5,6 +5,7 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { assignedProjectIdsFor, projectPickerWhere } from "../services/projectScope";
 import { planDateToUtc } from "../services/jobOrderCsv";
+import { normaliseWeights } from "../services/reviewCurve";
 import { plannedDayKey } from "../services/jobOrderSchedule";
 import {
   colorKeyConflictMessage,
@@ -26,6 +27,8 @@ import {
   validateProjectInput,
   validateUomInput,
   validateWbsInput,
+  parseWbsWeight,
+  MAX_WBS_WEIGHT,
   jobOrderNetworkWbsError,
   jobOrderWbsMoveError,
   validateJobOrderBudgetInput,
@@ -244,15 +247,15 @@ masterDataRouter.post("/projects/:projectId/wbs", writeOnly, async (req, res) =>
 
   const parsed = validateWbsInput(req.body ?? {});
   if (!parsed.ok) return validationError(res, parsed.errors);
-  const { wbsCode, name, sortOrder } = parsed.data;
+  const { wbsCode, name, sortOrder, plannedWeight } = parsed.data;
 
   const rows = await prisma.projectWbs.findMany({ where: { projectId: project.id }, select: { id: true, projectId: true, wbsCode: true, name: true } });
   const clash = findWbsCodeConflict(rows, project.id, wbsCode);
   if (clash) return res.status(409).json({ error: wbsCodeConflictMessage(clash, project), code: "WBS_CODE_EXISTS" });
 
   try {
-    const wbs = await prisma.projectWbs.create({ data: { projectId: project.id, wbsCode, name, sortOrder } });
-    await writeAudit(req.user!.id, "ADMIN_CREATE_WBS", "project_wbs", wbs.id, { by: req.user!.role, projectId: project.id, projectCode: project.code, wbsCode, name, sortOrder });
+    const wbs = await prisma.projectWbs.create({ data: { projectId: project.id, wbsCode, name, sortOrder, plannedWeight } });
+    await writeAudit(req.user!.id, "ADMIN_CREATE_WBS", "project_wbs", wbs.id, { by: req.user!.role, projectId: project.id, projectCode: project.code, wbsCode, name, sortOrder, plannedWeight });
     return res.status(201).json({ wbs });
   } catch (error) {
     return failed(res, "The WBS row", error, "project_wbs");
@@ -261,36 +264,167 @@ masterDataRouter.post("/projects/:projectId/wbs", writeOnly, async (req, res) =>
 
 masterDataRouter.put("/wbs/:id", writeOnly, async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await prisma.projectWbs.findUnique({ where: { id }, select: { id: true, projectId: true, wbsCode: true, name: true, sortOrder: true, active: true } });
+  const existing = await prisma.projectWbs.findUnique({
+    where: { id },
+    select: { id: true, projectId: true, wbsCode: true, name: true, sortOrder: true, active: true, plannedWeight: true },
+  });
   if (!existing) return notFound(res, "WBS row not found.", "WBS_NOT_FOUND");
   const project = await projectOrNull(existing.projectId);
   if (!project) return notFound(res, "The WBS row has no parent project.", "PROJECT_NOT_FOUND");
 
   const body = (req.body ?? {}) as Record<string, unknown>;
+  // `plannedWeight` is passed through only when the caller sent the field: `undefined` would otherwise read as
+  // "no weight" and silently clear a configured one every time a name was edited.
   const parsed = validateWbsInput({
     wbsCode: body.wbsCode ?? existing.wbsCode,
     name: body.name ?? existing.name,
     sortOrder: body.sortOrder ?? existing.sortOrder,
+    plannedWeight: "plannedWeight" in body ? body.plannedWeight : existing.plannedWeight,
   });
   if (!parsed.ok) return validationError(res, parsed.errors);
-  const { wbsCode, name, sortOrder } = parsed.data;
+  const { wbsCode, name, sortOrder, plannedWeight } = parsed.data;
 
   const rows = await prisma.projectWbs.findMany({ where: { projectId: project.id }, select: { id: true, projectId: true, wbsCode: true, name: true } });
   const clash = findWbsCodeConflict(rows, project.id, wbsCode, id);
   if (clash) return res.status(409).json({ error: wbsCodeConflictMessage(clash, project), code: "WBS_CODE_EXISTS" });
 
   try {
-    const wbs = await prisma.projectWbs.update({ where: { id }, data: { wbsCode, name, sortOrder } });
+    const wbs = await prisma.projectWbs.update({ where: { id }, data: { wbsCode, name, sortOrder, plannedWeight } });
     await writeAudit(req.user!.id, "ADMIN_UPDATE_WBS", "project_wbs", id, {
       by: req.user!.role,
       projectCode: project.code,
-      previous: { wbsCode: existing.wbsCode, name: existing.name, sortOrder: existing.sortOrder },
-      next: { wbsCode, name, sortOrder },
+      previous: { wbsCode: existing.wbsCode, name: existing.name, sortOrder: existing.sortOrder, plannedWeight: existing.plannedWeight },
+      next: { wbsCode, name, sortOrder, plannedWeight },
     });
     return res.json({ wbs });
   } catch (error) {
     return failed(res, "The WBS row", error, "project_wbs");
   }
+});
+
+/* ========================== project WBS weights ========================== */
+
+/**
+ * The weights that decide the S-curve's planned line, with the shares they produce.
+ *
+ * The share is computed by the SAME function the review uses (`normaliseWeights`), not by a second copy of the
+ * rule on the client. That is the whole reason this endpoint exists: an operator editing weights must see the
+ * percentage the curve will actually use.
+ */
+async function wbsWeightRows(projectId: number) {
+  const nodes = await prisma.projectWbs.findMany({
+    where: { projectId, active: true },
+    orderBy: [{ sortOrder: "asc" }, { wbsCode: "asc" }],
+    select: { id: true, wbsCode: true, name: true, plannedWeight: true },
+  });
+  const grouped = await prisma.jobOrder.groupBy({
+    by: ["projectWbsId"],
+    where: { projectId },
+    _count: { _all: true },
+    _sum: { budgetedHours: true },
+  });
+  const statById = new Map(
+    grouped.map((row) => [row.projectWbsId, { jobOrders: row._count._all, budgetHours: row._sum.budgetedHours ?? 0 }])
+  );
+  const shares = normaliseWeights(nodes.map((node) => ({ ...node, jobOrders: [] })));
+  const rows = nodes.map((node) => ({
+    wbsId: node.id,
+    wbsCode: node.wbsCode,
+    name: node.name,
+    plannedWeight: node.plannedWeight,
+    configured: typeof node.plannedWeight === "number" && Number.isFinite(node.plannedWeight) && node.plannedWeight > 0,
+    sharePct: Math.round((shares.get(node.id) ?? 0) * 10000) / 100,
+    jobOrders: statById.get(node.id)?.jobOrders ?? 0,
+    budgetHours: statById.get(node.id)?.budgetHours ?? 0,
+  }));
+  const configuredCount = rows.filter((row) => row.configured).length;
+  return {
+    rows,
+    mode:
+      configuredCount === 0 ? "EQUAL" : configuredCount === rows.length ? "CONFIGURED" : "MIXED",
+    configuredCount,
+    nodeCount: rows.length,
+    maxWeight: MAX_WBS_WEIGHT,
+  };
+}
+
+masterDataRouter.get("/projects/:projectId/wbs-weights", async (req, res) => {
+  const project = await projectOrNull(Number(req.params.projectId));
+  if (!project) return notFound(res, "Project not found.", "PROJECT_NOT_FOUND");
+  res.json({ project: { id: project.id, code: project.code, name: project.name }, ...(await wbsWeightRows(project.id)) });
+});
+
+masterDataRouter.put("/projects/:projectId/wbs-weights", writeOnly, async (req, res) => {
+  const project = await projectOrNull(Number(req.params.projectId));
+  if (!project) return notFound(res, "Project not found.", "PROJECT_NOT_FOUND");
+
+  const body = (req.body ?? {}) as { weights?: unknown };
+  if (!Array.isArray(body.weights)) {
+    return res.status(400).json({ error: "Send a `weights` list of { wbsId, plannedWeight } rows.", code: "VALIDATION_FAILED" });
+  }
+  if (body.weights.length > 500) {
+    return res.status(400).json({ error: "At most 500 WBS weights can be saved at once.", code: "VALIDATION_FAILED" });
+  }
+
+  const owned = await prisma.projectWbs.findMany({
+    where: { projectId: project.id },
+    select: { id: true, wbsCode: true, plannedWeight: true },
+  });
+  const ownerById = new Map(owned.map((row) => [row.id, row]));
+
+  const errors: FieldError[] = [];
+  const seen = new Set<number>();
+  const next = new Map<number, number | null>();
+  for (const [index, raw] of body.weights.entries()) {
+    const row = (raw ?? {}) as Record<string, unknown>;
+    const wbsId = Number(row.wbsId);
+    if (!Number.isInteger(wbsId) || !ownerById.has(wbsId)) {
+      errors.push({ field: `weights[${index}].wbsId`, message: "That WBS row does not belong to this project." });
+      continue;
+    }
+    if (seen.has(wbsId)) {
+      errors.push({ field: `weights[${index}].wbsId`, message: "The same WBS row appears twice." });
+      continue;
+    }
+    seen.add(wbsId);
+    const parsed = parseWbsWeight(row.plannedWeight);
+    if (!parsed.ok) {
+      errors.push({ field: `weights[${index}].plannedWeight`, message: parsed.error.message });
+      continue;
+    }
+    next.set(wbsId, parsed.value);
+  }
+  if (errors.length) return validationError(res, errors);
+
+  // Every weight on the project zero would leave the planned curve empty while every screen still showed it as
+  // "planned". Refusing is honest; silently drawing nothing is not.
+  const resulting = owned.map((row) => (next.has(row.id) ? next.get(row.id) : row.plannedWeight));
+  const anyPositive = resulting.some((weight) => typeof weight === "number" && Number.isFinite(weight) && weight > 0);
+  const anyConfigured = resulting.some((weight) => typeof weight === "number" && Number.isFinite(weight));
+  if (anyConfigured && !anyPositive) {
+    return res.status(400).json({
+      error: "Every weight is zero, so the planned curve would be empty. Give at least one WBS a positive weight, or clear them all to use an equal share.",
+      code: "ALL_WEIGHTS_ZERO",
+    });
+  }
+
+  const changed: Array<{ wbsId: number; wbsCode: string; previous: number | null; next: number | null }> = [];
+  for (const [wbsId, plannedWeight] of next) {
+    const before = ownerById.get(wbsId)!;
+    if (before.plannedWeight === plannedWeight) continue;
+    await prisma.projectWbs.update({ where: { id: wbsId }, data: { plannedWeight } });
+    changed.push({ wbsId, wbsCode: before.wbsCode, previous: before.plannedWeight, next: plannedWeight });
+  }
+  if (changed.length) {
+    await writeAudit(req.user!.id, "ADMIN_SET_WBS_WEIGHTS", "project_wbs", null, {
+      by: req.user!.role,
+      projectId: project.id,
+      projectCode: project.code,
+      changed,
+    });
+  }
+
+  res.json({ ...(await wbsWeightRows(project.id)), changed: changed.length });
 });
 
 /* ============================== UoM master =============================== */

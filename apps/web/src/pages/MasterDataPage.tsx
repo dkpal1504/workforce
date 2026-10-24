@@ -35,6 +35,8 @@ type WbsRow = {
   id: number;
   projectId: number;
   wbsCode: string;
+  /** Relative weight of this node in the project's planned S-curve; null = equal share. */
+  plannedWeight?: number | null;
   name: string | null;
   sortOrder: number;
   active: boolean;
@@ -118,7 +120,29 @@ type EditorState =
   | { type: "uom"; item?: UomRow }
   | { type: "network"; item?: NetworkRow }
   | { type: "joborder"; item: JobOrderRow }
-  | { type: "schedule"; item: JobOrderRow };
+  | { type: "schedule"; item: JobOrderRow }
+  | { type: "wbs-weights" };
+
+/** One row of GET /master-data/projects/:id/wbs-weights: the weight and the share it produces. */
+type WbsWeightRow = {
+  wbsId: number;
+  wbsCode: string;
+  name: string | null;
+  plannedWeight: number | null;
+  configured: boolean;
+  sharePct: number;
+  jobOrders: number;
+  budgetHours: number;
+};
+
+type WbsWeightsPayload = {
+  project: { id: number; code: string; name: string };
+  rows: WbsWeightRow[];
+  mode: "EQUAL" | "CONFIGURED" | "MIXED";
+  configuredCount: number;
+  nodeCount: number;
+  maxWeight: number;
+};
 
 /** Literal placeholder examples for the fields the UoM master cannot speak for. */
 const PROJECT_CODE_EXAMPLE = "PRJ-A";
@@ -191,6 +215,9 @@ export function MasterDataPage() {
   // Desktop-only: the help card is collapsed until the user opens it. It does not
   // touch the data, the tab or the filter state.
   const [helpOpen, setHelpOpen] = useState(false);
+  // The planned weights of the selected project, with the shares the S-curve will use. Loaded when the WBS tab
+  // is open, because that is the only place they are read or written.
+  const [weights, setWeights] = useState<WbsWeightsPayload | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -208,6 +235,18 @@ export function MasterDataPage() {
     } catch (e) { setError(errorText(e)); } finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (tab !== "wbs" || !projectFilter) {
+      setWeights(null);
+      return;
+    }
+    let cancelled = false;
+    api<WbsWeightsPayload>(`/master-data/projects/${projectFilter}/wbs-weights`)
+      .then((payload) => { if (!cancelled) setWeights(payload); })
+      .catch(() => { if (!cancelled) setWeights(null); });
+    return () => { cancelled = true; };
+  }, [tab, projectFilter, projects]);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
@@ -337,6 +376,22 @@ export function MasterDataPage() {
             </span>
           </div>
         )}
+        {tab === "wbs" && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={!selectedProject || !weights || weights.rows.length === 0}
+            title={
+              !selectedProject ? "Select a project first"
+                : !weights ? "Loading the weights…"
+                  : weights.rows.length === 0 ? "This project has no WBS rows yet"
+                    : "Edit the weights that decide the planned S-curve"
+            }
+            onClick={() => setEditor({ type: "wbs-weights" })}
+          >
+            Planned weights
+          </button>
+        )}
         {creatable ? (
           <button
             type="button"
@@ -383,7 +438,7 @@ export function MasterDataPage() {
       <table className="sup-table">
         <thead>
           {tab === "project" && <tr><th>Colour key</th><th>Project</th><th>WBS / Networks</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
-          {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
+          {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Planned weight</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "uom" && <tr><th>Code</th><th>Name</th><th>Example (on-screen help)</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "network" && <tr><th>Network code</th><th>Project</th><th>WBS</th><th>Source</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "joborder" && <tr><th>Job Order</th><th>Project</th><th>WBS</th><th>Network</th><th>Planned window</th><th>Booked hours</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
@@ -404,6 +459,7 @@ export function MasterDataPage() {
               <td><strong>{row.wbsCode}</strong>{row.name && <div className="muted">{row.name}</div>}</td>
               <td>{row.project.code} · {row.project.name}</td>
               <td>{row._count?.jobOrders ?? 0}</td>
+              <td>{weightCell(weights, row.id)}</td>
               <td><span className={`md-status${row.active ? "" : " md-status--off"}`}>{row.active ? "Active" : "Inactive"}</span></td>
               <td><Actions busy={busy} active={row.active} onEdit={() => setEditor({ type: "wbs", item: row })} onToggle={() => run(() => api(deactivatePath("wbs", row.id), { method: "POST" }))} onActivate={() => run(() => api(activatePath("wbs", row.id), { method: "POST" }))} /></td>
             </tr>
@@ -480,6 +536,7 @@ export function MasterDataPage() {
         projects={projects}
         uom={uom}
         projectFilter={projectFilter}
+        weights={weights}
         busy={busy}
         error={error}
         onClose={() => { setEditor(null); setError(""); }}
@@ -497,6 +554,25 @@ export function MasterDataPage() {
 function projectDeactivationReason(row: ProjectRow): string | null {
   if (!row.active || !row.activeJobOrderCount) return null;
   return `${row.activeJobOrderCount} active Job Order${row.activeJobOrderCount === 1 ? "" : "s"} — set them In-Active first`;
+}
+
+/** The WBS table's weight cell: the weight itself, then the share it produces once normalised. */
+function weightCell(weights: WbsWeightsPayload | null, wbsId: number) {
+  const row = weights?.rows.find((candidate) => candidate.wbsId === wbsId);
+  if (!row) return <span className="muted">—</span>;
+  if (!row.configured) {
+    return (
+      <span className="muted" title="No weight set for this node, so it takes the average of the configured weights.">
+        equal · {row.sharePct}%
+      </span>
+    );
+  }
+  return (
+    <span>
+      {row.plannedWeight}
+      <div className="muted">{row.sharePct}% of the plan</div>
+    </span>
+  );
 }
 
 function Actions({ active, busy, blockReason, onEdit, onToggle, onActivate }: { active: boolean; busy: boolean; blockReason?: string | null; onEdit: () => void; onToggle: () => void; onActivate: () => void }) {
@@ -595,10 +671,10 @@ function Field({ label, help, children }: { label: string; help: string; childre
   );
 }
 
-function Modal({ title, busy, error, onClose, onSubmit, submitDisabled, submitTitle, children }: { title: string; busy: boolean; error: string; onClose: () => void; onSubmit: () => void; submitDisabled?: boolean; submitTitle?: string; children: React.ReactNode }) {
+function Modal({ title, busy, error, onClose, onSubmit, submitDisabled, submitTitle, wide, children }: { title: string; busy: boolean; error: string; onClose: () => void; onSubmit: () => void; submitDisabled?: boolean; submitTitle?: string; wide?: boolean; children: React.ReactNode }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className={wide ? "modal modal--wide" : "modal"} onClick={(e) => e.stopPropagation()}>
         <div className="modal__header">
           <h2>{title}</h2>
           <button type="button" className="modal__close" onClick={onClose}>×</button>
@@ -618,11 +694,12 @@ function Modal({ title, busy, error, onClose, onSubmit, submitDisabled, submitTi
   );
 }
 
-function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClose, onSave }: {
+function MasterModal({ editor, projects, uom, projectFilter, weights, busy, error, onClose, onSave }: {
   editor: EditorState;
   projects: ProjectRow[];
   uom: UomRow[];
   projectFilter: string;
+  weights: WbsWeightsPayload | null;
   busy: boolean;
   error: string;
   onClose: () => void;
@@ -632,6 +709,17 @@ function MasterModal({ editor, projects, uom, projectFilter, busy, error, onClos
   if (editor.type === "uom") return <UomForm item={editor.item} uom={uom} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
   if (editor.type === "joborder") return <JobOrderForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
   if (editor.type === "schedule") return <JobOrderScheduleForm item={editor.item} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
+  if (editor.type === "wbs-weights") {
+    const target = weights ?? null;
+    if (!target) {
+      return (
+        <Modal title="Planned weights" busy={busy} error={error} onClose={onClose} onSubmit={onClose}>
+          <p className="sup-form__note">Select a project and open its WBS tab first — the weights belong to that project's WBS rows.</p>
+        </Modal>
+      );
+    }
+    return <WbsWeightForm payload={target} busy={busy} error={error} onClose={onClose} onSave={onSave} />;
+  }
 
   const parent = editor.item ? projects.find((project) => project.id === editor.item!.projectId) : projects.find((project) => String(project.id) === projectFilter);
   if (!parent) {
@@ -961,6 +1049,97 @@ function UomForm({ item, uom, busy, error, onClose, onSave }: { item?: UomRow; u
       <Field label="Example (shown as help text)" help={`This exact string is shown to the user beside the quantity field. Example: ${masterExample}`}>
         <input value={example} onChange={(e) => setExample(e.target.value)} placeholder={masterExample} />
       </Field>
+    </Modal>
+  );
+}
+
+/**
+ * Edit the weights that decide the planned S-curve, for every WBS row of one project at once.
+ *
+ * Three values mean three different things and the form says so instead of flattening them:
+ *   blank      no opinion — the node takes the average of the configured weights
+ *   0          planned to carry no share (still counted, never plotted)
+ *   > 0        the operator's own relative weight
+ *
+ * The share column is what the server computed the last time it answered. This form does NOT re-implement the
+ * normalisation: two copies of that rule would drift, and the whole point is that the number on screen is the
+ * number the curve uses.
+ */
+function WbsWeightForm({ payload, busy, error, onClose, onSave }: {
+  payload: WbsWeightsPayload;
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onSave: SaveFn;
+}) {
+  const [values, setValues] = useState<Record<number, string>>(() =>
+    Object.fromEntries(payload.rows.map((row) => [row.wbsId, row.plannedWeight == null ? "" : String(row.plannedWeight)]))
+  );
+  const anyPositive = payload.rows.some((row) => Number(values[row.wbsId]) > 0);
+  return (
+    <Modal
+      title={`Planned weights · ${payload.project.code}`}
+      busy={busy}
+      error={error}
+      onClose={onClose}
+      wide
+      submitDisabled={!anyPositive}
+      submitTitle={!anyPositive ? "Every weight is zero, so the planned curve would be empty." : undefined}
+      onSubmit={() => onSave(
+        `/master-data/projects/${payload.project.id}/wbs-weights`,
+        "PUT",
+        {
+          weights: payload.rows.map((row) => ({
+            wbsId: row.wbsId,
+            plannedWeight: values[row.wbsId]?.trim() === "" ? null : Number(values[row.wbsId]),
+          })),
+        }
+      )}
+    >
+      <p className="sup-form__note">
+        The planned S-curve splits the project budget across the WBS rows by these weights, then spreads each
+        share linearly across the planned windows of its Job Orders. They are RELATIVE: only the ratio matters,
+        so 3 / 2 / 1 and 30 / 20 / 10 draw the same curve. Leave a row blank to give it the average weight.
+      </p>
+      <div className="sup-field">
+        <label>Project</label>
+        <p className="md-readonly">{payload.project.code} · {payload.project.name}</p>
+        <p className="md-help">
+          {payload.mode === "EQUAL"
+            ? "No weights are configured, so every node currently carries an equal share."
+            : payload.mode === "MIXED"
+              ? `${payload.configuredCount} of ${payload.nodeCount} nodes have a weight; the rest take the average.`
+              : `All ${payload.nodeCount} nodes have a weight.`}
+        </p>
+      </div>
+      <div className="md-weight-table">
+        {payload.rows.map((row) => (
+          <div className="md-weight-row" key={row.wbsId}>
+            <div className="md-weight-row__name">
+              <strong>{row.wbsCode}</strong>
+              {row.name ? <div className="muted">{row.name}</div> : null}
+              <div className="muted">{row.jobOrders} Job Order{row.jobOrders === 1 ? "" : "s"} · {Math.round(row.budgetHours).toLocaleString("en-IN")} h budgeted</div>
+            </div>
+            <div className="md-weight-row__share">
+              <span>{row.sharePct}%</span>
+              <span className="muted">of the plan now</span>
+            </div>
+            <div className="md-weight-row__input">
+              <input
+                aria-label={`Weight for ${row.wbsCode}`}
+                inputMode="decimal"
+                placeholder="equal"
+                value={values[row.wbsId] ?? ""}
+                onChange={(event) => setValues((current) => ({ ...current, [row.wbsId]: event.target.value }))}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="md-help">
+        Shares shown are from the last save. Saving writes every changed row in one transaction and reloads the
+        table with the shares the curve will use.
+      </p>
     </Modal>
   );
 }

@@ -2,16 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  NETWORK_SOURCE,
   PROJECT_DEACTIVATION_MAX_CODES,
-  projectDeactivationError,
-  colorKeyError,
   colorKeyConflictMessage,
+  colorKeyError,
   exampleForUomCode,
   findColorKeyConflict,
   findNetworkCodeConflict,
   findProjectCodeConflict,
   findUomCodeConflict,
   findWbsCodeConflict,
+  isUnchangedBudget,
   isUnchangedSchedule,
   isUniqueConstraintError,
   isValidColorKey,
@@ -20,24 +21,24 @@ import {
   jobOrderWbsMoveError,
   networkCodeConflictMessage,
   networkSourceForWrite,
+  nextBudgetRevisionNo,
   normalizeCode,
+  parseWbsWeight,
   prismaConflictMessage,
   projectCodeConflictMessage,
+  projectDeactivationError,
   referencedDeleteMessage,
   resolveNetworkWbs,
+  uniqueConstraintFields,
   uomCodeConflictMessage,
   uomHelpText,
-  uniqueConstraintFields,
+  validateJobOrderBudgetInput,
+  validateJobOrderScheduleInput,
   validateNetworkInput,
   validateProjectInput,
   validateUomInput,
   validateWbsInput,
   wbsCodeConflictMessage,
-  NETWORK_SOURCE,
-  validateJobOrderBudgetInput,
-  validateJobOrderScheduleInput,
-  nextBudgetRevisionNo,
-  isUnchangedBudget,
 } from "./masterDataRules";
 
 /* --- fixtures: the seed masters, without a database ---------------------- */
@@ -203,7 +204,8 @@ test("a referenced row may not be deleted", () => {
 test("a WBS code is normalised and its name is optional", () => {
   const result = validateWbsInput({ wbsCode: " a.hull.0010.100 " });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.ok && result.data, { wbsCode: "A.HULL.0010.100", name: null, sortOrder: 0 });
+  // `plannedWeight: null` means "no weight configured", which is the honest default for a new row.
+  assert.deepEqual(result.ok && result.data, { wbsCode: "A.HULL.0010.100", name: null, sortOrder: 0, plannedWeight: null });
 });
 
 test("a WBS code is required and may not contain a space", () => {
@@ -485,4 +487,39 @@ test("an unchanged window writes nothing: the comparison is by DAY, not by insta
     true,
     "no plan on either side is no change"
   );
+});
+
+/* ----------------------------- WBS planned weights ----------------------------- */
+
+test("a weight is a relative number: blank means 'no opinion', zero means 'no share'", () => {
+  // The three values are three different instructions and must not collapse into one.
+  assert.deepEqual(parseWbsWeight(""), { ok: true, value: null });
+  assert.deepEqual(parseWbsWeight(null), { ok: true, value: null });
+  assert.deepEqual(parseWbsWeight(undefined), { ok: true, value: null });
+  assert.deepEqual(parseWbsWeight(0), { ok: true, value: 0 }, "zero is a decision, not an absence");
+  assert.deepEqual(parseWbsWeight("2.5"), { ok: true, value: 2.5 });
+  assert.deepEqual(parseWbsWeight(3), { ok: true, value: 3 });
+});
+
+test("a weight cannot be negative or absurdly large", () => {
+  // A negative share would flip the cumulative curve downwards, which no reader could interpret.
+  const negative = parseWbsWeight(-1);
+  assert.equal(negative.ok, false);
+  assert.match(JSON.stringify(negative), /cannot be negative/);
+
+  const huge = parseWbsWeight(10_001);
+  assert.equal(huge.ok, false);
+
+  const junk = parseWbsWeight("two");
+  assert.equal(junk.ok, false);
+});
+
+test("a WBS payload carries its weight, and an absent field reads as 'no weight'", () => {
+  const parsed = validateWbsInput({ wbsCode: "A.HULL.0010.100", name: "Hull", sortOrder: 1, plannedWeight: "4" });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.ok && parsed.data.plannedWeight, 4);
+
+  const absent = validateWbsInput({ wbsCode: "A.HULL.0010.100", name: "Hull", sortOrder: 1 });
+  assert.equal(absent.ok, true);
+  assert.equal(absent.ok && absent.data.plannedWeight, null);
 });

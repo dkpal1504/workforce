@@ -16,6 +16,8 @@ control which links are shown in the browser.
 | Organisation and supervisor administration | — | — | — | — | Yes | — (the API refuses: 403) |
 | Operations dashboard (`viewPortfolioDashboard`) | — | — | Own Department (whole, every Section) | Own Department (whole) | Yes | Yes (whole organisation, read only) |
 | Job Order conversations (`viewConversations`) | — | — | Own Department, narrowed to his Section set | Own Department | All | All (read/write on the trail; no `DECISION`) |
+| Project review — view (`viewProjectReview`) | — | — | Own Department's Job Orders **inside** a project | Own Department | All | All (read only) |
+| Project review — run (`runProjectReview`): freeze a snapshot | — | — | — | Yes | Yes | Yes |
 | Project-manager dashboard (`PROJECT_MANAGER`) | — | — | — | — | — | — (separate role, see below) |
 
 Each HOD must have an explicit `User.departmentId + User.sectionId` scope. HOD
@@ -42,6 +44,24 @@ allows reports to retain the HOD decision after a later PM decision.
 
 Legacy HR and Finance permissions remain for their existing operational screens;
 they are outside this matrix. CSV upload remains Admin/HR-only.
+
+## The Review menu (project review)
+
+The review is its own menu (`/review`), not a tab under Reports. It answers a different question: Reports
+measure what happened, the review freezes what happened, points at the Job Orders that need a decision, and
+keeps that decision for next month.
+
+| Property | Behaviour |
+|---|---|
+| View (`viewProjectReview`) | PM, ADMIN, COO: whole organisation. HOD, DEPT_HEAD: their own Department's Job Orders **inside** each project. PROJECT_MANAGER: exactly the assigned projects. SUPERVISOR, EMPLOYEE: refused at the door. |
+| Run (`runProjectReview`) | PM, COO, ADMIN only — it writes a frozen snapshot, nothing else. An HOD gets 403 `REVIEW_RUN_REQUIRED`. |
+| Out-of-scope project id | **404 `PROJECT_NOT_IN_SCOPE`**, not 403: an id the actor cannot see does not exist for them. |
+| HOD scope inside a project | A project with none of the Department's Job Orders is not listed, and its address answers 404. The screen also states how much of the project's budget the visible Job Orders carry, so a narrow scope cannot be mistaken for a small project. |
+| Frozen snapshots | Readable by anyone who can view the project; captured only by the run roles. A snapshot the actor cannot see answers 404 `SNAPSHOT_NOT_FOUND`. |
+| WBS weights | Read: any authenticated reader. Written: ADMIN and PM only (`PUT /api/master-data/projects/:id/wbs-weights`), audited as `ADMIN_SET_WBS_WEIGHTS`. |
+| Scope resolution | Server-side, once per request, through `reportScopeFor`. The client never receives a row it may not show. |
+
+Full definitions, endpoints and the freeze contract: [PROJECT_REVIEW.md](PROJECT_REVIEW.md).
 
 ## The PROJECT_MANAGER role (assigned projects)
 

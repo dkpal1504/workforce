@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { EscalatableNodeRow, EscalatableRow } from "../components/EscalateToOwner";
 import { api, getToken } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -1243,6 +1244,12 @@ export function ProjectStructureSection({ report }: { report: PortfolioReport })
           count={`${row.totals.jobOrderCount} job order${row.totals.jobOrderCount === 1 ? "" : "s"}`}
           hint="A node's bands are the WORST of its job orders, never an average. A Network has no status of its own — its bands are derived from its job orders."
         >
+          {/* The dashboard answers "how is the portfolio"; a review answers "what do we do about it".
+              The link carries the project so the reader does not have to find it again. */}
+          <p className="pf-review-link">
+            <Link to={`/review/${row.project.id}`}>Review this project →</Link>
+            <span className="pf-cell-sub"> S-curve, slowest Job Orders, manpower, escalations and the frozen packs.</span>
+          </p>
           <div className="pf-basis">
             <div>
               <div className="pf-basis__label">Budgeted</div>

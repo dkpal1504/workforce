@@ -646,6 +646,31 @@ curl.exe -fsS http://127.0.0.1:8099/api/health/ready
   **Role Assignment** listing people with *no login yet* (contract/blue-collar employees) —
   search a blue-collar EC No, tick **Supervisor**, and **Create login and assign**.
 
+### The review scheduler and the attendance settlement (both OFF by default)
+
+Two jobs that write rows on a timer, both gated so that a deploy never switches them on by accident:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ATTENDANCE_SETTLEMENT_ENABLED` | `false` | Daily 06:00 (`ATTENDANCE_SETTLEMENT_CRON`), re-settles the last `ATTENDANCE_SETTLEMENT_LOOKBACK_DAYS` days of `attendance_day`. Reports divide by each worker's own present days only when `SETTLE_REPORTS=true`. |
+| `SETTLE_REPORTS` | `false` | The whole rollback lever for the per-worker denominator: `false` reproduces the calendar numbers byte for byte. |
+| `REVIEW_SNAPSHOT_ENABLED` | `false` | Weekly Monday 00:30 and monthly 1st 01:30 freezes of the review payload. |
+| `APP_TIMEZONE` | `Asia/Kolkata` | The yard's business clock for both jobs. |
+
+Order of operations on the first deployment (never tear the stack down; always recreate the one service):
+
+1. `build migrate api web`, then `up -d --force-recreate migrate` — this applies
+   `20261023000000_work_calendar_and_attendance_settlement` and `20261024000000_project_review`.
+2. `up -d --force-recreate api web`.
+3. Run one settlement by hand and read the log:
+   `exec api node apps/api/scripts/settle-attendance.mjs --from 2026-09-21 --to 2026-10-23 --dry-run`, then
+   without `--dry-run`. Set `SETTLE_REPORTS=true` and recreate `api` only after the numbers have been reviewed.
+4. Run one review freeze by hand:
+   `exec api node apps/api/scripts/review-snapshot-once.mjs --kind MONTHLY`. Only then set
+   `REVIEW_SNAPSHOT_ENABLED=true` and recreate `api`.
+
+Full review contract and definitions: [PROJECT_REVIEW.md](PROJECT_REVIEW.md).
+
 ### Pulling an update onto the deployment host
 
 Two local edits live in the deployment checkout, and both of them are files the repository

@@ -1187,3 +1187,26 @@
 .pf-structure__network > td {
   font-weight: 400;
 }
+
+/* The bridge from "how is the portfolio" to "what do we do about it". Sits above the project's basis row so it
+   reads as belonging to the project, not to one of its WBS nodes. */
+.pf-review-link {
+  margin: 4px 0 10px;
+  font-size: 0.84rem;
+}
+
+.pf-review-link a {
+  font-weight: 600;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.pf-review-link a:hover,
+.pf-review-link a:focus-visible {
+  text-decoration: underline;
+}
+
+/* The Reports version sits under the tab strip, where it cannot be mistaken for another tab. */
+.pf-review-link--reports {
+  margin: 0 0 12px;
+}
