@@ -441,7 +441,7 @@
 
 .md-weight-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px 110px;
+  grid-template-columns: minmax(0, 1fr) 120px 104px;
   gap: 10px;
   align-items: center;
   padding: 8px 6px;
@@ -460,16 +460,43 @@
   font-size: 0.76rem;
 }
 
-.md-weight-row__share {
+/* The quick-fill row: three helpers and a running total, so the planner never has to do the arithmetic. */
+.md-weight-tools {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  font-size: 0.86rem;
-  font-variant-numeric: tabular-nums;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 10px;
 }
 
-.md-weight-row__share .muted {
+.md-weight-total {
+  margin-left: auto;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.md-weight-row__becomes {
+  text-align: right;
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.md-weight-row__becomes .muted {
+  font-weight: 400;
   font-size: 0.7rem;
+}
+
+.md-weight-row__input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.md-weight-row__unit {
+  font-size: 0.86rem;
+  color: var(--text-muted);
 }
 
 .md-weight-row__input input {
@@ -482,14 +509,19 @@
 
 @media (max-width: 767px) {
   .md-weight-row {
-    grid-template-columns: minmax(0, 1fr) 84px;
+    grid-template-columns: minmax(0, 1fr) 96px;
     grid-template-areas:
-      "name share"
+      "name becomes"
       "input input";
     row-gap: 6px;
   }
 
   .md-weight-row__name { grid-area: name; }
-  .md-weight-row__share { grid-area: share; }
+  .md-weight-row__becomes { grid-area: becomes; }
   .md-weight-row__input { grid-area: input; }
+
+  .md-weight-total {
+    margin-left: 0;
+    width: 100%;
+  }
 }

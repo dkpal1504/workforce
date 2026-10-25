@@ -144,6 +144,8 @@ type WbsWeightsPayload = {
   maxWeight: number;
 };
 
+import { budgetSplit, equalSplit, previewWeights, weightPayload } from "./masterDataWeights";
+
 /** Literal placeholder examples for the fields the UoM master cannot speak for. */
 const PROJECT_CODE_EXAMPLE = "PRJ-A";
 const PROJECT_NAME_EXAMPLE = "Project A";
@@ -438,7 +440,7 @@ export function MasterDataPage() {
       <table className="sup-table">
         <thead>
           {tab === "project" && <tr><th>Colour key</th><th>Project</th><th>WBS / Networks</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
-          {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Planned weight</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
+          {tab === "wbs" && <tr><th>WBS number</th><th>Project</th><th>Job Orders</th><th>Plan share</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "uom" && <tr><th>Code</th><th>Name</th><th>Example (on-screen help)</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "network" && <tr><th>Network code</th><th>Project</th><th>WBS</th><th>Source</th><th>Job Orders</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
           {tab === "joborder" && <tr><th>Job Order</th><th>Project</th><th>WBS</th><th>Network</th><th>Planned window</th><th>Booked hours</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr>}
@@ -556,21 +558,16 @@ function projectDeactivationReason(row: ProjectRow): string | null {
   return `${row.activeJobOrderCount} active Job Order${row.activeJobOrderCount === 1 ? "" : "s"} — set them In-Active first`;
 }
 
-/** The WBS table's weight cell: the weight itself, then the share it produces once normalised. */
+/** The WBS table's share cell: the percentage this node carries, and the weight behind it when one is set. */
 function weightCell(weights: WbsWeightsPayload | null, wbsId: number) {
   const row = weights?.rows.find((candidate) => candidate.wbsId === wbsId);
   if (!row) return <span className="muted">—</span>;
-  if (!row.configured) {
-    return (
-      <span className="muted" title="No weight set for this node, so it takes the average of the configured weights.">
-        equal · {row.sharePct}%
-      </span>
-    );
-  }
   return (
     <span>
-      {row.plannedWeight}
-      <div className="muted">{row.sharePct}% of the plan</div>
+      {row.sharePct}%
+      <div className="muted" title="The relative weight stored for this node. Edited with the Planned weights button.">
+        {row.configured ? `weight ${row.plannedWeight}` : "equal share"}
+      </div>
     </span>
   );
 }
@@ -1056,14 +1053,13 @@ function UomForm({ item, uom, busy, error, onClose, onSave }: { item?: UomRow; u
 /**
  * Edit the weights that decide the planned S-curve, for every WBS row of one project at once.
  *
- * Three values mean three different things and the form says so instead of flattening them:
- *   blank      no opinion — the node takes the average of the configured weights
- *   0          planned to carry no share (still counted, never plotted)
- *   > 0        the operator's own relative weight
+ * The dialog asks for PERCENTAGES because that is what a planner thinks in. The server stores a relative weight
+ * and normalises it, so the percentages do not have to add up to 100 — and the "becomes" column shows the share
+ * each row will actually carry, computed with `normaliseWeightShares`, the same function the curve uses.
  *
- * The share column is what the server computed the last time it answered. This form does NOT re-implement the
- * normalisation: two copies of that rule would drift, and the whole point is that the number on screen is the
- * number the curve uses.
+ * A blank box (or a typed 0) means "no opinion": the node takes the average of the percentages that were entered.
+ * It does NOT mean "no share" — a node quietly dropped out of the plan while still being listed is exactly the
+ * kind of quiet a review exists to prevent.
  */
 function WbsWeightForm({ payload, busy, error, onClose, onSave }: {
   payload: WbsWeightsPayload;
@@ -1073,9 +1069,20 @@ function WbsWeightForm({ payload, busy, error, onClose, onSave }: {
   onSave: SaveFn;
 }) {
   const [values, setValues] = useState<Record<number, string>>(() =>
-    Object.fromEntries(payload.rows.map((row) => [row.wbsId, row.plannedWeight == null ? "" : String(row.plannedWeight)]))
+    Object.fromEntries(
+      payload.rows.map((row) => [row.wbsId, row.plannedWeight == null ? "" : String(row.plannedWeight)])
+    )
   );
-  const anyPositive = payload.rows.some((row) => Number(values[row.wbsId]) > 0);
+  const rows = useMemo(
+    () => payload.rows.map((row) => ({ wbsId: row.wbsId, plannedWeight: row.plannedWeight, budgetHours: row.budgetHours })),
+    [payload.rows]
+  );
+  const preview = useMemo(() => previewWeights(rows, values), [rows, values]);
+  const anyPositive = preview.configuredCount > 0;
+  const totalLabel = preview.allBlank
+    ? "Nothing entered — an equal share"
+    : `${preview.enteredTotal}% across ${preview.configuredCount} of ${rows.length} node${rows.length === 1 ? "" : "s"}`;
+
   return (
     <Modal
       title={`Planned weights · ${payload.project.code}`}
@@ -1084,22 +1091,18 @@ function WbsWeightForm({ payload, busy, error, onClose, onSave }: {
       onClose={onClose}
       wide
       submitDisabled={!anyPositive}
-      submitTitle={!anyPositive ? "Every weight is zero, so the planned curve would be empty." : undefined}
+      submitTitle={!anyPositive ? "Enter a percentage on at least one WBS row." : undefined}
       onSubmit={() => onSave(
         `/master-data/projects/${payload.project.id}/wbs-weights`,
         "PUT",
-        {
-          weights: payload.rows.map((row) => ({
-            wbsId: row.wbsId,
-            plannedWeight: values[row.wbsId]?.trim() === "" ? null : Number(values[row.wbsId]),
-          })),
-        }
+        { weights: weightPayload(rows, values) }
       )}
     >
       <p className="sup-form__note">
-        The planned S-curve splits the project budget across the WBS rows by these weights, then spreads each
-        share linearly across the planned windows of its Job Orders. They are RELATIVE: only the ratio matters,
-        so 3 / 2 / 1 and 30 / 20 / 10 draw the same curve. Leave a row blank to give it the average weight.
+        Enter the share you want each WBS element to carry, in percent. The planned S-curve splits the project
+        budget by that share, then spreads each share linearly across the planned windows of its Job Orders. The
+        percentages do not have to add up to 100 — they are relative, so 30 / 20 / 50 draws the same curve as
+        3 / 2 / 5. The <strong>becomes</strong> column shows the share each row will actually carry.
       </p>
       <div className="sup-field">
         <label>Project</label>
@@ -1112,33 +1115,55 @@ function WbsWeightForm({ payload, busy, error, onClose, onSave }: {
               : `All ${payload.nodeCount} nodes have a weight.`}
         </p>
       </div>
+      <div className="md-weight-tools">
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setValues(budgetSplit(rows))}>
+          Split by budgeted hours
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setValues(equalSplit(rows))}>
+          Equal split
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setValues({})}>
+          Clear
+        </button>
+        <span className={preview.allBlank ? "md-weight-total muted" : "md-weight-total"}>{totalLabel}</span>
+      </div>
       <div className="md-weight-table">
-        {payload.rows.map((row) => (
-          <div className="md-weight-row" key={row.wbsId}>
-            <div className="md-weight-row__name">
-              <strong>{row.wbsCode}</strong>
-              {row.name ? <div className="muted">{row.name}</div> : null}
-              <div className="muted">{row.jobOrders} Job Order{row.jobOrders === 1 ? "" : "s"} · {Math.round(row.budgetHours).toLocaleString("en-IN")} h budgeted</div>
+        {payload.rows.map((row) => {
+          const becomes = preview.sharePct.get(row.wbsId) ?? 0;
+          const typed = (values[row.wbsId] ?? "").trim();
+          const blank = typed === "" || Number(typed) <= 0;
+          return (
+            <div className="md-weight-row" key={row.wbsId}>
+              <div className="md-weight-row__name">
+                <strong>{row.wbsCode}</strong>
+                {row.name ? <div className="muted">{row.name}</div> : null}
+                <div className="muted">
+                  {row.jobOrders} Job Order{row.jobOrders === 1 ? "" : "s"} · {Math.round(row.budgetHours).toLocaleString("en-IN")} h budgeted
+                  {row.plannedWeight != null ? ` · now ${row.sharePct}%` : " · equal share now"}
+                </div>
+              </div>
+              <div className="md-weight-row__input">
+                <input
+                  aria-label={`Percentage for ${row.wbsCode}`}
+                  inputMode="decimal"
+                  placeholder={preview.averagePct != null ? `avg ${preview.averagePct}` : "blank"}
+                  value={values[row.wbsId] ?? ""}
+                  onChange={(event) => setValues((current) => ({ ...current, [row.wbsId]: event.target.value }))}
+                />
+                <span className="md-weight-row__unit">%</span>
+              </div>
+              <div className={blank ? "md-weight-row__becomes muted" : "md-weight-row__becomes"}>
+                {becomes}%
+                <span className="muted"> becomes</span>
+              </div>
             </div>
-            <div className="md-weight-row__share">
-              <span>{row.sharePct}%</span>
-              <span className="muted">of the plan now</span>
-            </div>
-            <div className="md-weight-row__input">
-              <input
-                aria-label={`Weight for ${row.wbsCode}`}
-                inputMode="decimal"
-                placeholder="equal"
-                value={values[row.wbsId] ?? ""}
-                onChange={(event) => setValues((current) => ({ ...current, [row.wbsId]: event.target.value }))}
-              />
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <p className="md-help">
-        Shares shown are from the last save. Saving writes every changed row in one transaction and reloads the
-        table with the shares the curve will use.
+        Leave a box blank when you have no opinion: that node takes the average of the percentages you entered
+        {preview.averagePct != null ? ` (${preview.averagePct}%)` : ""}. Saving writes every changed row in one
+        transaction and reloads the table with the shares the curve will use.
       </p>
     </Modal>
   );

@@ -1,5 +1,44 @@
 import { z } from "zod";
 
+/**
+ * How the planned S-curve splits a project's budget across its WBS nodes.
+ *
+ * Lives in `shared` because BOTH sides need it: the server to draw the curve, the browser to preview the
+ * percentage a weight will produce before it is saved. Two copies of this rule would drift, and a preview that
+ * lies is worse than no preview.
+ *
+ *   weight > 0   the operator's own relative weight
+ *   weight = 0   read as "no opinion", the same as blank (a zero-share node would silently leave the plan)
+ *   null/blank   no opinion — the node takes the AVERAGE of the positive weights
+ *   none positive anywhere — every node takes an equal share
+ *
+ * The result is normalised, so it always sums to 1 (100%).
+ */
+export function normaliseWeightShares(
+  nodes: readonly { id: number; plannedWeight: number | null }[]
+): Map<number, number> {
+  const shares = new Map<number, number>();
+  if (!nodes.length) return shares;
+
+  const weightOf = (node: { plannedWeight: number | null }): number | null => {
+    const weight = node.plannedWeight;
+    return typeof weight === "number" && Number.isFinite(weight) && weight > 0 ? weight : null;
+  };
+  const configured = nodes.filter((node) => weightOf(node) !== null);
+  const configuredTotal = configured.reduce((sum, node) => sum + (weightOf(node) as number), 0);
+  if (!configured.length) {
+    for (const node of nodes) shares.set(node.id, 1 / nodes.length);
+    return shares;
+  }
+
+  const fallback = configuredTotal / configured.length;
+  const total = configuredTotal + fallback * (nodes.length - configured.length);
+  for (const node of nodes) {
+    shares.set(node.id, (weightOf(node) ?? fallback) / total);
+  }
+  return shares;
+}
+
 export const UserRole = {
   EMPLOYEE: "EMPLOYEE",
   SUPERVISOR: "SUPERVISOR",

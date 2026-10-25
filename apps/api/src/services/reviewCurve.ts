@@ -14,6 +14,8 @@
  * `coverage.wbsUnscheduled` instead: the curve must never grow for work nobody scheduled.
  */
 
+import { normaliseWeightShares } from "@workforce/shared";
+
 export const CURVE_BASIS = "WBS_WEIGHTED_LINEAR_SPREAD" as const;
 export type CurveBasis = typeof CURVE_BASIS;
 
@@ -118,27 +120,11 @@ export function spreadLinear(
  * default and the reason `weightsEqualShare` is printed next to the chart.
  */
 export function normaliseWeights(wbs: readonly CurveWbs[]): Map<number, number> {
-  const shares = new Map<number, number>();
-  if (!wbs.length) return shares;
-
-  const weightOf = (node: CurveWbs): number | null => {
-    const weight = node.plannedWeight;
-    return typeof weight === "number" && Number.isFinite(weight) && weight > 0 ? weight : null;
-  };
-  const configured = wbs.filter((node) => weightOf(node) !== null);
-  const configuredTotal = configured.reduce((sum, node) => sum + (weightOf(node) as number), 0);
-  if (!configured.length) {
-    for (const node of wbs) shares.set(node.id, 1 / wbs.length);
-    return shares;
-  }
-
-  const fallback = configuredTotal / configured.length;
-  const total = configuredTotal + fallback * (wbs.length - configured.length);
-  for (const node of wbs) {
-    shares.set(node.id, (weightOf(node) ?? fallback) / total);
-  }
-  return shares;
+  // ONE implementation, in `shared`, because the browser previews the same percentages. This wrapper keeps the
+  // curve's signature (a full WBS node in, a share out) while the arithmetic lives where both sides can reach it.
+  return normaliseWeightShares(wbs);
 }
+
 
 /**
  * Build the curve. `actualHoursByBucket` is supplied by the loader (the booked-hours definition lives in

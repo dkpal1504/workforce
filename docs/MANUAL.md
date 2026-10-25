@@ -872,16 +872,22 @@ A Job Order needs **both** a planned start and a planned end. A start with no en
 
 ### 17.5 Setting WBS weights
 
-**Master Data → WBS → Planned weights.** The dialog lists every WBS element of the selected project with the
-share it currently carries, and a box to change its weight.
+**Master Data → WBS → Planned weights.** The dialog lists every WBS element of the selected project and asks for
+the **percentage** of the plan you want it to carry. You type percentages, not weights — the screen does the
+arithmetic.
 
-- **Blank** — no opinion; the element takes the average of the weighted ones.
-- **0** — planned to carry no share. It is still counted and shown, just not plotted.
-- **A positive number** — your own weight. Only the ratio matters: 3 / 2 / 1 draws the same curve as 30 / 20 / 10.
+- The **becomes** column shows the share each row will actually carry, live as you type.
+- The percentages **do not have to add up to 100**. They are relative: 30 / 20 / 50 draws the same curve as
+  3 / 2 / 5. The header prints the total you have entered.
+- **Blank** — no opinion. That node takes the average of the percentages you did enter, and the box shows that
+  average as its placeholder.
+- **Split by budgeted hours** — fills every row with its share of the project's budgeted hours. This is the usual
+  starting point: it says "plan the work where the money is", and you then adjust.
+- **Equal split** — 100% divided by the number of rows.
+- **Clear** — back to an equal share for the whole project.
 
-The share column is computed by the server with the same rule the chart uses, so the number you see is the
-number the curve will draw. Every weight with a positive value is required: the dialog refuses to save when every
-weight is zero, because that would draw an empty plan while every screen still said "planned".
+The list refuses to save when nothing is entered, because a plan with no positive weight draws nothing while
+every other screen says "planned". Every changed row is written in one transaction and audited.
 
 ### 17.6 Freezing a review
 

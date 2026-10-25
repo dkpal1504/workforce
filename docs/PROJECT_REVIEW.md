@@ -83,9 +83,14 @@ the same numbers and must not navigate away from the period, the pulse or the re
 per-node table (share, budget, planned to date, actual, variance, Job Orders planned/total), sorted
 worst-variance-first. The Job Order view picks one Job Order and plots its own curve.
 
-**Weights are edited on Master Data → WBS → Planned weights**, which shows the share each weight produces,
-computed by the same function the curve uses (`normaliseWeights`). Blank means "no opinion" (average), `0` means
-"planned to carry no share", a positive number is a relative weight. Only the ratio matters.
+**Weights are edited on Master Data → WBS → Planned weights**, which asks for **percentages** and shows the share
+each weight will produce, computed by the same function the curve uses (`normaliseWeightShares`, in
+`packages/shared`, so the preview cannot drift from the server). The percentages do not have to add up to 100 —
+they are relative, and the dialog prints the total and what an unweighted node will take. Two helpers do the
+arithmetic a planner should not have to: **Split by budgeted hours** (each node's share of the budgeted hours)
+and **Equal split**. A blank box — or a typed `0` — means "no opinion": that node takes the **average** of the
+percentages that were entered. It never means "no share", because a node silently dropped from the plan while
+still listed on screen is exactly the kind of quiet a review exists to prevent.
 
 ---
 
