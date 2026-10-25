@@ -61,10 +61,10 @@ The twice-daily scheduler stays off (`BADGEVIEW_SYNC_ENABLED=false`).
 
 ### Switching back to PostgreSQL for development
 
-`apps/api/prisma/schema.postgresql.prisma` holds the production (PostgreSQL) schema that `prisma/migrations` were generated from. To go back:
+The committed `apps/api/prisma/schema.prisma` IS the PostgreSQL schema that `prisma/migrations` were generated from, so there is no second file to copy. To go back:
 
 ```powershell
-Copy-Item apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma
+git checkout -- apps/api/prisma/schema.prisma
 # set DATABASE_URL to the PostgreSQL URL in .env, then:
 npm run db:generate
 npm run dev:db:up     # Docker Desktop on port 5433

@@ -145,9 +145,11 @@ git checkout main          # or the release tag/branch you deploy from
 ```
 
 ```powershell
-# 2. PRODUCTION SCHEMA. The repository's schema.prisma is the SQLite variant used for
-#    local development, and the image build FAILS on purpose if it is not swapped.
-Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+# 2. PRODUCTION SCHEMA. The committed schema.prisma IS the PostgreSQL one, so there is
+#    nothing to swap. Only a checkout that was locally edited for SQLite needs fixing, and
+#    the image build refuses that on purpose.
+git checkout -- apps\api\prisma\schema.prisma
+Select-String apps\api\prisma\schema.prisma -Pattern 'provider\s*=\s*.postgresql' | Select-Object -First 1
 
 # 2b. NOTHING TO REMOVE. The shared first password is configuration now, not a literal:
 #     set BOOTSTRAP_PASSWORD in .env.production (step 3). The image build only refuses a
@@ -554,7 +556,7 @@ Also required, and easy to miss:
   `ERROR: apps/api/prisma/schema.prisma declares the 'sqlite' datasource provider`,
   restore it and rebuild:
   ```bash
-  cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma
+  git checkout -- apps/api/prisma/schema.prisma
   ```
   The `migrate` stage is additionally pinned: it rewrites `sqlite` → `postgresql`
   before running `prisma migrate deploy`, because the SQL under `prisma/migrations`
@@ -682,7 +684,7 @@ git checkout -- apps/api/prisma/schema.prisma        # undo the PostgreSQL schem
 # (if the old runbook step told you to null a hardcoded bootstrap password, undo that too)
 git checkout -- apps/api/src/services/defaultLoginCredentials.ts
 git pull origin main
-Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+git checkout -- apps\api\prisma\schema.prisma
 ```
 
 Then rebuild and apply migrations (below). `BOOTSTRAP_PASSWORD` and every other setting live in

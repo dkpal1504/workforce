@@ -176,7 +176,7 @@ git log --oneline -1
 
 ```powershell
 cd C:\Project\workforce-prod
-Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+git checkout -- apps\api\prisma\schema.prisma
 Select-String -Path apps\api\prisma\schema.prisma -Pattern 'provider = "postgresql"'
 ```
 Expected: one matching line. Without this the build stops with
@@ -411,7 +411,7 @@ sudo -u postgres pg_dump --format=custom workforce > /backup/workforce-$(date +%
   ```powershell
   git checkout -- apps/api/prisma/schema.prisma
   git pull origin main
-  Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+  git checkout -- apps\api\prisma\schema.prisma
   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml build --pull
   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml run --rm migrate
   docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml up -d --force-recreate api web
@@ -439,7 +439,7 @@ sudo -u postgres pg_dump --format=custom workforce > /backup/workforce-$(date +%
 | `CORS_ORIGINS must contain exact, valid origins in production.` | `*` or a placeholder origin | put the exact `http://10.5.1.193:8099` |
 | `JWT_SECRET must be a non-placeholder secret of at least 32 characters` | the example value was kept | generate and paste a real one |
 | `SQLite is not permitted in production.` | a dev `.env` was copied | `DATABASE_URL` must be the `postgresql://` URL |
-| `prisma:warn Prisma failed to detect the libssl/openssl version` followed by `Error: Can't write to /app/node_modules/@prisma/engines` | the slim Node base image has no `openssl` CLI, so Prisma could not detect OpenSSL, fell back to the `openssl-1.1.x` engine and tried to download it as an unprivileged user | fixed in the image (the `openssl` package is installed in the build/migrate/api stages, and the engine directories are chowned to `node`). Pull the fix, then rebuild: `git checkout -- apps/api/prisma/schema.prisma; git pull origin main; Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force; docker compose ... build --pull` |
+| `prisma:warn Prisma failed to detect the libssl/openssl version` followed by `Error: Can't write to /app/node_modules/@prisma/engines` | the slim Node base image has no `openssl` CLI, so Prisma could not detect OpenSSL, fell back to the `openssl-1.1.x` engine and tried to download it as an unprivileged user | fixed in the image (the `openssl` package is installed in the build/migrate/api stages, and the engine directories are chowned to `node`). Pull the fix, then rebuild: `git checkout -- apps/api/prisma/schema.prisma; git pull origin main; git checkout -- apps\api\prisma\schema.prisma; docker compose ... build --pull` |
 | a stale migration folder in the working tree breaks `migrate deploy` (for example `20260826115630_init` from an older checkout) | `prisma migrate deploy` applies EVERY folder under `prisma/migrations`, in filename order, and the `migrate` image is built from that folder | delete the untracked folder(s), confirm `git status --short` shows only the schema swap, then rebuild the migrate image: `docker compose ... build migrate` |
 | `migrate` exits non-zero with `column ... already exists` | `01-schema.sql` was applied by hand | drop the database (`DROP DATABASE workforce;` then Phase 1.4) and let `migrate` run |
 | web is up but the pages are blank | the API is unhealthy behind nginx | `docker compose ... logs api`, then `/api/health/ready` |
@@ -459,7 +459,7 @@ sudo ufw allow from 10.5.1.193 to any port 5432 proto tcp
 ```powershell
 # ---- 10.5.1.193 (Windows PowerShell) ----
 cd C:\Project; git clone <repository-url> workforce-prod; cd workforce-prod; git checkout main
-Copy-Item apps\api\prisma\schema.postgresql.prisma apps\api\prisma\schema.prisma -Force
+git checkout -- apps\api\prisma\schema.prisma
 Copy-Item infra\docker\.env.production.example infra\docker\.env.production; notepad infra\docker\.env.production
 docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml build --pull
 docker compose --env-file infra/docker/.env.production -f infra/docker/compose.production.yml up -d

@@ -20,11 +20,11 @@ FROM dependencies AS build
 COPY apps/api apps/api
 COPY apps/web apps/web
 COPY packages/shared packages/shared
-# Guard: the image must be built from the PostgreSQL schema. Local development
-# switches apps/api/prisma/schema.prisma to `sqlite` (see
-# apps/api/prisma/schema.postgresql.prisma); shipping that variant would generate a
-# SQLite client and a SQLite datasource for a PostgreSQL deployment. Fail the build
-# instead of deploying something that cannot work.
+# Guard: the image must be built from the PostgreSQL schema. Local development on
+# SQLite edits apps/api/prisma/schema.prisma in place, and shipping that variant would
+# generate a SQLite client and a SQLite datasource for a PostgreSQL deployment. Fail the
+# build instead of deploying something that cannot work. There is no second schema file
+# to copy — the committed schema IS the PostgreSQL one, so the restore is a git checkout.
 RUN set -eux; \
     schema="apps/api/prisma/schema.prisma"; \
     tr -d '\r' < "$schema" > /tmp/schema.check; \
@@ -34,7 +34,7 @@ RUN set -eux; \
       printf '%s\n' \
         "ERROR: $schema declares the '${provider}' datasource provider." \
         "Production images must be built from the PostgreSQL schema." \
-        "Restore it with:  cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma" \
+        "Restore it with:  git checkout -- apps/api/prisma/schema.prisma" \
         "(and set DATABASE_URL back to the PostgreSQL URL in .env)."; \
       exit 1; \
     fi

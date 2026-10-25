@@ -12,7 +12,7 @@ workstreams share. Nothing here is optional.
 
 - Planning is finished; this is the build. Implement, then test.
 - The database schema is ALREADY migrated. Do not edit:
-  `apps/api/prisma/schema.prisma`, `schema.postgresql.prisma`, `prisma/migrations/**`,
+  `apps/api/prisma/schema.prisma`, `prisma/migrations/**`,
   `database/01-schema.sql`, `apps/api/prisma/seed.ts`, `apps/api/src/index.ts`,
   `apps/web/src/App.tsx`, `apps/web/src/components/AppLayout.tsx`.
   Those are owned by the integration lead. To make your router or page reachable, put

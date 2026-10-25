@@ -127,7 +127,7 @@ seen when it is exported in the shell or set in `apps/api/.env`; a value only in
 | Piece | Note |
 |---|---|
 | `apps/api/prisma/schema.prisma` | `provider = "sqlite"` — the only difference from the production schema |
-| `apps/api/prisma/schema.postgresql.prisma` | the production schema the reviewed migrations were generated from (kept verbatim) |
+| the committed PostgreSQL schema | there is no second schema file: restore it with `git checkout -- apps/api/prisma/schema.prisma` |
 | `apps/api/scripts/migrate.mjs` | `db:migrate` is provider-aware: `file:` URL -> `prisma db push`; PostgreSQL URL -> `prisma migrate deploy` |
 | `apps/api/src/index.ts` | accepts a `file:` URL in dev, still throws on SQLite when `NODE_ENV=production` |
 | `apps/api/.env`, `.env` | `DATABASE_URL="file:./dev.db"` (both git-ignored) |
@@ -189,7 +189,7 @@ Rollback: stop the API, then `cp apps/api/prisma/dev.db.presync-<timestamp> apps
 
 
 ```bash
-cp apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma
+git checkout -- apps/api/prisma/schema.prisma
 # set DATABASE_URL in .env back to postgresql://workforce:workforce@localhost:5433/workforce?schema=public
 npm run dev:db:up     # Docker Desktop, port 5433
 npm run db:setup
@@ -248,7 +248,7 @@ Three things must all point at the restored copy, and all three are already set 
    `apps/api/.env`:
    `postgresql://workforce_app:<dev password>@127.0.0.1:5433/workforce?schema=public`
 2. `apps/api/prisma/schema.prisma` = the **PostgreSQL** variant
-   (`Copy-Item apps/api/prisma/schema.postgresql.prisma apps/api/prisma/schema.prisma -Force`),
+   (`git checkout -- apps/api/prisma/schema.prisma`),
    then `npm run db:generate -w @workforce/api`.
 3. `CREDENTIAL_DELIVERY_ENABLED=false` — see the warning below.
 
