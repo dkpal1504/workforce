@@ -35,6 +35,7 @@ import {
   unreadTotal,
 } from "../services/conversations";
 import { resolveOwner } from "../services/jobOrderContext";
+import { jobOrderSearchFilters } from "../services/conversationSearch";
 import { isMessageOrigin } from "../services/conversationOrigins";
 import { summariseEscalations } from "../services/escalationStats";
 import { deliverMessage, conversationEmailEnabled } from "../services/notificationMail";
@@ -116,12 +117,17 @@ function deny(res: import("express").Response, code: "JOB_ORDER_NOT_FOUND" | "OU
   });
 }
 
-/** GET /api/conversations/threads?unread=1 — the list, escalations first. */
+/** GET /api/conversations/threads?unread=1&q= — the list, escalations first. */
 conversationsRouter.get("/conversations/threads", ...guarded, async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  // A search is answered over the WHOLE scoped set, so the page cannot be capped at the first hundred rows
+  // and quietly hide the rest of a project.
+  const defaultTake = q ? 200 : 100;
   const threads = await listThreads(scope, req.user!.email, {
     unreadOnly: req.query.unread === "1",
-    take: Math.min(200, Number(req.query.take ?? 100) || 100),
+    q,
+    take: Math.min(200, Number(req.query.take ?? defaultTake) || defaultTake),
   });
   res.json({ threads, scope: scope.kind, emailEnabled: conversationEmailEnabled() });
 });
@@ -133,6 +139,14 @@ conversationsRouter.get("/conversations/threads", ...guarded, async (req, res) =
  * The three structural filters exist for the Project-structure popover: a WBS or Network node owns
  * several Job Orders and cannot name one itself. They NARROW the scope and never widen it — an id from
  * another project simply intersects to nothing.
+ *
+ * `q` matches the Job Order by code or name AND its Project by code, name or id, so a planner can type
+ * "CSR.008" and get the Job Orders to start a thread on — the same question the Conversations search answers.
+ *
+ * Scope and search are ANDed, not merged. `jobOrderScopeWhere` already carries an `OR` for a Department-scoped
+ * HOD (their sections plus section-less standing work); spreading a search `OR` into the same object replaced
+ * that clause, which WIDENED the scope — an HOD searching for anything at all saw Job Orders from sections
+ * they do not hold. A filter may only ever narrow.
  */
 conversationsRouter.get("/conversations/job-orders", ...guarded, async (req, res) => {
   const scope = await conversationScopeFor(actorOf(req));
@@ -144,13 +158,16 @@ conversationsRouter.get("/conversations/job-orders", ...guarded, async (req, res
   const projectId = asId(req.query.projectId);
   const wbsId = asId(req.query.wbsId);
   const networkId = asId(req.query.networkId);
+  const search = jobOrderSearchFilters(q);
   const jobOrders = await prisma.jobOrder.findMany({
     where: {
-      ...jobOrderScopeWhere(scope),
+      AND: [
+        jobOrderScopeWhere(scope),
+        ...(search.length ? [{ OR: search }] : []),
+      ],
       ...(projectId ? { projectId } : {}),
       ...(wbsId ? { projectWbsId: wbsId } : {}),
       ...(networkId ? { networkId } : {}),
-      ...(q ? { OR: [{ code: { contains: q } }, { name: { contains: q } }] } : {}),
     },
     orderBy: { code: "asc" },
     take: 60,

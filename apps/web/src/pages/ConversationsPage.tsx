@@ -272,6 +272,8 @@ export function ConversationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [query, setQuery] = useState("");
+  /** What the SERVER is searching for: `query` is debounced into this, so typing does not fire a request per key. */
+  const [serverQuery, setServerQuery] = useState("");
   const [picking, setPicking] = useState(false);
   const [stats, setStats] = useState<{
     raisedFromPortfolio: number;
@@ -284,9 +286,21 @@ export function ConversationsPage() {
   const openJobOrder = Number(params.get("jobOrder")) || null;
   const intent = parseEscalateIntent(params);
 
+  // The search runs on the SERVER, over the whole scoped set. Filtering the hundred rows already loaded (what
+  // this page used to do) found the conversations that happened to be in that page and hid the rest — which is
+  // exactly the lie that matters when a planner asks for every conversation under one project.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setServerQuery(query.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
   const load = useCallback(async () => {
     try {
-      const data = await api<{ threads: ThreadRow[] }>(`/conversations/threads${filter === "unread" ? "?unread=1" : ""}`);
+      const params = new URLSearchParams();
+      if (filter === "unread") params.set("unread", "1");
+      if (serverQuery) params.set("q", serverQuery);
+      const suffix = params.toString();
+      const data = await api<{ threads: ThreadRow[] }>(`/conversations/threads${suffix ? `?${suffix}` : ""}`);
       setThreads(data.threads);
       setError(null);
     } catch (err) {
@@ -294,7 +308,7 @@ export function ConversationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, serverQuery]);
 
   useEffect(() => {
     void load();
@@ -310,6 +324,8 @@ export function ConversationsPage() {
       .catch(() => undefined);
   }, []);
 
+  // Instant narrowing while the server request is in flight. The same four things the server matches, so the
+  // two can never disagree: the Job Order's code and name, and its Project's code and name.
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return threads;
@@ -317,6 +333,7 @@ export function ConversationsPage() {
       (row) =>
         row.jobOrder.code.toLowerCase().includes(needle) ||
         row.jobOrder.name.toLowerCase().includes(needle) ||
+        row.jobOrder.project.code.toLowerCase().includes(needle) ||
         row.jobOrder.project.name.toLowerCase().includes(needle)
     );
   }, [threads, query]);
@@ -367,10 +384,10 @@ export function ConversationsPage() {
         <input
           className="conv-search"
           type="search"
-          placeholder="Filter by Job Order, project…"
+          placeholder="Search Job Order, or a Project code (CSR.008) or id…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          aria-label="Filter conversations"
+          aria-label="Search conversations by Job Order, or by Project code or id"
         />
 
         {loading && <p className="conv-empty">Loading…</p>}
@@ -543,10 +560,10 @@ function JobOrderPicker(props: { onPick: (jobOrderId: number) => void; onClose: 
           className="conv-search conv-search--modal"
           type="search"
           autoFocus
-          placeholder="Job Order code or description…"
+          placeholder="Job Order code, or a Project code or id…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          aria-label="Search Job Orders"
+          aria-label="Search Job Orders by code or description, or by Project code or id"
         />
         <ul className="conv-rows conv-rows--modal">
           {loading && <li className="conv-empty">Loading…</li>}

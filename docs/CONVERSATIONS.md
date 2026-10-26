@@ -60,6 +60,26 @@ floats — it is history.
 
 The rail badge counts unread **messages** across the reader's scope, not threads.
 
+**The search box** answers one question: "where is the conversation about X". It matches, in one pass:
+
+| Type | Matches |
+|---|---|
+| a Job Order | its code (`M4122`) or its name |
+| a Project | its code (`CSR.008`) or its name (`Ocean`) — and returns **every** Job Order under it that has a thread |
+| a Project id | a bare number (`15`), and nothing else, so a project number is never confused with a Job Order code that happens to contain that digit |
+
+The search runs **on the server**, over the reader's whole scope. It used to filter only the hundred threads
+the page had already loaded, which meant a project's conversations were found only if they happened to be in
+that page — and the rest were silently missing. Typing narrows instantly against what is loaded while the
+request is in flight, so the two never disagree. Scope and search are ANDed: a search can only ever narrow
+what a role may see, never widen it.
+
+Matching is case-sensitive, like the Job Order code search it extends: codes are stored upper case, so type
+`CSR.008`, not `csr.008`.
+
+The **Start a follow-up** picker takes the same terms, so a planner can type a project code and pick the Job
+Order to open.
+
 **The drawer.** Header: the Job Order, its project, the owner and the thread state. Then a chip row —
 `✦ Bottleneck brief`, `Where this stands`, `Expand all / Collapse all` — then the trail, then the
 composer.

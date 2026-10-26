@@ -9,6 +9,7 @@
  * only stores what the route has already authorised.
  */
 
+import { threadSearchFilters } from "./conversationSearch";
 import { prisma } from "../db";
 import { extractCommitments } from "./commitmentExtraction";
 import { escalationDueAt } from "./escalationClock";
@@ -376,14 +377,30 @@ export type ThreadRow = {
   unread: number;
 };
 
-/** The rows the Conversations page shows, scoped, escalations first. */
+/**
+ * The rows the Conversations page shows, scoped, escalations first.
+ *
+ * `q` is applied HERE rather than in the browser because the page used to filter only the hundred rows it
+ * had already loaded: searching a project found the conversations that happened to be in that page, and
+ * silently hid the rest. A project with sixty Job Orders is exactly where that lie is expensive.
+ *
+ * The search is ANDed with the scope, never merged into it. `threadScopeWhere` carries an `OR` of its own for
+ * a Department-scoped HOD (their sections plus the section-less standing work), so spreading both into one
+ * object would let the search's `OR` REPLACE the section restriction — the search box would widen a narrow
+ * scope, which is the one direction a filter must never move.
+ */
 export async function listThreads(
   scope: ConversationScope,
   viewerEmail: string,
-  options: { take?: number; unreadOnly?: boolean } = {}
+  options: { take?: number; unreadOnly?: boolean; q?: string } = {}
 ) {
+  const search = threadSearchFilters(options.q ?? "");
+  const where = search.length
+    ? { AND: [threadScopeWhere(scope), { OR: search }] }
+    : threadScopeWhere(scope);
+
   const rows = await prisma.jobOrderThread.findMany({
-    where: threadScopeWhere(scope),
+    where,
     orderBy: [{ lastMessageAt: "desc" }],
     take: options.take ?? 100,
     select: {
