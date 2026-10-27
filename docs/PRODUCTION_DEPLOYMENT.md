@@ -659,6 +659,30 @@ Two jobs that write rows on a timer, both gated so that a deploy never switches 
 | `REVIEW_SNAPSHOT_ENABLED` | `false` | Weekly Monday 00:30 and monthly 1st 01:30 freezes of the review payload. |
 | `APP_TIMEZONE` | `Asia/Kolkata` | The yard's business clock for both jobs. |
 
+**Never write a default over a key the operator already set.** These four are choices, not deploy inputs, and a
+release that "applies the defaults" silently reverts a decision that was made after reading the numbers. In
+particular `SETTLE_REPORTS=true` is the difference between dividing by each worker's own present days and
+dividing by every calendar day — flip it back to `false` and weekly offs and holidays reappear as days men
+failed to fill timesheets, which reads as a broken report and is really a reset flag. The same applies to
+`ATTENDANCE_SETTLEMENT_ENABLED`: switching it off stops the 06:00 settlement, and the data then ages without
+anything looking wrong.
+
+So when adding a key, add it only if it is absent:
+
+```powershell
+function Set-EnvDefault {
+    param([string]$File, [string]$Key, [string]$Value)
+    $path = (Resolve-Path -LiteralPath $File).Path
+    if (Select-String -LiteralPath $path -Pattern ('^\s*' + [regex]::Escape($Key) + '=') -Quiet) {
+        Write-Output "$Key already set — left alone"
+        return
+    }
+    $lines = @(Get-Content -LiteralPath $path) + ('{0}={1}' -f $Key, $Value)
+    [IO.File]::WriteAllText($path, ([string]::Join([Environment]::NewLine, $lines) + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Output "$Key added as $Value"
+}
+```
+
 Order of operations on the first deployment (never tear the stack down; always recreate the one service):
 
 1. `build migrate api web`, then `up -d --force-recreate migrate` — this applies
@@ -670,6 +694,14 @@ Order of operations on the first deployment (never tear the stack down; always r
 4. Run one review freeze by hand:
    `exec api node apps/api/scripts/review-snapshot-once.mjs --kind MONTHLY`. Only then set
    `REVIEW_SNAPSHOT_ENABLED=true` and recreate `api`.
+
+Read the four back from inside the container after any recreate, because the file is not the truth:
+
+```powershell
+docker compose -f infra\docker\compose.production.yml --env-file $envFile exec api printenv |
+    Select-String -Pattern '^(SETTLE_REPORTS|ATTENDANCE_SETTLEMENT|REVIEW_SNAPSHOT_ENABLED|APP_TIMEZONE)='
+```
+
 
 Full review contract and definitions: [PROJECT_REVIEW.md](PROJECT_REVIEW.md).
 
