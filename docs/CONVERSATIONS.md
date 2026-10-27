@@ -199,8 +199,9 @@ anything reaches the screen.
 | `APP_BASE_URL` | `http://localhost:5173` | the address in the reply link — must be the real one |
 | `CONVERSATION_FROM` | `SMTP_FROM` | the authenticated mailbox |
 | `CONVERSATION_FROM_MODE` | `display` | `display` (recommended) or `sender` (needs Send As) |
-| `CONVERSATION_SCHEDULER_ENABLED` | `false` | **the escalation clock and the sweeps** |
+| `CONVERSATION_SCHEDULER_ENABLED` | `false` | runs the sweep: the clock, the attachment cleanup, the chases |
 | `CONVERSATION_SCHEDULER_MINUTES` | `15` | sweep interval |
+| `CONVERSATION_REMINDERS_ENABLED` | `false` | **whether the application may mail anybody on its own** — the 8 h reminder and the 24 h escalation. Off means the clock is recorded (`escalationDueAt`, the review's by-age panel) but no rung is ever *sent*; person-posted mail is unaffected. The API prints `reminders: ON/OFF` at boot so an operator can see why the ladder is quiet |
 | `ATTACHMENT_DIR` | `./data/attachments` | must be the mounted volume in production |
 | `ASSISTANT_ENABLED` | `false` | the assistant layer |
 | `ASSISTANT_BASE_URL` | — | OpenAI-compatible base, e.g. `http://10.5.1.178:8000/v1` |
