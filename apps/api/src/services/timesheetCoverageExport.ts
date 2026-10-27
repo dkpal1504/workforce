@@ -187,6 +187,10 @@ function detailColumns(report: TimesheetCoverageReport): SheetColumn<CoverageRow
     { header: "Overheads", width: 12, numFmt: "0.00", tone: "overheads", value: (row) => row.overheads },
     { header: "Combined Hours", width: 14, numFmt: "0.00", tone: "combined", value: (row) => row.combinedHours },
     { header: "Approval Status", width: 16, tone: "status", value: (row) => row.status },
+    // Last, because it is the only free-text column: the numbers and the status keep their aligned block, and the
+    // supervisor's reason sits at the edge where it does not disturb a scan down the hours. One row is one
+    // employee-day, so this is the remark verbatim — stored whether or not the day carried overtime.
+    { header: "Remarks", width: 50, tone: "id", value: (row) => row.remarks ?? "" },
   ];
 }
 

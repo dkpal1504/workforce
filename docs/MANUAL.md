@@ -373,6 +373,24 @@ A deputy sees a banner on Approvals — *"You are acting as deputy HOD for IT un
 - **Grand total** = sum of hours per row (excluding OT).
 - **Mobile parity** — table collapses to cards at the ≤1023 px breakpoint.
 
+### The supervisor's remarks, in every download that carries rows
+
+A supervisor can write one remark per employee per day while filling the sheet. It is stored whether or not the
+day carried overtime — the field is only *mandatory* when the day exceeds the slot limit or has OT, but it is
+never discarded when it is optional. Every data download that prints employee-days now carries it:
+
+| Download | Column | What it holds |
+|---|---|---|
+| Summary → **Export CSV** | `Remarks` | every remark behind that line, joined with `" | "` |
+| Reports → **Timesheet coverage** (Excel) | `Remarks` (last column) | that employee-day's remark, verbatim; blank when nothing was written |
+| Portfolio dashboard → **Export** (Excel, data sheets) | `Remarks` (last column) | every remark written on a day booked to that Job Order — de-duplicated, newest first, dated `dd-mm`, at most six before it says "…and N more" |
+
+"Not booked" is deliberately **not** included: a day counts there because it has **no timesheet at all**, so there
+is no remark to carry. The column would be empty by construction, and an empty column reads as a data gap.
+
+The remark is per **employee-day**, not per Job Order line, and re-saving a day overwrites it — only its current
+value exists, with no edit history.
+
 ### 11.1 Job Order Summary
 
 The Job Order Summary shows **hours and quantity side by side**. The two measures are independent and are never blended, so one Job Order can be 80 % on hours and 40 % on quantity at the same moment.

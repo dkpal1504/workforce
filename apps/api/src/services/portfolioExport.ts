@@ -246,60 +246,67 @@ function addLabelValueSheet(
 
 /** Per-job-order columns for the detail sheets. The Band columns carry TEXT so the file is
  *  readable without colour — the colour is a bonus, never the message. */
-const JOB_DETAIL_COLUMNS: SheetColumn<ReportJobRow>[] = [
-  { header: "Project", width: 16, value: (row) => row.project.name },
-  { header: "WBS", width: 14, value: (row) => row.wbs.wbsCode },
-  { header: "Code", width: 12, value: (row) => row.code },
-  { header: "Job", width: 28, value: (row) => row.name },
-  { header: "Department", width: 16, value: (row) => row.department.name },
-  { header: "Section", width: 16, value: (row) => sectionName(row) },
-  { header: "Status", width: 10, value: (row) => row.status },
-  { header: "UoM", width: 8, value: (row) => row.uom },
-  // Excel column width is in CHARACTERS, so 15 holds the longest Band label "NOT_MEASURABLE"
-  // (14 characters) on ONE line with a spare character. Unlike the PDF there is no relative
-  // scaling to fight here — the number is the character budget itself, so it was already safe.
-  { header: "Band", width: 15, value: (row) => row.hoursBand },
-  { header: "Budget h", width: 12, numFmt: "0.00", value: (row) => row.budgetHours },
-  { header: "Actual h", width: 12, numFmt: "0.00", value: (row) => row.actualHours },
-  { header: "Burn %", width: 10, numFmt: "0.0%", value: (row) => row.burnPct },
-  { header: "Hrs/day", width: 10, numFmt: "0.00", value: (row) => row.hoursPerDay },
-  // "Forecast exhausted" -> "Forecast": the date format below already says it is a date, so the
-  // second word was costing every row height in the sheet. The width is trimmed to 11 because
-  // that still holds the header on one line AND a `dd-mm-yyyy` value (10 visible characters).
-  { header: "Forecast", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.forecastExhaustedOn) },
-  // The three quantity columns, in the order the operator named them. The header strings are
-  // EXACT (QTY_BDG / QTY_Prgsd / %Qty) because this sheet is read in Excel alongside the
-  // operator's own trackers, which key off those literal names. They replace the old
-  // "Target qty" / "Achieved qty" / "Qty %" trio — leaving both would be two columns saying
-  // the same thing, which reads as a discrepancy to anyone scanning the sheet.
-  // The first two stay numeric with "0.00"; the third prints `qtyCompletePct`, the ALWAYS
-  // finite fraction (0, never blank/NaN) so a divide-by-zero is a real 0% in the cell.
-  // The SCHEDULE axis, beside the hours forecast rather than mixed into it: the hours forecast says
-  // when the BUDGET runs out, the projected finish says when the WORK does, and a reader needs both.
-  // "Schedule" states the judgement, "Days" is the number that judgement rests on, and the three dates
-  // are stored as real dates so the sheet can be sorted and subtracted in Excel.
-  { header: "Schedule", width: 15, value: (row) => row.scheduleBand },
-  { header: "Days", width: 10, value: (row) => scheduleDays(row) },
-  { header: "Plan start", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.plannedStartDate) },
-  { header: "Plan end", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.plannedEndDate) },
-  { header: "Proj finish", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.projectedFinish) },
-  { header: "QTY_BDG", width: 12, numFmt: "0.00", value: (row) => row.targetQty },
-  { header: "QTY_Prgsd", width: 12, numFmt: "0.00", value: (row) => row.achievedQty },
-  { header: "%Qty", width: 10, numFmt: "0.0%", value: (row) => row.qtyCompletePct },
-  // Kept: the band is a JUDGEMENT and the balance is REMAINING quantity — neither is derivable
-  // from the three columns above without re-applying rules the reader should not have to know.
-  { header: "Qty band", width: 15, value: (row) => row.qtyBand },
-  { header: "Balance qty", width: 12, numFmt: "0.00", value: (row) => row.balanceQty },
-  // "Last booking" -> "Last bk" and 13 -> 10: "bk" still reads as booking in context, and a date
-  // needs only 10 characters. "Days since activity" -> "Days idle": shorter AND clearer.
-  { header: "Last bk", width: 10, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.lastBooking) },
-  { header: "Days idle", width: 9, numFmt: "0", value: (row) => row.daysSinceActivity },
-  { header: "Unappr h", width: 10, numFmt: "0.00", value: (row) => row.unapprovedHours },
-  // "Oldest unapproved" -> "Oldest unappr": still unambiguous next to "Unappr h".
-  { header: "Oldest unappr", width: 12, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.oldestUnapprovedAt) },
-  { header: "Attention", width: 10, numFmt: "0", value: (row) => row.attentionScore },
-  { header: "Reasons", width: 46, value: (row) => reasonsText(row) },
-];
+function jobDetailColumns(remarks?: ReadonlyMap<number, string>): SheetColumn<ReportJobRow>[] {
+  return [
+    { header: "Project", width: 16, value: (row) => row.project.name },
+    { header: "WBS", width: 14, value: (row) => row.wbs.wbsCode },
+    { header: "Code", width: 12, value: (row) => row.code },
+    { header: "Job", width: 28, value: (row) => row.name },
+    { header: "Department", width: 16, value: (row) => row.department.name },
+    { header: "Section", width: 16, value: (row) => sectionName(row) },
+    { header: "Status", width: 10, value: (row) => row.status },
+    { header: "UoM", width: 8, value: (row) => row.uom },
+    // Excel column width is in CHARACTERS, so 15 holds the longest Band label "NOT_MEASURABLE"
+    // (14 characters) on ONE line with a spare character. Unlike the PDF there is no relative
+    // scaling to fight here — the number is the character budget itself, so it was already safe.
+    { header: "Band", width: 15, value: (row) => row.hoursBand },
+    { header: "Budget h", width: 12, numFmt: "0.00", value: (row) => row.budgetHours },
+    { header: "Actual h", width: 12, numFmt: "0.00", value: (row) => row.actualHours },
+    { header: "Burn %", width: 10, numFmt: "0.0%", value: (row) => row.burnPct },
+    { header: "Hrs/day", width: 10, numFmt: "0.00", value: (row) => row.hoursPerDay },
+    // "Forecast exhausted" -> "Forecast": the date format below already says it is a date, so the
+    // second word was costing every row height in the sheet. The width is trimmed to 11 because
+    // that still holds the header on one line AND a `dd-mm-yyyy` value (10 visible characters).
+    { header: "Forecast", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.forecastExhaustedOn) },
+    // The three quantity columns, in the order the operator named them. The header strings are
+    // EXACT (QTY_BDG / QTY_Prgsd / %Qty) because this sheet is read in Excel alongside the
+    // operator's own trackers, which key off those literal names. They replace the old
+    // "Target qty" / "Achieved qty" / "Qty %" trio — leaving both would be two columns saying
+    // the same thing, which reads as a discrepancy to anyone scanning the sheet.
+    // The first two stay numeric with "0.00"; the third prints `qtyCompletePct`, the ALWAYS
+    // finite fraction (0, never blank/NaN) so a divide-by-zero is a real 0% in the cell.
+    // The SCHEDULE axis, beside the hours forecast rather than mixed into it: the hours forecast says
+    // when the BUDGET runs out, the projected finish says when the WORK does, and a reader needs both.
+    // "Schedule" states the judgement, "Days" is the number that judgement rests on, and the three dates
+    // are stored as real dates so the sheet can be sorted and subtracted in Excel.
+    { header: "Schedule", width: 15, value: (row) => row.scheduleBand },
+    { header: "Days", width: 10, value: (row) => scheduleDays(row) },
+    { header: "Plan start", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.plannedStartDate) },
+    { header: "Plan end", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.plannedEndDate) },
+    { header: "Proj finish", width: 11, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.projectedFinish) },
+    { header: "QTY_BDG", width: 12, numFmt: "0.00", value: (row) => row.targetQty },
+    { header: "QTY_Prgsd", width: 12, numFmt: "0.00", value: (row) => row.achievedQty },
+    { header: "%Qty", width: 10, numFmt: "0.0%", value: (row) => row.qtyCompletePct },
+    // Kept: the band is a JUDGEMENT and the balance is REMAINING quantity — neither is derivable
+    // from the three columns above without re-applying rules the reader should not have to know.
+    { header: "Qty band", width: 15, value: (row) => row.qtyBand },
+    { header: "Balance qty", width: 12, numFmt: "0.00", value: (row) => row.balanceQty },
+    // "Last booking" -> "Last bk" and 13 -> 10: "bk" still reads as booking in context, and a date
+    // needs only 10 characters. "Days since activity" -> "Days idle": shorter AND clearer.
+    { header: "Last bk", width: 10, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.lastBooking) },
+    { header: "Days idle", width: 9, numFmt: "0", value: (row) => row.daysSinceActivity },
+    { header: "Unappr h", width: 10, numFmt: "0.00", value: (row) => row.unapprovedHours },
+    // "Oldest unapproved" -> "Oldest unappr": still unambiguous next to "Unappr h".
+    { header: "Oldest unappr", width: 12, numFmt: "dd-mm-yyyy", value: (row) => dateCell(row.oldestUnapprovedAt) },
+    { header: "Attention", width: 10, numFmt: "0", value: (row) => row.attentionScore },
+    { header: "Reasons", width: 46, value: (row) => reasonsText(row) },
+    // The supervisor's words, when the caller supplied them. A dump of hours without the reasons those hours
+    // were what they were sends the reader back to the screen — which is the thing a dump exists to avoid.
+    ...(remarks
+      ? [{ header: "Remarks", width: 60, value: (row: ReportJobRow) => remarks.get(row.id) ?? "" }]
+      : []),
+  ];
+}
 
 /** The exception buckets, in the order the report defines them, with their printed names. */
 function exceptionSheets(report: PortfolioReport): Array<{ label: string; count: number; rows: ReportJobRow[] }> {
@@ -335,8 +342,14 @@ export async function buildPortfolioXlsx(
    * Optional so every existing caller and test keeps working; when present the workbook gains two sheets,
    * and the file can no longer be read as "the portfolio" while the screen also shows why it is late.
    */
-  insights?: ReportInsights
+  insights?: ReportInsights,
+  /**
+   * Supervisor remarks per Job Order, when the caller has them. Optional so every existing caller and test keeps
+   * working, and so the purity of this function survives: the remark TEXT arrives assembled, this only lays it out.
+   */
+  remarks?: ReadonlyMap<number, string>
 ): Promise<Buffer> {
+  const detailColumns = jobDetailColumns(remarks);
   const workbook = new ExcelJS.Workbook();
   workbook.creator = report.provenance.generatedBy.name;
   workbook.created = new Date(report.generatedAt);
@@ -376,14 +389,14 @@ export async function buildPortfolioXlsx(
   /* ---- Data sheets ------------------------------------------------------ */
   // "Needs push", "Job work" and "On track" share the detail columns; each is the report's own
   // already-ordered list, so the sheet order IS the ranking.
-  addDataSheet(workbook, "Needs push", JOB_DETAIL_COLUMNS, report.needsPush);
+  addDataSheet(workbook, "Needs push", detailColumns, report.needsPush);
   // The schedule section, exported like every other section (worst window first, as assembled).
-  addDataSheet(workbook, "Schedule & delays", JOB_DETAIL_COLUMNS, report.scheduleDelays);
+  addDataSheet(workbook, "Schedule & delays", detailColumns, report.scheduleDelays);
   // The parity sheet: exactly one row per jobWork entry, no subtotals, no filtering.
-  addDataSheet(workbook, "Job work", JOB_DETAIL_COLUMNS, report.jobWork);
+  addDataSheet(workbook, "Job work", detailColumns, report.jobWork);
   // On track carries BOTH halves of the split; the Band column tells GREEN (measurable and
   // healthy) apart from NOT_MEASURABLE (no hours budget to judge), which must never be blended.
-  addDataSheet(workbook, "On track", JOB_DETAIL_COLUMNS, [
+  addDataSheet(workbook, "On track", detailColumns, [
     ...report.onTrack,
     ...report.onTrackNotMeasurable,
   ]);

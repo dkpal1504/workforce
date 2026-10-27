@@ -12,6 +12,7 @@ import {
   portfolioExportFilename,
   type PortfolioExportFormat,
 } from "../services/portfolioExport";
+import { remarksByJobOrder } from "../services/timesheetRemarks";
 import {
   CoverageRequestError,
   buildTimesheetCoverageReport,
@@ -174,9 +175,17 @@ function downloadHandler(format: PortfolioExportFormat) {
         hindranceState
       );
 
+      // The supervisor's remarks travel with the DATA dump only. They are per Job Order here (every remark on a
+      // day booked to it), so the workbook answers "why were these hours what they were" without the reader
+      // going back to the screen. The PDF stays a management summary: a 60-character column of sentences in a
+      // paginated landscape page is unreadable, and the screen shows them anyway.
+      const remarks = format === "xlsx"
+        ? await remarksByJobOrder(jobOrderIdsOf(report))
+        : undefined;
+
       const buffer =
         format === "xlsx"
-          ? await buildPortfolioXlsx(report, parsed.filters, undefined, insights)
+          ? await buildPortfolioXlsx(report, parsed.filters, undefined, insights, remarks)
           : await buildPortfolioPdf(report, parsed.filters, undefined, insights);
 
       // The filename carries the as-of date AND the filters hash, so two differently-filtered
@@ -212,6 +221,23 @@ function downloadHandler(format: PortfolioExportFormat) {
       return res.status(500).json({ error: message, code: "PORTFOLIO_EXPORT_FAILED" });
     }
   };
+}
+
+/**
+ * Every Job Order the workbook's detail sheets print, so ONE remark query can serve all of them.
+ *
+ * The four sheets are the report's own ordered lists and they overlap (a Job Order can be in Needs push and in
+ * Job work), so the set is de-duplicated before it reaches SQL.
+ */
+function jobOrderIdsOf(report: PortfolioReport): number[] {
+  const rows = [
+    ...report.needsPush,
+    ...report.scheduleDelays,
+    ...report.jobWork,
+    ...report.onTrack,
+    ...report.onTrackNotMeasurable,
+  ];
+  return [...new Set(rows.map((row) => row.id))];
 }
 
 // GET /api/reports/portfolio.xlsx — the same IDENTICAL query parameters as the JSON screen.

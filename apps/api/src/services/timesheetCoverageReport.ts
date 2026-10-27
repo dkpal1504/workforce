@@ -70,6 +70,13 @@ export type CoverageRow = {
   section: { id: number; name: string } | null;
   /** The supervisors whose sheet(s) cover this employee-day; more than one when two sheets exist. */
   supervisors: string[];
+  /**
+   * What the supervisor wrote against this employee-day, verbatim, or null when nothing was written.
+   *
+   * One row is one employee-day, so this is that day's remark exactly — no joining, no cap, no formatting. The
+   * remark is stored whether or not the day carried overtime, so a day with no OT still explains itself.
+   */
+  remarks: string | null;
   employee: { id: number; ecNo: string; name: string };
   /** Regular hours per Project colour key (the keys of `projects`). */
   projectHours: Record<string, number>;
@@ -230,6 +237,7 @@ export async function buildTimesheetCoverageReport(
           employeeId: true,
           workDate: true,
           status: true,
+          remarks: true,
           taggedBy: { select: { name: true } },
           entries: {
             select: {
@@ -287,6 +295,10 @@ export async function buildTimesheetCoverageReport(
         department: employee.department,
         section: employee.sectionAssignment?.section ?? null,
         supervisors: [...new Set(daySheets.map((sheet) => sheet.taggedBy.name))].sort(),
+        // Two sheets can exist for one employee-day (a re-tag); their remarks are the same field on two rows, so
+        // the joined text is what a reader would see on either screen. Blank collapses to null so an empty cell
+        // stays empty rather than holding "".
+        remarks: [...new Set(daySheets.map((sheet) => (sheet.remarks ?? "").trim()).filter(Boolean))].join(" | ") || null,
         employee: { id: employee.id, ecNo: employee.ecNo, name: employee.name },
         projectHours: booking.projectHours,
         projectOtHours: booking.projectOtHours,

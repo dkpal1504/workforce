@@ -22,6 +22,7 @@ function row(date: string, employeeId: number, status: CoverageRow["status"], na
     department: { id: 7, name: "Production - EOU" },
     section: { id: 1, name: "Hull" },
     supervisors: ["Sup A"],
+    remarks: null,
     employee: { id: employeeId, ecNo: `EMP${employeeId}`, name },
     projectHours: { P1: 8 },
     projectOtHours: { P1: 2 },
@@ -98,13 +99,14 @@ test("the detail headers are the operator's columns, one Regular/OT pair per Pro
   assert.deepEqual(headers.slice(0, 6), ["Date", "Department", "Section", "Supervisor", "EC No", "Employee name"]);
   assert.ok(headers.includes("Project A — Regular"));
   assert.ok(headers.includes("Project A — OT"));
-  assert.deepEqual(headers.slice(-6), [
+  assert.deepEqual(headers.slice(-7), [
     "Total Project hours — Regular",
     "Total Project hours — OT",
     "Total Project hours — Total",
     "Overheads",
     "Combined Hours",
     "Approval Status",
+    "Remarks",
   ]);
 });
 
@@ -152,7 +154,22 @@ test("the workbook carries both sheets, every data row, and its own provenance",
   const firstData = detail.getRow(headerRowIndex + 1);
   assert.equal(String(firstData.getCell(5).value), "EMP101");
   assert.equal(String(firstData.getCell(6).value), "EMP1");
-  assert.equal(String(firstData.getCell(detail.columnCount).value), "Approved");
+
+  // By HEADER, not by position: the status column used to be last and now has the supervisor's remark beside it,
+  // and a test that names a column by its position breaks every time a column is added — which is exactly what
+  // this one just proved.
+  const header = detail.getRow(headerRowIndex);
+  const columnOf = (name: string): number => {
+    for (let index = 1; index <= detail.columnCount; index += 1) {
+      if (String(header.getCell(index).value) === name) return index;
+    }
+    throw new Error(`no column called ${name}`);
+  };
+  assert.equal(String(firstData.getCell(columnOf("Approval Status")).value), "Approved");
+  // The remark column exists on every detail sheet, and an employee-day with no remark is an EMPTY cell, not a
+  // dash or a lie: "" is what the supervisor left behind.
+  assert.equal(columnOf("Remarks"), detail.columnCount, "Remarks is the last column");
+  assert.equal(String(firstData.getCell(columnOf("Remarks")).value), "");
 });
 
 test("the filename states the period, because that is what distinguishes two runs", () => {
