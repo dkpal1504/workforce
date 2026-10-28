@@ -435,6 +435,10 @@ employeeAllocationRouter.get("/pending", requireRoles("HOD", "PM", "ADMIN", "HR"
         include: {
           project: { select: { id: true, name: true, colorKey: true } },
           jobOrder: { select: { id: true, code: true, name: true } },
+          // Who put the hours in. The approvals screen filters by Supervisor, and a My Hours day has no
+          // supervisor in its chain — the allocator is the person who answered for it, and naming him is
+          // better than a filter that silently cannot work on this queue.
+          allocatedBy: { select: { id: true, name: true } },
         },
       },
     },

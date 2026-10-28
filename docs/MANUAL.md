@@ -167,6 +167,22 @@ Click **Submit for Approval**. If any day exceeds the configured daily cap, a ma
 
 **Path:** `/approvals` (top nav: **Approvals**).
 
+### 3.0 Narrowing a long queue: Department, Supervisor, Project
+
+Three filters sit above the tabs and govern **both** of them:
+
+| Filter | Matches |
+|---|---|
+| **Department** | the department label printed on the row, exactly — "Production" is not "Production - EOU", because those are two departments with two chains |
+| **Supervisor** | the supervisor whose sheet the day came from. On a **My Hours** submission there is no supervisor in the chain, so it matches the account that allocated the hours — usually the employee himself, and an Admin or HOD when they allocated for him |
+| **Project** | any row carrying hours, an allocation or a consumption figure on that project — the timesheet queues know a project by its colour key, the payroll and Job Order lenses by its id, and the filter speaks both by translating the key first |
+
+- The dropdowns offer only what the loaded queue contains, so no option empties the screen by existing.
+- A running count beside them reads `12 of 40 row(s)`, and `40` when nothing is filtered. It counts the tab you are on: pending rows on **Pending**, decided rows on **Approved**.
+- **Clear filters** appears only while a filter is set.
+- A section emptied by a filter says *"No My Hours submissions match these filters."* rather than "nothing pending", so an empty table is never mistaken for an empty queue.
+- The filters are applied **in the browser, on top of the server's scope**. They can hide rows you may see; they can never reveal one.
+
 ### 3.1 Routing rules
 
 - **HOD** is scoped to a **Department + Section** (`User.departmentId` + `User.sectionId`), matched against the employee's organisation. Each Section has its own HOD; HODs see only submissions for their Section. An HOD with no mapping fails closed (empty queue, `403` on mutation).

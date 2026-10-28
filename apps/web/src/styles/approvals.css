@@ -779,3 +779,64 @@
 .approvals-readonly .btn-send-back {
   display: none;
 }
+
+/* The three filters the Project Head queue needed. Above the tabs, because they govern both tabs: a manager
+   narrowing to one department wants the same narrowing when he checks what was approved. Wraps on a narrow
+   screen rather than pushing the tabs off the row. */
+.approval-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--surface-alt, #f6f8f9);
+}
+
+.approval-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 168px;
+}
+
+.approval-filters__field > span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.approval-filters__field select {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border, #cfd6dc);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.approval-filters__clear {
+  height: 34px;
+  align-self: flex-end;
+}
+
+.approval-filters__count {
+  margin-left: auto;
+  align-self: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .approval-filters__field {
+    min-width: 100%;
+  }
+
+  .approval-filters__count {
+    margin-left: 0;
+  }
+}

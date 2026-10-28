@@ -2,6 +2,15 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { formatDay, formatStamp } from "./formatDate";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import {
+  anyFilterActive,
+  filteredCount,
+  matchesFilters,
+  NO_FILTERS,
+  optionLists,
+  projectIdsFromKeys,
+  type ApprovalFilters,
+} from "../lib/approvalFilters";
 import "../styles/approvals.css";
 
 type ProjectHours = Record<string, number>;
@@ -87,10 +96,14 @@ type HistoryItem = {
   approver: { id: number; name: string; role: string };
 };
 
+type ProjectOption = { id: number; code: string; name: string; colorKey?: string | null };
+
 type PendingPayload = {
   role: string;
   roleLabel: string;
   maxDailyHours: number;
+  /** Every project, ordered by the Project's sort order: the colour keys the tables print resolve through it. */
+  projects: ProjectOption[];
   received: SupervisorGroup[];
   returnedByPlanning: ReturnedRow[];
 };
@@ -101,8 +114,15 @@ type PayrollAllocationDay = {
   workDate: string;
   status: string;
   remarks: string | null;
-  employee: { id: number; name: string; ecNo: string; department: { name: string } };
-  allocations: { id: number; shiftSlot: string; project: { name: string }; jobOrder: { code: string; name: string } | null }[];
+  employee: { id: number; name: string; ecNo: string; department: { id: number; name: string } };
+  allocations: {
+    id: number;
+    shiftSlot: string;
+    project: { id: number; name: string; colorKey?: string | null };
+    jobOrder: { id: number; code: string; name: string } | null;
+    /** The account that put the hours in — the nearest thing a My Hours day has to a supervisor. */
+    allocatedBy?: { id: number; name: string } | null;
+  }[];
 };
 
 type PayrollApproval = {
@@ -221,6 +241,7 @@ export function ApprovalsPage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [payrollPending, setPayrollPending] = useState<PayrollAllocationDay[]>([]);
   const [payrollHistory, setPayrollHistory] = useState<PayrollApproval[]>([]);
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [roleLabel, setRoleLabel] = useState("HOD");
   const [maxDailyHours, setMaxDailyHours] = useState(8);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -238,6 +259,164 @@ export function ApprovalsPage() {
     : user?.role === "ADMIN"
       ? "Approvals (view only)"
       : `${roleLabel} Approvals`;
+
+  /**
+   * The three filters at the top of the screen. Empty string = "all", because a `<select>` has no null option
+   * that reads well and "" is what the first option holds.
+   */
+  const [filters, setFilters] = useState<ApprovalFilters>(NO_FILTERS);
+
+  /** colour key → project id: the timesheet queues print projects as colour keys, the payroll lens as ids. */
+  const keyToId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const project of projects) {
+      if (project.colorKey) map.set(project.colorKey, project.id);
+    }
+    return map;
+  }, [projects]);
+
+  const filtered = useMemo(() => {
+    if (!anyFilterActive(filters)) {
+      return {
+        payroll: payrollPending,
+        groups: received,
+        returned,
+        history,
+        payrollHistory,
+        jobOrders: jobOrderRows,
+      };
+    }
+
+    // Every section reduces its own row shape to the same little subject, so the three filters mean the same
+    // thing on all of them — and a filter can only ever remove rows.
+    const payroll = payrollPending.filter((day) =>
+      matchesFilters(filters, {
+        department: day.employee.department?.name ?? null,
+        // A My Hours day has no supervisor in its chain; the accounts that allocated the slots are what it
+        // has, and they are who a manager is looking for when he filters this list by name.
+        supervisorIds: [...new Set(day.allocations.map((slot) => slot.allocatedBy?.id).filter((id): id is number => id != null))],
+        projectIds: [...new Set(day.allocations.map((slot) => slot.project?.id).filter((id): id is number => id != null))],
+      })
+    );
+
+    const groups = received
+      .map((group) => ({
+        // A supervisor's group is one date: keep the group, and keep only the employees that pass.
+        ...group,
+        employees: group.employees.filter((row) =>
+          matchesFilters(filters, {
+            department: row.employee.department,
+            supervisorIds: [row.supervisor?.id ?? group.supervisorId],
+            projectIds: projectIdsFromKeys({ ...row.projectHours, ...row.projectOtHours }, keyToId),
+          })
+        ),
+      }))
+      .filter((group) => group.employees.length > 0);
+
+    const returnedRows = returned.filter((row) =>
+      matchesFilters(filters, {
+        department: row.employee.department,
+        supervisorIds: [row.supervisor?.id ?? 0],
+        projectIds: projectIdsFromKeys({ ...row.projectHours, ...row.projectOtHours }, keyToId),
+      })
+    );
+
+    const historyRows = history.filter((row) =>
+      matchesFilters(filters, {
+        department: row.employee.department,
+        supervisorIds: [row.supervisor?.id ?? 0],
+        projectIds: projectIdsFromKeys({ ...row.projectHours, ...row.projectOtHours }, keyToId),
+      })
+    );
+
+    const payrollHistoryRows = payrollHistory.filter((row) =>
+      matchesFilters(filters, {
+        department: row.allocationDay.employee.department?.name ?? null,
+        supervisorIds: [
+          ...new Set(
+            row.allocationDay.allocations
+              .map((slot) => slot.allocatedBy?.id)
+              .filter((id): id is number => id != null)
+          ),
+        ],
+        projectIds: [
+          ...new Set(
+            row.allocationDay.allocations
+              .map((slot) => slot.project?.id)
+              .filter((id): id is number => id != null)
+          ),
+        ],
+      })
+    );
+
+    // The consumption lens carries one Job Order per row and names its project by colour key.
+    const jobOrders = jobOrderRows.filter((row) =>
+      matchesFilters(filters, {
+        department: null,
+        supervisorIds: [],
+        projectIds: projectIdsFromKeys({ [row.projectColorKey]: row.consumptionApproved + row.consumptionUnapproved }, keyToId),
+      })
+    );
+
+    return { payroll, groups, returned: returnedRows, history: historyRows, payrollHistory: payrollHistoryRows, jobOrders };
+  }, [filters, payrollPending, received, returned, history, payrollHistory, jobOrderRows, keyToId]);
+
+  /** Every project id that appears anywhere in the loaded queues — the only ids the Project filter may offer. */
+  const presentProjectIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const day of payrollPending) {
+      for (const slot of day.allocations) {
+        if (slot.project?.id != null) ids.add(slot.project.id);
+      }
+    }
+    const addFromHours = (hours: Record<string, number> | undefined) => {
+      for (const id of projectIdsFromKeys(hours, keyToId)) ids.add(id);
+    };
+    for (const group of received) {
+      addFromHours(group.projectHours);
+      addFromHours(group.projectOtHours);
+      for (const row of group.employees) {
+        addFromHours(row.projectHours);
+        addFromHours(row.projectOtHours);
+      }
+    }
+    for (const row of returned) {
+      addFromHours(row.projectHours);
+      addFromHours(row.projectOtHours);
+    }
+    for (const row of history) {
+      addFromHours(row.projectHours);
+      addFromHours(row.projectOtHours);
+    }
+    for (const row of jobOrderRows) {
+      const id = keyToId.get(row.projectColorKey);
+      if (id != null) ids.add(id);
+    }
+    return [...ids].sort((a, b) => a - b);
+  }, [payrollPending, received, returned, history, jobOrderRows, keyToId]);
+
+  const filterOptions = useMemo(
+    () =>
+      optionLists({
+        departments: [
+          ...payrollPending.map((day) => day.employee.department?.name),
+          ...received.flatMap((group) => group.employees.map((row) => row.employee.department)),
+          ...returned.map((row) => row.employee.department),
+          ...history.map((row) => row.employee.department),
+        ],
+        supervisors: [
+          ...received.map((group) => ({ id: group.supervisorId, name: group.supervisorName })),
+          ...returned.map((row) => row.supervisor),
+          ...payrollPending.flatMap((day) => day.allocations.map((slot) => slot.allocatedBy ?? null)),
+        ],
+        // Only the projects these queues actually contain. All fifteen would offer eleven choices that answer
+        // "no rows", and a dropdown where most options empty the screen reads as a broken filter.
+        projects: [
+          ...presentProjectIds.map((id) => projects.find((project) => project.id === id) ?? null),
+        ],
+      }),
+    [payrollPending, received, returned, history, jobOrderRows, projects, presentProjectIds]
+  );
 
   const allEmployeeIds = useMemo(
     () => received.flatMap((g) => g.employees.map((e) => e.id)),
@@ -283,6 +462,7 @@ export function ApprovalsPage() {
       const data = await api<PendingPayload>("/approvals/pending");
       setReceived(data.received);
       setReturned(data.returnedByPlanning || []);
+      setProjects(data.projects ?? []);
       setRoleLabel(data.roleLabel);
       setMaxDailyHours(data.maxDailyHours);
       const payroll = await api<{ days: PayrollAllocationDay[] }>("/allocations/pending");
@@ -454,6 +634,69 @@ export function ApprovalsPage() {
         </p>
       </div>
 
+      {/**
+       * The three filters the queue needed: Department, Supervisor, Project. Placed above the tabs because they
+       * govern BOTH tabs — a manager narrowing to one department wants the same narrowing when he checks what
+       * was approved.
+       */}
+      <div className="approval-filters" role="group" aria-label="Filter approvals">
+        <label className="approval-filters__field">
+          <span>Department</span>
+          <select
+            value={filters.department}
+            onChange={(event) => setFilters((current) => ({ ...current, department: event.target.value }))}
+          >
+            <option value="">All departments</option>
+            {filterOptions.departments.map((department) => (
+              <option key={department} value={department}>{department}</option>
+            ))}
+          </select>
+        </label>
+        <label className="approval-filters__field">
+          <span>Supervisor</span>
+          <select
+            value={filters.supervisor}
+            onChange={(event) => setFilters((current) => ({ ...current, supervisor: event.target.value }))}
+          >
+            <option value="">All supervisors</option>
+            {filterOptions.supervisors.map((supervisor) => (
+              <option key={supervisor.id} value={String(supervisor.id)}>{supervisor.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="approval-filters__field">
+          <span>Project</span>
+          <select
+            value={filters.project}
+            onChange={(event) => setFilters((current) => ({ ...current, project: event.target.value }))}
+          >
+            <option value="">All projects</option>
+            {filterOptions.projects.map((project) => (
+              <option key={project.id} value={String(project.id)}>{project.code} — {project.name}</option>
+            ))}
+          </select>
+        </label>
+        {anyFilterActive(filters) && (
+          <button type="button" className="btn btn-secondary approval-filters__clear" onClick={() => setFilters(NO_FILTERS)}>
+            Clear filters
+          </button>
+        )}
+        <span className="muted approval-filters__count">
+          {/* The count belongs to the tab you are on: "12 of 40" on Pending means nothing while you are looking
+              at what was approved, and a number that belongs to another list is worse than no number. */}
+          {tab === "pending"
+            ? filteredCount(
+                filtered.payroll.length + filtered.groups.reduce((sum, group) => sum + group.employees.length, 0),
+                payrollPending.length + received.reduce((sum, group) => sum + group.employees.length, 0)
+              )
+            : filteredCount(
+                filtered.history.length + filtered.payrollHistory.length,
+                history.length + payrollHistory.length
+              )}{" "}
+          row(s)
+        </span>
+      </div>
+
       <div className="hod-tabs" role="tablist">
         <button
           type="button"
@@ -488,13 +731,13 @@ export function ApprovalsPage() {
               <table className="hod-table">
                 <thead><tr><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Projects / Job Orders</th><th>Actions</th></tr></thead>
                 <tbody>
-                  {payrollPending.map((day) => <tr key={day.id}>
+                  {filtered.payroll.map((day) => <tr key={day.id}>
                     <td>{day.employee.name} <span className="muted">({day.employee.ecNo})</span></td>
                     <td>{day.employee.department.name}</td><td>{fmtDate(day.workDate)}</td><td>{day.allocations.length * 2}</td>
                     <td>{day.allocations.map((slot) => `${slot.project.name}${slot.jobOrder ? ` / ${slot.jobOrder.code}` : ""}`).join(", ")}</td>
                     <td><button className="btn btn-approve" onClick={() => void actPayroll(day.id, "approve")}>Approve</button>{" "}<button className="btn btn-reject" onClick={() => void actPayroll(day.id, "reject")}>Reject</button></td>
                   </tr>)}
-                  {!loading && payrollPending.length === 0 && <tr><td colSpan={6} className="empty-cell">No payroll My Hours submissions pending.</td></tr>}
+                  {!loading && filtered.payroll.length === 0 && <tr><td colSpan={6} className="empty-cell">{anyFilterActive(filters) ? "No My Hours submissions match these filters." : "No payroll My Hours submissions pending."}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -594,7 +837,7 @@ export function ApprovalsPage() {
                 )}
                 <tbody>
                   {viewMode === "supervisor" &&
-                    received.map((g) => {
+                    filtered.groups.map((g) => {
                       const key = `${g.supervisorId}|${fmtDate(g.workDate)}`;
                       const isOpen = !!expanded[key];
                       const badge = statusBadge(g);
@@ -862,7 +1105,7 @@ export function ApprovalsPage() {
                           </td>
                         </tr>
                       ) : (
-                        jobOrderRows.map((jo, i) => {
+                        filtered.jobOrders.map((jo, i) => {
                           const budget = jo.budgetedHours ?? 0;
                           const consumed = jo.consumptionApproved + jo.consumptionUnapproved;
                           const pct = jo.consumptionPct ?? 0;
@@ -921,7 +1164,7 @@ export function ApprovalsPage() {
             {/* Phone card layout */}
             <div className="hod-cards hod-mobile-only">
               {viewMode === "supervisor" &&
-                received.map((g) => {
+                filtered.groups.map((g) => {
                   const key = `${g.supervisorId}|${fmtDate(g.workDate)}`;
                   const isOpen = !!expanded[key];
                   const badge = statusBadge(g);
@@ -1141,7 +1384,7 @@ export function ApprovalsPage() {
                   {jobOrderRows.length === 0 ? (
                     <p className="muted empty-card">No job order consumption data for this period.</p>
                   ) : (
-                    jobOrderRows.map((jo) => {
+                    filtered.jobOrders.map((jo) => {
                       const budget = jo.budgetedHours ?? 0;
                       const pct = jo.consumptionPct ?? 0;
                       const colorClass =
@@ -1271,7 +1514,7 @@ export function ApprovalsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {returned.map((row, idx) => (
+                    {filtered.returned.map((row, idx) => (
                       <tr key={row.id} className="hod-row">
                         <td>{idx + 1}</td>
                         <td>{row.supervisor.name}</td>
@@ -1323,7 +1566,7 @@ export function ApprovalsPage() {
                 </table>
               </div>
               <div className="hod-cards hod-mobile-only">
-                {returned.map((row) => (
+                {filtered.returned.map((row) => (
                   <article key={row.id} className="hod-card">
                     <header className="hod-card__head">
                       <div>
@@ -1378,8 +1621,8 @@ export function ApprovalsPage() {
             <table className="hod-table">
               <thead><tr><th>When</th><th>Action</th><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Status</th><th>Comment</th></tr></thead>
               <tbody>
-                {payrollHistory.map((item) => <tr key={item.id}><td>{formatStamp(item.createdAt)}</td><td>{item.action}</td><td>{item.allocationDay.employee.name}</td><td>{item.allocationDay.employee.department.name}</td><td>{fmtDate(item.allocationDay.workDate)}</td><td>{item.allocationDay.allocations.length * 2}</td><td>{item.resultingStatus}</td><td>{item.comment || "—"}</td></tr>)}
-                {!loading && payrollHistory.length === 0 && <tr><td colSpan={8} className="empty-cell">No payroll My Hours decisions recorded.</td></tr>}
+                {filtered.payrollHistory.map((item) => <tr key={item.id}><td>{formatStamp(item.createdAt)}</td><td>{item.action}</td><td>{item.allocationDay.employee.name}</td><td>{item.allocationDay.employee.department.name}</td><td>{fmtDate(item.allocationDay.workDate)}</td><td>{item.allocationDay.allocations.length * 2}</td><td>{item.resultingStatus}</td><td>{item.comment || "—"}</td></tr>)}
+                {!loading && filtered.payrollHistory.length === 0 && <tr><td colSpan={8} className="empty-cell">{anyFilterActive(filters) ? "No My Hours decisions match these filters." : "No payroll My Hours decisions recorded."}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1411,7 +1654,7 @@ export function ApprovalsPage() {
                 </tr>
               </thead>
               <tbody>
-                {history.map((h) => (
+                {filtered.history.map((h) => (
                   <tr key={h.approvalId} className="hod-row">
                     <td>{formatStamp(h.approvedAt)}</td>
                     <td>
@@ -1455,7 +1698,7 @@ export function ApprovalsPage() {
             </table>
           </div>
           <div className="hod-cards hod-mobile-only">
-            {history.map((h) => (
+            {filtered.history.map((h) => (
               <article key={h.approvalId} className="hod-card">
                 <header className="hod-card__head">
                   <div>
