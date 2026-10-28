@@ -840,3 +840,62 @@
     margin-left: 0;
   }
 }
+
+/* The two queues, kept apart: contract labour timesheets on one side, payroll My Hours on the other. A
+   segmented control rather than tabs with an underline, because this picks WHICH LIST you are working in,
+   while Pending/Approved below picks what you see of it. Two different questions deserve two different shapes. */
+.approval-queues {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--surface-alt, #eef2f4);
+  align-self: flex-start;
+}
+
+.approval-queue {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 7px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-queue:hover {
+  color: var(--text);
+}
+
+.approval-queue.active {
+  background: var(--surface, #fff);
+  border-color: var(--border-light);
+  color: var(--primary);
+  box-shadow: 0 1px 2px rgba(15, 36, 48, 0.08);
+}
+
+/* The size of the pile behind each queue, so nobody has to open a tab to find out. */
+.approval-queue__count {
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-alt, #e3e9ee);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  line-height: 18px;
+}
+
+.approval-queue.active .approval-queue__count {
+  background: var(--primary);
+  color: #fff;
+}

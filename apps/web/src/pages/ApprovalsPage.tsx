@@ -232,6 +232,11 @@ export function ApprovalsPage() {
   const isProjectHead = user?.role === "PM";
 
   const [tab, setTab] = useState<"pending" | "approved">("pending");
+  /**
+   * Which queue is on screen: the supervisor/HOD contract-labour timesheets, or the payroll My Hours
+   * submissions. Two different decisions that used to share one scroll.
+   */
+  const [queue, setQueue] = useState<"timesheet" | "payroll">("timesheet");
   const [viewMode, setViewMode] = useState<"supervisor" | "employee" | "jobOrder">(
     "supervisor"
   );
@@ -253,12 +258,6 @@ export function ApprovalsPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const title = isProjectHead
-    ? "Project Head Approvals"
-    : user?.role === "ADMIN"
-      ? "Approvals (view only)"
-      : `${roleLabel} Approvals`;
 
   /**
    * The three filters at the top of the screen. Empty string = "all", because a `<select>` has no null option
@@ -360,6 +359,29 @@ export function ApprovalsPage() {
 
     return { payroll, groups, returned: returnedRows, history: historyRows, payrollHistory: payrollHistoryRows, jobOrders };
   }, [filters, payrollPending, received, returned, history, payrollHistory, jobOrderRows, keyToId]);
+
+  /** How many decisions sit in the timesheet queue right now — the number on its tab. */
+  const pendingTimesheetCount = useMemo(
+    () =>
+      received.reduce((sum, group) => sum + group.employees.length, 0) +
+      returned.length,
+    [received, returned]
+  );
+
+  /** The count beside the filters: the queue and the stage actually on screen, nothing else. */
+  const countLine = useMemo(() => {
+    if (queue === "payroll") {
+      return tab === "pending"
+        ? filteredCount(filtered.payroll.length, payrollPending.length)
+        : filteredCount(filtered.payrollHistory.length, payrollHistory.length);
+    }
+    return tab === "pending"
+      ? filteredCount(
+          filtered.groups.reduce((sum, group) => sum + group.employees.length, 0) + filtered.returned.length,
+          pendingTimesheetCount
+        )
+      : filteredCount(filtered.history.length, history.length);
+  }, [queue, tab, filtered, payrollPending, payrollHistory, pendingTimesheetCount, history]);
 
   /** Every project id that appears anywhere in the loaded queues — the only ids the Project filter may offer. */
   const presentProjectIds = useMemo(() => {
@@ -626,12 +648,39 @@ export function ApprovalsPage() {
 
   return (
     <div className={`hod-approvals${canDecide ? "" : " approvals-readonly"}`}>
-      <div className="hod-approvals__head">
-        <h2 className="hod-approvals__title">{title}</h2>
-        <p className="muted hod-approvals__hint">
-          Daily limit {maxDailyHours}h · Project A/B/C from WBS · OH = other projects · Unallocated = remaining vs daily max
-          · After a prior approval, only newly added hours appear here for re-approval.
-        </p>
+      {/**
+       * The two queues, kept apart. Contract labour arrives on a supervisor's sheet and is approved day by day;
+       * payroll My Hours arrives from the employee's own allocation and is a different decision with a different
+       * table. Mixed into one list they read as one pile and the reader has to sort them in his head.
+       *
+       * The page heading is the shell's job — printing it again here cost a line and a half of vertical space on
+       * every visit for nothing.
+       */}
+      <div className="approval-queues" role="tablist" aria-label="Approval queue">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={queue === "timesheet"}
+          className={`approval-queue ${queue === "timesheet" ? "active" : ""}`}
+          onClick={() => setQueue("timesheet")}
+        >
+          <span>{isProjectHead ? "Received from HOD" : "Received from Supervisors"}</span>
+          <span className="approval-queue__count">
+            {tab === "pending" ? pendingTimesheetCount : history.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={queue === "payroll"}
+          className={`approval-queue ${queue === "payroll" ? "active" : ""}`}
+          onClick={() => setQueue("payroll")}
+        >
+          <span>Payroll Employees</span>
+          <span className="approval-queue__count">
+            {tab === "pending" ? payrollPending.length : payrollHistory.length}
+          </span>
+        </button>
       </div>
 
       {/**
@@ -682,18 +731,9 @@ export function ApprovalsPage() {
           </button>
         )}
         <span className="muted approval-filters__count">
-          {/* The count belongs to the tab you are on: "12 of 40" on Pending means nothing while you are looking
-              at what was approved, and a number that belongs to another list is worse than no number. */}
-          {tab === "pending"
-            ? filteredCount(
-                filtered.payroll.length + filtered.groups.reduce((sum, group) => sum + group.employees.length, 0),
-                payrollPending.length + received.reduce((sum, group) => sum + group.employees.length, 0)
-              )
-            : filteredCount(
-                filtered.history.length + filtered.payrollHistory.length,
-                history.length + payrollHistory.length
-              )}{" "}
-          row(s)
+          {/* The count belongs to the queue AND the stage on screen: "12 of 40" means nothing beside a list it
+              was not counted from. */}
+          {countLine} row(s)
         </span>
       </div>
 
@@ -723,10 +763,9 @@ export function ApprovalsPage() {
       {readOnlyNote && <div className="alloc-note">{readOnlyNote}</div>}
       {loading && <p className="muted">Loading…</p>}
 
-      {tab === "pending" && (
-        <>
-          <section className="hod-section">
-            <div className="hod-section__header"><h3>Payroll Employee My Hours</h3></div>
+      {tab === "pending" && queue === "payroll" && (
+        <section className="hod-section">
+          <div className="hod-section__header"><h3>Payroll Employee My Hours</h3></div>
             <div className="hod-table-wrap">
               <table className="hod-table">
                 <thead><tr><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Projects / Job Orders</th><th>Actions</th></tr></thead>
@@ -741,10 +780,20 @@ export function ApprovalsPage() {
                 </tbody>
               </table>
             </div>
-          </section>
+        </section>
+      )}
+
+      {tab === "pending" && queue === "timesheet" && (
+        <>
           <section className="hod-section">
             <div className="hod-section__header">
-              <h3>{isProjectHead ? "Received from HOD" : "Received from Supervisors"}</h3>
+              {/* The column legend used to sit under the page title and cost two lines on every visit. It
+                  describes these columns, so it is kept on the heading for whoever wants it, and takes no space. */}
+              <h3
+                title={`Daily limit ${maxDailyHours}h · Project A/B/C from WBS · OH = other projects · Unallocated = remaining vs daily max`}
+              >
+                Pending days
+              </h3>
               <div className="view-toggle" role="group" aria-label="View mode">
                 <button
                   type="button"
@@ -1609,15 +1658,15 @@ export function ApprovalsPage() {
         </>
       )}
 
-      {tab === "approved" && (
+      {tab === "approved" && queue === "payroll" && (
         <section className="hod-section">
           <div className="hod-section__header">
-            <h3>My approvals</h3>
+            <h3>My approvals — Payroll Employees</h3>
             <p className="muted" style={{ margin: 0 }}>
-              All decisions you have taken as {roleLabel}.
+              Every My Hours decision you have taken as {roleLabel}.
             </p>
           </div>
-          <div className="hod-table-wrap" style={{ marginBottom: 20 }}>
+          <div className="hod-table-wrap">
             <table className="hod-table">
               <thead><tr><th>When</th><th>Action</th><th>Employee</th><th>Department</th><th>Date</th><th>Hours</th><th>Status</th><th>Comment</th></tr></thead>
               <tbody>
@@ -1626,7 +1675,18 @@ export function ApprovalsPage() {
               </tbody>
             </table>
           </div>
-          <h4>Contract labour timesheets</h4>
+        </section>
+      )}
+
+      {tab === "approved" && queue === "timesheet" && (
+        <section className="hod-section">
+          <div className="hod-section__header">
+            <h3>My approvals — Contract labour timesheets</h3>
+            <p className="muted" style={{ margin: 0 }}>
+              Every timesheet decision you have taken as {roleLabel}. A sheet an HOD approves appears here for the
+              Project Head.
+            </p>
+          </div>
           <div className="hod-table-wrap hod-desktop-only">
             <table className="hod-table">
               <thead>

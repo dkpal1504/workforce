@@ -167,9 +167,31 @@ Click **Submit for Approval**. If any day exceeds the configured daily cap, a ma
 
 **Path:** `/approvals` (top nav: **Approvals**).
 
-### 3.0 Narrowing a long queue: Department, Supervisor, Project
+### 3.0 Two queues, then the filters, then the stage
 
-Three filters sit above the tabs and govern **both** of them:
+The screen reads top to bottom in the order a decision is actually made:
+
+    [ Received from HOD ]  [ Payroll Employees ]      <- which queue
+    [ Department ] [ Supervisor ] [ Project ]  N of M  <- which rows of it
+    [ Pending ] [ Approved ]                          <- which stage
+    the list
+
+- **Received from HOD** (a HOD sees *Received from Supervisors*) — contract labour: the supervisor's sheet,
+  approved day by day, with the Job Order consumption lens and the sheets Planning sent back.
+- **Payroll Employees** — My Hours submissions from the employee's own allocation. No supervisor in the chain,
+  a different table, and a separate Approve / Reject pair per day.
+
+Mixed into one list these two read as one pile and the reader sorts them in his head. The number beside each
+queue is the size of that queue **on the stage you are looking at**: the pending count on **Pending**, the decided
+count on **Approved**.
+
+The page heading and the column legend that used to sit under it are gone from the body — the shell already
+prints the title, and the legend now lives on the timesheet section heading as a hover tooltip. That is the
+vertical space back.
+
+### 3.0.1 Narrowing a long queue: Department, Supervisor, Project
+
+Three filters sit under the queue tabs and govern **both** stages:
 
 | Filter | Matches |
 |---|---|
