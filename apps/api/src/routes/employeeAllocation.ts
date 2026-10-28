@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
@@ -14,7 +14,7 @@ import {
   loadSlotJobOrders,
 } from "../services/jobOrderEligibility";
 import { resolveAttributionSnapshot } from "../services/attributionSnapshot";
-import { hodEmployeeScopeSet, hodScopeMatchesSet } from "../services/roleAccess";
+import { canUseMyHours, hodEmployeeScopeSet, hodScopeMatchesSet } from "../services/roleAccess";
 
 /**
  * Payroll employee manhour allocation (CR#2) — slot-based, parent day + slot rows.
@@ -38,6 +38,32 @@ import { hodEmployeeScopeSet, hodScopeMatchesSet } from "../services/roleAccess"
 export const employeeAllocationRouter = Router();
 
 employeeAllocationRouter.use(requireAuth);
+
+/**
+ * My Hours is a PAYROLL screen, so its door is `canUseMyHours` — not "anyone with a session".
+ *
+ * These three write routes used to gate on `requireAuth` alone and then resolve the employee server-side, which
+ * hid the missing rule behind the WEB: the nav item is gated by the `allocateHours` capability, so a COO, an HOD
+ * or a PM never saw the screen — but `POST /api/allocations/slot` accepted their request and booked hours
+ * against their own employee record. A role the app does not give My Hours must be refused where the write
+ * happens, not only where the menu is drawn.
+ *
+ * ADMIN is the exception the routes already carry: it may book on behalf of anyone (`canAllocateOthers`) and is
+ * not itself a payroll employee.
+ */
+async function requireMyHoursUser(req: Request, res: Response): Promise<boolean> {
+  const user = req.user!;
+  if (user.role === "ADMIN") return true;
+  const employee =
+    user.employeeId == null
+      ? null
+      : await prisma.employee.findUnique({ where: { id: user.employeeId }, select: { employmentType: true } });
+  if (!employee || !canUseMyHours(user.role, employee.employmentType)) {
+    res.status(403).json({ error: "My Hours is available to payroll employees only.", code: "MY_HOURS_NOT_AVAILABLE" });
+    return false;
+  }
+  return true;
+}
 
 const VALID_SLOTS = new Set(["am1", "am2", "pm1", "pm2"]);
 const SHIFT_HOURS: Record<string, number> = { am1: 2, am2: 2, pm1: 2, pm2: 2 };
@@ -156,6 +182,7 @@ employeeAllocationRouter.get("/job-orders", async (req, res) => {
 
 /** POST /api/allocations/slot — atomic upsert of one slot on the parent day. */
 employeeAllocationRouter.post("/slot", async (req, res) => {
+  if (!(await requireMyHoursUser(req, res))) return;
   const role = req.user!.role;
   const userId = req.user!.id;
 
@@ -310,6 +337,7 @@ employeeAllocationRouter.post("/slot", async (req, res) => {
 
 /** DELETE /api/allocations/slot/:id — clear a single slot (only on DRAFT/REJECTED). */
 employeeAllocationRouter.delete("/slot/:id", async (req, res) => {
+  if (!(await requireMyHoursUser(req, res))) return;
   const id = Number(req.params.id);
   const role = req.user!.role;
   const userId = req.user!.id;
@@ -337,6 +365,7 @@ employeeAllocationRouter.delete("/slot/:id", async (req, res) => {
 
 /** POST /api/allocations/submit — submit a day for HOD approval. */
 employeeAllocationRouter.post("/submit", async (req, res) => {
+  if (!(await requireMyHoursUser(req, res))) return;
   const role = req.user!.role;
   const userId = req.user!.id;
 
