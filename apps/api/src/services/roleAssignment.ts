@@ -16,8 +16,16 @@ export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
 
 /** Roles that capture a team and fill timesheets for contract (CLMS) labour. */
 export const CAPTURE_ROLES: string[] = ["SUPERVISOR"];
-/** Roles that approve, so outstanding approval work blocks a move off them. */
-export const APPROVER_ROLES: string[] = ["HOD", "PM", "ADMIN"];
+/**
+ * Roles that ACTION an approval queue — the same two DECIDER_ROLES in routes/approvals.ts.
+ *
+ * Outstanding approval work blocks a move off these, because moving would strand a day in a queue nobody owns.
+ * ADMIN was in this list and should never have been: an Admin READS every queue and cannot decide any of it
+ * (DECIDER_ROLES is HOD and PM), so its "pending approvals" is work it cannot do. Counting it blocked every
+ * Admin from ever changing role with a refusal quoting the whole plant's backlog — 3,103 days on production —
+ * about a queue that Admin had no button for.
+ */
+export const APPROVAL_QUEUE_ROLES: string[] = ["HOD", "PM"];
 /** Roles that need to be linked to a person (they report on or act for real labour). */
 export const EMPLOYEE_LINKED_ROLES: string[] = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER"];
 /**
@@ -67,6 +75,16 @@ export type RoleTarget = {
 };
 
 export type OpenWorkload = {
+  /**
+   * How many OTHER active accounts can action the same queue.
+   *
+   * A Project Head's queue is the organisation-wide HOD_APPROVED list, shared by every PM: moving ONE of seven
+   * PMs to another role strands nothing, because the remaining six still own every day in it. Refusing that move
+   * quoted the whole backlog at a person who was not the only approver — the panel said "3,103 pending
+   * approvals" about a queue the yard could still clear. An HOD's queue is his own Sections, which nobody else
+   * holds, so this stays 0 for him and he stays blocked.
+   */
+  otherQueueOwners?: number;
   /**
    * Timesheet days returned to this account for rework (PLANNING_RETURNED) — the
    * only timesheet state that needs a supervisor to still be a supervisor. Already
@@ -318,13 +336,22 @@ export function planRoleChange(
     return { ok: false, code: "NO_CHANGE", error: `This account already has the ${requestedRole} role.` };
   }
 
-  // Moving off an approver leaves work stranded in a queue nobody owns.
-  if (target.role !== requestedRole && APPROVER_ROLES.includes(target.role) && workload.pendingApprovals > 0) {
-    return {
-      ok: false,
-      code: "OPEN_APPROVALS",
-      error: `This account has ${workload.pendingApprovals} pending approval(s). Clear them or arrange cover before changing the role.`,
-    };
+  // Moving off an approver leaves work stranded in a queue nobody owns — UNLESS somebody else already owns the
+  // same queue. That is the difference between a Section HOD (his Sections are his alone) and a Project Head
+  // (the organisation-wide HOD_APPROVED list is shared by every PM).
+  if (target.role !== requestedRole && APPROVAL_QUEUE_ROLES.includes(target.role) && workload.pendingApprovals > 0) {
+    const queueIsShared = target.role === "PM" && (workload.otherQueueOwners ?? 0) > 0;
+    if (!queueIsShared) {
+      const stage =
+        target.role === "HOD"
+          ? `the HOD stage (${workload.pendingApprovals} day(s) submitted to this account's Sections)`
+          : `the Project Head stage (${workload.pendingApprovals} HOD-approved day(s) waiting for the Project Head)`;
+      const remedy =
+        target.role === "HOD"
+          ? "Name another HOD for those Sections, or clear the queue, before changing the role."
+          : "This is the only Project Head, so nobody else would own that queue. Name another Project Head, or clear it, before changing the role.";
+      return { ok: false, code: "OPEN_APPROVALS", error: `This account owns ${stage}. ${remedy}` };
+    }
   }
   // Moving off a capturing role would strand timesheets that were sent back for
   // rework, because only a supervisor can resubmit them.

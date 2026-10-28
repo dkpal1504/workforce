@@ -124,7 +124,21 @@ export async function initialCredentialState(): Promise<InitialCredential> {
   return { passwordHash: await bcrypt.hash(shared, 10), mustChangePassword: true };
 }
 
-export function usesEcNoLogin(role: string, employeeId: number | null | undefined): boolean {
-  return employeeId != null
-    && ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER"].includes(role);
+/**
+ * Can this account sign in with its EC No?
+ *
+ * YES WHENEVER IT IS LINKED TO AN EMPLOYEE — the ROLE is deliberately not consulted.
+ *
+ * The old rule asked "is this a yard role?" and listed six of them, which locked out a real account: a payroll
+ * employee promoted to an organisation-wide role (COO, HR, FINANCE, ADMIN) keeps his `employeeId` — the roles
+ * only ever REQUIRE an Employee, they never remove one — and the account then had NO way in at all. His EC No
+ * was refused because of the role, and his e-mail was null because payroll employees have no e-mail. The account
+ * existed, the password was known, and the door was bricked up.
+ *
+ * The identifier is a property of the person, not of the job he now holds: if he has an employee record, his EC
+ * No is his. Both branches of POST /auth/login stay reachable — an identifier that matches no EC No falls
+ * through to the e-mail lookup, so an organisation-wide account with an address can still sign in with it.
+ */
+export function usesEcNoLogin(employeeId: number | null | undefined): boolean {
+  return employeeId != null;
 }

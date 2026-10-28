@@ -72,7 +72,7 @@ Departments) and without the organisation-wide reach of `PM`.
 
 | Property | PROJECT_MANAGER behaviour |
 |---|---|
-| Login identifier | EC No once a payroll Employee is linked (`usesEcNoLogin`, and `EC_NO_LOGIN_ROLES` for the reset screen); an unlinked account falls back to e-mail like `PM`. |
+| Login identifier | EC No once a payroll Employee is linked (`usesEcNoLogin(employeeId)`, and `EC_NO_LOGIN_ROLES` for the reset screen); an unlinked account falls back to e-mail like `PM`. |
 | Landing page | `/portfolio` (`landingPathFor`). |
 | Read scope | **Exactly the Projects assigned to the account**, server-side, via `reportScopeFor` → `{ kind: "PROJECTS" }`. Cross-department by construction: a Project is not a Department. |
 | Unassigned | `NONE` — **zero rows**, with the sentence "No project is in this scope…" on screen. Never the organisation, never a Department fallback. |
@@ -94,8 +94,10 @@ oversees every Department but acts on nothing.
 
 | Property | COO behaviour |
 |---|---|
-| Login identifier | **E-mail address only.** The COO holds no payroll Employee, so it is NOT an `usesEcNoLogin` role and is listed on the e-mail allow-list in `routes/auth.ts`. |
+| Login identifier | **E-mail, or its EC No when the account is linked to an Employee.** The designed COO holds no Employee and signs in by e-mail; a payroll employee promoted to COO keeps his link and therefore keeps his EC No (`usesEcNoLogin(employeeId)`, which no longer consults the role). Both doors stay open: an EC No never matches the e-mail lookup, so neither closes the other. |
 | Landing page | `/portfolio` (`landingPathFor("COO")`), the operations dashboard. |
+| Approval work | **None, ever.** The COO is absent from `APPROVER_ROLES` (cannot read `/approvals/*` or `/allocations/pending`: 403) and from `DECIDER_ROLES` (cannot approve, reject, send back or batch). `capabilitiesFor("COO").approveTimesheets` is false and the web gates `/approvals` on that capability, so the menu item never appears. Proven end-to-end: a COO session gets `403 FORBIDDEN` from all seven approval endpoints. |
+| Approval workload blocker | A COO is never counted as owning a queue, so a role change to or from COO is never blocked by a pending-approval count. |
 | Read scope | **Whole organisation.** `departmentScope("COO", …)` returns `undefined`, so no Department filter is ever applied. |
 | Capabilities | `viewSummary: true`, `viewPortfolioDashboard: true`. **Every** mutating capability is `false` — no approvals, no allocation, no registration, no employee management, no master data, no timesheet editing, no role assignment. |
 | Router access | Present on the read-only `summary` router (`/api/summary/*`) and the portfolio router; **absent from every mutating `requireRoles(...)` list**, so the COO reaches only the reads its `viewSummary` / `viewPortfolioDashboard` capabilities advertise. |
@@ -132,11 +134,13 @@ HOD scope is therefore two different things and both are correct:
 | Employee listing and the operations report | Whole **Department**, for every HOD shape |
 
 
-`usesEcNoLogin` in `services/defaultLoginCredentials.ts` is the single switch that decides
-whether an account signs in by EC No; because the COO is not on that list, an e-mail sign-in
-reaches the e-mail branch of `POST /api/auth/login`. `roleAccess.test.ts` and
-`defaultLoginCredentials.test.ts` assert this, because adding a new role to `usesEcNoLogin`
-by mistake locks the account out entirely.
+`usesEcNoLogin` in `services/defaultLoginCredentials.ts` decides whether an account signs in by EC No, and it
+asks ONE question: is an Employee linked? The role is not consulted — the identifier belongs to the person, not
+to the job he holds. It used to be a list of six yard roles, and that list bricked up a real account: a payroll
+employee promoted to COO kept his `employeeId`, had no usable e-mail (payroll employees carry only a
+`<ecNo>@employee.local` placeholder), and was refused by BOTH doors. `roleAccess.test.ts` and
+`defaultLoginCredentials.test.ts` now assert the opposite of what they used to: any linked account, whatever its
+role, signs in with its EC No, and an unlinked one falls back to e-mail.
 
 ## Register an HOD
 

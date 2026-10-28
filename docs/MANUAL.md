@@ -205,6 +205,12 @@ Three filters sit under the queue tabs and govern **both** stages:
 - A section emptied by a filter says *"No My Hours submissions match these filters."* rather than "nothing pending", so an empty table is never mistaken for an empty queue.
 - The filters are applied **in the browser, on top of the server's scope**. They can hide rows you may see; they can never reveal one.
 
+**Who is not here.** The **COO** has no part in approvals: the role is absent from the approver list and from the
+decider list, so every `/approvals/*` and `/allocations/pending` request is refused with `403`, and the menu item
+never appears. If an account reports pending approvals it cannot action, it is not a COO account — check the role
+with `node apps/api/scripts/audit-account.mjs <EC No>` on the server (read-only), which prints the role, both login
+doors, and the queue the role actually owns.
+
 ### 3.1 Routing rules
 
 - **HOD** is scoped to a **Department + Section** (`User.departmentId` + `User.sectionId`), matched against the employee's organisation. Each Section has its own HOD; HODs see only submissions for their Section. An HOD with no mapping fails closed (empty queue, `403` on mutation).

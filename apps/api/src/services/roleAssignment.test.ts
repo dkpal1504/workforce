@@ -279,6 +279,47 @@ test("work returned for rework, and an untouched approval queue, block a role ch
   const returned = planRoleChange(1, target({ role: "SUPERVISOR" }), "EMPLOYEE", { ...NO_WORK, returnedTimesheetDays: 2 });
   assert.equal(!returned.ok && returned.code, "OPEN_TIMESHEETS");
   const withApprovals = planRoleChange(1, target({ role: "HOD" }), "SUPERVISOR", { ...NO_WORK, pendingApprovals: 3 });
+  /**
+   * An ADMIN reads every queue and decides none, so a pending count must never block its move — quoting the
+   * whole plant's backlog at a person with no Approve button is the bug this pins. Production hit it with
+   * 3,103 days quoted against an account that could not act on one of them.
+   */
+  const adminMove = planRoleChange(
+    1,
+    target({ role: "ADMIN", employeeId: null, employee: null }),
+    "COO",
+    { ...NO_WORK, pendingApprovals: 3103 },
+  );
+  assert.equal(adminMove.ok, true, "an Admin's read-only queue cannot strand work");
+  // And a COO, which never actions a queue either.
+  const cooMove = planRoleChange(1, target({ role: "COO", employeeId: null, employee: null }), "PM", NO_WORK);
+  assert.equal(cooMove.ok, false, "a PM needs an Employee record");
+  assert.equal(!cooMove.ok && cooMove.code, "EMPLOYEE_REQUIRED");
+
+  /**
+   * A Project Head's queue is the organisation-wide HOD-APPROVED list, shared by every PM. Moving ONE of seven
+   * strands nothing: the other six still own every day in it. Refusing that move quoted 3,103 days at a person
+   * who was not the only approver, and the operator read it as "the COO has 3,103 approvals".
+   */
+  const sharedPm = planRoleChange(
+    1,
+    target({ role: "PM" }),
+    "COO",
+    { ...NO_WORK, pendingApprovals: 3103, otherQueueOwners: 6 },
+  );
+  assert.equal(sharedPm.ok, true, "another Project Head still owns the queue");
+
+  // The last Project Head is a different matter: moving him leaves the queue owned by nobody.
+  const lastPm = planRoleChange(
+    1,
+    target({ role: "PM" }),
+    "COO",
+    { ...NO_WORK, pendingApprovals: 3103, otherQueueOwners: 0 },
+  );
+  assert.equal(lastPm.ok, false);
+  assert.equal(!lastPm.ok && lastPm.code, "OPEN_APPROVALS");
+  assert.ok(!lastPm.ok && lastPm.error.includes("only Project Head"), "the refusal says WHY it is blocked");
+
   assert.equal(!withApprovals.ok && withApprovals.code, "OPEN_APPROVALS");
 });
 

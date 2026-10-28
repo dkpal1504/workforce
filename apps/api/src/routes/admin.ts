@@ -22,6 +22,7 @@ import {
   type OpenWorkload,
   type RoleSourceEmployee,
   type RoleTarget,
+  APPROVAL_QUEUE_ROLES,
 } from "../services/roleAssignment";
 
 export const adminRouter = Router();
@@ -603,8 +604,10 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
     // SUBMITTED days ROUTED to his Sections — the Section of the SUPERVISOR who submitted the sheet
     // decides (services/approvalRouting.ts) — and a PM's is HOD_APPROVED across all departments.
     Promise.all(users.map(async (user) => {
+      // Only the roles that can ACTION a queue carry a blocker. An Admin reads every queue and decides none of
+      // them, so its number was the whole plant's backlog quoted against a person with no button to clear it.
       const statuses = user.role === "HOD" ? ["SUBMITTED"] : user.role === "PM" ? ["HOD_APPROVED"] : null;
-      if (!statuses || !["HOD", "PM", "ADMIN"].includes(user.role)) return [user.id, 0] as const;
+      if (!statuses || !APPROVAL_QUEUE_ROLES.includes(user.role)) return [user.id, 0] as const;
       // A Department HOD (no Section) covers every Section of its Department; a Section HOD covers
       // exactly its Sections. An approver with no Department at all matches nothing (fails closed).
       const scopeIds = scopeIdsFor(user);
@@ -741,7 +744,9 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
   // day waiting on this account is counted here even though no Approval row exists
   // until an action is taken.
   const queueStatuses = user.role === "HOD" ? ["SUBMITTED"] : user.role === "PM" ? ["HOD_APPROVED"] : ["SUBMITTED", "HOD_APPROVED"];
-  const approvalScoped = ["HOD", "PM", "ADMIN"].includes(user.role);
+  // ADMIN is deliberately absent: it may read every queue and decide none (DECIDER_ROLES = HOD, PM), so its
+  // pending count is work it cannot action and must never block a role change.
+  const approvalScoped = APPROVAL_QUEUE_ROLES.includes(user.role);
   const pendingApprovals = !approvalScoped
     ? Promise.resolve(0)
     : prisma.timesheetDay.count({
@@ -754,13 +759,18 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
             : {}),
         },
       });
-  const [returnedTimesheetDays, pendingApprovalCount] = await Promise.all([
+  const [returnedTimesheetDays, pendingApprovalCount, otherQueueOwners] = await Promise.all([
     // Only rework still needs the supervisor role; SUBMITTED/approved days are the
     // approver's, and would otherwise permanently block any reassignment.
     prisma.timesheetDay.count({ where: { taggedById: userId, status: "PLANNING_RETURNED" } }),
     pendingApprovals,
+    // A Project Head's queue is shared by every PM, so moving one of them strands nothing while another
+    // remains. An HOD's Sections are his alone, so he keeps blocking at 1.
+    user.role === "PM"
+      ? prisma.user.count({ where: { role: "PM", active: true, id: { not: user.id } } })
+      : Promise.resolve(0),
   ]);
-  const workload: OpenWorkload = { returnedTimesheetDays, pendingApprovals: pendingApprovalCount };
+  const workload: OpenWorkload = { returnedTimesheetDays, pendingApprovals: pendingApprovalCount, otherQueueOwners };
 
   // An EMPTY set is department-wide, so the candidate list is only needed when one is named.
   const named = Array.isArray(req.body?.sectionIds) ? (req.body.sectionIds as unknown[]) : null;

@@ -31,18 +31,17 @@ test("queued accounts never get an unknown password they are not told about", as
   assert.equal(defaultWorkforceCredentialState.mustChangePassword, true);
 });
 
-test("linked operational roles use ecNo login", () => {
-  assert.equal(usesEcNoLogin("EMPLOYEE", 10), true);
-  assert.equal(usesEcNoLogin("SUPERVISOR", 10), true);
-  assert.equal(usesEcNoLogin("HOD", 10), true);
-  assert.equal(usesEcNoLogin("PM", 10), true);
-  assert.equal(usesEcNoLogin("DEPT_HEAD", 10), true);
-  assert.equal(usesEcNoLogin("SUPERVISOR", null), false);
-  assert.equal(usesEcNoLogin("ADMIN", 10), false);
-  // The COO is an organisation-wide e-mail-login role. Were it ever added to the EC-No list the
-  // e-mail branch of POST /auth/login would be skipped and the account would 401 on its own
-  // address — the silent lockout this assertion guards against.
-  assert.equal(usesEcNoLogin("COO", 5), false);
+test("every employee-linked account signs in with its EC No, whatever its role", () => {
+  // The identifier belongs to the PERSON. This used to be a role list of six yard roles, and a payroll
+  // employee promoted to COO kept his employee link but lost his only way in: his EC No was refused because of
+  // the role, and his e-mail was null because payroll employees have none. The account existed, the password
+  // was known, and the door was bricked up.
+  for (const role of ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER", "ADMIN", "HR", "FINANCE", "COO"]) {
+    assert.equal(usesEcNoLogin(10), true, `${role} with an employee record signs in with its EC No`);
+  }
+  // No employee record: the EC No is not his to use, and the e-mail branch is the only door.
+  assert.equal(usesEcNoLogin(null), false);
+  assert.equal(usesEcNoLogin(undefined), false);
 });
 
 test("no BOOTSTRAP_PASSWORD means a random credential that must be changed", async () => {

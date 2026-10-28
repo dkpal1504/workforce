@@ -80,7 +80,7 @@ export async function processCredentialDeliveries(): Promise<CredentialDeliveryR
       continue;
     }
 
-    const ecNoAccount = usesEcNoLogin(currentUser.role, currentUser.employeeId);
+    const ecNoAccount = usesEcNoLogin(currentUser.employeeId);
     // Reaching here means no shared first password is configured, so the account is
     // waiting for a random one-time credential that must be replaced at first login.
     const deliveredPassword = temporaryPassword();

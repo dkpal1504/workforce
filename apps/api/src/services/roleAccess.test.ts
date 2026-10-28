@@ -233,14 +233,19 @@ test("intersectDepartmentFilter INTERSECTS the request with the actor's scope, n
 });
 
 /**
- * THE account-lockout test. `usesEcNoLogin` decides whether a linked Employee makes an account
- * sign in by EC No. A COO has no linked Employee, but if COO were ever added to that list the
- * login route would take the ecNo branch only and an e-mail sign-in would 401 despite the account
- * existing — the exact way a new role has silently locked itself out before.
+ * THE account-lockout test, rewritten because the original premise was wrong.
+ *
+ * `usesEcNoLogin` decides whether a linked Employee lets an account sign in by EC No. A COO is designed to hold
+ * no Employee — but holding one is allowed (a payroll employee promoted to COO keeps his link), and the old
+ * rule locked exactly that account out: the EC No was refused because of the role and the e-mail was null
+ * because payroll employees have none. Signing in by EC No cannot break the e-mail door either: an EC No never
+ * matches the e-mail lookup, so both remain reachable.
  */
-test("the COO signs in by e-mail, never by EC No", () => {
-  assert.equal(usesEcNoLogin("COO", 5), false);
-  assert.equal(usesEcNoLogin("COO", null), false);
+test("an organisation-wide role signs in with its EC No when it has one, and by e-mail when it does not", () => {
+  // Promoted payroll employee: his EC No is his, whatever role he now holds.
+  assert.equal(usesEcNoLogin(5), true);
+  // The designed COO: no Employee record at all, so the e-mail is the only door and it stays open.
+  assert.equal(usesEcNoLogin(null), false);
 });
 
 /**
@@ -339,9 +344,9 @@ test("the Project Manager role is read-only, lands on the portfolio, and is EC-N
   assert.equal(pm.allocateHours, true);
   assert.equal(canUseMyHours("PROJECT_MANAGER", "PAYROLL"), true);
   assert.equal(canUseMyHours("PROJECT_MANAGER", "CLMS"), false);
-  // EC-No sign-in, and it MUST be on the list or the account cannot log in at all.
-  assert.equal(usesEcNoLogin("PROJECT_MANAGER", 5), true);
-  assert.equal(usesEcNoLogin("PROJECT_MANAGER", null), false, "an unlinked account falls back to e-mail");
+  // EC-No sign-in: any linked account has it, so a role can never brick the door up again.
+  assert.equal(usesEcNoLogin(5), true);
+  assert.equal(usesEcNoLogin(null), false, "an unlinked account falls back to e-mail");
 });
 
 test("legacy behaviour is untouched: every pre-existing role resolves to the same scope", () => {

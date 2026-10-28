@@ -111,14 +111,14 @@ authRouter.post("/login", async (req, res) => {
         select: { ...lifecycleUserSelect, passwordHash: true },
       })
     : null;
-  const ecNoUser = linkedUser && usesEcNoLogin(linkedUser.role, linkedUser.employeeId) ? linkedUser : null;
+  const ecNoUser = linkedUser && usesEcNoLogin(linkedUser.employeeId) ? linkedUser : null;
 
   // Keep email login for administrative roles and older API clients. Stored
   // login emails are normalized to lowercase at creation time.
   //
-  // The COO is an EMAIL-login role: it holds no payroll Employee, so it never takes the ecNo
-  // branch above and must be listed here or a sign-in with its e-mail address returns 401 even
-  // though the account exists. Every organisation-wide role is listed (ADMIN, HR, FINANCE, COO).
+  // Every organisation-wide role is listed here (ADMIN, HR, FINANCE, COO). It is an ADDITIONAL door, not a
+  // replacement: an organisation-wide account that happens to be linked to an Employee also signs in with his
+  // EC No through the branch above, and an EC No never matches this e-mail lookup.
   const emailCandidate = ecNoUser ? null : await prisma.user.findUnique({
     where: { email: identifier.toLowerCase() },
     select: { ...lifecycleUserSelect, passwordHash: true },
