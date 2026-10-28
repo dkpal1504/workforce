@@ -303,6 +303,12 @@ HOD/PM/Admin/HR can allocate hours **on behalf of any employee** via the same en
 - **HOD scope is fail-closed**: if the logged-in user is an HOD, Department and Section are locked to their own mapping (server-enforced with `WRONG_SCOPE`), and the form is disabled with a banner when the HOD has no mapping.
 - **Active Employees** table (bottom panel) lists every active employee with ecNo, name, type/role, Department, Section and designation, plus two actions per row:
   - **Transfer** (PM/ADMIN only) — moves the employee's Department/Section. HOD-linked rows are refused (`HOD_SCOPE_REQUIRES_COORDINATION`).
+  - **A transfer is refused while a day of his is still in the approval chain** (`OPEN_TIMESHEETS`): a timesheet day
+    `SUBMITTED`, `HOD_APPROVED` or `PLANNING_RETURNED`, or a My Hours day `SUBMITTED` or `HOD_APPROVED`. A **DRAFT**
+    day does not block, and neither does a decided one — which is why an employee can look "clean" on the timesheet
+    screen and still refuse to move. The refusal now names the count, the dates, the stage each day sits in and who
+    can move it on; before, it said only "Resolve or close open timesheets". To see the same list on the server:
+    `docker compose ... exec api node apps/api/scripts/audit-transfer.mjs <EC No>` (read-only).
   - **Set as HOD** / **Change HOD scope** (PM/ADMIN) — pre-fills the HOD form below with that employee.
 - A plain **registration always creates an `EMPLOYEE` account**; that is the normal starting point for promotion to HOD — the person is reused, not duplicated.
 

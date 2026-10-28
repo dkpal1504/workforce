@@ -4,6 +4,12 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import {
+  blockingDaysMessage,
+  blockingDaysOf,
+  TRANSFER_BLOCKING_ALLOCATION_STATUSES,
+  TRANSFER_BLOCKING_TIMESHEET_STATUSES,
+} from "../services/transferBlockers";
 import { legacySectionId, normaliseSectionIds, validateScopeSections } from "../services/userScope";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
@@ -414,12 +420,27 @@ adminRouter.put("/employees/:id/organisation", requireRoles("PM", "ADMIN"), asyn
   if (employee.user?.role === "HOD") {
     return res.status(409).json({ error: "Use HOD scope mapping together with the linked payroll Employee transfer.", code: "HOD_SCOPE_REQUIRES_COORDINATION" });
   }
+  // The blocker list, not just a count: "Resolve or close open timesheets" left the operator to go and find out
+  // which days, in which stage, and who to chase. Ask the question the screen should have answered.
   const [openTimesheets, openAllocations] = await Promise.all([
-    prisma.timesheetDay.count({ where: { employeeId, status: { in: ["SUBMITTED", "HOD_APPROVED", "PLANNING_RETURNED"] } } }),
-    prisma.employeeAllocationDay.count({ where: { employeeId, status: { in: ["SUBMITTED", "HOD_APPROVED"] } } }),
+    prisma.timesheetDay.findMany({
+      where: { employeeId, status: { in: [...TRANSFER_BLOCKING_TIMESHEET_STATUSES] } },
+      select: { workDate: true, status: true },
+      orderBy: { workDate: "asc" },
+    }),
+    prisma.employeeAllocationDay.findMany({
+      where: { employeeId, status: { in: [...TRANSFER_BLOCKING_ALLOCATION_STATUSES] } },
+      select: { workDate: true, status: true },
+      orderBy: { workDate: "asc" },
+    }),
   ]);
-  if (openTimesheets || openAllocations) {
-    return res.status(409).json({ error: "Resolve or close open timesheets before transferring this Employee.", code: "OPEN_TIMESHEETS" });
+  const blockers = blockingDaysOf(openTimesheets, openAllocations);
+  if (blockers.length > 0) {
+    return res.status(409).json({
+      error: blockingDaysMessage(blockers),
+      code: "OPEN_TIMESHEETS",
+      blockers,
+    });
   }
   const previous = { departmentId: employee.departmentId, sectionId: employee.sectionAssignment?.sectionId ?? null };
   await prisma.$transaction(async (tx) => {
