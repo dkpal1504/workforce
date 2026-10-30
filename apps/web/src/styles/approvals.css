@@ -899,3 +899,84 @@
   background: var(--primary);
   color: #fff;
 }
+
+/* ---- Allocation column: the day's slots and the Job Order number in each ---------------------
+ * The approver decides on hours that arrive as four separate bookings, so the queue must show
+ * WHICH booking each hour is, not only the per-project totals beside it. Each chip is the
+ * Project colour token; the number under it is the Job Order code the PM team writes.
+ * Ten digits at 8px need ~44px, hence the fixed 48px column per slot — a narrower chip truncates
+ * the work order, which is the one thing this column exists to show.
+ */
+.hod-table th.alloc-col,
+.hod-table td.alloc-col {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.slot-chips {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.slot-chip-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 48px;
+  flex: 0 0 auto;
+}
+
+.slot-chip {
+  width: 26px;
+  height: 26px;
+  border: 1.5px solid transparent;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: var(--project-ink, #10202c);
+  line-height: 1;
+}
+
+.slot-chip--empty {
+  background: transparent;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.slot-chip__jo {
+  font-size: 8px;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  max-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* OT is not one of the four shift slots: mark it so the row still reads as a shape. */
+.slot-chip-wrap--ot .slot-chip {
+  outline: 1px dashed color-mix(in srgb, var(--danger) 55%, transparent);
+  outline-offset: 1px;
+}
+
+/* Phone cards: the same chips, allowed to wrap. */
+.hod-card .slot-chips {
+  flex-wrap: wrap;
+  margin: 8px 0 2px;
+}
+
+/* The date must stay on one line: the Allocation column added beside it squeezed
+ * "26-10-2026" into three lines on a 1280px screen. */
+.hod-table td.date-col,
+.hod-table th.date-col {
+  white-space: nowrap;
+}

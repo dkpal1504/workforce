@@ -8,6 +8,7 @@ import { formatDay } from "./formatDate";
 import { limitJobOrderOptionText } from "../utils/jobOrderLabel";
 import "../styles/timesheet.css";
 import { applyProjectColorVars, projectColorToken } from "../theme/projectColors";
+import { slotTooltip } from "../lib/slotTooltip";
 
 type JobOrderOption = {
   id: number;
@@ -88,6 +89,8 @@ type Row = {
   exceedsLimit?: boolean;
   otHours?: number | null;
   otJobOrderId?: number | null;
+  otJobOrderCode?: string | null;
+  otJobOrderName?: string | null;
   otProjectId?: number | null;
   otProjectColorKey?: string | null;
   otSectionId?: number | null;
@@ -1213,11 +1216,26 @@ export function TimesheetPage() {
                           title={
                             s.bookedByOther
                               ? `${SHIFT_LABELS[s.shiftSlot].long} · Allocated by Supervisor ${s.bookedBySupervisorNames?.join(" & ")}`
-                              : SHIFT_LABELS[s.shiftSlot].long
+                              : s.jobOrderId != null
+                                ? slotTooltip({
+                                    projectKey: s.projectColorKey,
+                                    projectName: s.projectName,
+                                    jobOrderCode: s.jobOrderCode,
+                                    jobOrderName: s.jobOrderName,
+                                  })
+                                : SHIFT_LABELS[s.shiftSlot].long
                           }
                         >
                           {label}
                         </button>
+                        {/* The colour token says which Project, not which work order: the Job Order
+                            number goes under the slot so the supervisor reads it without opening
+                            the Allocation column for the row. */}
+                        {s.jobOrderId != null && s.jobOrderCode && (
+                          <span className="slot-jo" title={s.jobOrderName ?? undefined}>
+                            {s.jobOrderCode}
+                          </span>
+                        )}
                       </td>
                     );
                   })}
@@ -1237,7 +1255,12 @@ export function TimesheetPage() {
                         r.otBookedByOther
                           ? `OT ${r.otHours ?? 0}h booked by Supervisor ${(r.otBookedBySupervisorNames ?? []).join(", ")} (${r.otOtherBookingStatus ?? "submitted"}) — read only`
                           : r.otHours != null
-                            ? `OT ${r.otHours}h — click to select; double-click to remove`
+                            ? `${slotTooltip({
+                                projectKey: r.otProjectColorKey,
+                                projectName: projects.find((p) => p.id === r.otProjectId)?.name ?? null,
+                                jobOrderCode: r.otJobOrderCode,
+                                jobOrderName: r.otJobOrderName,
+                              })} — click to select; double-click to remove`
                             : otAvailable
                               ? "Select OT for assignment"
                               : "OT is not applicable to Payroll Employees"
@@ -1245,6 +1268,11 @@ export function TimesheetPage() {
                     >
                       {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
                     </button>
+                    {r.otHours != null && r.otJobOrderCode && (
+                      <span className="slot-jo" title={r.otJobOrderName ?? undefined}>
+                        {r.otJobOrderCode}
+                      </span>
+                    )}
                   </td>
                   <td className="ot-hours-col">
                     <input
@@ -1463,7 +1491,14 @@ export function TimesheetPage() {
                       title={
                         s.bookedByOther
                           ? `${SHIFT_LABELS[s.shiftSlot].long} · Allocated by Supervisor ${s.bookedBySupervisorNames?.join(" & ")}`
-                          : SHIFT_LABELS[s.shiftSlot].long
+                          : s.jobOrderId != null
+                            ? slotTooltip({
+                                projectKey: s.projectColorKey,
+                                projectName: s.projectName,
+                                jobOrderCode: s.jobOrderCode,
+                                jobOrderName: s.jobOrderName,
+                              })
+                            : SHIFT_LABELS[s.shiftSlot].long
                       }
                     >
                       <span className="ts-shift-chip__half">
@@ -1473,6 +1508,9 @@ export function TimesheetPage() {
                         {SHIFT_LABELS[s.shiftSlot].short}
                       </span>
                       <span className="ts-shift-chip__value">{label || "·"}</span>
+                      {s.jobOrderId != null && s.jobOrderCode && (
+                        <span className="ts-shift-chip__jo">{s.jobOrderCode}</span>
+                      )}
                     </button>
                   );
                 })}
@@ -1494,7 +1532,12 @@ export function TimesheetPage() {
                     r.otBookedByOther
                       ? `OT ${r.otHours ?? 0}h booked by Supervisor ${(r.otBookedBySupervisorNames ?? []).join(", ")} (${r.otOtherBookingStatus ?? "submitted"}) — read only`
                       : r.otHours != null
-                        ? `OT ${r.otHours}h — click to select; double-click to remove`
+                        ? `${slotTooltip({
+                            projectKey: r.otProjectColorKey,
+                            projectName: projects.find((p) => p.id === r.otProjectId)?.name ?? null,
+                            jobOrderCode: r.otJobOrderCode,
+                            jobOrderName: r.otJobOrderName,
+                          })} — click to select; double-click to remove`
                         : otAvailable
                           ? "Select OT for assignment"
                           : "OT is not applicable to Payroll Employees"
@@ -1502,6 +1545,9 @@ export function TimesheetPage() {
                 >
                   {r.otSelected ? "✓" : r.otHours != null ? (r.otProjectColorKey || "OT").toUpperCase() : ""}
                 </button>
+                {r.otHours != null && r.otJobOrderCode && (
+                  <span className="ts-shift-chip__jo">{r.otJobOrderCode}</span>
+                )}
                 <label className="ts-ot__hours">
                   <span>Hrs</span>
                   <input

@@ -889,6 +889,10 @@ timesheetRouter.get("/", async (req, res) => {
       slots,
       otHours: otEntry?.otHours ?? null,
       otJobOrderId: otEntry?.jobOrderId ?? null,
+      // The OT booking is a work order like any other: the grid prints its number under the OT
+      // slot the same way the four shift slots print theirs.
+      otJobOrderCode: otEntry?.jobOrder?.code ?? null,
+      otJobOrderName: otEntry?.jobOrder?.name ?? null,
       otProjectId: otEntry?.projectId ?? otEntry?.jobOrder?.project.id ?? null,
       otSectionId: otEntry?.sectionId ?? null,
       otDepartmentId: otEntry?.departmentId ?? null,

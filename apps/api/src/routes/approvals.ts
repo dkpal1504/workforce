@@ -3,7 +3,7 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
-import { contractOverheadHours, projectHoursFromEntries } from "../services/contractWorkHours";
+import { contractOverheadHours, projectHoursFromEntries, slotsFromEntries } from "../services/contractWorkHours";
 import { isDepartmentViewRole } from "../services/roleAccess";
 import { hodRoutingScope } from "../services/approvalRouting";
 import { getEmployeeDayHourTotals } from "../services/hours";
@@ -44,6 +44,8 @@ type ProjectWbsRef = { wbsCode: string; name: string | null } | null;
 /** Frozen project snapshot captured when the hours were booked. */
 type ProjectRef = { colorKey: string } | null;
 type JobOrderRef = {
+  code: string;
+  name: string;
   project: { colorKey: string; name: string };
 } | null;
 
@@ -245,6 +247,12 @@ function mapEmployeeRow(
     otSource,
     /** The work order the OT is charged to (null if no OT). */
     otJobOrderId: otEntry?.jobOrderId ?? null,
+    /**
+     * The per-SLOT bookings behind those project columns: which Job Order sits in which shift
+     * slot. The approver was shown the totals only, so the four bookings that make up a day —
+     * and the Job Order number on each — were invisible on this screen.
+     */
+    slots: slotsFromEntries(pendingEntries),
     isAmendment,
     hasConflict: conflictSupervisors != null,
     /** Names of the supervisors who tagged this employee on this date (the conflict reason). */

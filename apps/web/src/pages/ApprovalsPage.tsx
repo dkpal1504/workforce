@@ -12,6 +12,8 @@ import {
   type ApprovalFilters,
 } from "../lib/approvalFilters";
 import "../styles/approvals.css";
+import { projectColorToken } from "../theme/projectColors";
+import { slotTooltip } from "../lib/slotTooltip";
 
 type ProjectHours = Record<string, number>;
 
@@ -24,6 +26,20 @@ function projectKeys(rows: { projectHours: ProjectHours; projectOtHours?: Projec
   }
   return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
+
+/** One booking row: which Job Order sits in which shift slot (see `slotsFromEntries` on the API). */
+type SlotBooking = {
+  shiftSlot: string | null;
+  hourSlot: number | null;
+  isOt: boolean;
+  hours: number;
+  projectKey: string | null;
+  projectName: string | null;
+  jobOrderId: number | null;
+  jobOrderCode: string | null;
+  jobOrderName: string | null;
+  status: string;
+};
 
 type EmployeeRow = {
   id: number;
@@ -43,6 +59,8 @@ type EmployeeRow = {
   hasConflict: boolean;
   conflictSupervisors?: string[] | null;
   otHours?: number | null;
+  /** The bookings behind `projectHours`: one row per booked slot, with its Job Order number. */
+  slots?: SlotBooking[];
   employee: { id: number; name: string; ecNo: string; department: string };
   supervisor: { id: number; name: string; email: string };
 };
@@ -206,6 +224,72 @@ function HourChips({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * The four shift slots of a day, each carrying its Job Order number — the approver's view of
+ * WHAT was booked, not just how many hours. Empty slots print as dashed placeholders so the
+ * day's shape is legible (a 2-slot day must not look like a 4-slot one).
+ *
+ * The number under the chip is the Job Order code exactly as the PM team writes it; the project
+ * name and the Job Order description live in the title, which is where the operator needs them
+ * without widening the table any further.
+ */
+const SHIFT_SLOT_LABELS: { key: string; label: string }[] = [
+  { key: "am1", label: "9a–11a" },
+  { key: "am2", label: "11a–1p" },
+  { key: "pm1", label: "2p–4p" },
+  { key: "pm2", label: "4p–6p" },
+];
+
+function SlotChips({ slots, testIdPrefix }: { slots?: SlotBooking[]; testIdPrefix?: string }) {
+  const bySlot = new Map<string, SlotBooking>();
+  const others: SlotBooking[] = [];
+  for (const slot of slots ?? []) {
+    if (slot.shiftSlot && !slot.isOt && !bySlot.has(slot.shiftSlot)) bySlot.set(slot.shiftSlot, slot);
+    else others.push(slot);
+  }
+  return (
+    <div className="slot-chips" data-testid={testIdPrefix ? `${testIdPrefix}-slots` : undefined}>
+      {SHIFT_SLOT_LABELS.map(({ key, label }) => {
+        const slot = bySlot.get(key);
+        return slot ? (
+          <SlotChip key={key} slot={slot} />
+        ) : (
+          <span key={key} className="slot-chip-wrap slot-chip-wrap--empty" title={`${label} · not booked`}>
+            <span className="slot-chip slot-chip--empty" aria-label={`${label} not booked`} />
+          </span>
+        );
+      })}
+      {others.map((slot, index) => (
+        <SlotChip
+          key={`${slot.isOt ? "ot" : slot.shiftSlot ?? slot.hourSlot ?? "x"}-${index}`}
+          slot={slot}
+        />
+      ))}
+    </div>
+  );
+}
+
+function SlotChip({ slot }: { slot: SlotBooking }) {
+  const token = (slot.projectKey ?? "n").toString().slice(0, 4).toUpperCase();
+  const colour = projectColorToken(slot.projectKey);
+  return (
+    <span
+      className={`slot-chip-wrap ${slot.isOt ? "slot-chip-wrap--ot" : ""}`}
+      title={slotTooltip({
+        projectKey: slot.projectKey,
+        projectName: slot.projectName,
+        jobOrderCode: slot.jobOrderCode,
+        jobOrderName: slot.jobOrderName,
+      })}
+    >
+      <span className="slot-chip" style={{ background: colour, borderColor: colour }}>
+        {token}
+      </span>
+      <span className="slot-chip__jo">{slot.jobOrderCode ?? "—"}</span>
+    </span>
   );
 }
 
@@ -865,6 +949,9 @@ export function ApprovalsPage() {
                       <th className="col-check" rowSpan={2} />
                       <th rowSpan={2}>Supervisor</th>
                       <th rowSpan={2}>Date</th>
+                      <th rowSpan={2} className="alloc-col">
+                        Allocation
+                      </th>
                       {pendingProjectKeys.map((k) => (
                         <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
                       ))}
@@ -914,7 +1001,8 @@ export function ApprovalsPage() {
                                 <span className={badge.className}>{badge.text}</span>
                               </button>
                             </td>
-                            <td>{fmtDate(g.workDate)}</td>
+                            <td className="date-col">{fmtDate(g.workDate)}</td>
+                            <td className="alloc-col" />
                             {pendingProjectKeys.map((k) => (
                               <Fragment key={k}>
                                 <td>{fmtHours(g.projectHours[k])}</td>
@@ -1002,7 +1090,10 @@ export function ApprovalsPage() {
                                     <div className="muted tiny">{emp.remarks}</div>
                                   )}
                                 </td>
-                                <td>{fmtDate(emp.workDate)}</td>
+                                <td className="date-col">{fmtDate(emp.workDate)}</td>
+                                <td className="alloc-col">
+                                  <SlotChips slots={emp.slots} testIdPrefix={`emp-${emp.id}`} />
+                                </td>
                                 {pendingProjectKeys.map((k) => (
                                   <Fragment key={k}>
                                     <td>{fmtHours(emp.projectHours[k])}</td>
@@ -1081,7 +1172,10 @@ export function ApprovalsPage() {
                             <div className="muted tiny">{emp.remarks}</div>
                           )}
                         </td>
-                        <td>{fmtDate(emp.workDate)}</td>
+                        <td className="date-col">{fmtDate(emp.workDate)}</td>
+                        <td className="alloc-col">
+                          <SlotChips slots={emp.slots} testIdPrefix={`flat-${emp.id}`} />
+                        </td>
                         {pendingProjectKeys.map((k) => (
                           <Fragment key={k}>
                             <td>{fmtHours(emp.projectHours[k])}</td>
@@ -1129,7 +1223,7 @@ export function ApprovalsPage() {
                         colSpan={
                           viewMode === "jobOrder"
                             ? 11
-                            : 8 + pendingProjectKeys.reduce((sum, key) => sum + (projectOtKeys.has(key) ? 2 : 1), 0)
+                            : 9 + pendingProjectKeys.reduce((sum, key) => sum + (projectOtKeys.has(key) ? 2 : 1), 0)
                         }
                         className="empty-cell"
                       >
@@ -1294,6 +1388,7 @@ export function ApprovalsPage() {
                                   )}
                                 </div>
                               </header>
+                              <SlotChips slots={emp.slots} testIdPrefix={`m-emp-${emp.id}`} />
                               <HourChips
                                 projectHours={emp.projectHours}
                                 projectOtHours={emp.projectOtHours}
@@ -1374,6 +1469,7 @@ export function ApprovalsPage() {
                         )}
                       </div>
                     </header>
+                    <SlotChips slots={emp.slots} testIdPrefix={`m-flat-${emp.id}`} />
                     <HourChips
                       projectHours={emp.projectHours}
                       projectOtHours={emp.projectOtHours}

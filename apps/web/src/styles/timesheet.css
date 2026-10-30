@@ -445,6 +445,34 @@
 .slot-td {
   text-align: center;
   padding: 4px 2px !important;
+  /* Wide enough for a 10-digit Job Order number at 8px (see .slot-jo). A narrower column
+     truncates the number, which is the one thing the caption exists to show. */
+  min-width: 48px;
+}
+
+/* The Job Order number UNDER the slot. The colour token inside the chip says which Project;
+   this says which work order, and it is the number the supervisor reads back to Planning. */
+.slot-jo {
+  display: block;
+  margin-top: 2px;
+  font-size: 8px;
+  line-height: 1.1;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  max-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ts-shift-chip__jo {
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  line-height: 1;
 }
 
 /* ---- OT HRS column ---- */
