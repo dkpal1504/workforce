@@ -791,7 +791,7 @@
   padding: 12px 14px;
   border: 1px solid var(--border-light);
   border-radius: 10px;
-  background: var(--surface-alt, #f6f8f9);
+  background: var(--bg-subtle);
 }
 
 .approval-filters__field {
@@ -812,11 +812,22 @@
 .approval-filters__field select {
   height: 34px;
   padding: 0 8px;
-  border: 1px solid var(--border, #cfd6dc);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface, #fff);
+  background: var(--bg-elevated);
   color: var(--text);
   font-size: 13px;
+}
+
+.approval-filters__field select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* The popup list is painted by the platform: without this it comes back light in a dark theme. */
+.approval-filters__field select option {
+  background: var(--bg-elevated);
+  color: var(--text);
 }
 
 .approval-filters__clear {
@@ -851,7 +862,7 @@
   padding: 4px;
   border: 1px solid var(--border-light);
   border-radius: 10px;
-  background: var(--surface-alt, #eef2f4);
+  background: var(--bg-subtle);
   align-self: flex-start;
 }
 
@@ -875,10 +886,10 @@
 }
 
 .approval-queue.active {
-  background: var(--surface, #fff);
-  border-color: var(--border-light);
+  background: var(--bg-elevated);
+  border-color: var(--border);
   color: var(--primary);
-  box-shadow: 0 1px 2px rgba(15, 36, 48, 0.08);
+  box-shadow: var(--shadow-sm);
 }
 
 /* The size of the pile behind each queue, so nobody has to open a tab to find out. */
@@ -886,7 +897,7 @@
   min-width: 22px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--surface-alt, #e3e9ee);
+  background: var(--bg-elevated);
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
@@ -895,9 +906,11 @@
   line-height: 18px;
 }
 
+/* On the active tab the pill inverts onto the accent. The ink is the PAGE colour, not white: Nocturne's
+   accent is a light sky blue, and white on it is the one combination that reads as a smudge. */
 .approval-queue.active .approval-queue__count {
   background: var(--primary);
-  color: #fff;
+  color: var(--bg);
 }
 
 /* ---- Allocation column: the day's slots and the Job Order number in each ---------------------
