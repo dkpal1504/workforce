@@ -41,7 +41,7 @@ import { summariseEscalations } from "../services/escalationStats";
 import { deliverMessage, conversationEmailEnabled } from "../services/notificationMail";
 import { remindersEnabled } from "../services/conversationReminders";
 import { elapsedHours, responseStats, slaChip, ageingBucket } from "../services/sla";
-import { runSlaLadder } from "../services/slaLadder";
+import { runSlaLadder, escalationNotifyAudience } from "../services/slaLadder";
 import {
   canCloseHindrance,
   canDecideRecovery,
@@ -897,6 +897,11 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", ...guarded, as
     return res.status(400).json({ error: "Unknown origin.", code: "BAD_ORIGIN" });
   }
 
+  // An escalation is addressed to real people the moment it is raised: the Section Heads whose sections hold
+  // the work, every PM, the COO and the Project Managers of this project. The ladder says the same thing
+  // later, but only for the rung it has reached; this is the first breath.
+  const notifyAudience = kind === "ESCALATION" ? await escalationNotifyAudience(jobOrderId) : undefined;
+
   const posted = await postMessage({
     jobOrderId,
     author: authorOf(req),
@@ -907,6 +912,7 @@ conversationsRouter.post("/job-orders/:id/conversation/messages", ...guarded, as
     emailOwner: req.body?.emailOwner !== false,
     origin: rawOrigin,
     reasonCode,
+    notifyAudience,
   });
 
   const attachmentIds = Array.isArray(req.body?.attachmentIds)

@@ -22,6 +22,61 @@ const SYSTEM_AUTHOR = { id: null, email: "system@workforce", name: "Workforce", 
 
 export type LadderResult = { reminded: number; escalated: number; skipped: number };
 
+/** The columns a mail audience is built from, in one place so the two rungs cannot disagree. */
+const USER_FOR_MAIL = {
+  id: true,
+  email: true,
+  notificationEmail: true,
+  sectionId: true,
+  scopeSections: { select: { sectionId: true } },
+} as const;
+
+export type AudiencePerson = {
+  id: number;
+  email: string;
+  notificationEmail: string | null;
+  sectionId: number | null;
+  scopeSections: Array<{ sectionId: number }>;
+};
+
+/** The mailbox a person is reached at: the notification address wins, exactly as everywhere else. */
+export function audienceAddress(person: AudiencePerson): string | null {
+  const address = (person.notificationEmail?.trim() || person.email?.trim() || "").trim();
+  return address ? address.toLowerCase() : null;
+}
+
+/**
+ * One row per PERSON, not per role. A PM who is also named Project Manager on the project — or a COO who
+ * is also a PM — must receive one copy, so the first mention wins and later ones are dropped.
+ */
+export function uniqueAudience(people: AudiencePerson[]): Array<{ userId: number | null; email: string | null }> {
+  const seen = new Set<number>();
+  const out: Array<{ userId: number | null; email: string | null }> = [];
+  for (const person of people) {
+    if (seen.has(person.id)) continue;
+    seen.add(person.id);
+    out.push({ userId: person.id, email: audienceAddress(person) });
+  }
+  return out;
+}
+
+/**
+ * The Section Head whose scope contains this Job Order's section comes first, the rest of the department's
+ * heads follow, and the rung stops at four people. Pure, so the ordering the escalation promises is a test
+ * rather than a hope.
+ */
+export function sectionHeadAudience(hods: AudiencePerson[], sectionId: number | null): AudiencePerson[] {
+  const covers = (person: AudiencePerson) => {
+    const sections = person.scopeSections.length
+      ? person.scopeSections.map((row) => row.sectionId)
+      : person.sectionId == null
+        ? []
+        : [person.sectionId];
+    return sectionId != null && sections.includes(sectionId);
+  };
+  return [...hods].sort((a, b) => Number(covers(b)) - Number(covers(a))).slice(0, 4);
+}
+
 /** The line the HOD reads. It names the message, the age, and what is expected next. */
 export function remindLine(seq: number, hours: number): string {
   return `Escalation #${seq} reminded to the Section HOD and the Department HOD after ${hours}h without a reply.`;
@@ -45,28 +100,46 @@ async function audienceFor(jobOrderId: number, rung: LadderStep): Promise<Array<
     // head is told because a section head who is on leave is otherwise a silent dead end.
     const hods = await prisma.user.findMany({
       where: { role: "HOD", active: true, departmentId: order.departmentId },
-      select: { id: true, email: true, notificationEmail: true, sectionId: true, scopeSections: { select: { sectionId: true } } },
+      select: USER_FOR_MAIL,
     });
-    const covers = (user: (typeof hods)[number]) => {
-      const sections = user.scopeSections.length ? user.scopeSections.map((row) => row.sectionId) : user.sectionId == null ? [] : [user.sectionId];
-      return order.sectionId != null && sections.includes(order.sectionId);
-    };
-    const sectionFirst = [...hods].sort((a, b) => Number(covers(b)) - Number(covers(a)));
-    return sectionFirst.slice(0, 4).map((user) => ({ userId: user.id, email: user.notificationEmail ?? user.email }));
+    return uniqueAudience(sectionHeadAudience(hods, order.sectionId));
   }
 
-  // ESCALATE_COO: the COO (org-wide) and every PM assigned to the project.
-  const [coos, managers] = await Promise.all([
-    prisma.user.findMany({ where: { role: "COO", active: true }, select: { id: true, email: true, notificationEmail: true } }),
+  // ESCALATE_COO: everybody who must see an unanswered escalation — the COO and every PM org-wide, plus
+  // the Project Managers ASSIGNED to this project and to no other. The assignment is filtered to `active`:
+  // a revoked manager is history, not a recipient, and mailing him would be a leak dressed as diligence.
+  const [coos, pms, assigned] = await Promise.all([
+    prisma.user.findMany({ where: { role: "COO", active: true }, select: USER_FOR_MAIL }),
+    prisma.user.findMany({ where: { role: "PM", active: true }, select: USER_FOR_MAIL }),
     prisma.projectManagerAssignment.findMany({
-      where: { projectId: order.projectId },
-      select: { user: { select: { id: true, email: true, notificationEmail: true } } },
+      where: { projectId: order.projectId, status: "active", user: { active: true } },
+      select: { user: { select: USER_FOR_MAIL } },
     }),
   ]);
-  return [
-    ...coos.map((user) => ({ userId: user.id, email: user.notificationEmail ?? user.email })),
-    ...managers.map((row) => ({ userId: row.user.id, email: row.user.notificationEmail ?? row.user.email })),
-  ];
+  return uniqueAudience([...coos, ...pms, ...assigned.map((row) => row.user)]);
+}
+
+/**
+ * Who is told the moment an escalation is RAISED — not after the clock runs out.
+ *
+ * An escalation names real people: the Section Heads whose sections the work sits in, every PM and the
+ * COO, and the Project Managers of that project. The ladder rungs say the same thing later, when nobody
+ * answers; this is the first breath, so the heads learn of it while it is still actionable.
+ */
+export async function escalationNotifyAudience(
+  jobOrderId: number
+): Promise<Array<{ userId: number | null; email: string | null }>> {
+  const [heads, leads] = await Promise.all([audienceFor(jobOrderId, "REMIND_HOD"), audienceFor(jobOrderId, "ESCALATE_COO")]);
+  const seen = new Set<number>();
+  const out: Array<{ userId: number | null; email: string | null }> = [];
+  for (const person of [...heads, ...leads]) {
+    if (person.userId != null) {
+      if (seen.has(person.userId)) continue;
+      seen.add(person.userId);
+    }
+    out.push(person);
+  }
+  return out;
 }
 
 /**

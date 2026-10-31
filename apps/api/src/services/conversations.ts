@@ -79,6 +79,12 @@ export type PostMessageInput = {
    * audience still e-mails nobody, which is what keeps every other automated note quiet.
    */
   audience?: Array<{ userId: number | null; email: string | null }>;
+  /**
+   * People this message is ADDRESSED to without having spoken in the thread — the Section Heads, PMs and
+   * Project Managers a raised escalation names. They get their own delivery row (and therefore the mail),
+   * where a participant only gets one because he once posted here.
+   */
+  notifyAudience?: Array<{ userId: number | null; email: string | null }>;
   /** REMIND_HOD | ESCALATE_COO on a ladder line; makes a second sweep harmless. */
   ladderStep?: "REMIND_HOD" | "ESCALATE_COO" | null;
   now?: Date;
@@ -306,6 +312,29 @@ export async function postMessage(input: PostMessageInput): Promise<PostedMessag
         data: { messageId: message.id, email: address, userId: participant.userId, state },
       });
       recipientRows.push({ email: address, state });
+    }
+
+    // The people the message is ADDRESSED to. Without this, an escalation raised in a thread where nobody
+    // has replied yet e-mails only the owner — the heads whose section holds the work hear nothing until the
+    // ladder's first rung, hours later. Deduped against the participants already queued above.
+    const addressed = new Set(recipientRows.map((row) => row.email.toLowerCase()));
+    const addressedUsers = new Set(participants.map((row) => row.userId).filter((id): id is number => id != null));
+    for (const person of input.notifyAudience ?? []) {
+      if (person.userId != null && addressedUsers.has(person.userId)) continue;
+      const address = (person.email ?? "").trim().toLowerCase();
+      if (!address || address === input.author.email.toLowerCase() || addressed.has(address)) continue;
+      const routable = isRoutableAddress(address);
+      await tx.jobOrderMessageRecipient.create({
+        data: {
+          messageId: message.id,
+          email: routable ? address : address || "unknown",
+          userId: person.userId,
+          state: routable ? "QUEUED" : "NO_ADDRESS",
+        },
+      });
+      recipientRows.push({ email: address, state: routable ? "QUEUED" : "NO_ADDRESS" });
+      addressed.add(address);
+      if (person.userId != null) addressedUsers.add(person.userId);
     }
 
     // Commitments are recorded from any human message, and always editable by a person afterwards.
