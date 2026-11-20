@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../db";
+import { hodScopeFromRows, type HodScope } from "../services/hodScope";
 
 export type AuthUser = {
   id: number;
@@ -12,8 +13,18 @@ export type AuthUser = {
   /**
    * The Sections this user may act within. EMPTY means every Section of `departmentId` (the
    * "Section Head for one whole Department" case). `sectionId` above is the legacy mirror.
+   *
+   * FLAT and single-Department: kept for display and for un-converted callers. Authority is
+   * `hodScope` below — a named Section from a second Department lives in there, not here.
    */
   sectionScope: number[];
+  /**
+   * The AUTHORITY: every Department this approver heads, with either all of its Sections or a named
+   * list. One grant = exactly what `departmentId` + `sectionScope` meant; several grants = a head for
+   * more than one plant (Yardservice - EOU plus Yardservice - SEZ). Built by `hodScopeFromRows`, so an
+   * account with no scope rows at all keeps today's meaning with no backfill.
+   */
+  hodScope: HodScope;
   employeeId: number | null;
   mustChangePassword: boolean;
   tokenVersion: number;
@@ -68,7 +79,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         role: true,
         departmentId: true,
         sectionId: true,
-        scopeSections: { select: { sectionId: true } },
+        scopeSections: { select: { sectionId: true, section: { select: { departmentId: true } } } },
+        scopeDepartments: { select: { departmentId: true } },
         employeeId: true,
         active: true,
         mustChangePassword: true,
@@ -104,6 +116,17 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       sectionScope: user.scopeSections.length
         ? user.scopeSections.map((scope) => scope.sectionId)
         : (user.sectionId != null ? [user.sectionId] : []),
+      // The authority, as grants. An account with no scope rows anywhere resolves to the same single
+      // Department + Section set the two fields above describe — that is the zero-backfill guarantee.
+      hodScope: hodScopeFromRows({
+        departmentId: user.departmentId,
+        legacySectionId: user.sectionId,
+        departmentGrants: user.scopeDepartments.map((grant) => grant.departmentId),
+        sectionRows: user.scopeSections.map((scope) => ({
+          sectionId: scope.sectionId,
+          departmentId: scope.section.departmentId,
+        })),
+      }),
       employeeId: user.employeeId,
       mustChangePassword: user.mustChangePassword,
       tokenVersion: user.tokenVersion,

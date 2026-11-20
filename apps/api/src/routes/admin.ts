@@ -10,7 +10,9 @@ import {
   TRANSFER_BLOCKING_ALLOCATION_STATUSES,
   TRANSFER_BLOCKING_TIMESHEET_STATUSES,
 } from "../services/transferBlockers";
-import { legacySectionId, normaliseSectionIds, validateScopeSections } from "../services/userScope";
+import { legacySectionId, normaliseSectionIds, validateHodGrants, validateScopeSections } from "../services/userScope";
+import { describeHodScope, hodScopeFromRows } from "../services/hodScope";
+import { hodRoutingScopeFor } from "../services/approvalRouting";
 import { runBadgeViewSync } from "../services/badgeViewSync";
 import { processCredentialDeliveries } from "../services/credentialDelivery";
 import { canonicalEcNo, findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
@@ -138,12 +140,22 @@ async function writeUserScope(
   tx: Prisma.TransactionClient,
   userId: number,
   sectionIds: readonly number[],
+  departmentGrants: readonly number[] = [],
 ) {
   await tx.userScopeSection.deleteMany({ where: { userId } });
+  await tx.userScopeDepartment.deleteMany({ where: { userId } });
   const wanted = normaliseSectionIds(sectionIds);
   if (wanted.length > 0) {
     await tx.userScopeSection.createMany({
       data: wanted.map((sectionId) => ({ userId, sectionId })),
+    });
+  }
+  // Whole-Department grants: one row per Department. Empty for every ordinary single-Department HOD,
+  // whose scope continues to come from `User.departmentId` (no backfill, no extra rows).
+  const departments = [...new Set(departmentGrants)].filter((id) => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
+  if (departments.length > 0) {
+    await tx.userScopeDepartment.createMany({
+      data: departments.map((departmentId) => ({ userId, departmentId })),
     });
   }
 }
@@ -361,48 +373,88 @@ adminRouter.post("/hods", requireRoles("PM", "ADMIN"), async (req, res) => {
  */
 adminRouter.put("/users/:id/hod-scope", requireRoles("PM", "ADMIN"), async (req, res) => {
   const userId = Number(req.params.id);
-  const departmentId = Number(req.body?.departmentId);
+  // `grants` is the contract: ONE ENTRY PER DEPARTMENT, `sectionIds: []` = that whole Department. This is
+  // what lets one Sectional Head cover Yardservice - EOU and Yardservice - SEZ on one login.
+  // The older single-Department body (`departmentId` + `sectionIds` / `sectionId`) is still accepted, so
+  // an in-flight client cannot silently lose its scope.
+  const rawGrants = Array.isArray(req.body?.grants) ? (req.body.grants as unknown[]) : null;
+  const legacyDepartmentId = Number(req.body?.departmentId);
   const namedSections = Array.isArray(req.body?.sectionIds)
     ? (req.body.sectionIds as unknown[]).map((value) => Number(value))
     : null;
   const singleSectionId = req.body?.sectionId == null ? null : Number(req.body.sectionId);
-  if (!departmentId) return res.status(400).json({ error: "departmentId is required." });
-  if (namedSections == null && !singleSectionId) {
-    return res.status(400).json({ error: "Name the Sections to scope this HOD to (sectionIds), or send sectionId." });
+
+  const grants = rawGrants
+    ? rawGrants.map((entry) => {
+        const value = (entry ?? {}) as { departmentId?: unknown; sectionIds?: unknown };
+        return {
+          departmentId: Number(value.departmentId),
+          sectionIds: Array.isArray(value.sectionIds) ? (value.sectionIds as unknown[]).map(Number) : [],
+        };
+      })
+    : Number.isFinite(legacyDepartmentId) && legacyDepartmentId > 0
+      ? [{
+          departmentId: legacyDepartmentId,
+          sectionIds: normaliseSectionIds(namedSections ?? (singleSectionId ? [singleSectionId] : [])),
+        }]
+      : null;
+  if (!grants) {
+    return res.status(400).json({
+      error: "Send `grants` ([{ departmentId, sectionIds }]), or a single `departmentId`.",
+      code: "SCOPE_REQUIRED",
+    });
   }
-  const [user, sections] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, include: { employee: { include: { sectionAssignment: true } } } }),
-    loadNamedSections(namedSections ?? (singleSectionId ? [singleSectionId] : [])),
+
+  const [user, departments, sections] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, include: { employee: true } }),
+    prisma.department.findMany({ select: { id: true, name: true, active: true } }),
+    prisma.section.findMany({ select: { id: true, name: true, departmentId: true, active: true } }),
   ]);
   if (!user || user.role !== "HOD") return res.status(404).json({ error: "HOD account not found." });
-  // An EMPTY set is the whole Department: a legitimate scope, so nothing is validated for it.
-  const wantedSections = normaliseSectionIds(namedSections ?? [singleSectionId].filter((v): v is number => v != null));
-  const sectionRefusal = validateScopeSections(departmentId, wantedSections, sections);
-  if (sectionRefusal) return res.status(400).json(sectionRefusal);
+
+  const departmentName = (id: number) => departments.find((department) => department.id === id)?.name;
+  const sectionName = (id: number) => sections.find((section) => section.id === id)?.name;
+  const refusal = validateHodGrants(grants, departments, sections, { departmentName, sectionName });
+  if (refusal) return res.status(400).json(refusal);
+
   if (user.employee) {
-    const open = await prisma.employeeAllocationDay.count({ where: { employeeId: user.employee.id, status: { in: ["SUBMITTED", "HOD_APPROVED"] } } });
+    const open = await prisma.employeeAllocationDay.count({
+      where: { employeeId: user.employee.id, status: { in: ["SUBMITTED", "HOD_APPROVED"] } },
+    });
     if (open) return res.status(409).json({ error: "Resolve the HOD's submitted My Hours before changing scope.", code: "OPEN_TIMESHEETS" });
   }
-  // The legacy mirror: the first Section, or null for the whole Department.
-  const sectionId = wantedSections[0] ?? null;
+
+  const wholeDepartments = grants.filter((grant) => grant.sectionIds.length === 0).map((grant) => grant.departmentId);
+  const namedList = normaliseSectionIds(grants.flatMap((grant) => grant.sectionIds));
+  // The legacy mirror only: first whole Department, else the Department of the first named Section.
+  const mirrorDepartmentId =
+    wholeDepartments[0] ??
+    sections.find((section) => section.id === namedList[0])?.departmentId ??
+    user.departmentId;
+  const sectionId = namedList[0] ?? null;
+
+  // THE EMPLOYEE IS NOT TOUCHED. Granting approval scope must never transfer the person: this block used
+  // to re-point his Employee to the granted Department and move his Section assignment, which is exactly
+  // how "Section Head for two plants" would have become "an EOU employee on the SEZ rolls".
   const updated = await prisma.$transaction(async (tx) => {
-    // The Employee's own org mapping follows a NAMED Section only. A department-wide scope is not a
-    // Section, so moving the person's home Section to express it would be wrong: he belongs where he
-    // belongs and may still head the whole Department.
-    if (user.employee && sectionId != null) {
-      await tx.employee.update({ where: { id: user.employee.id }, data: { departmentId } });
-      await tx.employeeSectionAssignment.upsert({
-        where: { employeeId: user.employee.id },
-        create: { employeeId: user.employee.id, sectionId, source: "MANUAL" },
-        update: { sectionId, source: "MANUAL" },
-      });
-    }
-    const saved = await tx.user.update({ where: { id: userId }, data: { departmentId, sectionId, tokenVersion: { increment: 1 } } });
-    await writeUserScope(tx, userId, wantedSections);
+    const saved = await tx.user.update({
+      where: { id: userId },
+      data: { departmentId: mirrorDepartmentId, sectionId, tokenVersion: { increment: 1 } },
+    });
+    await writeUserScope(tx, userId, namedList, wholeDepartments);
     return saved;
   });
-  await writeAudit(req.user!.id, "HOD_SCOPE_UPDATE", "user", userId, { departmentId, sectionId, sectionIds: wantedSections });
-  res.json({ user: { id: updated.id, departmentId: updated.departmentId, sectionId: updated.sectionId }, sectionIds: wantedSections });
+
+  await writeAudit(req.user!.id, "HOD_SCOPE_UPDATE", "user", userId, {
+    grants: grants.map((grant) => ({ departmentId: grant.departmentId, sectionIds: grant.sectionIds })),
+    description: describeHodScope({ grants }, departmentName, sectionName),
+    mirror: { departmentId: mirrorDepartmentId, sectionId },
+  });
+  res.json({
+    user: { id: updated.id, departmentId: updated.departmentId, sectionId: updated.sectionId },
+    grants,
+    description: describeHodScope({ grants }, departmentName, sectionName),
+  });
 });
 
 /** Atomically de-link an Employee from the current organisation path and map a new one. */
@@ -575,6 +627,7 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
       select: {
         id: true, name: true, email: true, role: true, active: true, employeeId: true, sectionId: true, departmentId: true,
         department: { select: { id: true, name: true } },
+        scopeDepartments: { select: { departmentId: true, department: { select: { id: true, name: true } } } },
         scopeSection: { select: { id: true, name: true } },
         // The authoritative SET; `sectionId` is its legacy mirror (first, or null).
         scopeSections: { select: { sectionId: true } },
@@ -681,6 +734,10 @@ adminRouter.get("/role-assignment", requireRoles("ADMIN"), async (req, res) => {
         // must be told the SET and not just the legacy mirror: `hodScope` says "SECTION" for any
         // non-null mirror, so a two-Section Head would read as a one-Section Head without this.
         scopeSections: user.scopeSections.map((row) => row.sectionId),
+        // Whole-Department grants. TWO entries = a Sectional Head over two plants; the panel must show
+        // them, because `hodScope: "DEPARTMENT"` alone cannot tell one Department from two.
+        scopeDepartments: user.scopeDepartments.map((grant) => grant.departmentId),
+        scopeDepartmentNames: user.scopeDepartments.map((grant) => grant.department.name),
         // HOD with no Section = Department-level oversight.
         hodScope: user.role === "HOD" ? (user.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
       })),
@@ -732,6 +789,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     select: {
       id: true, name: true, role: true, active: true, employeeId: true, departmentId: true, sectionId: true,
       scopeSections: { select: { sectionId: true } },
+      scopeDepartments: { select: { departmentId: true } },
       employee: {
         select: {
           id: true, active: true, employmentType: true, departmentId: true,
@@ -750,6 +808,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     active: user.active,
     currentSectionId: user.sectionId,
     currentSectionIds: scopeIdsFor(user),
+    currentDepartmentIds: user.scopeDepartments.map((grant) => grant.departmentId),
     employeeId: user.employeeId,
     employee: user.employee
       ? { id: user.employee.id, active: user.employee.active, employmentType: user.employee.employmentType, departmentId: user.employee.departmentId }
@@ -773,11 +832,12 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     : prisma.timesheetDay.count({
         where: {
           status: { in: queueStatuses },
-          ...(user.role === "HOD"
-            ? user.departmentId == null || scopeIdsFor(user).length === 0
-              ? { employee: { id: -1 } }
-              : routingSectionScope(scopeIdsFor(user))
-            : {}),
+          ...(user.role === "HOD" ? hodRoutingScopeFor(hodScopeFromRows({
+            departmentId: user.departmentId,
+            legacySectionId: user.sectionId,
+            departmentGrants: user.scopeDepartments.map((grant) => grant.departmentId),
+            sectionRows: [],
+          })) : {}),
         },
       });
   const [returnedTimesheetDays, pendingApprovalCount, otherQueueOwners] = await Promise.all([
@@ -796,10 +856,15 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
   // An EMPTY set is department-wide, so the candidate list is only needed when one is named.
   const named = Array.isArray(req.body?.sectionIds) ? (req.body.sectionIds as unknown[]) : null;
   const candidates = named ? await loadNamedSections(named.map((value) => Number(value))) : [];
+  const departmentCandidates = Array.isArray(req.body?.departmentIds)
+    ? await prisma.department.findMany({ select: { id: true, active: true } })
+    : [];
   const plan = planRoleChange(req.user!.id, target, requestedRole, workload, {
     hodScope: req.body?.hodScope,
     sectionIds: req.body?.sectionIds,
     sections: candidates,
+    departmentIds: req.body?.departmentIds,
+    departments: departmentCandidates,
   });
   if (!plan.ok) {
     // 409 is for a state CONFLICT (stranded work, an inactive account). A rejected request — an
@@ -828,7 +893,15 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     });
     // The mirror alone is not the scope: the set is the authority, and it is written here so
     // the two can never disagree after a role change.
-    await writeUserScope(tx, userId, plan.update.sectionIds);
+    // A role edit that does not name Departments PRESERVES the ones the account already heads: silently
+    // dropping a second plant because an Admin re-saved the HOD role would be the same data loss the
+    // hod-scope endpoint used to cause by moving the Employee.
+    const preservedGrants = plan.update.departmentGrants.length > 0
+      ? plan.update.departmentGrants
+      : plan.update.role === "HOD"
+        ? user.scopeDepartments.map((grant) => grant.departmentId)
+        : [];
+    await writeUserScope(tx, userId, plan.update.sectionIds, preservedGrants);
     return saved;
   });
 
@@ -838,6 +911,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     departmentId: plan.update.departmentId,
     sectionId: plan.update.sectionId,
     sectionIds: plan.update.sectionIds,
+    departmentGrants: plan.update.departmentGrants,
     hodScope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : undefined,
   });
   return res.json({
@@ -848,6 +922,7 @@ async function assignRoleToExistingAccount(req: Request, res: Response, userId: 
     // Tells the panel which scope was actually stored, so the UI can confirm it.
     scope: plan.update.role === "HOD" ? (plan.update.sectionId == null ? "DEPARTMENT" : "SECTION") : null,
     sectionIds: plan.update.sectionIds,
+    departmentGrants: plan.update.departmentGrants,
   });
 }
 

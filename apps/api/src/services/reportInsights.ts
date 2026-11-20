@@ -191,7 +191,7 @@ export async function loadReportInsights(
       case "PROJECTS":
         return projectId != null && scope.projectIds.includes(projectId);
       case "DEPARTMENT":
-        if (departmentId !== scope.departmentId) return false;
+        if (!(scope.departmentIds ?? [scope.departmentId]).includes(departmentId ?? -1)) return false;
         if (scope.sectionIds.length === 0) return true;
         return sectionId == null || scope.sectionIds.includes(sectionId);
       default:

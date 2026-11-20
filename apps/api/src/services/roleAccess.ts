@@ -9,6 +9,8 @@
  * A **Section HOD** is the existing behaviour: Department + Section, approving only
  * its own Section's timesheets.
  */
+import { hodScopeDepartmentIds, hodScopeFromLegacy, type HodScope } from "./hodScope";
+
 export const DEPARTMENT_VIEW_ROLES = ["HOD", "DEPT_HEAD"] as const;
 
 export function isDepartmentViewRole(role: string): boolean {
@@ -216,9 +218,28 @@ export function departmentScope(role: string, departmentId: number | null): numb
  */
 export type ReportScope =
   | { kind: "ORGANISATION" }
-  | { kind: "DEPARTMENT"; departmentId: number }
+  /**
+   * Exactly these Departments, every Section of each. `departmentId` is the FIRST one, kept so the
+   * provenance line and every legacy reader have a single value; `departmentIds` is the authority —
+   * one entry for a single-Department head, two for a Sectional Head over two plants.
+   */
+  | { kind: "DEPARTMENT"; departmentId: number; departmentIds?: readonly number[] }
   | { kind: "PROJECTS"; projectIds: readonly number[] }
   | { kind: "NONE" };
+
+/** The Departments a report scope is limited to. Empty for ORGANISATION / PROJECTS / NONE. */
+export function reportScopeDepartmentIds(scope: ReportScope): number[] {
+  if (scope.kind !== "DEPARTMENT") return [];
+  return [...new Set([scope.departmentId, ...(scope.departmentIds ?? [])])]
+    .filter((id) => Number.isInteger(id) && id > 0)
+    .sort((a, b) => a - b);
+}
+
+/** Does this report scope include that Department? The equality test every reader should use. */
+export function reportScopeCoversDepartment(scope: ReportScope, departmentId: number): boolean {
+  if (scope.kind === "ORGANISATION") return true;
+  return scope.kind === "DEPARTMENT" && reportScopeDepartmentIds(scope).includes(departmentId);
+}
 
 /**
  * The scope an actor's report is ACTUALLY limited to.
@@ -230,6 +251,52 @@ export type ReportScope =
  * FAIL CLOSED, in both directions: a Project Manager with no assignment is NONE (zero rows, with an
  * explicit sentence on screen), never the organisation and never a Department fallback.
  */
+/**
+ * The same scope, from the account's GRANT SET rather than one Department id.
+ *
+ * This is what a Sectional Head over Yardservice - EOU + Yardservice - SEZ reads: both Departments,
+ * whole, on every report that derives its scope from the actor. An account with no grants and no
+ * Department still fails closed to NONE, exactly as below.
+ */
+export function reportScopeForScope(
+  role: string,
+  scope: HodScope,
+  assignedProjectIds: readonly number[] | null = null
+): ReportScope {
+  if (role === "PM" || role === "ADMIN" || role === "COO") return { kind: "ORGANISATION" };
+  if (role === "PROJECT_MANAGER") return reportScopeFor(role, null, assignedProjectIds);
+  if (!isDepartmentViewRole(role)) return { kind: "NONE" };
+  const departmentIds = hodScopeDepartmentIds(scope);
+  if (departmentIds.length === 0) return { kind: "NONE" };
+  return departmentIds.length > 1
+    ? { kind: "DEPARTMENT", departmentId: departmentIds[0], departmentIds }
+    : { kind: "DEPARTMENT", departmentId: departmentIds[0] };
+}
+
+/**
+ * The scope from the values an ACTOR carries: a home Department plus, for a Sectional Head, the other
+ * Departments he heads. Callers pass `departmentIds` when they have it; a single-Department actor is
+ * unchanged because the list is then just his one Department.
+ */
+export function reportScopeForActor(
+  role: string,
+  departmentId: number | null,
+  departmentIds: readonly number[] | null | undefined,
+  assignedProjectIds: readonly number[] | null = null
+): ReportScope {
+  const ids = [...new Set([...(departmentIds ?? []), ...(departmentId != null ? [departmentId] : [])])]
+    .filter((id) => Number.isInteger(id) && id > 0)
+    .sort((a, b) => a - b);
+  if (isDepartmentViewRole(role) && ids.length > 0) {
+    // `departmentIds` is emitted ONLY for a head of several Departments, so every existing
+    // single-Department caller keeps the exact object it produced before grants existed.
+    return ids.length > 1
+      ? { kind: "DEPARTMENT", departmentId: ids[0], departmentIds: ids }
+      : { kind: "DEPARTMENT", departmentId: ids[0] };
+  }
+  return reportScopeFor(role, departmentId, assignedProjectIds);
+}
+
 export function reportScopeFor(
   role: string,
   departmentId: number | null,
@@ -291,8 +358,9 @@ export function intersectDepartmentFilter(
   // DEPARTMENT: keep only the requested ids that ARE the actor's Department. No request -> the
   // actor's Department alone. An empty result is the honest "disjoint" case (an EMPTY array, never
   // a substituted Department).
-  if (requested == null) return [scope.departmentId];
-  return requested.filter((id) => id === scope.departmentId);
+  const own = reportScopeDepartmentIds(scope);
+  if (requested == null) return own;
+  return requested.filter((id) => own.includes(id));
 }
 
 /**
@@ -328,15 +396,33 @@ export function intersectProjectFilter(
 export const SUMMARY_VISIBLE_STATUSES = ["HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"] as const;
 
 /**
- * Can this approver act on a resource, given a SET of sections?
+ * Can this approver act on a resource, given a SET of grants?
  *
- *   departmentId set, sections EMPTY      -> whole Department (unchanged: was `sectionId == null`)
- *   departmentId set, sections non-empty  -> exactly those Sections
- *   departmentId null                     -> nothing
+ *   a grant for the resource's Department, EMPTY sections -> the whole Department
+ *   a grant for the resource's Department, named sections -> exactly those Sections
+ *   no grant for that Department                          -> false
  *
- * The Department gate comes FIRST and is absolute: a Section from another Department can never
- * match, even if a stale row existed. Callers must uphold the same-department rule when WRITING a
- * scope (see `validateScopeSections`); this function is the read-side rule.
+ * The Department gate is PER GRANT and absolute: a Section from a Department the account does not
+ * hold can never match, even if a stale `user_scope_sections` row named it. Callers must uphold the
+ * same rule when WRITING a scope (see `validateScopeSections`); this function is the read-side rule.
+ */
+export function hodScopeMatchesScope(
+  scope: HodScope,
+  resourceDepartmentId: number,
+  resourceSectionId: number | null
+): boolean {
+  return scope.grants.some((grant) => {
+    if (grant.departmentId !== resourceDepartmentId) return false;
+    if (grant.sectionIds.length === 0) return true;
+    return resourceSectionId != null && grant.sectionIds.includes(resourceSectionId);
+  });
+}
+
+/**
+ * Can this approver act on a resource, given a SET of sections? Legacy single-Department form.
+ *
+ * Kept so un-converted callers keep their exact behaviour; it now runs through the grant rule, so
+ * there is one implementation of "does this scope cover that day" and no second copy to drift.
  */
 export function hodScopeMatchesSet(
   actorDepartmentId: number | null,
@@ -344,26 +430,40 @@ export function hodScopeMatchesSet(
   resourceDepartmentId: number,
   resourceSectionId: number | null
 ): boolean {
-  if (actorDepartmentId == null) return false;
-  if (actorDepartmentId !== resourceDepartmentId) return false;
-  // An empty set means the WHOLE Department — the single-Department Section Head case.
-  if (actorSectionIds.length === 0) return true;
-  return resourceSectionId != null && actorSectionIds.includes(resourceSectionId);
+  return hodScopeMatchesScope(
+    hodScopeFromLegacy(actorDepartmentId, actorSectionIds),
+    resourceDepartmentId,
+    resourceSectionId
+  );
 }
 
 /**
  * The Prisma `employee` filter for an approver's scope.
  *
- * Replaces the two duplicated `hodEmployeeScope` copies (routes/approvals.ts and
- * routes/employeeAllocation.ts). Note the two shapes are NOT interchangeable:
+ * Note the two shapes inside one grant are NOT interchangeable:
  *   EMPTY set  -> `{ departmentId }`                     — no Section filter at all (every Section)
  *   NON-empty  -> `{ departmentId, sectionAssignment }`  — narrows to those Sections
- * Swapping them either hides rows or leaks every Section of the Department.
+ * Swapping them either hides rows or leaks every Section of the Department. With several grants the
+ * fragments are OR-ed, so each Department keeps its own shape.
  */
+export function hodEmployeeScopeFor(scope: HodScope) {
+  if (scope.grants.length === 0) return { id: -1 };
+  const fragments = scope.grants.map((grant) =>
+    grant.sectionIds.length === 0
+      ? { departmentId: grant.departmentId }
+      : { departmentId: grant.departmentId, sectionAssignment: { sectionId: { in: [...grant.sectionIds] } } }
+  );
+  // One grant keeps the EXACT legacy object shape (`{ departmentId }` / `{ departmentId,
+  // sectionAssignment }`) because callers merge it into a larger `where`; only a real multi-Department
+  // scope needs the `OR`. Changing the single-grant shape would rewrite every existing query for no
+  // behavioural gain.
+  return fragments.length === 1 ? fragments[0] : { OR: fragments };
+}
+
+/** Legacy single-Department form of `hodEmployeeScopeFor`. */
 export function hodEmployeeScopeSet(departmentId: number | null, actorSectionIds: readonly number[]) {
   if (departmentId == null) return { id: -1 };
-  if (actorSectionIds.length === 0) return { departmentId };
-  return { departmentId, sectionAssignment: { sectionId: { in: [...actorSectionIds] } } };
+  return hodEmployeeScopeFor(hodScopeFromLegacy(departmentId, actorSectionIds));
 }
 
 /**

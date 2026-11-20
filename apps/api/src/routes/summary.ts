@@ -6,6 +6,7 @@ import { endOfFrequency, formatDateOnly, parseDateOnly, startOfFrequency } from 
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours } from "../services/contractWorkHours";
 import { isDepartmentViewRole } from "../services/roleAccess";
+import { hodScopeDepartmentIds, type HodScope } from "../services/hodScope";
 import {
   balanceOf,
   latestApprovedProgress,
@@ -27,8 +28,29 @@ export const summaryRouter = Router();
  * before the scope became a set. Five sites in this router ask this one question, so it is
  * asked once here rather than spelled out five times.
  */
-function isDepartmentWideViewer(role: string, sectionScope: readonly number[]): boolean {
-  return isDepartmentViewRole(role) && sectionScope.length === 0;
+function isDepartmentWideViewer(role: string, scope: HodScope): boolean {
+  if (!isDepartmentViewRole(role)) return false;
+  // No grants at all stays today's unmapped head: department-wide over nothing, which matches nothing.
+  if (scope.grants.length === 0) return true;
+  // A head who holds ANY Department IN FULL aggregates by Department. A Section-only head does not —
+  // he sees what he personally approved, which is the existing Section-HOD behaviour.
+  return scope.grants.some((grant) => grant.sectionIds.length === 0);
+}
+
+/**
+ * The Department match for a head's aggregate: one id, `{ in: [...] }` for a head of several plants,
+ * `-1` when he holds none (fail closed).
+ *
+ * Summary aggregates by DEPARTMENT because the frozen booking snapshot stores Department, not Section.
+ * A named-Section grant is therefore reported for its whole Department on these screens; the approval
+ * QUEUE stays section-precise (`hodScopeMatchesScope`). That asymmetry is deliberate — a head who can
+ * approve three Sections should still see the Department's approved hours, and the alternative (no
+ * rows at all for that Department) reads as missing data.
+ */
+function departmentMatch(scope: HodScope): number | { in: number[] } {
+  const ids = hodScopeDepartmentIds(scope);
+  if (ids.length === 0) return -1;
+  return ids.length === 1 ? ids[0] : { in: ids };
 }
 
 // COO is deliberately NOT department-pinned below: `isDepartmentViewRole("COO")` is false and
@@ -68,7 +90,7 @@ summaryRouter.get("/job-order", async (req, res) => {
   // fails closed. Other reporting roles may use the explicit report filter.
   // A Section HOD is pinned to its Department; a Department HOD / Department Head is
   // pinned to its Department too, but covers every Section in it.
-  const filterDeptId = isDepartmentViewRole(role) ? (req.user!.departmentId ?? -1) : requestedDeptId;
+  const filterDeptId = isDepartmentViewRole(role) ? departmentMatch(req.user!.hodScope) : requestedDeptId;
 
   let projectIds: number[] | undefined;
   if (typeof req.query.projectIds === "string" && req.query.projectIds.length) {
@@ -119,12 +141,12 @@ summaryRouter.get("/job-order", async (req, res) => {
       status: "PM_APPROVED",
       ...(role === "SUPERVISOR" ? { taggedById: userId } : {}),
       ...(role === "EMPLOYEE" ? { employeeId: req.user!.employeeId ?? -1 } : {}),
-      ...(isDepartmentWideViewer(role, req.user!.sectionScope) ? {
+      ...(isDepartmentWideViewer(role, req.user!.hodScope) ? {
         // Approved by a Section HOD of this Department (the Department HOD may not
         // have approved it personally), which is the department-level roll-up.
         timesheetDay: {
           approvals: { some: { approverId: { not: req.user!.id }, approver: { role: "HOD" }, action: "APPROVE" } },
-          employee: { departmentId: req.user!.departmentId ?? -1 },
+          employee: { departmentId: departmentMatch(req.user!.hodScope) },
         },
       } : role === "HOD" ? {
         timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } },
@@ -142,10 +164,10 @@ summaryRouter.get("/job-order", async (req, res) => {
       jobOrderId: { in: jobOrderIds },
       allocationDay: {
         status: "PM_APPROVED",
-        ...(isDepartmentWideViewer(role, req.user!.sectionScope)
+        ...(isDepartmentWideViewer(role, req.user!.hodScope)
           ? {
               approvals: { some: { approverId: { not: req.user!.id }, approver: { role: "HOD" }, action: "APPROVE" } },
-              employee: { departmentId: req.user!.departmentId ?? -1 },
+              employee: { departmentId: departmentMatch(req.user!.hodScope) },
             }
           : role === "HOD" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
         ...(role === "PM" ? { approvals: { some: { approverId: userId, action: "APPROVE" } } } : {}),
@@ -356,8 +378,8 @@ summaryRouter.get("/decisions", async (req, res) => {
   } else if (role === "SUPERVISOR") {
     dayScope = { taggedById: userId, approvals: { some: { approver: { role: "HOD" } } } };
     allocationScope = { employeeId: employeeId ?? -1, approvals: { some: { approver: { role: "HOD" } } } };
-  } else if (isDepartmentWideViewer(role, req.user!.sectionScope)) {
-    const departmentId = req.user!.departmentId ?? -1;
+  } else if (isDepartmentWideViewer(role, req.user!.hodScope)) {
+    const departmentId = departmentMatch(req.user!.hodScope);
     dayScope = { employee: { departmentId } };
     allocationScope = { employee: { departmentId } };
   } else if (role === "HOD") {
@@ -465,8 +487,8 @@ summaryRouter.get("/export.csv", async (req, res) => {
   const role = req.user!.role;
   const userId = req.user!.id;
   const employeeId = req.user!.employeeId;
-  const departmentId = req.user!.departmentId ?? -1;
-  const departmentWide = isDepartmentWideViewer(role, req.user!.sectionScope);
+  const departmentId = departmentMatch(req.user!.hodScope);
+  const departmentWide = isDepartmentWideViewer(role, req.user!.hodScope);
 
   let entryScope: Prisma.TimesheetEntryWhereInput = { status: { in: statuses } };
   let allocationScope: Prisma.EmployeeAllocationWhereInput = { allocationDay: { status: { in: statuses } } };
@@ -796,7 +818,7 @@ summaryRouter.get("/", async (req, res) => {
     status: { in: visibleStatuses },
     timesheetDay: { approvals: { some: { approver: { role: "HOD" }, action: { in: ["APPROVE", "REJECT", "SEND_BACK"] } } } },
   };
-  else if (isDepartmentWideViewer(role, req.user!.sectionScope)) {
+  else if (isDepartmentWideViewer(role, req.user!.hodScope)) {
     // Department HOD / Department Head: every Section of this Department, showing only
     // hours already APPROVED by the Section HODs. Work still sitting with a Section
     // HOD is deliberately excluded (it is not attendance yet) and belongs in the
@@ -806,7 +828,7 @@ summaryRouter.get("/", async (req, res) => {
     // later transfer does not move approved hours out of this report. Rows written
     // before the snapshot columns existed have department_id IS NULL and fall back to
     // the employee's current Department, which keeps that history visible.
-    const departmentId = req.user!.departmentId ?? -1;
+    const departmentId = departmentMatch(req.user!.hodScope);
     entryScope = {
       status: { in: visibleStatuses },
       OR: [
@@ -855,8 +877,8 @@ summaryRouter.get("/", async (req, res) => {
     status: { in: visibleStatuses },
     approvals: { some: { approver: { role: "HOD" } } },
   };
-  else if (isDepartmentWideViewer(role, req.user!.sectionScope)) {
-    const departmentId = req.user!.departmentId ?? -1;
+  else if (isDepartmentWideViewer(role, req.user!.hodScope)) {
+    const departmentId = departmentMatch(req.user!.hodScope);
     allocationDayScope = { status: { in: visibleStatuses } };
     // Frozen snapshot first; a NULL snapshot is pre-snapshot history and falls back
     // to the employee's current Department.

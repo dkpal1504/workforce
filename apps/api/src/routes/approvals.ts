@@ -5,7 +5,8 @@ import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours, projectHoursFromEntries, slotsFromEntries } from "../services/contractWorkHours";
 import { isDepartmentViewRole } from "../services/roleAccess";
-import { hodRoutingScope } from "../services/approvalRouting";
+import { hodRoutingScopeFor } from "../services/approvalRouting";
+import type { HodScope } from "../services/hodScope";
 import { getEmployeeDayHourTotals } from "../services/hours";
 import { isProtectedEntryStatus } from "../services/timesheetEditLock";
 import { rejectionStatusForEmployee } from "../services/employeeEligibility";
@@ -375,7 +376,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     where: {
       status: { in: statusFilter },
       ...(isDepartmentViewRole(role)
-        ? hodRoutingScope(req.user!.departmentId, req.user!.sectionScope)
+        ? hodRoutingScopeFor(req.user!.hodScope)
         : {}),
       // Only days that have at least one project-tagged hour (legacy WBS OR new JobOrder).
       entries: {
@@ -408,7 +409,7 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
       where: {
         status: "PLANNING_RETURNED",
         ...(isDepartmentViewRole(role)
-          ? hodRoutingScope(req.user!.departmentId, req.user!.sectionScope)
+          ? hodRoutingScopeFor(req.user!.hodScope)
           : {}),
         entries: {
           some: { OR: [{ projectWbsId: { not: null } }, { jobOrderId: { not: null } }] },
@@ -480,7 +481,7 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
       ...(role === "PM" || role === "ADMIN"
         ? {}
         : isDepartmentViewRole(role)
-          ? { timesheetDay: hodRoutingScope(req.user!.departmentId, req.user!.sectionScope) }
+          ? { timesheetDay: hodRoutingScopeFor(req.user!.hodScope) }
           : { approverId: req.user!.id }),
     },
     include: {
@@ -542,14 +543,13 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
  */
 approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), async (req, res) => {
   const role = req.user!.role;
-  const departmentId = req.user!.departmentId;
-  const sectionScope = req.user!.sectionScope;
+  const scope = req.user!.hodScope;
 
   // Scope: only entries whose sheet is ROUTED to this approver (by the Section of the Supervisor who
   // submitted it), matching the pending view. If the approver has no department (e.g. PM), no
   // department filter is applied — consistent with the existing pending view.
   const deptWhere = role === "HOD"
-    ? { timesheetDay: hodRoutingScope(departmentId, sectionScope) }
+    ? { timesheetDay: hodRoutingScopeFor(scope) }
     : {};
 
   const entries = await prisma.timesheetEntry.findMany({
@@ -650,20 +650,15 @@ approvalsRouter.get("/job-order-consumption", requireRoles(...APPROVER_ROLES), a
  * queue and the decision can therefore never disagree about who may act. PM/Admin are not department
  * scoped here and pass.
  */
-async function routedToHod(
-  dayId: number,
-  role: string,
-  departmentId: number | null,
-  sectionScope: readonly number[]
-): Promise<boolean> {
+async function routedToHod(dayId: number, role: string, scope: HodScope): Promise<boolean> {
   if (role !== "HOD") return true;
   const reachable = await prisma.timesheetDay.count({
-    where: { id: dayId, ...hodRoutingScope(departmentId, sectionScope) },
+    where: { id: dayId, ...hodRoutingScopeFor(scope) },
   });
   return reachable > 0;
 }
 
-async function applyApprove(ids: number[], userId: number, role: string, departmentId: number | null, sectionScope: readonly number[], comment: string | null) {
+async function applyApprove(ids: number[], userId: number, role: string, scope: HodScope, comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
 
@@ -681,7 +676,7 @@ async function applyApprove(ids: number[], userId: number, role: string, departm
       errors.push({ id, error: "Not found" });
       continue;
     }
-    if (!(await routedToHod(id, role, departmentId, sectionScope))) {
+    if (!(await routedToHod(id, role, scope))) {
       errors.push({ id, error: "Timesheet is routed to another Section Head (the Section of the Supervisor who submitted it)." });
       continue;
     }
@@ -724,7 +719,7 @@ async function applyApprove(ids: number[], userId: number, role: string, departm
   return { results, errors };
 }
 
-async function applyReject(ids: number[], userId: number, role: string, departmentId: number | null, sectionScope: readonly number[], comment: string | null) {
+async function applyReject(ids: number[], userId: number, role: string, scope: HodScope, comment: string | null) {
   const results: { id: number; status: string }[] = [];
   const errors: { id: number; error: string }[] = [];
 
@@ -742,7 +737,7 @@ async function applyReject(ids: number[], userId: number, role: string, departme
       errors.push({ id, error: "Not found" });
       continue;
     }
-    if (!(await routedToHod(id, role, departmentId, sectionScope))) {
+    if (!(await routedToHod(id, role, scope))) {
       errors.push({ id, error: "Timesheet is routed to another Section Head (the Section of the Supervisor who submitted it)." });
       continue;
     }
@@ -808,8 +803,8 @@ approvalsRouter.post("/batch", requireRoles(...DECIDER_ROLES), async (req, res) 
 
   const outcome =
     action === "approve"
-      ? await applyApprove(ids, req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment)
-      : await applyReject(ids, req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment);
+      ? await applyApprove(ids, req.user!.id, req.user!.role, req.user!.hodScope, comment)
+      : await applyReject(ids, req.user!.id, req.user!.role, req.user!.hodScope, comment);
 
   res.json({ ok: outcome.errors.length === 0, ...outcome });
 });
@@ -817,7 +812,7 @@ approvalsRouter.post("/batch", requireRoles(...DECIDER_ROLES), async (req, res) 
 approvalsRouter.post("/:id/approve", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
-  const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment);
+  const { results, errors } = await applyApprove([id], req.user!.id, req.user!.role, req.user!.hodScope, comment);
   if (errors.length) return res.status(400).json({ error: errors[0].error });
   res.json({ ok: true, status: results[0].status });
 });
@@ -825,7 +820,7 @@ approvalsRouter.post("/:id/approve", requireRoles(...DECIDER_ROLES), async (req,
 approvalsRouter.post("/:id/reject", requireRoles(...DECIDER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
-  const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, req.user!.departmentId, req.user!.sectionScope, comment);
+  const { results, errors } = await applyReject([id], req.user!.id, req.user!.role, req.user!.hodScope, comment);
   if (errors.length) return res.status(400).json({ error: errors[0].error });
   res.json({ ok: true, status: results[0].status });
 });
@@ -834,7 +829,7 @@ approvalsRouter.post("/:id/send-back", requireRoles("HOD"), async (req, res) => 
   const id = Number(req.params.id);
   const day = await prisma.timesheetDay.findUnique({ where: { id }, include: { employee: { select: { active: true, departmentId: true, sectionAssignment: { select: { sectionId: true } } } } } });
   if (!day) return res.status(404).json({ error: "Not found" });
-  if (!(await routedToHod(id, req.user!.role, req.user!.departmentId, req.user!.sectionScope))) {
+  if (!(await routedToHod(id, req.user!.role, req.user!.hodScope))) {
     return res.status(403).json({ error: "Timesheet is routed to another Section Head (the Section of the Supervisor who submitted it).", code: "FORBIDDEN" });
   }
   if (day.status !== "PLANNING_RETURNED") {

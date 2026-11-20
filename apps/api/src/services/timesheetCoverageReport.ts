@@ -34,7 +34,7 @@
 
 import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
-import { intersectDepartmentFilter, reportScopeFor } from "./roleAccess";
+import { intersectDepartmentFilter, reportScopeDepartmentIds, reportScopeForActor, type ReportScope } from "./roleAccess";
 import { projectHoursFromEntries, type BookingEntryLike } from "./contractWorkHours";
 import { settledCoverageFor } from "./settledWorkDays";
 import {
@@ -49,7 +49,14 @@ import {
 } from "./timesheetCoverage";
 
 /** The caller's identity, stamped into the provenance and used to derive the scope. */
-export type CoverageActor = { id: number; name: string; role: string; departmentId: number | null };
+export type CoverageActor = {
+  id: number;
+  name: string;
+  role: string;
+  departmentId: number | null;
+  /** Every Department he heads — a Sectional Head over two plants covers both rosters. */
+  departmentIds?: readonly number[] | null;
+};
 
 export type CoverageFilters = {
   from: string;
@@ -195,7 +202,7 @@ export async function buildTimesheetCoverageReport(
   const maxDailyHours = getMaxDailyHours();
 
   // ---- Scope: derived server-side, intersected with the request, never trusted from it --------
-  const scope = reportScopeFor(actor.role, actor.departmentId);
+  const scope = reportScopeForActor(actor.role, actor.departmentId, actor.departmentIds);
   const effectiveDepartmentIds = intersectDepartmentFilter(scope, filters.departmentIds.length ? filters.departmentIds : null);
   if (effectiveDepartmentIds !== null && effectiveDepartmentIds.length === 0) {
     // A DISJOINT request is an honest empty report, never a fallback to the actor's own department.
@@ -427,7 +434,7 @@ export async function buildTimesheetCoverageReport(
   };
 }
 
-function scopeLabel(scope: ReturnType<typeof reportScopeFor>, effectiveDepartmentIds: number[] | null): string {
+function scopeLabel(scope: ReportScope, effectiveDepartmentIds: number[] | null): string {
   if (scope.kind === "NONE") return "None — this account has no usable scope, so the report is empty.";
   if (scope.kind === "ORGANISATION") {
     return effectiveDepartmentIds === null
@@ -441,7 +448,10 @@ function scopeLabel(scope: ReturnType<typeof reportScopeFor>, effectiveDepartmen
     return `Project scope (${scope.projectIds.length} assigned project(s)) — this report lists the `
       + "employee roster, which a project scope cannot define, so it contains no rows.";
   }
-  return `Department ${scope.departmentId} (the account's own scope; the request can only narrow it)`;
+  const ids = reportScopeDepartmentIds(scope);
+  return ids.length > 1
+    ? `Departments ${ids.join(", ")} (the account's own scope; the request can only narrow it)`
+    : `Department ${scope.departmentId} (the account's own scope; the request can only narrow it)`;
 }
 
 /** An honest empty report — used for a disjoint scope. It still carries the definitions. */

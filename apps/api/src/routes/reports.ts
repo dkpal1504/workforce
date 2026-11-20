@@ -22,6 +22,7 @@ import {
 import { buildTimesheetCoverageXlsx, timesheetCoverageFilename } from "../services/timesheetCoverageExport";
 import { parseCoverageStatuses } from "../services/timesheetCoverage";
 import { writeAudit } from "../audit";
+import { hodScopeDepartmentIds } from "../services/hodScope";
 import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
 import { notBookedCsv, summariseNotBooked , eachDay } from "../services/notBooked";
@@ -91,6 +92,7 @@ reportsRouter.get("/portfolio", async (req, res) => {
     name: req.user!.name,
     role: req.user!.role,
     departmentId: req.user!.departmentId,
+    departmentIds: hodScopeDepartmentIds(req.user!.hodScope),
   };
 
   try {
@@ -152,6 +154,7 @@ function downloadHandler(format: PortfolioExportFormat) {
       name: req.user!.name,
       role: req.user!.role,
       departmentId: req.user!.departmentId,
+      departmentIds: hodScopeDepartmentIds(req.user!.hodScope),
     };
 
     try {
@@ -168,6 +171,7 @@ function downloadHandler(format: PortfolioExportFormat) {
           id: req.user!.id,
           role: req.user!.role,
           departmentId: req.user!.departmentId ?? null,
+          departmentIds: hodScopeDepartmentIds(req.user!.hodScope),
           sectionScope: req.user!.sectionScope ?? [],
           sectionId: req.user!.sectionId ?? null,
         },
@@ -287,6 +291,7 @@ function coverageActor(req: Request): CoverageActor {
     name: req.user!.name,
     role: req.user!.role,
     departmentId: req.user!.departmentId ?? null,
+    departmentIds: hodScopeDepartmentIds(req.user!.hodScope),
   };
 }
 
@@ -343,12 +348,12 @@ async function buildNotBooked(req: Request) {
   // Department and Section narrow the roster the way every other Reports filter does: a scoped user can
   // only narrow inside his own Department, and a request outside it is an honest empty report rather than
   // a silent widening to his own.
-  const roleDepartment = departmentScoped ? req.user!.departmentId : null;
+  const roleDepartments = departmentScoped ? hodScopeDepartmentIds(req.user!.hodScope) : [];
   const askedDepartments = idList(req.query.departmentIds);
-  const departmentIds = roleDepartment
+  const departmentIds = departmentScoped
     ? askedDepartments.length
-      ? askedDepartments.filter((id) => id === roleDepartment)
-      : [roleDepartment]
+      ? askedDepartments.filter((id) => roleDepartments.includes(id))
+      : roleDepartments
     : askedDepartments;
   const sectionIds = idList(req.query.sectionIds);
   const people = await prisma.employee.findMany({

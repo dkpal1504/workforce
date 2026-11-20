@@ -35,6 +35,8 @@ export const SECTION_NARROWED_EMPLOYEE_LIST_ROLES = ["SUPERVISOR"] as const;
 export type EmployeeListActor = {
   role: string;
   departmentId: number | null;
+  /** Every Department the account heads; falls back to `departmentId` when absent. */
+  departmentIds?: readonly number[] | null;
   /** The legacy single-Section scope. Used only by the Section-narrowed roles above. */
   sectionId: number | null;
 };
@@ -42,8 +44,11 @@ export type EmployeeListActor = {
 export type EmployeeListScope =
   /** No Department filter at all. */
   | { kind: "ALL" }
-  /** Every Section of this Department (or nothing, when the account has no Department). */
-  | { kind: "DEPARTMENT"; departmentId: number }
+  /**
+   * Every Section of this Department — or of THESE Departments, for a Sectional Head over more than one
+   * plant. `departmentId` is the first, kept so a single-Department account (and the tests) are unchanged.
+   */
+  | { kind: "DEPARTMENT"; departmentId: number; departmentIds?: readonly number[] }
   /** That Department AND exactly this Section. */
   | { kind: "DEPARTMENT_SECTION"; departmentId: number; sectionId: number }
   /** Nothing — the account has no usable scope. Never a wider scope than asked for. */
@@ -66,7 +71,12 @@ export function employeeListScopeFor(actor: EmployeeListActor): EmployeeListScop
     if (actor.departmentId == null) {
       return { kind: "NONE", reason: `${actor.role} has no Department mapping.` };
     }
-    return { kind: "DEPARTMENT", departmentId: actor.departmentId };
+    // The grant set wins over the scalar: a head of two plants lists BOTH rosters. One entry keeps the
+    // exact previous shape (`departmentId` alone), so nothing that reads this scope changes.
+    const ids = [...new Set([...(actor.departmentIds ?? []), actor.departmentId])].filter((id) => Number.isInteger(id) && id > 0);
+    return ids.length > 1
+      ? { kind: "DEPARTMENT", departmentId: ids[0], departmentIds: ids.sort((a, b) => a - b) }
+      : { kind: "DEPARTMENT", departmentId: actor.departmentId };
   }
   if ((SECTION_NARROWED_EMPLOYEE_LIST_ROLES as readonly string[]).includes(actor.role)) {
     if (actor.departmentId == null || actor.sectionId == null) {
@@ -89,7 +99,9 @@ export function employeeListWhere(scope: EmployeeListScope): Record<string, unkn
     case "ALL":
       return {};
     case "DEPARTMENT":
-      return { departmentId: scope.departmentId };
+      return scope.departmentIds && scope.departmentIds.length > 1
+        ? { departmentId: { in: [...scope.departmentIds] } }
+        : { departmentId: scope.departmentId };
     case "DEPARTMENT_SECTION":
       return { departmentId: scope.departmentId, sectionAssignment: { sectionId: scope.sectionId } };
     default:

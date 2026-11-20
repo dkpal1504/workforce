@@ -134,7 +134,27 @@ HOD scope is therefore two different things and both are correct:
 |---|---|
 | Approvals and timesheet decisions | Sheets **routed to his Sections** — the Section of the Supervisor who submitted the sheet decides |
 | My Hours approvals | Own Department **+ Section** (a Section Head) or the whole Department (a Department HOD) — a My Hours day is the employee's own booking, so its Section decides |
-| Employee listing and the operations report | Whole **Department**, for every HOD shape |
+| Employee listing and the operations report | His **Departments** — one, or several for a Sectional Head |
+
+### One HOD, more than one plant (Sectional Head)
+
+A plant (EOU, SEZ, BCS) is only a suffix on `Department.name`; there is no Plant entity, so "head of
+Yardservice - EOU and Yardservice - SEZ" is **two Departments**. An HOD's authority is therefore a set
+of **grants** (`user_scope_departments` for a whole Department, `user_scope_sections` for named
+Sections, `services/hodScope.ts`), built on every request into `req.user.hodScope`:
+
+| Grants | Meaning |
+|---|---|
+| none, but a Department on the account | the whole of that Department — today's default, so existing accounts needed **no backfill** |
+| several whole-Department rows | each of those Departments in full |
+| named Sections | exactly those Sections, in whatever Departments they sit |
+
+The account's `departmentId` / `sectionId` are a **legacy mirror only** (first Department, first
+Section), and the `PUT /admin/users/:id/hod-scope` endpoint no longer re-points the person's Employee
+when scope is granted: being Section Head of the SEZ plant does not move an EOU employee onto the SEZ
+rolls. Departments are **never merged** to club two plants — the nightly BadgeView sync recreates a
+Department by name (`services/badgeViewSync.ts`), so a merge is undone the next night. Reporting
+rollups are a separate, later structure (`department_groups`) that grants no approval rights.
 
 
 `usesEcNoLogin` in `services/defaultLoginCredentials.ts` decides whether an account signs in by EC No, and it

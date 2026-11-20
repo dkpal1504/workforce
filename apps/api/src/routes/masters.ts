@@ -1,8 +1,10 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { assignedProjectIdsFor, projectPickerWhere } from "../services/projectScope";
 import { departmentScope } from "../services/roleAccess";
+import { hodScopeDepartmentIds, hodScopeNamedSectionIds, type HodScope } from "../services/hodScope";
 import { employeeListScopeFor, employeeListWhere } from "../services/employeeListScope";
 
 export const mastersRouter = Router();
@@ -10,7 +12,9 @@ export const mastersRouter = Router();
 mastersRouter.use(requireAuth);
 
 mastersRouter.get("/departments", async (req, res) => {
-  const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
+  // A Sectional Head over two plants must see BOTH Departments in every picker. `departmentScope`
+  // answers with one id; the grant set is what knows there are two.
+  const scopedDepartmentId = pickerDepartmentFilter(req.user!.role, req.user!.hodScope);
   const departments = await prisma.department.findMany({
     where: scopedDepartmentId !== undefined ? { id: scopedDepartmentId } : undefined,
     orderBy: { name: "asc" },
@@ -22,7 +26,13 @@ mastersRouter.get("/employees", requireRoles("SUPERVISOR", "HOD", "DEPT_HEAD", "
   // One endpoint, three kinds of caller. The visibility rule — and in particular why a HOD's listing
   // is department-wide even when his account is narrowed to one Section — is in
   // services/employeeListScope.ts, where it is unit-tested.
-  const scope = employeeListScopeFor(req.user!);
+  // The grant set, not the single scalar: a Sectional Head over Yardservice EOU + SEZ lists both rosters.
+  const scope = employeeListScopeFor({
+    role: req.user!.role,
+    departmentId: req.user!.departmentId,
+    departmentIds: hodScopeDepartmentIds(req.user!.hodScope),
+    sectionId: req.user!.sectionId,
+  });
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const employees = await prisma.employee.findMany({
     where: {
@@ -127,18 +137,41 @@ mastersRouter.get("/projects", async (req, res) => {
  * department-wide HOD. `{ in: [-1] }` is used rather than `{ in: [] }` so the intent is
  * explicit at the query and can never be read as 'no filter'.
  */
-function hodPickerSectionFilter(scope: readonly number[]): { in: number[] } {
-  return { in: scope.length ? [...scope] : [-1] };
+/** One id, `{ in: [...] }` for a head of several Departments, `undefined` = no filter. */
+function pickerDepartmentFilter(role: string, scope: HodScope): number | { in: number[] } | undefined {
+  if (departmentScope(role, null) === undefined) return undefined; // organisation-wide roles
+  const ids = hodScopeDepartmentIds(scope);
+  if (ids.length === 0) return -1;
+  return ids.length === 1 ? ids[0] : { in: ids };
+}
+
+/**
+ * The Sections a head may pick from: every Section of a Department he holds IN FULL, plus the Sections
+ * he holds BY NAME.
+ *
+ * The old rule filtered on `sectionScope` alone, so a Department-wide head (empty set) was handed
+ * `{ in: [-1] }` and every picker came back EMPTY — invisible for a Sectional Head over whole plants.
+ */
+function hodSectionPickerWhere(scope: HodScope): Prisma.SectionWhereInput {
+  if (scope.grants.length === 0) return { id: -1 };
+  const wholeDepartments = scope.grants.filter((grant) => grant.sectionIds.length === 0).map((grant) => grant.departmentId);
+  const namedSections = hodScopeNamedSectionIds(scope);
+  const branches = [
+    ...(wholeDepartments.length ? [{ departmentId: { in: wholeDepartments } }] : []),
+    ...(namedSections.length ? [{ id: { in: namedSections } }] : []),
+  ];
+  if (branches.length === 0) return { id: -1 };
+  return branches.length === 1 ? branches[0] : { OR: branches };
 }
 
 /** Active section picker, optionally scoped to a department. */
 mastersRouter.get("/sections", async (req, res) => {
   const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
-  const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
+  const scopedDepartmentId = pickerDepartmentFilter(req.user!.role, req.user!.hodScope);
   const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
-  const hodSectionIds = req.user!.role === "HOD" ? req.user!.sectionScope : undefined;
+  const hodSectionWhere = req.user!.role === "HOD" ? hodSectionPickerWhere(req.user!.hodScope) : undefined;
   const sections = await prisma.section.findMany({
-    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}), ...(hodSectionIds !== undefined ? { id: hodPickerSectionFilter(hodSectionIds) } : {}) },
+    where: { active: true, ...(departmentId !== undefined ? { departmentId } : {}), ...(hodSectionWhere ?? {}) },
     select: { id: true, code: true, name: true, departmentId: true, costCenter: { select: { id: true, code: true, name: true, active: true } } },
     orderBy: { name: "asc" },
   });
@@ -148,12 +181,21 @@ mastersRouter.get("/sections", async (req, res) => {
 /** Active cost-centre picker; section/department filters are optional. */
 mastersRouter.get("/cost-centers", async (req, res) => {
   const requestedSectionId = req.query.section_id ? Number(req.query.section_id) : undefined;
-  const sectionFilter = req.user!.role === "HOD" ? hodPickerSectionFilter(req.user!.sectionScope) : (requestedSectionId != null ? { in: [requestedSectionId] } : undefined);
   const requestedDepartmentId = req.query.department_id ? Number(req.query.department_id) : undefined;
-  const scopedDepartmentId = departmentScope(req.user!.role, req.user!.departmentId);
+  const role = req.user!.role;
+  const hodWhere = role === "HOD" ? hodSectionPickerWhere(req.user!.hodScope) : null;
+  // A cost centre hangs off a Section, so the grant set is applied through `section`: every Section of
+  // a whole-Department grant, or the named Sections themselves. The requested Department still narrows
+  // an ADMIN/PM picker and is ignored for an HOD, whose Departments come from his grants.
+  const scopedDepartmentId = pickerDepartmentFilter(role, req.user!.hodScope);
   const departmentId = scopedDepartmentId !== undefined ? scopedDepartmentId : requestedDepartmentId;
   const costCenters = await prisma.costCenter.findMany({
-    where: { active: true, ...(sectionFilter ? { sectionId: sectionFilter } : {}), ...(departmentId ? { section: { departmentId } } : {}) },
+    where: {
+      active: true,
+      ...(hodWhere ? { section: hodWhere } : {}),
+      ...(requestedSectionId != null && role !== "HOD" ? { sectionId: requestedSectionId } : {}),
+      ...(departmentId && role !== "HOD" ? { section: { departmentId } } : {}),
+    },
     select: { id: true, code: true, name: true, sectionId: true, section: { select: { id: true, code: true, name: true, departmentId: true } } },
     orderBy: { code: "asc" },
   });

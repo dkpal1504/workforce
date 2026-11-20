@@ -6,14 +6,17 @@ import {
   canCreatePayrollEmployee,
   departmentScope,
   effectiveOrganisation,
+  hodEmployeeScopeFor,
   hodEmployeeScopeSet,
   hodScopeMatches,
+  hodScopeMatchesScope,
   hodScopeMatchesSet,
   intersectDepartmentFilter,
   intersectProjectFilter,
   landingPathFor,
   reportScopeFor,
 } from "./roleAccess";
+import { hodScopeFromLegacy } from "./hodScope";
 import { usesEcNoLogin } from "./defaultLoginCredentials";
 
 /**
@@ -108,6 +111,47 @@ test("the employee filter narrows by Section, and drops the filter when departme
   // between "every Section" and "no Section", and getting it backwards hides or leaks rows.
   assert.deepEqual(hodEmployeeScopeSet(4, []), { departmentId: 4 });
   assert.deepEqual(hodEmployeeScopeSet(null, [8]), { id: -1 }, "no Department matches nothing");
+});
+
+test("ONE GRANT keeps the exact legacy filter shape — no OR, so every existing query is unchanged", () => {
+  assert.deepEqual(hodEmployeeScopeFor(hodScopeFromLegacy(4, [8, 42])), hodEmployeeScopeSet(4, [8, 42]));
+  assert.deepEqual(hodEmployeeScopeFor(hodScopeFromLegacy(4, [])), { departmentId: 4 });
+  assert.deepEqual(hodScopeMatchesScope(hodScopeFromLegacy(2, [8]), 2, 8), true);
+});
+
+test("TWO Department grants are OR-ed: Yardservice EOU + Yardservice SEZ", () => {
+  // The reported case: home Department 12 (EOU), second Department 11 (SEZ), each in full.
+  const scope = {
+    grants: [
+      { departmentId: 11, sectionIds: [] as number[] },
+      { departmentId: 12, sectionIds: [] as number[] },
+    ],
+  };
+  assert.equal(hodScopeMatchesScope(scope, 12, 17), true, "EOU Operation");
+  assert.equal(hodScopeMatchesScope(scope, 12, 44), true, "EOU Electrical-YS");
+  assert.equal(hodScopeMatchesScope(scope, 11, 24), true, "SEZ Operation");
+  assert.equal(hodScopeMatchesScope(scope, 11, null), true, "a sheet with no Section is still in the granted Department");
+  assert.equal(hodScopeMatchesScope(scope, 4, 18), false, "Production - EOU is NOT in the grant");
+  assert.equal(hodScopeMatchesScope({ grants: [] }, 12, 17), false, "empty grants fail closed");
+
+  assert.deepEqual(hodEmployeeScopeFor(scope), {
+    OR: [{ departmentId: 11 }, { departmentId: 12 }],
+  });
+});
+
+test("a named-Section grant reaches ONLY its Sections, not the whole second Department", () => {
+  const scope = {
+    grants: [
+      { departmentId: 12, sectionIds: [] as number[] },
+      { departmentId: 11, sectionIds: [15, 24, 45] },
+    ],
+  };
+  assert.equal(hodScopeMatchesScope(scope, 11, 15), true);
+  assert.equal(hodScopeMatchesScope(scope, 11, 45), true);
+  assert.equal(hodScopeMatchesScope(scope, 11, 26), false, "a SEZ Section not named is not his");
+  assert.deepEqual(hodEmployeeScopeFor(scope), {
+    OR: [{ departmentId: 12 }, { departmentId: 11, sectionAssignment: { sectionId: { in: [15, 24, 45] } } }],
+  });
 });
 
 test("a Department HOD (no Section) matches every Section of its Department", () => {

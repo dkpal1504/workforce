@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { hodScopeFromLegacy, type HodScope } from "./hodScope";
 
 /*
  * WHICH SECTION HEAD RECEIVES A SUBMITTED TIMESHEET.
@@ -71,10 +72,46 @@ export function routingSectionScope(sectionIds: readonly number[]): Prisma.Times
 }
 
 /**
- * The whole routing scope of an approver: the days whose Section Head is this account.
+ * Every sheet routed to this Department, with no Section to compare: the employee's Department, or
+ * the tagger's, or the tagger's employee's (a supervisor registered without an Employee row).
+ */
+export function departmentWideRoutingScope(departmentId: number): Prisma.TimesheetDayWhereInput {
+  return {
+    OR: [
+      { employee: { departmentId } },
+      { taggedBy: { departmentId } },
+      { taggedBy: { employee: { departmentId } } },
+    ],
+  };
+}
+
+/**
+ * The whole routing scope of an approver WITH SEVERAL DEPARTMENTS: the union of every grant.
  *
- *   departmentId set, sections EMPTY      -> every sheet routed to this Department (no Section to
- *                                            compare, so the tagger's OR the employee's Department)
+ *   whole-Department grant  -> departmentWideRoutingScope(departmentId)
+ *   named-Section grant     -> routingSectionScope(sectionIds) — Section ids are globally unique, so
+ *                              no Department clause is needed; the write path guarantees each named
+ *                              Section belongs to a Department the account holds
+ *   no grants               -> nothing (fail closed)
+ *
+ * ONE grant returns that grant's fragment UNWRAPPED, so a single-Department approver produces exactly
+ * the `where` this module produced before grants existed — every existing query, test and page plan
+ * is unchanged. Only a genuine second Department introduces the `OR`.
+ */
+export function hodRoutingScopeFor(scope: HodScope): Prisma.TimesheetDayWhereInput {
+  if (scope.grants.length === 0) return { id: -1 };
+  const fragments = scope.grants.map((grant) =>
+    grant.sectionIds.length === 0
+      ? departmentWideRoutingScope(grant.departmentId)
+      : routingSectionScope(grant.sectionIds)
+  );
+  return fragments.length === 1 ? fragments[0] : { OR: fragments };
+}
+
+/**
+ * The whole routing scope of a single-Department approver (legacy form).
+ *
+ *   departmentId set, sections EMPTY      -> every sheet routed to this Department
  *   departmentId set, sections non-empty  -> exactly those routing Sections
  *   departmentId null                     -> nothing (fail closed; an unmapped head routes no work)
  */
@@ -82,15 +119,5 @@ export function hodRoutingScope(
   departmentId: number | null,
   actorSectionIds: readonly number[]
 ): Prisma.TimesheetDayWhereInput {
-  if (departmentId == null) return { id: -1 };
-  if (actorSectionIds.length === 0) {
-    return {
-      OR: [
-        { employee: { departmentId } },
-        { taggedBy: { departmentId } },
-        { taggedBy: { employee: { departmentId } } },
-      ],
-    };
-  }
-  return routingSectionScope(actorSectionIds);
+  return hodRoutingScopeFor(hodScopeFromLegacy(departmentId, actorSectionIds));
 }

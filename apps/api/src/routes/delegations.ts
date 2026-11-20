@@ -2,6 +2,8 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { hodScopeFromRows, hodScopeNamedSectionIds, type HodScope } from "../services/hodScope";
+import { hodScopeMatchesScope } from "../services/roleAccess";
 
 /**
  * HOD approval-cover delegations.
@@ -38,6 +40,56 @@ function parseDateOnly(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * The Departments/Sections a head's delegations may touch.
+ *
+ * Built from the GRANT SET, not from `sectionScope`: a Sectional Head of two plants covers the whole of
+ * each, which an empty section list used to encode as "nothing" (`{ in: [-1] }`). Same fail-closed
+ * shape when he holds no Department at all.
+ */
+function delegationScopeWhere(scope: HodScope) {
+  const wholeDepartments = scope.grants.filter((grant) => grant.sectionIds.length === 0).map((grant) => grant.departmentId);
+  const namedSections = hodScopeNamedSectionIds(scope);
+  const branches = [
+    ...(wholeDepartments.length ? [{ departmentId: { in: wholeDepartments } }] : []),
+    ...(namedSections.length ? [{ sectionId: { in: namedSections } }] : []),
+  ];
+  if (branches.length === 0) return { id: -1 };
+  return branches.length === 1 ? branches[0] : { OR: branches };
+}
+
+/**
+ * Every active HOD whose SCOPE covers this Department/Section — the only people who may stand in.
+ *
+ * Filtered in JS over the HOD list (~40 rows) because the authority now lives in two tables plus the
+ * legacy scalar; expressing that in one `where` is how the delegations screen and the approvals screen
+ * would end up disagreeing about who may approve.
+ */
+async function hodsCovering(departmentId: number, sectionId: number, excludeUserId?: number) {
+  const users = await prisma.user.findMany({
+    where: { role: "HOD", active: true, ...(excludeUserId ? { id: { not: excludeUserId } } : {}) },
+    select: {
+      id: true, name: true, email: true, departmentId: true, sectionId: true,
+      scopeSections: { select: { sectionId: true, section: { select: { departmentId: true } } } },
+      scopeDepartments: { select: { departmentId: true } },
+      employee: { select: { ecNo: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+  return users.filter((candidate) =>
+    hodScopeMatchesScope(
+      hodScopeFromRows({
+        departmentId: candidate.departmentId,
+        legacySectionId: candidate.sectionId,
+        departmentGrants: candidate.scopeDepartments.map((grant) => grant.departmentId),
+        sectionRows: candidate.scopeSections.map((row) => ({ sectionId: row.sectionId, departmentId: row.section.departmentId })),
+      }),
+      departmentId,
+      sectionId
+    )
+  );
+}
+
 /** Active cover = not revoked and today inside [fromDate, toDate]. */
 function activeOn(date: Date) {
   return { revokedAt: null, fromDate: { lte: date }, toDate: { gte: date } };
@@ -56,7 +108,7 @@ delegationRouter.get("/", requireRoles("HOD", "PM", "ADMIN"), async (req, res) =
 
   const visibility =
     role === "HOD"
-      ? { OR: [{ delegatorId: req.user!.id }, { delegateUserId: req.user!.id }, { sectionId: { in: req.user!.sectionScope.length ? [...req.user!.sectionScope] : [-1] } }] }
+      ? { OR: [{ delegatorId: req.user!.id }, { delegateUserId: req.user!.id }, delegationScopeWhere(req.user!.hodScope)] }
       : {};
 
   const delegations = await prisma.hodDelegation.findMany({
@@ -80,12 +132,12 @@ delegationRouter.get("/", requireRoles("HOD", "PM", "ADMIN"), async (req, res) =
 delegationRouter.get("/coverage", requireRoles("HOD", "PM", "ADMIN"), async (req, res) => {
   const today = new Date(new Date().toISOString().slice(0, 10));
   const role = req.user!.role;
-  const sectionScope = req.user!.sectionScope;
+  const scope = req.user!.hodScope;
 
   const [coveringMe, iAmCovering] = await Promise.all([
     role === "HOD"
       ? prisma.hodDelegation.findMany({
-          where: { ...activeOn(today), sectionId: { in: sectionScope.length ? [...sectionScope] : [-1] } },
+          where: { ...activeOn(today), ...delegationScopeWhere(scope) },
           select: delegationSelect,
         })
       : Promise.resolve([]),
@@ -118,8 +170,11 @@ delegationRouter.post("/", requireRoles("HOD", "PM", "ADMIN"), async (req, res) 
   if (!reason) return res.status(400).json({ error: "A reason is required for an approval-cover delegation.", code: "REASON_REQUIRED" });
 
   // An HOD may only arrange cover for the Section it owns.
-  if (role === "HOD" && (req.user!.departmentId !== departmentId || !req.user!.sectionScope.includes(sectionId))) {
-    return res.status(403).json({ error: "An HOD can delegate only for its own Department/Section.", code: "WRONG_SCOPE" });
+  if (role === "HOD" && !hodScopeMatchesScope(req.user!.hodScope, departmentId, sectionId)) {
+    return res.status(403).json({
+      error: "An HOD can delegate only for a Section in one of their granted Departments.",
+      code: "WRONG_SCOPE",
+    });
   }
 
   const section = await prisma.section.findFirst({
@@ -130,10 +185,7 @@ delegationRouter.post("/", requireRoles("HOD", "PM", "ADMIN"), async (req, res) 
 
   // The delegate must already be an active HOD of that same Section (their approval
   // authorization is unchanged; this is a stand-in, e.g. leave cover).
-  const delegate = await prisma.user.findFirst({
-    where: { id: delegateUserId, role: "HOD", active: true, departmentId, sectionId },
-    select: { id: true, name: true },
-  });
+  const delegate = (await hodsCovering(departmentId, sectionId)).find((candidate) => candidate.id === delegateUserId);
   if (!delegate) {
     return res.status(400).json({
       error: "The delegate must be an active HOD mapped to that same Department/Section.",
@@ -149,11 +201,7 @@ delegationRouter.post("/", requireRoles("HOD", "PM", "ADMIN"), async (req, res) 
   // (HOD) or the Section's current HOD (created on their behalf by ADMIN/PM).
   const delegatorId = role === "HOD"
     ? req.user!.id
-    : (await prisma.user.findFirst({
-        where: { role: "HOD", active: true, departmentId, sectionId, id: { not: delegateUserId } },
-        select: { id: true },
-        orderBy: { id: "asc" },
-      }))?.id ?? null;
+    : (await hodsCovering(departmentId, sectionId, delegateUserId))[0]?.id ?? null;
   if (!delegatorId) {
     return res.status(400).json({
       error: "No HOD is mapped to that Section to delegate from. Map an HOD first.",
@@ -190,7 +238,7 @@ delegationRouter.delete("/:id", requireRoles("HOD", "PM", "ADMIN"), async (req, 
   const delegation = await prisma.hodDelegation.findUnique({ where: { id }, select: { id: true, delegatorId: true, departmentId: true, sectionId: true, revokedAt: true } });
   if (!delegation) return res.status(404).json({ error: "Delegation not found." });
   if (delegation.revokedAt) return res.status(409).json({ error: "Delegation is already revoked.", code: "ALREADY_REVOKED" });
-  if (role === "HOD" && (delegation.delegatorId !== req.user!.id || !req.user!.sectionScope.includes(delegation.sectionId))) {
+  if (role === "HOD" && (delegation.delegatorId !== req.user!.id || !hodScopeMatchesScope(req.user!.hodScope, delegation.departmentId, delegation.sectionId))) {
     return res.status(403).json({ error: "An HOD can revoke only its own Section's delegations.", code: "WRONG_SCOPE" });
   }
   const revoked = await prisma.hodDelegation.update({
@@ -205,16 +253,16 @@ delegationRouter.delete("/:id", requireRoles("HOD", "PM", "ADMIN"), async (req, 
 /** GET /api/delegations/candidates?departmentId&sectionId — HODs eligible as delegate. */
 delegationRouter.get("/candidates", requireRoles("HOD", "PM", "ADMIN"), async (req, res) => {
   const role = req.user!.role;
-  const departmentId = Number(req.query.departmentId || req.user!.departmentId);
-  const sectionId = Number(req.query.sectionId || req.user!.sectionScope[0] || NaN);
+  const scope = req.user!.hodScope;
+  const firstGrant = scope.grants[0];
+  const departmentId = Number(req.query.departmentId || req.user!.departmentId || firstGrant?.departmentId || NaN);
+  const sectionId = Number(req.query.sectionId || firstGrant?.sectionIds[0] || req.user!.sectionId || NaN);
   if (!departmentId || !sectionId) return res.status(400).json({ error: "departmentId and sectionId are required." });
-  if (role === "HOD" && (req.user!.departmentId !== departmentId || !req.user!.sectionScope.includes(sectionId))) {
-    return res.status(403).json({ error: "An HOD can choose a delegate only from its own Department/Section.", code: "WRONG_SCOPE" });
+  if (role === "HOD" && !hodScopeMatchesScope(scope, departmentId, sectionId)) {
+    return res.status(403).json({ error: "An HOD can choose a delegate only from a Section they head.", code: "WRONG_SCOPE" });
   }
-  const candidates = await prisma.user.findMany({
-    where: { role: "HOD", active: true, departmentId, sectionId, id: { not: req.user!.id } },
-    select: { id: true, name: true, email: true, employee: { select: { ecNo: true } } },
-    orderBy: { name: "asc" },
-  });
+  const candidates = (await hodsCovering(departmentId, sectionId, req.user!.id)).map((candidate) => ({
+    id: candidate.id, name: candidate.name, email: candidate.email, employee: candidate.employee,
+  }));
   res.json({ candidates });
 });

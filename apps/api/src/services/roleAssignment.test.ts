@@ -62,25 +62,25 @@ const HOD_DEPT_SECTIONS = [
 test("an admin can give a payroll employee the supervisor role, scoped to the employee department", () => {
   const plan = planRoleChange(1, target(), "SUPERVISOR", NO_WORK);
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("a contract (CLMS) linked employee is equally assignable", () => {
   const plan = planRoleChange(1, target({ employee: { id: 900, active: true, employmentType: "CLMS", departmentId: 77 } }), "SUPERVISOR", NO_WORK);
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 77, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 77, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("HOD takes Department and Section from the employee mapping, never from the request", () => {
   const plan = planRoleChange(1, target(), "HOD", NO_WORK);
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103 });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103, departmentGrants: [] });
 });
 
 test("HOD is allowed with no section assignment, as a department-wide approver", () => {
   const plan = planRoleChange(1, target({ sectionAssignment: null }), "HOD", NO_WORK);
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("HOD refuses a section that is inactive or in another department", () => {
@@ -103,16 +103,16 @@ test("an HOD can be scoped to the whole Department explicitly", () => {
   // creates a Department HOD for someone with a Section on their record).
   const plan = planRoleChange(1, target(), "HOD", NO_WORK, { hodScope: "DEPARTMENT" });
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 
   const section = planRoleChange(1, target(), "HOD", NO_WORK, { hodScope: "SECTION" });
   assert.equal(section.ok, true);
-  assert.deepEqual(section.ok && section.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103 });
+  assert.deepEqual(section.ok && section.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103, departmentGrants: [] });
 
   // Omitted -> the existing behaviour: inherit the Section when there is one.
   const inferred = planRoleChange(1, target(), "HOD", NO_WORK);
   assert.equal(inferred.ok, true);
-  assert.deepEqual(inferred.ok && inferred.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103 });
+  assert.deepEqual(inferred.ok && inferred.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103, departmentGrants: [] });
 });
 
 test("an unknown HOD scope is refused rather than guessed", () => {
@@ -136,7 +136,7 @@ test("a contract worker with no account can be created as a Supervisor or an Emp
 test("supervisor scope for a contract worker comes from the Employee record, not the request", () => {
   const plan = planRoleChange(1, roleTargetForNewAccount(contractEmployee(), { sectionId: 210, sectionActive: true, sectionDepartmentId: 77 }), "SUPERVISOR", NO_WORK);
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 77, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 77, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("a contract worker is refused the approver roles with the reason, not silently dropped", () => {
@@ -165,15 +165,15 @@ test("a payroll Employee can be created as HOD / Department Head, still using th
 
   const asHod = planRoleChange(1, roleTargetForNewAccount(employee, { sectionId: 103, sectionActive: true, sectionDepartmentId: 81 }), "HOD", NO_WORK);
   assert.equal(asHod.ok, true);
-  assert.deepEqual(asHod.ok && asHod.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103 });
+  assert.deepEqual(asHod.ok && asHod.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103, departmentGrants: [] });
 
   const asDepartmentHod = planRoleChange(1, roleTargetForNewAccount(employee, null), "HOD", NO_WORK);
   assert.equal(asDepartmentHod.ok, true);
-  assert.deepEqual(asDepartmentHod.ok && asDepartmentHod.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(asDepartmentHod.ok && asDepartmentHod.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 
   const asHead = planRoleChange(1, roleTargetForNewAccount(employee, null), "DEPT_HEAD", NO_WORK);
   assert.equal(asHead.ok, true);
-  assert.deepEqual(asHead.ok && asHead.update, { role: "DEPT_HEAD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(asHead.ok && asHead.update, { role: "DEPT_HEAD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("a newly created account is never the Admin's own account, whatever the Employee id", () => {
@@ -207,7 +207,7 @@ test("an unknown role is refused before any Employee rule is applied", () => {
 test("a Department Head is department-wide with no Section scope", () => {
   const plan = planRoleChange(1, target(), "DEPT_HEAD", NO_WORK);
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "DEPT_HEAD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "DEPT_HEAD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("a Department Head still needs an active linked employee", () => {
@@ -233,14 +233,14 @@ test("the COO is assignable without an Employee, from and to", () => {
   const unlinked = target({ employeeId: null, employee: null, role: "PM" });
   const toCoo = planRoleChange(1, unlinked, "COO", NO_WORK);
   assert.equal(toCoo.ok, true, "an account with no Employee can become the COO");
-  assert.deepEqual(toCoo.ok && toCoo.update, { role: "COO", departmentId: null, sectionIds: [], sectionId: null });
+  assert.deepEqual(toCoo.ok && toCoo.update, { role: "COO", departmentId: null, sectionIds: [], sectionId: null, departmentGrants: [] });
 
   // A linked Employee moving OFF a payroll role onto COO keeps its Department as a display
   // fact but takes NO Section scope (a COO is organisation-wide, never narrowed).
   const linked = target({ role: "HOD", employeeId: 900 });
   const fromLinked = planRoleChange(1, linked, "COO", NO_WORK);
   assert.equal(fromLinked.ok, true, "an HOD can be re-roled to COO");
-  assert.deepEqual(fromLinked.ok && fromLinked.update, { role: "COO", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(fromLinked.ok && fromLinked.update, { role: "COO", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 
   // FROM COO: the move back out plans from the COO role itself, not just onto it.
   const asCoo = planRoleChange(1, target({ role: "COO", employeeId: null, employee: null }), "ADMIN", NO_WORK);
@@ -337,11 +337,11 @@ test("moving an existing HOD from Section to Department is allowed, not a no-op"
   const existingSectionHod = target({ role: "HOD", currentSectionId: 103 });
   const widen = planRoleChange(1, existingSectionHod, "HOD", NO_WORK, { hodScope: "DEPARTMENT" });
   assert.equal(widen.ok, true, "same role, wider scope must go through");
-  assert.deepEqual(widen.ok && widen.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(widen.ok && widen.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 
   const narrow = planRoleChange(1, target({ role: "HOD", currentSectionId: null }), "HOD", NO_WORK, { hodScope: "SECTION" });
   assert.equal(narrow.ok, true);
-  assert.deepEqual(narrow.ok && narrow.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103 });
+  assert.deepEqual(narrow.ok && narrow.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103, departmentGrants: [] });
 
   // Genuinely identical -> still refused.
   const same = planRoleChange(1, target({ role: "HOD", currentSectionId: 103 }), "HOD", NO_WORK, { hodScope: "SECTION" });
@@ -358,34 +358,35 @@ test("an HOD scope is a SET of sections of the same department", () => {
     departmentId: 81,
     sectionIds: [103, 210],
     sectionId: 103, // the legacy mirror is the FIRST section, so an un-converted caller agrees
+    departmentGrants: [],
   });
 });
 
 test("an EMPTY section set is department-wide, unchanged from the null scalar", () => {
   const plan = planRoleChange(1, target(), "HOD", NO_WORK, { sections: HOD_DEPT_SECTIONS, sectionIds: [] });
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 });
 
 test("a Section Head may be WIDENED from one section to two, and is not a no-op", () => {
   const hod = target({ role: "HOD", currentSectionId: 103, currentSectionIds: [103] });
   const plan = planRoleChange(1, hod, "HOD", NO_WORK, { sections: HOD_DEPT_SECTIONS, sectionIds: [103, 210] });
   assert.equal(plan.ok, true, "same role, wider SET must go through");
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103, 210], sectionId: 103 });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103, 210], sectionId: 103, departmentGrants: [] });
 });
 
 test("a Section Head may be NARROWED to one of several sections", () => {
   const hod = target({ role: "HOD", currentSectionId: 103, currentSectionIds: [103, 210] });
   const plan = planRoleChange(1, hod, "HOD", NO_WORK, { sections: HOD_DEPT_SECTIONS, sectionIds: [210] });
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [210], sectionId: 210 });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [210], sectionId: 210, departmentGrants: [] });
 });
 
 test("a department-wide HOD may be narrowed to a set of sections", () => {
   const deptHod = target({ role: "HOD", currentSectionId: null, currentSectionIds: [] });
   const plan = planRoleChange(1, deptHod, "HOD", NO_WORK, { sections: HOD_DEPT_SECTIONS, sectionIds: [103, 210] });
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103, 210], sectionId: 103 });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103, 210], sectionId: 103, departmentGrants: [] });
 });
 
 test("the SAME set is still a no-op, so an unmoved scope is never rewritten", () => {
@@ -397,7 +398,7 @@ test("the SAME set is still a no-op, so an unmoved scope is never rewritten", ()
 test("the order of the requested sections does not change the outcome", () => {
   const plan = planRoleChange(1, target(), "HOD", NO_WORK, { sections: HOD_DEPT_SECTIONS, sectionIds: [210, 103, 210] });
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103, 210], sectionId: 103 });
+  assert.deepEqual(plan.ok && plan.update, { role: "HOD", departmentId: 81, sectionIds: [103, 210], sectionId: 103, departmentGrants: [] });
 });
 
 test("a section outside the Employee department is refused, naming the reason", () => {
@@ -416,13 +417,13 @@ test("a section set with no department to scope it is refused", () => {
 
 test("the deprecated hodScope alias still works for one release", () => {
   const dept = planRoleChange(1, target(), "HOD", NO_WORK, { hodScope: "DEPARTMENT" });
-  assert.deepEqual(dept.ok && dept.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(dept.ok && dept.update, { role: "HOD", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
   const section = planRoleChange(1, target(), "HOD", NO_WORK, { hodScope: "SECTION" });
-  assert.deepEqual(section.ok && section.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103 });
+  assert.deepEqual(section.ok && section.update, { role: "HOD", departmentId: 81, sectionIds: [103], sectionId: 103, departmentGrants: [] });
 });
 
 test("a non-HOD role ignores the section set entirely", () => {
   const plan = planRoleChange(1, target(), "SUPERVISOR", NO_WORK, { sections: HOD_DEPT_SECTIONS, sectionIds: [103, 210] });
   assert.equal(plan.ok, true);
-  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 81, sectionIds: [], sectionId: null });
+  assert.deepEqual(plan.ok && plan.update, { role: "SUPERVISOR", departmentId: 81, sectionIds: [], sectionId: null, departmentGrants: [] });
 });

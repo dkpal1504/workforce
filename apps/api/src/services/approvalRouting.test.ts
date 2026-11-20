@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hodRoutingScope, routingSectionScope } from "./approvalRouting";
+import { hodRoutingScope, hodRoutingScopeFor, routingSectionScope } from "./approvalRouting";
+import { hodScopeFromLegacy } from "./hodScope";
 
 /*
  * The routing rule is a Prisma `where` fragment, so these tests run it rather than only reading it:
@@ -179,4 +180,65 @@ test("the rule keys on the Supervisor's Section and carries its Department with 
 
 test("an EMPTY Section set is match-nothing, never every Section", () => {
   assert.equal(matches(routingSectionScope([]) as Record<string, any>, steelSupervisorSheet), false);
+});
+
+test("one grant produces the UNWRAPPED legacy fragment — every existing queue is byte-identical", () => {
+  assert.deepEqual(hodRoutingScopeFor(hodScopeFromLegacy(DEPARTMENT, [])), hodRoutingScope(DEPARTMENT, []));
+  assert.deepEqual(hodRoutingScopeFor(hodScopeFromLegacy(DEPARTMENT, [STEEL])), routingSectionScope([STEEL]));
+  assert.deepEqual(hodRoutingScopeFor(hodScopeFromLegacy(null, [STEEL])), { id: -1 });
+  assert.deepEqual(hodRoutingScopeFor({ grants: [] }), { id: -1 });
+});
+
+test("a Head over TWO Departments receives BOTH queues and nothing else", () => {
+  const EOU = 12;
+  const SEZ = 11;
+  const eouSheet: DayFixture = {
+    id: 201,
+    employee: { departmentId: EOU, sectionId: 17 },
+    taggedBy: { departmentId: EOU, employee: { departmentId: EOU, sectionId: 17 } },
+  };
+  const sezSheet: DayFixture = {
+    id: 202,
+    employee: { departmentId: SEZ, sectionId: 24 },
+    taggedBy: { departmentId: SEZ, employee: { departmentId: SEZ, sectionId: 24 } },
+  };
+  const productionSheet: DayFixture = {
+    id: 203,
+    employee: { departmentId: DEPARTMENT, sectionId: 18 },
+    taggedBy: { departmentId: DEPARTMENT, employee: { departmentId: DEPARTMENT, sectionId: 18 } },
+  };
+  const scope = {
+    grants: [
+      { departmentId: SEZ, sectionIds: [] as number[] },
+      { departmentId: EOU, sectionIds: [] as number[] },
+    ],
+  };
+  const filter = hodRoutingScopeFor(scope) as Record<string, any>;
+  assert.equal(matches(filter, eouSheet), true, "EOU side of the pair");
+  assert.equal(matches(filter, sezSheet), true, "SEZ side of the pair");
+  assert.equal(matches(filter, productionSheet), false, "an ungranted Department never matches");
+  assert.equal(matches(filter, adminTaggedSheet), false, "an unmapped tagger in an ungranted Department still does not match");
+});
+
+test("a named-Section grant on the second Department does not widen to all of it", () => {
+  const EOU = 12;
+  const SEZ = 11;
+  const sezOperation: DayFixture = {
+    id: 204,
+    employee: { departmentId: SEZ, sectionId: 24 },
+    taggedBy: { departmentId: SEZ, employee: { departmentId: SEZ, sectionId: 24 } },
+  };
+  const sezOtherSection: DayFixture = {
+    id: 205,
+    employee: { departmentId: SEZ, sectionId: 26 },
+    taggedBy: { departmentId: SEZ, employee: { departmentId: SEZ, sectionId: 26 } },
+  };
+  const filter = hodRoutingScopeFor({
+    grants: [
+      { departmentId: EOU, sectionIds: [] as number[] },
+      { departmentId: SEZ, sectionIds: [15, 24, 45] },
+    ],
+  }) as Record<string, any>;
+  assert.equal(matches(filter, sezOperation), true);
+  assert.equal(matches(filter, sezOtherSection), false, "not in the named list");
 });

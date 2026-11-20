@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { legacySectionId, normaliseSectionIds, scopeSectionIds, validateScopeSections } from "./userScope";
+import {
+  legacySectionId,
+  normaliseSectionIds,
+  scopeSectionIds,
+  validateHodGrants,
+  validateScopeSections,
+} from "./userScope";
 
 /**
  * The write-side rules for a multi-section Section Head.
@@ -76,4 +82,74 @@ test("the query ids are only the NARROWING sections; empty must stay empty", () 
   assert.deepEqual(scopeSectionIds([42, 8]), [8, 42]);
   assert.deepEqual(scopeSectionIds([]), []);
   assert.equal(scopeSectionIds([]).length, 0);
+});
+
+/*
+ * Multi-Department grants: the same fail-closed rule, one Department per grant. The case throughout
+ * is the real one — 12 Yardservice - EOU (home) and 11 Yardservice - SEZ.
+ */
+const DEPARTMENTS = [
+  { id: 11, active: true },
+  { id: 12, active: true },
+  { id: 27, active: false },
+];
+const SECTIONS = [
+  { id: 17, departmentId: 12, active: true }, // EOU Operation
+  { id: 19, departmentId: 12, active: true }, // EOU Maintenance
+  { id: 24, departmentId: 11, active: true }, // SEZ Operation
+  { id: 15, departmentId: 11, active: false }, // SEZ Maintenance (inactive)
+];
+
+test("two whole-Department grants are accepted — the Sectional Head case", () => {
+  assert.equal(
+    validateHodGrants(
+      [
+        { departmentId: 12, sectionIds: [] },
+        { departmentId: 11, sectionIds: [] },
+      ],
+      DEPARTMENTS,
+      SECTIONS
+    ),
+    null
+  );
+});
+
+test("a named Section must belong to ITS OWN grant's Department", () => {
+  assert.equal(
+    validateHodGrants(
+      [
+        { departmentId: 12, sectionIds: [] },
+        { departmentId: 11, sectionIds: [24] },
+      ],
+      DEPARTMENTS,
+      SECTIONS
+    ),
+    null
+  );
+  const mismatch = validateHodGrants([{ departmentId: 11, sectionIds: [17] }], DEPARTMENTS, SECTIONS);
+  assert.equal(mismatch?.code, "SECTION_NOT_IN_GRANTED_DEPARTMENT");
+  assert.match(mismatch!.error, /another Department/, "the refusal names the rule, not just the id");
+});
+
+test("a Department granted twice is refused as overlap, not silently merged", () => {
+  const refused = validateHodGrants(
+    [
+      { departmentId: 11, sectionIds: [] },
+      { departmentId: 11, sectionIds: [24] },
+    ],
+    DEPARTMENTS,
+    SECTIONS
+  );
+  assert.equal(refused?.code, "SCOPE_DEPARTMENT_OVERLAP");
+});
+
+test("an empty grant set is refused: an HOD with no Department matches nothing", () => {
+  assert.equal(validateHodGrants([], DEPARTMENTS, SECTIONS)?.code, "SCOPE_REQUIRED");
+});
+
+test("unknown, inactive Departments and inactive Sections are each named", () => {
+  assert.equal(validateHodGrants([{ departmentId: 999, sectionIds: [] }], DEPARTMENTS, SECTIONS)?.code, "DEPARTMENT_NOT_FOUND");
+  assert.equal(validateHodGrants([{ departmentId: 27, sectionIds: [] }], DEPARTMENTS, SECTIONS)?.code, "DEPARTMENT_INACTIVE");
+  assert.equal(validateHodGrants([{ departmentId: 11, sectionIds: [15] }], DEPARTMENTS, SECTIONS)?.code, "SECTION_INACTIVE");
+  assert.equal(validateHodGrants([{ departmentId: 11, sectionIds: [999] }], DEPARTMENTS, SECTIONS)?.code, "SECTION_NOT_FOUND");
 });

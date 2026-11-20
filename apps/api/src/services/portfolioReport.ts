@@ -57,7 +57,9 @@ import {
 import {
   intersectDepartmentFilter,
   intersectProjectFilter,
+  reportScopeDepartmentIds,
   reportScopeFor,
+  reportScopeForActor,
   type ReportScope,
 } from "./roleAccess";
 import { assignedProjectIdsFor } from "./projectScope";
@@ -134,6 +136,12 @@ export type ReportActor = {
    * `null`, which `reportScopeFor` turns into the fail-closed NONE scope.
    */
   departmentId?: number | null;
+  /**
+   * EVERY Department this actor heads, for a Sectional Head over more than one plant. Optional so the
+   * pure-assembly test fixtures keep working; when present it wins over the single `departmentId`,
+   * which stays as the first entry for the provenance line.
+   */
+  departmentIds?: readonly number[] | null;
 };
 
 /** A `JobOrderFacts` row with its dates already reduced to `YYYY-MM-DD` (or null). */
@@ -233,8 +241,13 @@ export type PortfolioReport = {
      */
     scope: {
       kind: ReportScope["kind"];
-      /** The Department id when `kind === "DEPARTMENT"`, else null. */
+      /** The FIRST Department id when `kind === "DEPARTMENT"`, else null. */
       departmentId: number | null;
+      /**
+       * EVERY Department the scope covers, in id order — one entry for a single-Department head, two
+       * for a Sectional Head over two plants. Null for the non-Department kinds.
+       */
+      departmentIds?: number[] | null;
       /**
        * The Project ids when `kind === "PROJECTS"`, else null. Carried so a forwarded export states
        * the exact assignment it was built from, not merely "assigned projects".
@@ -342,7 +355,12 @@ function dateKeyOrNull(date: Date | null): string | null {
  */
 function describeScope(scope: ReportScope): string {
   if (scope.kind === "ORGANISATION") return "Whole organisation (all departments)";
-  if (scope.kind === "DEPARTMENT") return `Department ${scope.departmentId} (whole department)`;
+  if (scope.kind === "DEPARTMENT") {
+    const ids = reportScopeDepartmentIds(scope);
+    return ids.length > 1
+      ? `Departments ${ids.join(", ")} (whole departments — one head)`
+      : `Department ${scope.departmentId} (whole department)`;
+  }
   if (scope.kind === "PROJECTS") return `Assigned projects only (${scope.projectIds.length})`;
   // Reached by an HOD/DEPT_HEAD with no Department mapping, or a PROJECT_MANAGER with no active
   // assignment. The sentence must fit BOTH, so it names neither.
@@ -706,6 +724,11 @@ export function assemblePortfolioReport(input: AssembleInput): PortfolioReport {
       scope: {
         kind: scope.kind,
         departmentId: scope.kind === "DEPARTMENT" ? scope.departmentId : null,
+        // Omitted unless the head covers SEVERAL Departments: a single-Department report keeps the exact
+        // payload it always had, and the exports/UI keep reading `departmentId`.
+        ...(scope.kind === "DEPARTMENT" && reportScopeDepartmentIds(scope).length > 1
+          ? { departmentIds: reportScopeDepartmentIds(scope) }
+          : {}),
         projectIds: scope.kind === "PROJECTS" ? [...scope.projectIds] : null,
         description: describeScope(scope),
       },
@@ -864,7 +887,7 @@ export async function buildPortfolioReport(
   // (`assignedProjectIdsFor` returns null with no query for every other role). It is deliberately
   // not passed in by the route: a request must never be able to name its own project scope.
   const assignedProjectIds = await assignedProjectIdsFor(actor);
-  const scope = reportScopeFor(actor.role, actor.departmentId ?? null, assignedProjectIds);
+  const scope = reportScopeForActor(actor.role, actor.departmentId ?? null, actor.departmentIds, assignedProjectIds);
   const effectiveDepartmentIds = intersectDepartmentFilter(scope, filters.departmentIds);
   // The Project dimension is intersected with the assignment exactly as the Department one is with
   // the Department: the request narrows, never widens, and a disjoint request stays EMPTY.

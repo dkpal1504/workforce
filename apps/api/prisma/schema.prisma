@@ -24,6 +24,9 @@ model User {
   /// The Sections this user may act within. EMPTY means every Section of `departmentId`.
   /// `sectionId` above is the legacy mirror (first section, or null) — see UserScopeSection.
   scopeSections           UserScopeSection[] @relation("UserScopeSections")
+  /// The Departments this user heads IN FULL (every Section, including ones added later).
+  /// One HOD may hold several: home Department plus any granted second plant. See UserScopeDepartment.
+  scopeDepartments        UserScopeDepartment[] @relation("UserScopeDepartments")
   active                  Boolean            @default(true)
   mustChangePassword      Boolean            @default(false) @map("must_change_password")
   tokenVersion            Int                @default(0) @map("token_version")
@@ -103,6 +106,8 @@ model Department {
   manpowerRequests      ManpowerRequest[]
   jobOrders             JobOrder[]
   sections              Section[]
+  /// Whole-Department HOD grants that name this Department (see UserScopeDepartment).
+  scopeUsers            UserScopeDepartment[] @relation("DepartmentScopeUsers")
   organisationOverrides EmployeeOrganisationOverride[]
   hodDelegations        HodDelegation[]
 
@@ -216,6 +221,38 @@ model UserScopeSection {
   @@unique([userId, sectionId])
   @@index([sectionId])
   @@map("user_scope_sections")
+}
+
+/// A Department this account heads IN FULL — every Section of it, including Sections the BadgeView
+/// sync adds later. ONE ROW PER DEPARTMENT.
+///
+/// This is the ONLY structure that lets one HOD head two plants (e.g. Yardservice - EOU and
+/// Yardservice - SEZ), which a single `User.departmentId` cannot express. It stores AUTHORITY only:
+/// the person's own Employee row keeps its home Department, and granting scope never transfers him
+/// (`PUT /api/admin/users/:id/hod-scope` used to re-point the Employee — that is gone).
+///
+/// The three shapes an HOD can have, in order of precedence when reading:
+///   rows here                  -> those Departments in full
+///   `user_scope_sections` rows -> exactly those Sections, in whatever Departments they sit (a
+///                                 named-Section grant may now span Departments, but ONLY ones this
+///                                 account holds here or as its home Department)
+///   neither                    -> the whole Department of `User.departmentId` (today's default, so
+///                                 NO BACKFILL is needed for existing accounts)
+///
+/// A Department may not appear BOTH here and in `user_scope_sections` for the same account
+/// (`SCOPE_DEPARTMENT_OVERLAP`): the whole-Department grant already covers every Section, and the
+/// overlap would make "which grant approved this day" unanswerable.
+model UserScopeDepartment {
+  id           Int        @id @default(autoincrement())
+  userId       Int        @map("user_id")
+  user         User       @relation("UserScopeDepartments", fields: [userId], references: [id], onDelete: Cascade)
+  departmentId Int        @map("department_id")
+  department   Department @relation("DepartmentScopeUsers", fields: [departmentId], references: [id])
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@unique([userId, departmentId])
+  @@index([departmentId])
+  @@map("user_scope_departments")
 }
 
 model CostCenter {

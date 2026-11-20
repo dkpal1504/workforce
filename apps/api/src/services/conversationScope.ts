@@ -18,13 +18,19 @@ import { assignedProjectIdsFor } from "./projectScope";
 export type ConversationScope =
   | { kind: "ORGANISATION" }
   | { kind: "PROJECTS"; projectIds: number[] }
-  | { kind: "DEPARTMENT"; departmentId: number; sectionIds: number[] }
+  /**
+   * These Departments, every Section of each unless `sectionIds` narrows. `departmentIds` carries the
+   * full set for a Sectional Head over more than one plant; `departmentId` stays the first for display.
+   */
+  | { kind: "DEPARTMENT"; departmentId: number; departmentIds?: number[]; sectionIds: number[] }
   | { kind: "NONE" };
 
 export type ConversationActor = {
   id: number;
   role: string;
   departmentId: number | null;
+  /** Every Department he heads (a Sectional Head over two plants); falls back to `departmentId`. */
+  departmentIds?: readonly number[];
   /** The Sections this account may act within; EMPTY means every Section of its Department. */
   sectionScope: number[];
   /** The legacy single-Section mirror, which is all a pre-conversion account carries. */
@@ -68,7 +74,11 @@ export async function conversationScopeFor(actor: ConversationActor): Promise<Co
       : actor.sectionId != null
         ? [actor.sectionId]
         : [];
-    return { kind: "DEPARTMENT", departmentId: actor.departmentId, sectionIds };
+    const departmentIds = [...new Set([...(actor.departmentIds ?? []), actor.departmentId])].filter((id) => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
+    // Only a head of several Departments carries the list; one Department keeps the old object.
+    return departmentIds.length > 1
+      ? { kind: "DEPARTMENT", departmentId: actor.departmentId, departmentIds, sectionIds }
+      : { kind: "DEPARTMENT", departmentId: actor.departmentId, sectionIds };
   }
   return { kind: "NONE" };
 }
@@ -93,7 +103,7 @@ export function maySeeJobOrder(scope: ConversationScope, jobOrder: JobOrderScope
     case "PROJECTS":
       return scope.projectIds.includes(jobOrder.projectId);
     case "DEPARTMENT":
-      if (scope.departmentId !== jobOrder.departmentId) return false;
+      if (!(scope.departmentIds ?? [scope.departmentId]).includes(jobOrder.departmentId)) return false;
       if (scope.sectionIds.length === 0) return true;
       return jobOrder.sectionId == null || scope.sectionIds.includes(jobOrder.sectionId);
     default:
@@ -113,7 +123,7 @@ export function jobOrderScopeWhere(scope: ConversationScope) {
       return { projectId: { in: scope.projectIds } };
     case "DEPARTMENT":
       return {
-        departmentId: scope.departmentId,
+        departmentId: scope.departmentIds && scope.departmentIds.length > 1 ? { in: scope.departmentIds } : scope.departmentId,
         ...(scope.sectionIds.length
           ? { OR: [{ sectionId: null }, { sectionId: { in: scope.sectionIds } }] }
           : {}),

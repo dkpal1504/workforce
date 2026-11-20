@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { hodScopeDepartmentIds } from "../services/hodScope";
 import {
   CONVERSATION_ROLES,
   canAccessJobOrder,
@@ -87,6 +88,7 @@ function actorOf(req: Request): ConversationActor {
     id: user.id,
     role: user.role,
     departmentId: user.departmentId,
+    departmentIds: hodScopeDepartmentIds(user.hodScope),
     sectionId: user.sectionId,
     sectionScope: user.sectionScope,
   };
@@ -698,7 +700,7 @@ conversationsRouter.get("/conversations/hindrances", ...guarded, async (req, res
       case "PROJECTS":
         return projectId != null && scope.projectIds.includes(projectId);
       case "DEPARTMENT":
-        if (departmentId !== scope.departmentId) return false;
+        if (!(scope.departmentIds ?? [scope.departmentId]).includes(departmentId ?? -1)) return false;
         if (scope.sectionIds.length === 0) return true;
         return sectionId == null || scope.sectionIds.includes(sectionId);
       default:

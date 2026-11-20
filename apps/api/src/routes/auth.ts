@@ -4,6 +4,7 @@ import { changePasswordSchema, loginSchema } from "@workforce/shared";
 import { prisma } from "../db";
 import { requireAuth, signToken } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { hodScopeFromRows } from "../services/hodScope";
 import { findEmployeeByCanonicalEcNo } from "../services/employeeIdentity";
 import { usesEcNoLogin } from "../services/defaultLoginCredentials";
 import { capabilitiesFor, landingPathFor } from "../services/roleAccess";
@@ -18,7 +19,8 @@ const lifecycleUserSelect = {
   departmentId: true,
   sectionId: true,
   scopeSection: { select: { id: true, code: true, name: true, departmentId: true } },
-  scopeSections: { select: { sectionId: true } },
+  scopeSections: { select: { sectionId: true, section: { select: { departmentId: true } } } },
+  scopeDepartments: { select: { departmentId: true, department: { select: { id: true, name: true } } } },
   employeeId: true,
   active: true,
   mustChangePassword: true,
@@ -71,6 +73,22 @@ function presentUser(user: any) {
     sectionScope: (user.scopeSections?.length ?? 0)
       ? user.scopeSections.map((scope: { sectionId: number }) => scope.sectionId)
       : (user.sectionId != null ? [user.sectionId] : []),
+    /**
+     * The AUTHORITY as grants, identical to `req.user.hodScope` in middleware/auth.ts: every Department
+     * this account heads, with `sectionIds: []` meaning all of its Sections. A Sectional Head over two
+     * plants gets two entries here, which is what lets the screens label and filter both.
+     */
+    hodScope: hodScopeFromRows({
+      departmentId: user.departmentId,
+      legacySectionId: user.sectionId,
+      departmentGrants: (user.scopeDepartments ?? []).map((grant: { departmentId: number }) => grant.departmentId),
+      sectionRows: (user.scopeSections ?? []).map((scope: { sectionId: number; section: { departmentId: number } }) => ({
+        sectionId: scope.sectionId,
+        departmentId: scope.section.departmentId,
+      })),
+    }),
+    /** The Departments he heads, with names, for the header and the pickers. */
+    scopeDepartments: (user.scopeDepartments ?? []).map((grant: { departmentId: number; department: { id: number; name: string } }) => grant.department),
     employeeId: user.employeeId,
     active: user.active,
     employeeActive: user.employee?.active ?? null,

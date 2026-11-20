@@ -9,7 +9,7 @@
  * unit-tested without a database. The route layer loads the counts and applies the
  * returned `update`.
  */
-import { legacySectionId, normaliseSectionIds, validateScopeSections } from "./userScope";
+import { legacySectionId, normaliseSectionIds, validateHodGrants, validateScopeSections } from "./userScope";
 
 export const ASSIGNABLE_ROLES = ["EMPLOYEE", "SUPERVISOR", "HOD", "DEPT_HEAD", "PM", "PROJECT_MANAGER", "ADMIN", "HR", "FINANCE", "COO"] as const;
 export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
@@ -68,6 +68,8 @@ export type RoleTarget = {
    * `currentSectionId === null` means) — the set and the scalar must always agree.
    */
   currentSectionIds: readonly number[];
+  /** The Departments the account heads IN FULL today. Optional so existing callers compile. */
+  currentDepartmentIds?: readonly number[];
   employeeId: number | null;
   employee: RoleTargetEmployee;
   /** The linked Employee's Section assignment, if any. */
@@ -104,6 +106,8 @@ export type RoleChangePlan =
         departmentId: number | null;
         /** The Sections an HOD heads. EMPTY = the whole Department. Always [] for other roles. */
         sectionIds: number[];
+        /** The Departments an HOD heads IN FULL. One entry is the normal case; two is a Sectional Head. */
+        departmentGrants: number[];
         /** The legacy mirror: the first of `sectionIds`, or null. */
         sectionId: number | null;
       };
@@ -301,6 +305,13 @@ export function planRoleChange(
     sectionIds?: unknown;
     /** The candidate Sections, so the same-department rule is checked here and not only in the UI. */
     sections?: readonly { id: number; departmentId: number; active: boolean }[];
+    /**
+     * The Departments to grant IN FULL, for an HOD who heads more than one plant. `undefined` keeps the
+     * single-Department behaviour; `[]` means the same. Validation runs in `validateHodGrants`.
+     */
+    departmentIds?: unknown;
+    /** The Departments that exist, for the active/known checks. */
+    departments?: readonly { id: number; active: boolean }[];
   } = {},
 ): RoleChangePlan {
   if (!isAssignableRole(requestedRole)) {
@@ -318,6 +329,10 @@ export function planRoleChange(
   // "already has the role" would be a lie about a request that was never understood.
   const hodRequest = requestedRole === "HOD" ? projectHodSectionIds(options, target) : null;
   if (hodRequest && !hodRequest.ok) return hodRequest;
+  // A malformed Department list is refused here, before "already has the role" can answer for it.
+  if (requestedRole === "HOD" && options.departmentIds !== undefined && !Array.isArray(options.departmentIds)) {
+    return { ok: false, code: "INVALID_HOD_SCOPE", error: "departmentIds must be an array of Department ids." };
+  }
   // A role change with no scope change is a no-op (an HOD moving Section -> Department
   // is NOT one: same role, different scope, so it must be allowed through).
   // For an HOD the resulting scope is the SET; every other role keeps a null Section.
@@ -330,8 +345,17 @@ export function planRoleChange(
       ? null
       : requestedRole === "SUPERVISOR" || requestedRole === "PM" || requestedRole === "PROJECT_MANAGER" ? null
         : target.sectionAssignment?.sectionId ?? null;
+  const requestedGrants = requestedRole === "HOD" && Array.isArray(options.departmentIds)
+    ? [...new Set(options.departmentIds.map((value) => Number(value)))].filter((id) => Number.isInteger(id) && id > 0).sort((a, b) => a - b)
+    : null;
+  const grantSetChanged =
+    requestedGrants != null &&
+    (requestedGrants.length !== (target.currentDepartmentIds ?? []).length ||
+      requestedGrants.some((id) => !(target.currentDepartmentIds ?? []).includes(id)));
   const scopeOnlyChange =
-    target.role === "HOD" && requestedRole === "HOD" && !sameSectionSets(target.currentSectionIds, resultingSectionIds);
+    target.role === "HOD" &&
+    requestedRole === "HOD" &&
+    (!sameSectionSets(target.currentSectionIds, resultingSectionIds) || grantSetChanged);
   if (target.role === requestedRole && !scopeOnlyChange) {
     return { ok: false, code: "NO_CHANGE", error: `This account already has the ${requestedRole} role.` };
   }
@@ -389,10 +413,53 @@ export function planRoleChange(
   // A Department Head is the department-wide view WITHOUT approval rights: same
   // Department as the linked Employee, deliberately no Section scope.
   if (requestedRole === "DEPT_HEAD") {
-    return { ok: true, update: { role: "DEPT_HEAD", departmentId: employee!.departmentId, sectionIds: [], sectionId: null } };
+    return { ok: true, update: { role: "DEPT_HEAD", departmentId: employee!.departmentId, sectionIds: [], sectionId: null, departmentGrants: [] } };
   }
 
   if (requestedRole === "HOD") {
+    // ---- MULTI-DEPARTMENT GRANTS -----------------------------------------------------------------
+    // When the caller names whole Departments, the scope is those Departments (plus, optionally, the
+    // named Sections validated below). This is the Sectional Head over two plants: Yardservice - EOU
+    // and Yardservice - SEZ on one login. The account's Department/Section remain the LEGACY MIRROR —
+    // first Department, first Section — never a second source of truth.
+    const grantDepartments = options.departmentIds === undefined
+      ? null
+      : Array.isArray(options.departmentIds)
+        ? [...new Set(options.departmentIds.map((value) => Number(value)))].filter((id) => Number.isInteger(id) && id > 0)
+        : "invalid";
+    if (grantDepartments === "invalid") {
+      return { ok: false, code: "INVALID_HOD_SCOPE", error: "departmentIds must be an array of Department ids." };
+    }
+    if (grantDepartments) {
+      const namedSections = (hodRequest as { ok: true; sectionIds: number[] }).sectionIds;
+      const departmentRefusal = validateHodGrants(
+        [
+          ...grantDepartments.map((id) => ({ departmentId: id, sectionIds: [] as number[] })),
+          // Named Sections are grouped under the Department each one belongs to, so a named Section in
+          // an UNGRANTED Department is refused rather than silently widened.
+          ...[...new Set(
+            namedSections.map((id) => options.sections?.find((section) => section.id === id)?.departmentId ?? -1)
+          )]
+            .filter((id) => id > 0 && !grantDepartments.includes(id))
+            .map((id) => ({ departmentId: id, sectionIds: namedSections.filter((sectionId) => options.sections?.find((section) => section.id === sectionId)?.departmentId === id) })),
+        ],
+        options.departments ?? [],
+        options.sections ?? []
+      );
+      if (departmentRefusal) return { ok: false, code: departmentRefusal.code, error: departmentRefusal.error };
+      const firstDepartment = grantDepartments[0];
+      return {
+        ok: true,
+        update: {
+          role: "HOD",
+          departmentId: firstDepartment,
+          sectionIds: normaliseSectionIds(namedSections),
+          sectionId: legacySectionId(namedSections),
+          departmentGrants: [...grantDepartments].sort((a, b) => a - b),
+        },
+      };
+    }
+
     // A Department-wide HOD still needs a Department: an EMPTY set with no Department would be
     // an approver scoped to everything, which is the one reading this must never produce.
     const departmentId = employee!.departmentId;
@@ -432,6 +499,7 @@ export function planRoleChange(
         departmentId,
         sectionIds: normaliseSectionIds(wanted),
         sectionId: legacySectionId(wanted),
+        departmentGrants: [],
       },
     };
   }
@@ -440,15 +508,15 @@ export function planRoleChange(
   // the Department comes from the linked Employee, and the Section picker on the
   // capture screen offers that Department's Sections.
   if (requestedRole === "SUPERVISOR") {
-    return { ok: true, update: { role: "SUPERVISOR", departmentId: employee!.departmentId, sectionIds: [], sectionId: null } };
+    return { ok: true, update: { role: "SUPERVISOR", departmentId: employee!.departmentId, sectionIds: [], sectionId: null, departmentGrants: [] } };
   }
 
   if (requestedRole === "EMPLOYEE" || requestedRole === "PM") {
-    return { ok: true, update: { role: requestedRole, departmentId: employee!.departmentId, sectionIds: [], sectionId: null } };
+    return { ok: true, update: { role: requestedRole, departmentId: employee!.departmentId, sectionIds: [], sectionId: null, departmentGrants: [] } };
   }
 
   // ADMIN / HR / FINANCE / COO are organisation-wide and need no Employee linkage. A linked
   // Employee's Department is kept only as a display fact; the Section scope is always null
   // because these roles are never narrowed below the whole organisation.
-  return { ok: true, update: { role: requestedRole, departmentId: employee?.departmentId ?? null, sectionIds: [], sectionId: null } };
+  return { ok: true, update: { role: requestedRole, departmentId: employee?.departmentId ?? null, sectionIds: [], sectionId: null, departmentGrants: [] } };
 }

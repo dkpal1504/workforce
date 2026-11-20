@@ -66,6 +66,14 @@ export type AuthUser = {
   credentialProvisionedAt: string | null;
   credentialSentAt: string | null;
   department: { id: number; name: string; code: string } | null;
+  /**
+   * The AUTHORITY as grants: every Department this account heads. `sectionIds: []` means all of that
+   * Department's Sections. One entry is the ordinary single-Department head; two is a Sectional Head
+   * over more than one plant (Yardservice - EOU + Yardservice - SEZ on one login).
+   */
+  hodScope?: { grants: { departmentId: number; sectionIds: number[] }[] };
+  /** The granted Departments with names, for headers and pickers. */
+  scopeDepartments?: { id: number; name: string }[];
   employee: { id: number; ecNo: string; active: boolean; terminatedAt: string | null } | null;
   section: {
     id: number;
