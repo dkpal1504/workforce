@@ -345,7 +345,16 @@ async function main() {
   }
 
   console.log("\nPROPOSED GRANTS (what a save would store)");
-  console.log(`  { departmentId: ${ownDepartmentId ?? "?"}, sectionIds: [${scopeIds.join(", ")}] }   // ${user.department?.name ?? "home department"} — legacy mirror`);
+  // The home Department is listed first because it is the legacy mirror. When it is ALSO granted
+  // whole-Department, say so: after the multi-plant grant a bare "legacy mirror" label reads as
+  // "this one is not really granted", which is the opposite of the truth.
+  const homeWholeGrant = hodScope.grants.some(
+    (grant) => grant.departmentId === ownDepartmentId && grant.sectionIds.length === 0
+  );
+  console.log(
+    `  { departmentId: ${ownDepartmentId ?? "?"}, sectionIds: [${scopeIds.join(", ")}] }   // ` +
+      `${user.department?.name ?? "home department"} — ${homeWholeGrant ? "already granted whole Department" : "legacy mirror"}`
+  );
   for (const department of otherDepartments) {
     const ids = sectionIdsByDepartment.get(department.id) ?? [];
     console.log(`  { departmentId: ${department.id}, sectionIds: [] }            // ${department.name} — whole Department (self-maintaining)`);
