@@ -11,6 +11,13 @@ import {
   setManualInOutHours,
   sweepPendingInOutHours,
 } from "../services/attendanceHours";
+import {
+  approvedOtSource,
+  formatApprovedOtSummary,
+  refreshApprovedOt,
+  scheduledApprovedOtWindow,
+  setManualApprovedOt,
+} from "../services/approvedOt";
 
 /**
  * Clocked attendance hours (in/out) for submitted timesheets - ADMIN only.
@@ -232,6 +239,134 @@ attendanceHoursRouter.post("/manual", async (req, res) => {
     res.json({ ok: true, ...after });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not save the manual figure." });
+  }
+});
+
+/* --------------------------------------------------------------------------- *
+ * Approved overtime (CLMS `[AcceptedOT]`)
+ *
+ * The OT a supervisor punches is only what was worked; CLMS decides what is approved and
+ * paid. These endpoints read the approved figure into `timesheet_days.approved_ot_hours`,
+ * which every screen and report uses. The sync and the 06:00 settlement already refresh it
+ * on their own; these exist so an operator can backfill a period or correct a day without
+ * waiting for either.
+ * --------------------------------------------------------------------------- */
+
+attendanceHoursRouter.get("/approved-ot/config", (_req, res) => {
+  const source = approvedOtSource();
+  const window = scheduledApprovedOtWindow();
+  res.json({
+    ok: true,
+    source: {
+      view: source.view,
+      idColumn: source.idColumn,
+      otColumn: source.otColumn,
+      dateColumn: source.dateColumn,
+      aggregate: source.aggregate,
+      server: attendanceSourceConfig().server,
+      database: attendanceSourceConfig().database,
+    },
+    triggers: {
+      afterSync: String(process.env.APPROVED_OT_SYNC_ON_COMPLETE ?? "true").toLowerCase() !== "false",
+      afterSettlement: String(process.env.APPROVED_OT_AFTER_SETTLEMENT ?? "true").toLowerCase() !== "false",
+      lookbackDays: Number(process.env.APPROVED_OT_LOOKBACK_DAYS || 21),
+    },
+    /**
+     * The nightly backfill. CLMS approves overtime 2–15 days after the work, so this is the guarantee
+     * that a late approval is stamped without anybody pressing a button.
+     */
+    schedule: {
+      enabled: String(process.env.APPROVED_OT_SCHEDULE_ENABLED ?? "true").toLowerCase() !== "false",
+      cron: process.env.APPROVED_OT_CRON || "0 2 * * *",
+      backfillDays: Number(process.env.APPROVED_OT_BACKFILL_DAYS || 30),
+      window,
+    },
+    /** The window the automatic triggers cover on the next pass. */
+    window,
+  });
+});
+
+const approvedOtRefreshSchema = z.object({
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "dateFrom must be YYYY-MM-DD"),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "dateTo must be YYYY-MM-DD"),
+  dryRun: z.boolean().optional(),
+  includeDraft: z.boolean().optional(),
+});
+
+attendanceHoursRouter.post("/approved-ot/refresh", async (req, res) => {
+  const parsed = approvedOtRefreshSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+  try {
+    const result = await refreshApprovedOt(parsed.data);
+    if (result.errors.length && result.datesRead.length === 0 && result.sheets > 0) {
+      return res.status(502).json({
+        error: `Could not read the approved overtime. ${result.errors[0].message}`,
+        dateFrom: result.dateFrom,
+        dateTo: result.dateTo,
+        errors: result.errors,
+      });
+    }
+    if (!result.dryRun && result.updated > 0) {
+      const changes = result.rows
+        .filter((row) => row.wouldChange)
+        .slice(0, 200)
+        .map((row) => ({
+          dayId: row.dayId,
+          ecNo: row.ecNo,
+          workDate: row.workDate,
+          punched: row.punchedOtHours,
+          from: row.previousHours,
+          to: row.approvedHours,
+        }));
+      await writeAudit(req.user!.id, "APPROVED_OT_REFRESH", "timesheet_day", `${result.dateFrom}..${result.dateTo}`, {
+        dateFrom: result.dateFrom,
+        dateTo: result.dateTo,
+        source: result.source,
+        sheets: result.sheets,
+        withApprovedOt: result.withApprovedOt,
+        updated: result.updated,
+        changes,
+        changesTruncated: result.updated > changes.length,
+      });
+    }
+    res.json({ ok: true, summary: formatApprovedOtSummary(result), ...result });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Approved overtime refresh failed." });
+  }
+});
+
+const approvedOtManualSchema = z.object({
+  dayId: z.number().int().positive(),
+  /** null clears the value and hands the day back to CLMS on the next refresh. */
+  hours: z.number().min(0).max(24).nullable(),
+  reason: z.string().max(500).optional(),
+});
+
+attendanceHoursRouter.post("/approved-ot/manual", async (req, res) => {
+  const parsed = approvedOtManualSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+  const { dayId, hours, reason } = parsed.data;
+  try {
+    const before = await prisma.timesheetDay.findUnique({
+      where: { id: dayId },
+      select: { approvedOtHours: true, approvedOtSource: true },
+    });
+    const after = await setManualApprovedOt(dayId, hours);
+    await writeAudit(req.user!.id, "APPROVED_OT_MANUAL", "timesheet_day", String(dayId), {
+      dayId,
+      from: before?.approvedOtHours ?? null,
+      fromSource: before?.approvedOtSource ?? null,
+      to: after.approvedOtHours,
+      toSource: after.approvedOtSource,
+      reason: reason ?? null,
+    });
+    res.json({ ok: true, ...after });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not save the approved overtime." });
   }
 });
 

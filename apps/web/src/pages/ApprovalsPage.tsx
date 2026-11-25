@@ -59,6 +59,16 @@ type EmployeeRow = {
   hasConflict: boolean;
   conflictSupervisors?: string[] | null;
   otHours?: number | null;
+  /** OT the supervisor punched — the captured reference, never the reported figure. */
+  punchedOtHours?: number;
+  /** The overtime CLMS approved for this employee-day (0 when it approved none). */
+  approvedOtHours?: number;
+  /** False when this day has never been read from CLMS. */
+  approvedOtFetched?: boolean;
+  /** 'clms' | 'not-fetched' | null — where the reported OT came from. */
+  otSource?: string | null;
+  /** Approved OT nobody booked a Job Order against (printed as "OT not booked"). */
+  otNotBookedHours?: number;
   /** The bookings behind `projectHours`: one row per booked slot, with its Job Order number. */
   slots?: SlotBooking[];
   employee: { id: number; name: string; ecNo: string; department: string };
@@ -179,6 +189,31 @@ function fmtHours(n: number) {
   return n ? String(n) : "—";
 }
 
+/**
+ * The label of a Project column. Every real column is a Project colour token; the one reserved
+ * key carries the overtime CLMS approved that no supervisor booked a Job Order against, and it
+ * must read as plain words rather than as a project called "OT_NOT_BOOKED".
+ */
+function projectColumnLabel(key: string) {
+  return key === "OT_NOT_BOOKED" ? "OT not booked" : `Project ${key}`;
+}
+
+function approvedOtTitle(row: {
+  approvedOtHours?: number;
+  approvedOtFetched?: boolean;
+  punchedOtHours?: number;
+  otSource?: string | null;
+}) {
+  if (row.approvedOtFetched === false) {
+    return "CLMS has not been read for this day yet; the reported overtime is 0 until it is.";
+  }
+  return (
+    `Approved overtime in CLMS: ${row.approvedOtHours ?? 0} h` +
+    (row.otSource === "manual" ? " (set by Admin)" : "") +
+    ` — the supervisor punched ${row.punchedOtHours ?? 0} h, which is a reference only.`
+  );
+}
+
 function HourChips({
   projectHours,
   projectOtHours = {},
@@ -205,7 +240,7 @@ function HourChips({
     <div className="hour-chips">
       {keys.map((k) => (
         <span key={k}>
-          <em>{k}</em> {fmtHours(projectHours[k])}
+          <em>{k === "OT_NOT_BOOKED" ? "OT not booked" : k}</em> {fmtHours(projectHours[k])}
           {(projectOtHours[k] ?? 0) > 0 && <strong className="project-ot-inline"> OT {projectOtHours[k]}h</strong>}
         </span>
       ))}
@@ -953,7 +988,7 @@ export function ApprovalsPage() {
                         Allocation
                       </th>
                       {pendingProjectKeys.map((k) => (
-                        <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
+                        <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>{projectColumnLabel(k)}</th>
                       ))}
                       <th rowSpan={2}>Total Alloc.</th>
                       <th rowSpan={2}>Overhead</th>
@@ -1099,7 +1134,13 @@ export function ApprovalsPage() {
                                     <td>{fmtHours(emp.projectHours[k])}</td>
                                     {projectOtKeys.has(k) && (
                                       <td className="ot-col">
-                                        {(emp.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{emp.projectOtHours[k]}h</span> : "—"}
+                                        {(emp.projectOtHours[k] ?? 0) > 0 ? (
+                                  <span className="ot-badge" title={approvedOtTitle(emp)}>
+                                    {emp.projectOtHours[k]}h
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
                                       </td>
                                     )}
                                   </Fragment>
@@ -1181,7 +1222,13 @@ export function ApprovalsPage() {
                             <td>{fmtHours(emp.projectHours[k])}</td>
                             {projectOtKeys.has(k) && (
                               <td className="ot-col">
-                                {(emp.projectOtHours[k] ?? 0) > 0 ? <span className="ot-badge">{emp.projectOtHours[k]}h</span> : "—"}
+                                {(emp.projectOtHours[k] ?? 0) > 0 ? (
+                                  <span className="ot-badge" title={approvedOtTitle(emp)}>
+                                    {emp.projectOtHours[k]}h
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
                               </td>
                             )}
                           </Fragment>
@@ -1641,7 +1688,7 @@ export function ApprovalsPage() {
                       <th rowSpan={2}>Employee</th>
                       <th rowSpan={2}>Date</th>
                       {returnedProjectKeys.map((k) => (
-                        <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
+                        <th key={k} colSpan={projectOtKeys.has(k) ? 2 : 1}>{projectColumnLabel(k)}</th>
                       ))}
                       <th rowSpan={2}>Total Alloc.</th>
                       <th rowSpan={2}>Overhead</th>
@@ -1793,7 +1840,7 @@ export function ApprovalsPage() {
                   <th rowSpan={2}>Supervisor</th>
                   <th rowSpan={2}>Date</th>
                   {historyProjectKeys.map((k) => (
-                    <th key={k} colSpan={historyProjectOtKeys.has(k) ? 2 : 1}>Project {k}</th>
+                    <th key={k} colSpan={historyProjectOtKeys.has(k) ? 2 : 1}>{projectColumnLabel(k)}</th>
                   ))}
                   <th rowSpan={2}>Total</th>
                   <th rowSpan={2}>Overhead</th>

@@ -149,6 +149,15 @@ A supervisor can also assign **OT hours** to a contract workman (CLMS employee) 
 
 For holiday attendance, OT may be entered without selecting any regular shift slot. The complete entered time is booked as project OT and overhead is `0`. On a mixed regular-plus-OT day, OT stays additive and unused regular capacity retains its normal overhead calculation. OT entry is disabled and rejected for Payroll Employees.
 
+**What the supervisor enters is NOT the paid overtime.** CLMS LabourWorks approves the overtime, and its
+`[AcceptedOT]` on `Report_Attendance_View` is the figure the rest of the application reports and pays.
+The sync and the 06:00 settlement stamp it into `timesheet_days.approved_ot_hours`, the OT cell shows
+`CLMS 2h` (or `CLMS —` while the day has not been read yet) under the supervisor's input, and every
+report prints the approved figure. A day CLMS approves no OT for reports **0** whatever was punched —
+that is deliberate: falling back to the punch would pay overtime the yard never approved. When the
+approved OT is for a day nobody booked a Job Order against, it appears in the **OT not booked** column
+rather than being dropped.
+
 ### 2.7 Supervisor self-row
 
 Supervisors appear as a **non-removable "You" row** in their own timesheet, so they can allocate their own hours via the same flow. The Remove button is disabled for the self-row.
@@ -241,14 +250,29 @@ Rejection at either stage moves the day to `REJECTED` (supervisor can re-edit an
 
 A day is **flagged** when two or more supervisors have tagged the same employee on the same date. The flag shows the supervisors involved: *"Tagged by S. Menon & R. Sharma — resolve before approving."* Conflict-flagged days cannot be approved until the conflict is resolved at the timesheet level.
 
-### 3.4 Auto-calculated OT in the column
+### 3.3a Holiday-hours reconciliation shows the approved OT too
 
-The HOD/PM **OT column** appears dynamically only when at least one employee row has OT. It shows **effective OT** per row:
+`npm run recon:holiday-hours` (read-only) now prints an **APPROVED OVERTIME (CLMS)** block next to the
+booked-hours block: OT rows and hours punched, the approved figure and its variance, the hours that
+would actually be paid (regular slots + approved OT), the days still awaiting an approval, the days
+approved short or high, the approved OT nobody booked, and whether the stamped
+`approved_ot_hours` column has caught up with the register. The per-employee-day CSV gains
+`punched_ot_hours`, `ot_approved_minus_punched` and `approved_ot_stamped`.
 
-- **Manual OT wins** if entered via the supervisor's OT modal.
-- **Otherwise auto-calculated** as `max(0, trueHours − MAX_DAILY_HOURS)` from multi-supervisor over-allocation.
+### 3.4 Approved OT in the column
 
-The OT column is **light-red** with an `auto` tag on derived values so the approver knows what they're approving.
+The HOD/PM **OT column** appears dynamically only when at least one employee row has OT. It shows the
+**CLMS-approved overtime** per row — the figure the yard has regularised and will pay, stamped by the
+sync and the 06:00 settlement from `[AcceptedOT]`.
+
+- **Approved only.** The supervisor's punch no longer decides the column. It is kept as the captured
+  reference and appears in the tooltip ("the supervisor punched 4 h, which is a reference only").
+- **Zero is a real answer.** A day CLMS has not approved reports `0`, not the punched figure. A day the
+  application has never read from CLMS says so instead of pretending it was zero.
+- **Unbooked approved OT** appears in its own **OT not booked** column, so the columns always add up to
+  what CLMS approved.
+- **Over-allocation warning** (`exceedsLimit`, red) still rides along: it flags a planning problem, but
+  it never becomes the payable overtime.
 
 ---
 
@@ -496,6 +520,11 @@ out. This screen puts the two figures side by side so contract attendance can be
   submitted — first submit, a re-submit after a send-back, and a resubmitted amendment alike. Nothing
   a supervisor does writes it, and nothing else in the app reads it: it can never change booked hours,
   approvals or reports.
+- **Approved overtime, 2–15 days later.** CLMS approves OT after the day worked, not on it. The sync
+  re-reads the last 21 days on every pass, and a nightly job (`APPROVED_OT_CRON`, default 02:00)
+  re-reads the last 30 days, so an approval that lands on its twelfth day is stamped by the next
+  morning with nobody pressing anything. Every write is idempotent: a re-read of an unchanged day
+  writes nothing.
 - **The value comes from LabourWorks.** The join key is the employee **`ecNo`**, which the source view
   calls `IDNo`; the hours field is `ManHours`, and the date is `Date` (all three confirmed against the
   live view on 2026-09-21). The screen reads the view named by `ATTENDANCE_DB_VIEW` (default
@@ -1178,7 +1207,10 @@ Selected routes (all under `/api/`):
 | `/allocations/:dayId/approve` | POST | HOD/PM/ADMIN | Stage-scoped approve |
 | `/allocations/:dayId/reject` | POST | HOD/PM/ADMIN | Stage-scoped reject |
 | `/allocations/pending` | GET | HOD/PM/ADMIN/HR | Role-aware, department-scoped queue |
-| `/summary` | GET | auth | Hours by project/employee/supervisor/department; effective OT |
+| `/summary` | GET | auth | Hours by project/employee/supervisor/department; the OT columns are the CLMS-approved figure, with approved OT nobody booked under "OT not booked" |
+| `/attendance-hours/approved-ot/config` | GET | ADMIN | Which view and column the approved-OT refresh reads, and the automatic triggers in force |
+| `/attendance-hours/approved-ot/refresh` | POST | ADMIN | Backfill `timesheet_days.approved_ot_hours` from CLMS `[AcceptedOT]` for a date range (`dryRun` supported) |
+| `/attendance-hours/approved-ot/manual` | POST | ADMIN | Set or clear one day's approved OT by hand (flagged MANUAL; no refresh overwrites it) |
 | `/summary/job-order?status=all\|active\|inactive&departmentId=&asOf=` | GET | auth (not EMPLOYEE) | Job Order Summary: Project → WBS → Job Order, hours and quantity; HOD / DEPT_HEAD pinned to their own department |
 | `/projects` | GET | auth | Project master list |
 | `/job-order` | GET | auth | Job-order list (filter by project / status / department) |

@@ -88,6 +88,9 @@ type Row = {
   dayTotalHours?: number;
   exceedsLimit?: boolean;
   otHours?: number | null;
+  /** The overtime CLMS approved for this employee-day; null = not fetched yet. */
+  approvedOtHours?: number | null;
+  approvedOtSource?: string | null;
   otJobOrderId?: number | null;
   otJobOrderCode?: string | null;
   otJobOrderName?: string | null;
@@ -1288,6 +1291,23 @@ export function TimesheetPage() {
                       aria-label={`OT hours for ${r.employee.name}`}
                       title="Whole OT hours from 1 to 12; enter 0 to clear existing OT"
                     />
+                    {/*
+                      APPROVED vs PUNCHED. What the supervisor types here is a capture of what was
+                      worked; what CLMS approves is what is paid, and every report prints that figure.
+                      Showing both beside each other is the point of this cell — a supervisor can see
+                      at once that the yard approved less (or nothing) for the day.
+                    */}
+                    <span
+                      className="ot-approved-note"
+                      title={
+                        r.approvedOtHours == null
+                          ? "CLMS approval has not been read for this day yet (the sync and the 06:00 settlement fill it)"
+                          : `Approved in CLMS: ${r.approvedOtHours} h${r.approvedOtSource === "MANUAL" ? " (set by Admin)" : ""}`
+                      }
+                      style={{ display: "block", fontSize: "0.72rem", marginTop: 2, opacity: 0.8 }}
+                    >
+                      {r.approvedOtHours == null ? "CLMS —" : `CLMS ${r.approvedOtHours}h`}
+                    </span>
                   </td>
                   <td>
                     <select

@@ -13,6 +13,7 @@
  * Usage:  npm run dev:all
  */
 import { spawn } from "node:child_process";
+import { ensureDatabaseReachable } from "./dev-db-preflight.mjs";
 
 const targets = [
   { name: "api", colour: "\x1b[36m", args: ["run", "dev", "-w", "@workforce/api"] },
@@ -51,6 +52,15 @@ function stop(reason) {
   }, 2000);
   force.unref();
 }
+
+// Probe the database FIRST. A cold WSL distro reads as "Can't reach database server at
+// 127.0.0.1:5433" on every screen, which looks like a database fault and is not one.
+const db = await ensureDatabaseReachable();
+if (!db.ok) {
+  console.error(`\n${db.message}\n`);
+  process.exit(1);
+}
+if (db.keepAlive) children.push(db.keepAlive);
 
 for (const { name, colour, args } of targets) {
   const child = spawn("npm", args, { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });

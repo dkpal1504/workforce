@@ -37,6 +37,7 @@ import { startBadgeViewSyncScheduler, stopBadgeViewSyncScheduler } from "./servi
 import { attendanceHoursRouter } from "./routes/attendanceHours";
 import { startAttendanceHoursScheduler, stopAttendanceHoursScheduler } from "./services/attendanceHoursScheduler";
 import { startAttendanceSettlementScheduler, stopAttendanceSettlementScheduler } from "./services/attendanceSettlementScheduler";
+import { startApprovedOtScheduler, stopApprovedOtScheduler } from "./services/approvedOtScheduler";
 import { prisma } from "./db";
 import { assertBootstrapPasswordUsable, bootstrapPasswordNotice } from "./services/defaultLoginCredentials";
 
@@ -201,6 +202,9 @@ const server = app.listen(port, host, () => {
   startBadgeViewSyncScheduler();
   startAttendanceHoursScheduler();
   startAttendanceSettlementScheduler();
+  // The nightly approved-OT backfill: CLMS approves overtime 2–15 days after the day worked, so a fixed
+  // window must be re-read every night for a late approval to land without an operator pressing anything.
+  startApprovedOtScheduler();
 startReviewSnapshotScheduler();
   startConversationScheduler();
 });
@@ -212,6 +216,7 @@ async function shutdown(signal: string): Promise<void> {
   stopBadgeViewSyncScheduler();
   stopAttendanceHoursScheduler();
   stopAttendanceSettlementScheduler();
+  stopApprovedOtScheduler();
   stopReviewSnapshotScheduler();
   server.close(async () => {
     await prisma.$disconnect();

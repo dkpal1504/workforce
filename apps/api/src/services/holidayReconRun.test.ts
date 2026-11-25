@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { reconCsvFiles, renderReconSummary, type ReconResult } from "./holidayReconRun";
 import { splitHoursByClass } from "./holidayHours";
+import { summariseOvertime } from "./holidayRecon";
+
+function emptyOvertime() {
+  return summariseOvertime([]);
+}
 
 function result(overrides: Partial<ReconResult> = {}): ReconResult {
   return {
@@ -49,6 +54,9 @@ function result(overrides: Partial<ReconResult> = {}): ReconResult {
         bookedHours: 8,
         clockedHours: 8,
         acceptedOt: 8,
+        punchedOtHours: 8,
+        otVariance: 0,
+        stampedApprovedOt: null,
         variance: 0,
         statuses: "SUBMITTED",
         jobOrders: "H0001",
@@ -100,6 +108,7 @@ function result(overrides: Partial<ReconResult> = {}): ReconResult {
         removedFromRegular: 1389,
       },
     },
+    overtime: emptyOvertime(),
     anomalies: {
       unmatchedIdNos: [],
       statusContradictsDayType: 0,
@@ -148,6 +157,9 @@ test("a booking with no register day is labelled PROVISIONAL, never blank", () =
         bookedHours: 8,
         clockedHours: null,
         acceptedOt: null,
+        punchedOtHours: 0,
+        otVariance: 0,
+        stampedApprovedOt: null,
         variance: null,
         statuses: "PM_APPROVED",
         jobOrders: "H0002",

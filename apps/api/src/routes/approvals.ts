@@ -4,6 +4,11 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
 import { getMaxDailyHours } from "../config";
 import { contractOverheadHours, projectHoursFromEntries, slotsFromEntries } from "../services/contractWorkHours";
+import {
+  approvedOtOfDay,
+  loadApprovedOtContext,
+  type ApprovedOtFact,
+} from "../services/approvedOt";
 import { isDepartmentViewRole } from "../services/roleAccess";
 import { hodRoutingScopeFor } from "../services/approvalRouting";
 import type { HodScope } from "../services/hodScope";
@@ -80,6 +85,9 @@ type DayRow = {
   };
   taggedBy: { id: number; name: string; email: string };
   entries: EntryLike[];
+  /** CLMS-approved OT for this employee-day, as stamped by the sync/settlement. */
+  approvedOtHours: number | null;
+  approvedOtSource: string | null;
   approvals: {
     action: string;
     comment: string | null;
@@ -204,25 +212,41 @@ function mapEmployeeRow(
   dayTotalHours: number,
   maxDailyHours: number,
   conflictMap: Map<string, string[]>,
-  role: string
+  role: string,
+  approvedContext: { byDay: Map<string, ApprovedOtFact>; carriers: Set<number> }
 ) {
   const workDate = d.workDate.toISOString().slice(0, 10);
   const { entries: pendingEntries, isAmendment } = pendingEntriesForRole(d, role);
-  const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(pendingEntries, maxDailyHours);
+  const approvedOt = approvedOtOfDay(approvedContext, d);
+  /**
+   * THE COUNTED FIGURE BELONGS TO ONE SHEET OF THE DAY.
+   *
+   * `timesheet_days` is keyed by (employee, date, supervisor), so two supervisors who each booked
+   * the same man have two rows. The approved OT is a man-day fact, shown on BOTH rows (so neither
+   * supervisor is misled) but COUNTED on exactly one — the sheet whose entries carry the OT booking.
+   * Counting it on both would double the day's approved overtime in every column total below.
+   */
+  const countedApprovedOt = { hours: approvedOt.carriedHere ? approvedOt.hours : 0, fetched: approvedOt.fetched };
+  const { projectHours, projectOtHours, overhead, totalAlloc, punchedOtHours, otNotBookedHours } =
+    projectHoursFromEntries(pendingEntries, maxDailyHours, countedApprovedOt);
   // "All tagged" (across the whole day, not just pending) must include both flows too.
-  const allTagged = projectHoursFromEntries(d.entries, maxDailyHours);
+  const allTagged = projectHoursFromEntries(d.entries, maxDailyHours, countedApprovedOt);
   const unallocatedHours = contractOverheadHours(maxDailyHours, dayTotalHours, allTagged.totalOtHours);
   const conflictKey = `${d.employeeId}|${workDate}`;
   const conflictSupervisors = conflictMap.get(conflictKey) ?? null;
-  // OT: the stored OT row for this employee/day (additive, separate from allocation).
+  // OT: the supervisor's stored booking for this employee/day — a REFERENCE, not the figure.
   const otEntry = d.entries.find((e) => e.otHours != null);
-  const manualOt = otEntry?.otHours ?? null;
-  // Effective OT for the HOD/PM column: manual OT wins when entered; otherwise
-  // auto-calculate the excess over the daily max (multi-supervisor union).
-  // Manual and auto are mutually exclusive per employee/day — never summed.
-  const autoOt = manualOt == null ? Math.max(0, dayTotalHours - maxDailyHours) : 0;
-  const effectiveOT = manualOt ?? autoOt;
-  const otSource = manualOt != null ? "manual" : autoOt > 0 ? "auto" : null;
+  const punchedOt = otEntry?.otHours ?? null;
+  /**
+   * THE OVERTIME THAT IS REPORTED IS THE ONE CLMS APPROVED.
+   *
+   * It used to be the supervisor's punch, falling back to the excess over the daily max. Both
+   * are now shown as references only: an approver must see what the yard approved, and a day
+   * CLMS has not approved carries 0 even when the supervisor punched hours. The excess-over-max
+   * warning still rides along (`exceedsLimit`) because it is a planning signal, not a payment.
+   */
+  const effectiveOT = approvedOt.fetched ? approvedOt.hours : 0;
+  const otSource = !approvedOt.fetched ? "not-fetched" : approvedOt.hours > 0 ? "clms" : null;
   return {
     id: d.id,
     workDate,
@@ -240,12 +264,21 @@ function mapEmployeeRow(
     allTotalAlloc: allTagged.totalAlloc,
     maxDailyHours,
     exceedsLimit: dayTotalHours > maxDailyHours,
-    /** Stored OT hours for this employee/day (null if none). */
-    otHours: manualOt,
-    /** Effective OT shown to HOD/PM: manual if entered, else auto excess. */
-    effectiveOT,
-    /** 'manual' | 'auto' | null — how the effective OT was derived. */
+    /** OT the supervisor punched for this employee/day (reference only, never paid). */
+    otHours: punchedOt,
+    punchedOtHours,
+    /** Approved OT as CLMS states it; 0 when CLMS approved none. */
+    approvedOtHours: approvedOt.hours,
+    /** False when this day has never been read from CLMS, so the screen can say so. */
+    approvedOtFetched: approvedOt.fetched,
+    /** 'clms' | 'not-fetched' | null — where the reported OT came from. */
     otSource,
+    /** Approved OT this sheet carries into the project columns (counted once per employee-day). */
+    approvedOtCarries: approvedOt.carriedHere,
+    /** Approved OT nobody booked a Job Order against (reported as "OT not booked"). */
+    otNotBookedHours,
+    /** Effective OT shown to HOD/PM: the CLMS-approved figure. */
+    effectiveOT,
     /** The work order the OT is charged to (null if no OT). */
     otJobOrderId: otEntry?.jobOrderId ?? null,
     /**
@@ -355,6 +388,10 @@ async function buildRows(days: DayRow[], maxDailyHours: number, role: string) {
   const employeeIds = [...new Set(days.map((d) => d.employeeId))];
   const workDates = [...new Set(days.map((d) => d.workDate.toISOString()))].map((s) => new Date(s));
   const conflictMap = await conflictEmployeeIds(employeeIds, workDates);
+  // ONE read of the approved OT for the whole screen, including the sibling sheets of the same
+  // employee-day: a PM approving one supervisor's sheet still needs the day's approved figure,
+  // which may have been booked by another supervisor.
+  const approvedContext = await loadApprovedOtContext(days);
 
   const rows: EmployeeMapped[] = [];
   for (const d of days) {
@@ -362,7 +399,7 @@ async function buildRows(days: DayRow[], maxDailyHours: number, role: string) {
     if (pendingEntries.length === 0) continue;
     const totals = await getEmployeeDayHourTotals([d.employeeId], d.workDate);
     const dayTotalHours = totals.get(d.employeeId)?.totalHours ?? 0;
-    rows.push(mapEmployeeRow(d, dayTotalHours, maxDailyHours, conflictMap, role));
+    rows.push(mapEmployeeRow(d, dayTotalHours, maxDailyHours, conflictMap, role, approvedContext));
   }
   return rows;
 }
@@ -399,6 +436,11 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
     projectOtHours: Record<string, number>;
     overhead: number;
     totalAlloc: number;
+    /** OT the supervisor punched — reference only; CLMS decides what is approved. */
+    punchedOtHours: number;
+    /** The approved overtime CLMS states for this employee-day (0 when none). */
+    approvedOtHours: number;
+    approvedOtFetched: boolean;
     planningComment: string | null;
     planningReturnedAt: string | null;
     planningApprover: string | null;
@@ -419,9 +461,17 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
       orderBy: [{ updatedAt: "desc" }],
     })) as unknown as DayRow[];
 
+    const returnedContext = await loadApprovedOtContext(returned);
+
     returnedByPlanning = returned
       .map((d) => {
-        const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, maxDailyHours);
+        const approvedOt = approvedOtOfDay(returnedContext, d);
+        const { projectHours, projectOtHours, overhead, totalAlloc, punchedOtHours } = projectHoursFromEntries(
+          d.entries,
+          maxDailyHours,
+          // Counted once per employee-day, on the sheet that carries the OT booking.
+          { hours: approvedOt.carriedHere ? approvedOt.hours : 0, fetched: approvedOt.fetched }
+        );
         if (totalAlloc === 0) return null;
         const planning = d.approvals.find(
           (a) => a.action === "PLANNING_RETURN" || (a.action === "REJECT" && a.approver.role === "PM")
@@ -440,6 +490,9 @@ approvalsRouter.get("/pending", requireRoles(...APPROVER_ROLES), async (req, res
           projectOtHours,
           overhead,
           totalAlloc,
+          punchedOtHours,
+          approvedOtHours: approvedOt.hours,
+          approvedOtFetched: approvedOt.fetched,
           planningComment: planning?.comment ?? d.remarks,
           planningReturnedAt: planning?.createdAt?.toISOString() ?? d.updatedAt.toISOString(),
           planningApprover: planning?.approver.name ?? null,
@@ -501,9 +554,17 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
     take: 200,
   });
 
+  const historyDays = approvals.map((a) => a.timesheetDay);
+  const historyContext = await loadApprovedOtContext(historyDays);
   const items = approvals.map((a) => {
     const d = a.timesheetDay;
-    const { projectHours, projectOtHours, overhead, totalAlloc } = projectHoursFromEntries(d.entries, getMaxDailyHours());
+    const approvedOt = approvedOtOfDay(historyContext, d);
+    const { projectHours, projectOtHours, overhead, totalAlloc, punchedOtHours } = projectHoursFromEntries(
+      d.entries,
+      getMaxDailyHours(),
+      // Counted once per employee-day, on the sheet that carries the OT booking.
+      { hours: approvedOt.carriedHere ? approvedOt.hours : 0, fetched: approvedOt.fetched }
+    );
     return {
       approvalId: a.id,
       action: a.action,
@@ -516,6 +577,11 @@ approvalsRouter.get("/history", requireRoles(...APPROVER_ROLES), async (req, res
       projectOtHours,
       overhead,
       totalAlloc,
+      /** OT the supervisor punched — reference only. */
+      punchedOtHours,
+      /** The approved overtime CLMS states for this employee-day. */
+      approvedOtHours: approvedOt.hours,
+      approvedOtFetched: approvedOt.fetched,
       employee: {
         id: d.employee.id,
         name: d.employee.name,

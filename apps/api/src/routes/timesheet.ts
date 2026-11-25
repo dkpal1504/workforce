@@ -888,6 +888,15 @@ timesheetRouter.get("/", async (req, res) => {
       status,
       slots,
       otHours: otEntry?.otHours ?? null,
+      /**
+       * The overtime CLMS APPROVED for this employee-day — the figure the sheet is judged on.
+       * `null` means "not fetched yet" (no sync/settlement has touched this day), which is why the
+       * grid must not print it as 0. The supervisor's own figure above stays editable: capture is
+       * still his, the paid number is the yard's.
+       */
+      approvedOtHours: day?.approvedOtHours ?? null,
+      approvedOtSource: day?.approvedOtSource ?? null,
+      approvedOtCheckedAt: day?.approvedOtCheckedAt ? day.approvedOtCheckedAt.toISOString() : null,
       otJobOrderId: otEntry?.jobOrderId ?? null,
       // The OT booking is a work order like any other: the grid prints its number under the OT
       // slot the same way the four shift slots print theirs.

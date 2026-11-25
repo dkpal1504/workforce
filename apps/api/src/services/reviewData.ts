@@ -2,6 +2,7 @@ import { prisma } from "../db";
 import { assignedProjectIdsFor } from "./projectScope";
 import { intersectProjectFilter, reportScopeFor, type ReportScope } from "./roleAccess";
 import { hoursOf, UNAPPROVED_STATUSES } from "./portfolioReport";
+import { approvedOtForDays, attributeApprovedOt } from "./approvedOt";
 import { BOOKED_HOURS_STATUSES, buildJobOrderFacts, type JobOrderFacts } from "./portfolioReporting";
 import { bucketsBetween, buildSCurve, normaliseWeights, type CurveBucket, type CurveWbs } from "./reviewCurve";
 import { buildReviewPayload, type ReviewPayload, type WbsCurveRow } from "./reviewPayload";
@@ -26,6 +27,61 @@ import { eachDay } from "./notBooked";
  *   same hours grouped by date. A review that invented its own hour would be the third definition in a
  *   product that already documents two.
  */
+
+
+/**
+ * APPROVED overtime per grouping key, for one entry population.
+ *
+ * `_sum: { otHours: true }` can no longer be the source of an OT figure: what counts is the
+ * overtime CLMS APPROVED for the employee-day, and it is attributed once to the booking that
+ * carries it (see `services/approvedOt`). This reads the OT rows of the same population and
+ * returns the lookups the review's four groupings need, so no caller re-implements the rule.
+ */
+const bookedMapGet = (map: Map<string, number>, jobOrderId: number, day: string) => map.get(`${jobOrderId}|${day}`) ?? 0;
+
+async function approvedOtIndex(where: {
+  jobOrderId?: { in: number[] };
+  status?: { in: string[] };
+  workDate?: { gte?: Date; lte?: Date };
+}) {
+  const rows = await prisma.timesheetEntry.findMany({
+    where: { ...where, otHours: { not: null } },
+    select: {
+      id: true,
+      employeeId: true,
+      workDate: true,
+      jobOrderId: true,
+      projectWbsId: true,
+      otHours: true,
+    },
+  });
+  const byJobOrder = new Map<number, number>();
+  const byJobOrderDay = new Map<string, number>();
+  const byWbsDay = new Map<string, number>();
+  const byEmployeeDay = new Map<string, number>();
+  if (!rows.length) return { byJobOrder, byJobOrderDay, byWbsDay, byEmployeeDay };
+  const days = await prisma.timesheetDay.findMany({
+    where: {
+      employeeId: { in: [...new Set(rows.map((row) => row.employeeId))] },
+      workDate: { in: [...new Set(rows.map((row) => row.workDate.toISOString()))].map((iso) => new Date(iso)) },
+    },
+    select: { employeeId: true, workDate: true, approvedOtHours: true, approvedOtSource: true },
+  });
+  const attribution = attributeApprovedOt(rows, approvedOtForDays(days));
+  for (const row of rows) {
+    const hours = attribution.get(row.id) ?? 0;
+    const isoDay = row.workDate.toISOString().slice(0, 10);
+    if (row.jobOrderId != null) {
+      byJobOrder.set(row.jobOrderId, (byJobOrder.get(row.jobOrderId) ?? 0) + hours);
+      byJobOrderDay.set(`${row.jobOrderId}|${isoDay}`, (byJobOrderDay.get(`${row.jobOrderId}|${isoDay}`) ?? 0) + hours);
+    }
+    if (row.projectWbsId != null) {
+      byWbsDay.set(`${row.projectWbsId}|${isoDay}`, (byWbsDay.get(`${row.projectWbsId}|${isoDay}`) ?? 0) + hours);
+    }
+    byEmployeeDay.set(`${row.employeeId}|${isoDay}`, (byEmployeeDay.get(`${row.employeeId}|${isoDay}`) ?? 0) + hours);
+  }
+  return { byJobOrder, byJobOrderDay, byWbsDay, byEmployeeDay };
+}
 
 export type ReviewActor = {
   id: number;
@@ -146,10 +202,9 @@ export async function loadReviewProjects(actor: ReviewActor, now = new Date()): 
               lte: new Date(`${listWindow.end}T23:59:59.999Z`),
             },
           },
-          _sum: { otHours: true },
           _count: { shiftSlot: true, hourSlot: true },
         })
-      : Promise.resolve([] as Array<{ jobOrderId: number | null; _sum: { otHours: number | null }; _count: { shiftSlot: number; hourSlot: number } }>),
+      : Promise.resolve([] as Array<{ jobOrderId: number | null; _count: { shiftSlot: number; hourSlot: number } }>),
     jobOrderIds.length
       ? prisma.jobOrderMessage.findMany({
           where: { kind: "ESCALATION", thread: { jobOrderId: { in: jobOrderIds }, status: "OPEN" } },
@@ -195,9 +250,17 @@ export async function loadReviewProjects(actor: ReviewActor, now = new Date()): 
       : [];
 
   const hoursByJobOrder = new Map<number, number>();
+  const listOt = await approvedOtIndex({
+    jobOrderId: { in: jobOrderIds },
+    status: { in: [...BOOKED_HOURS_STATUSES] },
+    workDate: {
+      gte: new Date(`${listWindow.start}T00:00:00.000Z`),
+      lte: new Date(`${listWindow.end}T23:59:59.999Z`),
+    },
+  });
   for (const row of hourRows) {
     if (row.jobOrderId === null) continue;
-    hoursByJobOrder.set(row.jobOrderId, hoursOf(row._count, row._sum.otHours));
+    hoursByJobOrder.set(row.jobOrderId, hoursOf(row._count, listOt.byJobOrder.get(row.jobOrderId) ?? 0));
   }
 
   const openEscalationsByThread = summariseEscalationsByAge({
@@ -397,20 +460,17 @@ export async function loadReviewDashboard(input: {
     prisma.timesheetEntry.groupBy({
       by: ["jobOrderId", "workDate"],
       where: { jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } },
-      _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
     }),
     prisma.timesheetEntry.groupBy({
       by: ["jobOrderId"],
       where: { jobOrderId: { in: jobOrderIds }, status: { in: [...UNAPPROVED_STATUSES] } },
-      _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
       _min: { workDate: true },
     }),
     prisma.timesheetEntry.groupBy({
       by: ["workDate", "employeeId"],
       where: { jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } },
-      _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
     }),
     // Actual hours per WBS per date: the per-WBS curves below are built from this, so a WBS curve can
@@ -418,7 +478,6 @@ export async function loadReviewDashboard(input: {
     prisma.timesheetEntry.groupBy({
       by: ["projectWbsId", "workDate"],
       where: { jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } },
-      _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
     }),
     prisma.employeeAllocation.groupBy({
@@ -474,6 +533,10 @@ export async function loadReviewDashboard(input: {
       })) as ThreadReply[])
     : [];
 
+  // Approved OT for the two populations this review reports (booked, and stuck in approval).
+  const bookedOt = await approvedOtIndex({ jobOrderId: { in: jobOrderIds }, status: { in: [...BOOKED_HOURS_STATUSES] } });
+  const unapprovedOt = await approvedOtIndex({ jobOrderId: { in: jobOrderIds }, status: { in: [...UNAPPROVED_STATUSES] } });
+
   const revisionsByJobOrder = groupBy(revisionRows, (row) => row.jobOrderId);
   const progressByJobOrder = groupBy(progressRows, (row) => row.jobOrderId);
   const unapprovedByJobOrder = new Map(unapprovedRows.map((row) => [row.jobOrderId, row]));
@@ -484,7 +547,10 @@ export async function loadReviewDashboard(input: {
   const actualByBucket = new Map<string, number>();
   for (const row of hourRows) {
     if (row.jobOrderId === null) continue;
-    const hours = hoursOf(row._count, row._sum.otHours);
+    const hours = hoursOf(
+      row._count,
+      bookedOt.byJobOrderDay.get(`${row.jobOrderId}|${row.workDate.toISOString().slice(0, 10)}`) ?? 0
+    );
     hoursByJobOrder.set(row.jobOrderId, (hoursByJobOrder.get(row.jobOrderId) ?? 0) + hours);
     const day = iso(row.workDate);
     actualByBucket.set(day, (actualByBucket.get(day) ?? 0) + hours);
@@ -517,7 +583,9 @@ export async function loadReviewDashboard(input: {
       },
       budgetRevisions: revisionsByJobOrder.get(order.id) ?? [],
       actualHours: hoursByJobOrder.get(order.id) ?? 0,
-      unapprovedHours: unapproved ? hoursOf(unapproved._count, unapproved._sum.otHours) : 0,
+      unapprovedHours: unapproved
+        ? hoursOf(unapproved._count, unapprovedOt.byJobOrder.get(order.id) ?? 0)
+        : 0,
       oldestUnapprovedAt: unapproved?._min.workDate ?? null,
       firstBooking: firstBooking.get(order.id) ?? null,
       lastBooking: lastBooking.get(order.id) ?? null,
@@ -551,7 +619,11 @@ export async function loadReviewDashboard(input: {
     if (row.projectWbsId === null) continue;
     const byDay = actualByWbsDay.get(row.projectWbsId) ?? new Map<string, number>();
     const day = iso(row.workDate);
-    byDay.set(day, (byDay.get(day) ?? 0) + hoursOf(row._count, row._sum.otHours));
+    byDay.set(
+      day,
+      (byDay.get(day) ?? 0) +
+        hoursOf(row._count, bookedOt.byWbsDay.get(`${row.projectWbsId}|${day}`) ?? 0)
+    );
     actualByWbsDay.set(row.projectWbsId, byDay);
   }
   const wbsCurves: WbsCurveRow[] = curveWbs.map((node) => {
@@ -611,7 +683,7 @@ export async function loadReviewDashboard(input: {
     contractRows: manDayRows.map((row) => ({
       workDate: iso(row.workDate),
       employeeId: row.employeeId,
-      hours: hoursOf(row._count, row._sum.otHours),
+      hours: hoursOf(row._count, bookedOt.byEmployeeDay.get(`${row.employeeId}|${iso(row.workDate)}`) ?? 0),
     })),
     payrollRows: allocationRows.map((row) => ({
       workDate: iso(row.workDate),
@@ -726,12 +798,19 @@ export async function loadJobOrderCurve(input: {
   const rows = await prisma.timesheetEntry.groupBy({
     by: ["workDate"],
     where: { jobOrderId: jobOrder.id, status: { in: [...BOOKED_HOURS_STATUSES] } },
-    _sum: { otHours: true },
     _count: { shiftSlot: true, hourSlot: true },
+  });
+  const curveOt = await approvedOtIndex({
+    jobOrderId: { in: [jobOrder.id] },
+    status: { in: [...BOOKED_HOURS_STATUSES] },
   });
   const byDay = new Map<string, number>();
   for (const row of rows) {
-    byDay.set(iso(row.workDate), (byDay.get(iso(row.workDate)) ?? 0) + hoursOf(row._count, row._sum.otHours));
+    byDay.set(
+      iso(row.workDate),
+      (byDay.get(iso(row.workDate)) ?? 0) +
+        hoursOf(row._count, bookedMapGet(curveOt.byJobOrderDay, jobOrder.id, iso(row.workDate)))
+    );
   }
 
   const curve = buildSCurve({

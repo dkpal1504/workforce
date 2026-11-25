@@ -543,18 +543,17 @@ test("portfoliosReport loader: Prisma call count is constant when the job orders
   // The observed numbers are printed so a reader can see the real counts, not just the claim.
   console.log(`[no-N+1] small(4 job orders)=${smallCalls} prisma calls, doubled(8 job orders)=${bigCalls} prisma calls`);
   assert.equal(bigCalls, smallCalls, "the query count must not grow with the number of job orders");
-  // NINE now, still a fixed number: the seven above plus the two master reads the Project structure
-  // register needs (the WBS rows and the Network rows, both carrying their own `_count` so telling an
-  // empty node from an out-of-scope one costs nothing). A project-scoped actor makes one more (its
-  // assigned projects, which may include a project with no job orders at all). The assertion that
-  // matters is the one above: doubling the scope must not move the count.
+  // ELEVEN now, still a fixed number: the ten below plus ONE read of the approved overtime — the OT
+  // ROWS, which the reported figure must be attributed from (CLMS approves per employee-day, so
+  // `_sum: { otHours }` can no longer stand in for it). That read is bounded by the job orders in
+  // scope, not by their number, so doubling the scope still does not move the count.
   assert.equal(
     smallCalls,
-    10,
+    11,
     "a fixed count: JOs, revisions, progress, booked, unapproved, oldest-unapproved, span, WBS rows, "
       + "Network rows, plus one for the master project rows because this fixture applies an explicit "
-      + "project filter (an unfiltered report reads 9). Nothing here scans per job order — that is what "
-      + "the invariance assertion above actually guards."
+      + "project filter, plus one for the approved-overtime rows of those job orders. Nothing here "
+      + "scans per job order — that is what the invariance assertion above actually guards."
   );
 });
 

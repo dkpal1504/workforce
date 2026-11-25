@@ -654,6 +654,12 @@ Two jobs that write rows on a timer, both gated so that a deploy never switches 
 
 | Variable | Default | What it does |
 |---|---|---|
+| `APPROVED_OT_SYNC_ON_COMPLETE` | `true` | Reads CLMS `[AcceptedOT]` into `timesheet_days.approved_ot_hours` the moment a BadgeView sync pass succeeds. Non-fatal: a slow attendance view never fails the sync. |
+| `APPROVED_OT_AFTER_SETTLEMENT` | `true` | Re-stamps the approved OT for the dates the 06:00 settlement settled. |
+| `APPROVED_OT_LOOKBACK_DAYS` | `21` | Window each sync pass refreshes. Sized above CLMS's 2–15 day OT approval lag, so a slow approval is picked up by the twice-daily sync itself. |
+| `APPROVED_OT_SCHEDULE_ENABLED` | `true` | Nightly backfill. It writes only figures CLMS has already approved, so leaving it on cannot invent overtime. |
+| `APPROVED_OT_CRON` | `0 2 * * *` | When the backfill runs (02:00, clear of the 06:00/18:00 sync and the 06:00 settlement). |
+| `APPROVED_OT_BACKFILL_DAYS` | `30` | Days the nightly job re-reads. Must stay above the 15-day approval lag; the Admin refresh endpoint backfills further back. |
 | `ATTENDANCE_SETTLEMENT_ENABLED` | `false` | Daily 06:00 (`ATTENDANCE_SETTLEMENT_CRON`), re-settles the last `ATTENDANCE_SETTLEMENT_LOOKBACK_DAYS` days of `attendance_day`. Reports divide by each worker's own present days only when `SETTLE_REPORTS=true`. |
 | `SETTLE_REPORTS` | `false` | The whole rollback lever for the per-worker denominator: `false` reproduces the calendar numbers byte for byte. |
 | `REVIEW_SNAPSHOT_ENABLED` | `false` | Weekly Monday 00:30 and monthly 1st 01:30 freezes of the review payload. |

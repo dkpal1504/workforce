@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { contractOverheadHours, slotsFromEntries, type BookingEntryLike } from "./contractWorkHours";
+import {
+  contractOverheadHours,
+  OT_NOT_BOOKED_COLOR_KEY,
+  projectHoursFromEntries,
+  slotsFromEntries,
+  type BookingEntryLike,
+} from "./contractWorkHours";
 
 test("OT-only holiday attendance has zero overhead", () => {
   assert.equal(contractOverheadHours(8, 0, 8), 0);
@@ -85,4 +91,61 @@ test("two supervisors on the same slot yield two rows — the conflict must be e
   const slots = slotsFromEntries([entry({ shiftSlot: "am1" }), entry({ shiftSlot: "am1" })]);
   assert.equal(slots.length, 2);
   assert.deepEqual(slots.map((s) => s.shiftSlot), ["am1", "am1"]);
+});
+
+
+/* ---- approved overtime: CLMS is the figure, the punch is only attribution -------------------- */
+
+test("the approved figure is reported, not the punch, and it lands on the OT booking's project", () => {
+  const result = projectHoursFromEntries(
+    [
+      entry({ shiftSlot: "am1" }),
+      entry({ shiftSlot: "am2" }),
+      entry({ otHours: 4, project: { colorKey: "b" } }),
+    ],
+    8,
+    { hours: 2, fetched: true }
+  );
+  assert.deepEqual(result.projectHours, { B: 4 });
+  assert.deepEqual(result.projectOtHours, { B: 2 }, "2 approved, not the 4 punched");
+  assert.equal(result.punchedOtHours, 4, "the punch is still readable as a reference");
+  assert.equal(result.totalOtHours, 2);
+  assert.equal(result.totalAlloc, 6);
+});
+
+test("CLMS approving no OT reports zero overtime however many hours were punched", () => {
+  const result = projectHoursFromEntries(
+    [entry({ shiftSlot: "am1" }), entry({ otHours: 5, project: { colorKey: "b" } })],
+    8,
+    { hours: 0, fetched: true }
+  );
+  assert.deepEqual(result.projectOtHours, {});
+  assert.equal(result.punchedOtHours, 5);
+  assert.equal(result.totalOtHours, 0);
+});
+
+test("approved OT nobody booked is reported in its own bucket, never dropped", () => {
+  const result = projectHoursFromEntries([entry({ shiftSlot: "am1" })], 8, { hours: 3, fetched: true });
+  assert.deepEqual(result.projectOtHours, { [OT_NOT_BOOKED_COLOR_KEY]: 3 });
+  assert.equal(result.otNotBookedHours, 3);
+  assert.equal(result.totalOtHours, 3);
+});
+
+test("a never-fetched day reports zero OT and says so", () => {
+  const result = projectHoursFromEntries([entry({ otHours: 2, project: { colorKey: "b" } })], 8, {
+    hours: 0,
+    fetched: false,
+  });
+  assert.equal(result.otFetched, false);
+  assert.equal(result.totalOtHours, 0);
+  assert.equal(result.punchedOtHours, 2);
+});
+
+test("an OT-only day keeps zero overhead against the approved figure", () => {
+  const result = projectHoursFromEntries([entry({ otHours: 8, project: { colorKey: "b" } })], 8, {
+    hours: 8,
+    fetched: true,
+  });
+  assert.equal(result.overhead, 0);
+  assert.equal(result.totalAlloc, 8);
 });

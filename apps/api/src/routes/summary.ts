@@ -4,7 +4,8 @@ import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { endOfFrequency, formatDateOnly, parseDateOnly, startOfFrequency } from "../utils/date";
 import { getMaxDailyHours } from "../config";
-import { contractOverheadHours } from "../services/contractWorkHours";
+import { contractOverheadHours, OT_NOT_BOOKED_COLOR_KEY } from "../services/contractWorkHours";
+import { attributeApprovedOt, loadApprovedOtForEntries, loadOtBookingDays } from "../services/approvedOt";
 import { isDepartmentViewRole } from "../services/roleAccess";
 import { hodScopeDepartmentIds, type HodScope } from "../services/hodScope";
 import {
@@ -153,8 +154,13 @@ summaryRouter.get("/job-order", async (req, res) => {
       } : {}),
       ...(role === "PM" ? { timesheetDay: { approvals: { some: { approverId: userId, action: "APPROVE" } } } } : {}),
     },
-    select: { jobOrderId: true, shiftSlot: true, hourSlot: true, otHours: true, workDate: true },
+    select: { id: true, employeeId: true, jobOrderId: true, shiftSlot: true, hourSlot: true, otHours: true, workDate: true },
   });
+  // Overtime is the CLMS-APPROVED figure, attributed once per employee-day to the booking that
+  // carries the OT. A Job Order summary can only show approved OT that somebody booked against a
+  // Job Order; approved OT nobody booked has no Job Order to appear under (the Project Summary and
+  // the Timesheet Coverage report carry that in the "OT not booked" column).
+  const approvedOtAttribution = attributeApprovedOt(entries, await loadApprovedOtForEntries(entries));
 
   // Payroll/My Hours allocations use a separate parent-day model. Include
   // their slots only after the same final PM approval stage.
@@ -223,7 +229,10 @@ summaryRouter.get("/job-order", async (req, res) => {
   };
   for (const e of entries) {
     if (e.jobOrderId == null) continue;
-    const hours = e.otHours ?? (e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0);
+    // OT contributes the CLMS-APPROVED hours (0 when the entry is not the day's OT carrier);
+    // a slot contributes its own 2h/1h. The punch is never the figure.
+    const hours =
+      e.otHours != null ? approvedOtAttribution.get(e.id) ?? 0 : e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
     consumptionByJo.set(e.jobOrderId, (consumptionByJo.get(e.jobOrderId) ?? 0) + hours);
     noteDate(lastBookedDateByJo, e.jobOrderId, e.workDate);
   }
@@ -413,10 +422,26 @@ summaryRouter.get("/decisions", async (req, res) => {
     if (role === "PM") return approval.approverId === userId;
     return true;
   };
+  // One approved-OT fact per employee-day for these rows, so the list reports the CLMS figure.
+  const activityOt = attributeApprovedOt(
+    days.flatMap((day) => day.entries),
+    await loadApprovedOtForEntries(days.flatMap((day) => day.entries))
+  );
   const items = [
     ...days.map((day) => {
       const decision = day.approvals.find(relevant) ?? day.approvals[0] ?? null;
-      const hours = day.entries.reduce((sum, entry) => sum + (entry.otHours ?? (entry.shiftSlot ? 2 : entry.hourSlot != null ? 1 : 0)), 0);
+      const hours = day.entries.reduce(
+        (sum, entry) =>
+          sum +
+          (entry.otHours != null
+            ? activityOt.get(entry.id) ?? 0
+            : entry.shiftSlot
+              ? 2
+              : entry.hourSlot != null
+                ? 1
+                : 0),
+        0
+      );
       return { id: `timesheet-${day.id}`, source: "SUPERVISOR_TIMESHEET", employee: day.employee, workDate: day.workDate.toISOString().slice(0, 10), status: day.status, hours, decision: decision ? { action: decision.action, comment: decision.comment, at: decision.createdAt, by: decision.approver.name, role: decision.approver.role } : null };
     }),
     ...allocationDays.map((day) => {
@@ -555,6 +580,9 @@ summaryRouter.get("/export.csv", async (req, res) => {
     const row = rates.find((r) => r.category === category);
     return row ? Number(row.ratePerHour) : 0;
   };
+  // The CLMS-approved OT per employee-day, attributed to the booking that carries it. This
+  // report's "OT hours" column is the APPROVED figure; the punch is not reported here at all.
+  const approvedOtAttribution = attributeApprovedOt(entries, await loadApprovedOtForEntries(entries));
   const day = (value: Date | null) => (value ? formatDateOnly(value) : "");
   const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
   const kept = (codeKey: string | null | undefined) =>
@@ -643,7 +671,8 @@ summaryRouter.get("/export.csv", async (req, res) => {
     const hod = approvals.find((a) => a.action === "APPROVE" && a.approver.role === "HOD");
     const pm = approvals.find((a) => a.action === "APPROVE" && a.approver.role === "PM");
     const regular = entry.otHours != null ? 0 : entry.shiftSlot != null ? 2 : entry.hourSlot != null ? 1 : 0;
-    const ot = entry.otHours ?? 0;
+    // OT is the APPROVED figure for this employee-day, counted on the entry that carries it.
+    const ot = entry.otHours != null ? approvedOtAttribution.get(entry.id) ?? 0 : 0;
     const money = (regular + ot) * rate(entry.employee.category);
     const dk = dayKey(entry.employee.id, entry.workDate);
     const totals = dayTotals.get(dk) ?? { regular: 0, overtime: 0, keptRegular: 0 };
@@ -867,6 +896,13 @@ summaryRouter.get("/", async (req, res) => {
     },
   });
 
+  // Approved overtime, per employee-day, attributed to the booking that carries it. This report's
+  // OT columns are the CLMS figure; a day with no booking for its approved OT lands in the
+  // "OT not booked" column rather than disappearing.
+  const approvedOtByDay = await loadApprovedOtForEntries(entries);
+  const approvedOtAttribution = attributeApprovedOt(entries, approvedOtByDay);
+  const otBookedDays = await loadOtBookingDays(entries);
+
   let allocationDayScope: Prisma.EmployeeAllocationDayWhereInput = { status: { in: visibleStatuses } };
   // Department roll-up for payroll/My Hours rows: the snapshot lives on the
   // allocation row itself, not on its parent day.
@@ -965,6 +1001,21 @@ summaryRouter.get("/", async (req, res) => {
       if (!codes.has(k)) projectMeta.delete(k);
     }
   }
+  // APPROVED OT NOBODY BOOKED gets its own column. CLMS approves a figure per employee-day with
+  // no Project or Job Order on it; reporting only the booked part would make every total disagree
+  // with the yard. Registered AFTER the Project filter, so narrowing the columns cannot hide it.
+  const unbookedOtDays = [...approvedOtByDay.entries()].filter(
+    ([key, fact]) => fact.hours > 0 && !otBookedDays.has(key)
+  );
+  if (unbookedOtDays.length) {
+    projectMeta.set(OT_NOT_BOOKED_COLOR_KEY, {
+      id: -1,
+      code: "OT-NOT-BOOKED",
+      name: "OT not booked",
+      colorKey: OT_NOT_BOOKED_COLOR_KEY,
+      sortOrder: 9999,
+    });
+  }
   const projects = [...projectMeta.values()].sort(
     (a, b) => a.sortOrder - b.sortOrder || a.colorKey.localeCompare(b.colorKey, undefined, { numeric: true })
   );
@@ -1045,9 +1096,12 @@ summaryRouter.get("/", async (req, res) => {
     const bucket = getBucket(e);
     if (e.otHours != null) {
       if (e.status !== "HOD_APPROVED" && e.status !== "PM_APPROVED") continue;
-      bucket.projectOtHours[colorKey] = (bucket.projectOtHours[colorKey] || 0) + e.otHours;
+      // THE APPROVED FIGURE, counted once per employee-day on the booking that carries it.
+      const approvedOtHours = approvedOtAttribution.get(e.id) ?? 0;
+      if (approvedOtHours <= 0) continue;
+      bucket.projectOtHours[colorKey] = (bucket.projectOtHours[colorKey] || 0) + approvedOtHours;
       bucket.projectOtCost[colorKey] =
-        (bucket.projectOtCost[colorKey] || 0) + e.otHours * rateFor(e.employee.category);
+        (bucket.projectOtCost[colorKey] || 0) + approvedOtHours * rateFor(e.employee.category);
       continue;
     }
 
@@ -1055,6 +1109,25 @@ summaryRouter.get("/", async (req, res) => {
     bucket.projectHours[colorKey] = (bucket.projectHours[colorKey] || 0) + regularHours;
     bucket.projectCost[colorKey] =
       (bucket.projectCost[colorKey] || 0) + regularHours * rateFor(e.employee.category);
+  }
+
+  // Approved OT nobody booked: attributed to the employee's group, in its own column, so the
+  // report total always equals what CLMS approved. The sample is the day's first booking entry
+  // (the same deterministic rule `attributeApprovedOt` uses for days that WERE booked).
+  const firstEntryByEmployeeDay = new Map<string, (typeof entries)[number]>();
+  for (const e of entries) {
+    const key = `${e.employeeId}|${formatDateOnly(e.workDate)}`;
+    if (!firstEntryByEmployeeDay.has(key)) firstEntryByEmployeeDay.set(key, e);
+  }
+  for (const [key] of unbookedOtDays) {
+    const sample = firstEntryByEmployeeDay.get(key);
+    const fact = approvedOtByDay.get(key);
+    if (!sample || !fact || fact.hours <= 0) continue;
+    const bucket = getBucket(sample);
+    bucket.projectOtHours[OT_NOT_BOOKED_COLOR_KEY] =
+      (bucket.projectOtHours[OT_NOT_BOOKED_COLOR_KEY] || 0) + fact.hours;
+    bucket.projectOtCost[OT_NOT_BOOKED_COLOR_KEY] =
+      (bucket.projectOtCost[OT_NOT_BOOKED_COLOR_KEY] || 0) + fact.hours * rateFor(sample.employee.category);
   }
 
   for (const allocation of allocations) {
@@ -1093,7 +1166,8 @@ summaryRouter.get("/", async (req, res) => {
     if (e.otHours == null) {
       day.hours += e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
     } else {
-      day.overtimeHours += e.otHours;
+      // Overheads are computed against the APPROVED overtime, not the punch.
+      day.overtimeHours += approvedOtAttribution.get(e.id) ?? 0;
     }
   }
   const maxDailyHours = getMaxDailyHours();

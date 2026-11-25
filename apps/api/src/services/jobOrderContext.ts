@@ -9,6 +9,7 @@
 import { prisma } from "../db";
 import { buildJobOrderFacts, BOOKED_HOURS_STATUSES } from "./portfolioReporting";
 import { hoursOf, UNAPPROVED_STATUSES } from "./portfolioReport";
+import { approvedOtForDays, attributeApprovedOt } from "./approvedOt";
 import type { BriefFacts } from "./assistantPrompts";
 
 export type JobOrderContext = {
@@ -31,6 +32,31 @@ export type JobOrderContext = {
 };
 
 /** The Job Order facts a message freezes, in one bounded set of queries. */
+/**
+ * Approved overtime for one Job Order, over one status population.
+ *
+ * A per-Job-Order figure cannot be read off `timesheet_entries.ot_hours`: the hours that count are
+ * CLMS's approved number for the employee-day, and a day's approved OT is charged to the Job Order
+ * the supervisor booked it against. So the OT rows are read, the approved figure per employee-day is
+ * looked up, and the sum is taken over the rows that carry it.
+ */
+async function approvedOtHoursForJobOrder(jobOrderId: number, statuses: string[]): Promise<number> {
+  const rows = await prisma.timesheetEntry.findMany({
+    where: { jobOrderId, status: { in: statuses }, otHours: { not: null } },
+    select: { id: true, employeeId: true, workDate: true, otHours: true },
+  });
+  if (!rows.length) return 0;
+  const days = await prisma.timesheetDay.findMany({
+    where: {
+      employeeId: { in: [...new Set(rows.map((row) => row.employeeId))] },
+      workDate: { in: [...new Set(rows.map((row) => row.workDate.toISOString()))].map((iso) => new Date(iso)) },
+    },
+    select: { employeeId: true, workDate: true, approvedOtHours: true, approvedOtSource: true },
+  });
+  const attribution = attributeApprovedOt(rows, approvedOtForDays(days));
+  return rows.reduce((sum, row) => sum + (attribution.get(row.id) ?? 0), 0);
+}
+
 export async function jobOrderContextFor(jobOrderId: number, now: Date = new Date()): Promise<JobOrderContext | null> {
   const jobOrder = await prisma.jobOrder.findUnique({
     where: { id: jobOrderId },
@@ -65,13 +91,11 @@ export async function jobOrderContextFor(jobOrderId: number, now: Date = new Dat
     prisma.timesheetEntry.groupBy({
       by: ["jobOrderId"],
       where: { jobOrderId, status: { in: [...BOOKED_HOURS_STATUSES] } },
-      _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
     }),
     prisma.timesheetEntry.groupBy({
       by: ["jobOrderId"],
       where: { jobOrderId, status: { in: [...UNAPPROVED_STATUSES] } },
-      _sum: { otHours: true },
       _count: { shiftSlot: true, hourSlot: true },
     }),
     prisma.timesheetEntry.groupBy({
@@ -80,6 +104,13 @@ export async function jobOrderContextFor(jobOrderId: number, now: Date = new Dat
       _min: { workDate: true },
       _max: { workDate: true },
     }),
+  ]);
+
+  // Overtime counted here is the CLMS-APPROVED figure for the employee-day, attributed once to the
+  // booking that carries it — never the supervisor's punch (`_sum.otHours` is not a figure any more).
+  const [approvedOt, unapprovedOt] = await Promise.all([
+    approvedOtHoursForJobOrder(jobOrderId, [...BOOKED_HOURS_STATUSES]),
+    approvedOtHoursForJobOrder(jobOrderId, [...UNAPPROVED_STATUSES]),
   ]);
 
   const bookedRow = booked[0];
@@ -105,8 +136,8 @@ export async function jobOrderContextFor(jobOrderId: number, now: Date = new Dat
       plannedEndDate: jobOrder.plannedEndDate,
     },
     budgetRevisions: revisions,
-    actualHours: bookedRow ? hoursOf(bookedRow._count, bookedRow._sum.otHours) : 0,
-    unapprovedHours: unapprovedRow ? hoursOf(unapprovedRow._count, unapprovedRow._sum.otHours) : 0,
+    actualHours: bookedRow ? hoursOf(bookedRow._count, approvedOt) : 0,
+    unapprovedHours: unapprovedRow ? hoursOf(unapprovedRow._count, unapprovedOt) : 0,
     oldestUnapprovedAt: null,
     firstBooking: spanRow?._min.workDate ?? null,
     lastBooking: spanRow?._max.workDate ?? null,

@@ -14,6 +14,7 @@ import {
   type SettlementPlan,
 } from "./attendanceSettlement";
 import type { DayType } from "./attendanceRegister";
+import { refreshApprovedOtAfterSettlement } from "./approvedOt";
 
 /**
  * Writing the settled man-days and the calendar.
@@ -259,6 +260,11 @@ export async function settleAttendance(options: SettleOptions): Promise<SettleRe
         },
       },
     });
+    // The approved OT lives on the SAME view this settlement just read, so the settled dates
+    // are stamped immediately rather than waiting for the next sync. Non-fatal: the
+    // settlement's own write is already complete and must not be reported as failed because
+    // the OT stamp could not be written.
+    await refreshApprovedOtAfterSettlement(register.datesRead);
     return { ...base, daysWritten, calendarWritten, runId: run.id };
   } catch (error) {
     // The run row is the record that a settlement was attempted and failed. Without it a half-written

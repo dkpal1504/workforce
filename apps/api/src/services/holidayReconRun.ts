@@ -37,6 +37,8 @@ import {
   type ReconJobOrderRow,
   type ReconPerson,
   type ReconSurfaces,
+  summariseOvertime,
+  type OvertimeSummary,
 } from "./holidayRecon";
 import { BOOKED_HOURS_STATUSES } from "./portfolioReporting";
 
@@ -75,6 +77,8 @@ export type ReconResult = {
   employeeDays: ReconEmployeeDayRow[];
   jobOrders: ReconJobOrderRow[];
   surfaces: ReconSurfaces;
+  /** Booked vs CLMS-approved overtime: the lag, the variances, and whether the stamp has kept up. */
+  overtime: OvertimeSummary;
   anomalies: ReconAnomalies;
 };
 
@@ -146,7 +150,9 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
   const [sheetRows, entryRows, rates] = await Promise.all([
     prisma.timesheetDay.findMany({
       where: { workDate: { gte: fromDate, lte: toDate } },
-      select: { employeeId: true, workDate: true },
+      // The stamped approved OT rides along so the recon can show whether the sync kept up with a
+      // figure CLMS may have approved days after the work.
+      select: { employeeId: true, workDate: true, approvedOtHours: true },
     }),
     prisma.timesheetEntry.findMany({
       where: { workDate: { gte: fromDate, lte: toDate }, status: { in: [...BOOKED_HOURS_STATUSES] } },
@@ -169,6 +175,11 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
   ]);
 
   const sheetDays = new Set(sheetRows.map((row) => dayKey(row.employeeId, row.workDate.toISOString().slice(0, 10))));
+  const stampedApprovedOt = new Map<string, number | null>();
+  for (const row of sheetRows) {
+    const key = dayKey(row.employeeId, row.workDate.toISOString().slice(0, 10));
+    if (!stampedApprovedOt.has(key)) stampedApprovedOt.set(key, row.approvedOtHours ?? null);
+  }
 
   const bookings: ReconBooking[] = entryRows.map((entry) => {
     const workDate = entry.workDate.toISOString().slice(0, 10);
@@ -191,6 +202,8 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
       registerStatus: fact?.status ?? null,
       clockedHours: fact ? clockedHoursOf(fact) : null,
       acceptedOt: fact?.acceptedOt ?? null,
+      punchedOt: entry.otHours,
+      stampedApprovedOt: stampedApprovedOt.get(dayKey(entry.employeeId, workDate)) ?? null,
     };
   });
 
@@ -234,6 +247,7 @@ export async function runHolidayRecon(options: ReconOptions): Promise<ReconResul
       maxDailyHours,
       rateFor,
     }),
+    overtime: summariseOvertime(bookings),
     anomalies: {
       unmatchedIdNos,
       statusContradictsDayType: facts.filter((fact) => fact.statusDayTypeConflict).length,
@@ -331,6 +345,50 @@ export function renderReconSummary(result: ReconResult): string[] {
   lines.push(
     `  provisional        ${fmt(surfaces.hours.after.provisionalHours)} h (day not settled against attendance yet)`
   );
+  // APPROVED OVERTIME — the block that makes the 2–15 day approval lag visible. Every report shows the
+  // approved figure; this is where a reader can see WHAT was punched, WHAT the yard approved, and which
+  // days are still waiting (or were approved more/less than booked, or approved with no booking at all).
+  const overtime = result.overtime;
+  lines.push("");
+  lines.push("APPROVED OVERTIME (CLMS LabourWorks)");
+  lines.push(
+    `  OT booked          ${fmt(overtime.otRows)} row(s) over ${fmt(overtime.otDays)} employee-day(s), ` +
+      `punched ${fmt(overtime.punchedHours)} h`
+  );
+  lines.push(
+    `  approved by CLMS   ${fmt(overtime.approvedHours)} h   ` +
+      `(variance ${overtime.varianceHours >= 0 ? "+" : ""}${fmt(overtime.varianceHours)} h against the punch)`
+  );
+  lines.push(
+    `  paid hours         ${fmt(overtime.paidHours)} h   (booked was ${fmt(overtime.bookedHours)} h — ` +
+      `regular slots keep their hours, OT becomes the approved figure)`
+  );
+  if (overtime.pendingApprovalDays > 0) {
+    lines.push(
+      `  awaiting approval  ${fmt(overtime.pendingApprovalDays)} day(s), ${fmt(overtime.pendingApprovalHours)} h punched ` +
+        `with no approval yet  (CLMS approves 2–15 days after the work; the nightly backfill re-reads 30 days)`
+    );
+  }
+  if (overtime.underApprovedDays > 0) {
+    lines.push(
+      `  approved short     ${fmt(overtime.underApprovedDays)} day(s), ${fmt(overtime.underApprovedHours)} h less than was punched`
+    );
+  }
+  if (overtime.overApprovedDays > 0) {
+    lines.push(
+      `  approved higher    ${fmt(overtime.overApprovedDays)} day(s), ${fmt(overtime.overApprovedHours)} h more than was punched`
+    );
+  }
+  if (overtime.unbookedDays > 0) {
+    lines.push(
+      `  approved, unbooked ${fmt(overtime.unbookedDays)} day(s), ${fmt(overtime.unbookedHours)} h — no Job Order to charge, ` +
+        `reported in the "OT not booked" column`
+    );
+  }
+  lines.push(
+    `  stamped column     ${fmt(overtime.staleStampedDays)} day(s) differ from the register, ` +
+      `${fmt(overtime.neverStampedDays)} never stamped  (the sync/backfill writes that column)`
+  );
   lines.push("");
   lines.push("ANOMALIES TO LOOK AT");
   lines.push(`  register id not in Employee master   ${fmt(anomalies.unmatchedIdNos.length)}`);
@@ -405,6 +463,9 @@ export function reconCsvFiles(result: ReconResult): Array<{ name: string; rows: 
           "booked_hours",
           "clocked_hours",
           "accepted_ot",
+          "punched_ot_hours",
+          "ot_approved_minus_punched",
+          "approved_ot_stamped",
           "variance_booked_minus_clocked",
           "sheet_statuses",
           "job_orders",
@@ -419,6 +480,9 @@ export function reconCsvFiles(result: ReconResult): Array<{ name: string; rows: 
           row.bookedHours,
           row.clockedHours ?? "",
           row.acceptedOt ?? "",
+          row.punchedOtHours,
+          row.otVariance,
+          row.stampedApprovedOt ?? "",
           row.variance ?? "",
           row.statuses,
           row.jobOrders,

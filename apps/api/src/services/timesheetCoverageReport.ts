@@ -36,6 +36,8 @@ import { prisma } from "../db";
 import { getMaxDailyHours } from "../config";
 import { intersectDepartmentFilter, reportScopeDepartmentIds, reportScopeForActor, type ReportScope } from "./roleAccess";
 import { projectHoursFromEntries, type BookingEntryLike } from "./contractWorkHours";
+import { approvedOtForDays } from "./approvedOt";
+import { OT_NOT_BOOKED_COLOR_KEY } from "./contractWorkHours";
 import { settledCoverageFor } from "./settledWorkDays";
 import {
   NOT_FILLED,
@@ -87,10 +89,19 @@ export type CoverageRow = {
   employee: { id: number; ecNo: string; name: string };
   /** Regular hours per Project colour key (the keys of `projects`). */
   projectHours: Record<string, number>;
-  /** Overtime hours per Project colour key. */
+  /** APPROVED overtime hours per Project colour key (CLMS `AcceptedOT`). */
   projectOtHours: Record<string, number>;
   regularTotal: number;
+  /** Approved overtime counted for this employee-day (never the punched figure). */
   otTotal: number;
+  /** OT the supervisor punched, kept as the captured reference. */
+  punchedOtHours: number;
+  /** The approved figure CLMS states for this employee-day (0 when it approved none). */
+  approvedOtHours: number;
+  /** False when this employee-day has never been read from CLMS. */
+  approvedOtFetched: boolean;
+  /** Approved OT nobody booked a Job Order against (reported as "OT not booked"). */
+  otNotBookedHours: number;
   totalHours: number;
   overheads: number;
   combinedHours: number;
@@ -245,6 +256,9 @@ export async function buildTimesheetCoverageReport(
           workDate: true,
           status: true,
           remarks: true,
+          /** The approved overtime stamped on the day by the CLMS sync / settlement. */
+          approvedOtHours: true,
+          approvedOtSource: true,
           taggedBy: { select: { name: true } },
           entries: {
             select: {
@@ -294,9 +308,24 @@ export async function buildTimesheetCoverageReport(
       // would turn the very gap this report exists to expose into a booking, and would make
       // "combined hours" claim a day nobody can account for. A day WITH a sheet does report the
       // capacity gap, because the sheet is what proves the day happened.
+      //
+      // ONE approved-OT fact per employee-day, taken from the day rows themselves (never summed
+      // across two supervisors' sheets for the same man-day): CLMS approves overtime per man-day.
+      const approvedFact = approvedOtForDays(daySheets).get(`${employee.id}|${day}`);
+      const approvedOt = { hours: approvedFact?.hours ?? 0, fetched: approvedFact?.fetched ?? false };
       const booking = daySheets.length
-        ? projectHoursFromEntries(entries, maxDailyHours)
-        : { projectHours: {}, projectOtHours: {}, overhead: 0, totalAlloc: 0, regularTotalAlloc: 0, totalOtHours: 0 };
+        ? projectHoursFromEntries(entries, maxDailyHours, approvedOt)
+        : {
+            projectHours: {},
+            projectOtHours: {},
+            overhead: 0,
+            totalAlloc: 0,
+            regularTotalAlloc: 0,
+            totalOtHours: 0,
+            punchedOtHours: 0,
+            otFetched: approvedOt.fetched,
+            otNotBookedHours: 0,
+          };
       rows.push({
         date: day,
         department: employee.department,
@@ -311,6 +340,10 @@ export async function buildTimesheetCoverageReport(
         projectOtHours: booking.projectOtHours,
         regularTotal: booking.regularTotalAlloc,
         otTotal: booking.totalOtHours,
+        punchedOtHours: booking.punchedOtHours,
+        approvedOtHours: approvedOt.hours,
+        approvedOtFetched: approvedOt.fetched,
+        otNotBookedHours: booking.otNotBookedHours,
         totalHours: booking.totalAlloc,
         overheads: booking.overhead,
         combinedHours: booking.totalAlloc + booking.overhead,
@@ -398,7 +431,8 @@ export async function buildTimesheetCoverageReport(
       ],
       hours: {
         regular: "Sum of booked regular slots: a shift slot (am1/am2/pm1/pm2) is 2h, a legacy hour slot is 1h.",
-        overtime: "Sum of the day's OT hours, kept under the Project they are charged to.",
+        overtime:
+          "APPROVED overtime from CLMS (LabourWorks `AcceptedOT`) for the employee-day, kept under the Project of the Job Order the OT was booked against; approved OT nobody booked appears in the 'OT not booked' column.",
         overheads: `Unused regular capacity, computed once per employee-day: max(0, ${maxDailyHours}h - regular hours), and 0 on an OT-only day (OT then represents the whole attendance).`,
         combined: "Regular + OT + Overheads.",
         maxDailyHours,
@@ -415,7 +449,13 @@ export async function buildTimesheetCoverageReport(
         "Days with no bookings at all are listed, not skipped: a date nobody filled in is the finding, not noise.",
       ],
     },
-    projects: projectColumns,
+    // One extra column when CLMS approved overtime nobody booked a Job Order against: the hours are
+    // real, and a report whose columns add up to less than the approved total is the report nobody
+    // can reconcile. The key is reserved (`OT_NOT_BOOKED_COLOR_KEY`) so the UI can label it.
+    projects:
+      rows.some((row) => row.otNotBookedHours > 0)
+        ? [...projectColumns, { colorKey: OT_NOT_BOOKED_COLOR_KEY, name: "OT not booked" }]
+        : projectColumns,
     rows: pageRows,
     rowTotal: detailRows.length,
     page,

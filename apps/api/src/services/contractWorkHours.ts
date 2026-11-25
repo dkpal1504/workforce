@@ -53,20 +53,50 @@ export type BookingEntryLike = {
 export type ProjectHours = {
   /** Regular hours per Project colour key. */
   projectHours: Record<string, number>;
-  /** Overtime hours per Project colour key. */
+  /** APPROVED overtime hours per Project colour key (CLMS `AcceptedOT`). */
   projectOtHours: Record<string, number>;
   /** Unused regular capacity for the day (see `contractOverheadHours`). */
   overhead: number;
   /** Regular + overtime. OVERHEADS ARE NOT INCLUDED — they are capacity, not booked work. */
   totalAlloc: number;
   regularTotalAlloc: number;
+  /** Approved overtime counted for the day (the sum of `projectOtHours`). */
   totalOtHours: number;
+  /** OT the supervisor punched, kept as the captured reference. NEVER the reported figure. */
+  punchedOtHours: number;
+  /** True when the day's approved OT has been fetched from CLMS; false = never fetched. */
+  otFetched: boolean;
+  /** Approved OT that nobody booked a Job Order against (see `OT_NOT_BOOKED_COLOR_KEY`). */
+  otNotBookedHours: number;
 };
 
 /**
- * Per-project regular and overtime hours for one employee-day, plus that day's overhead.
+ * The colour key of the bucket that carries approved overtime no supervisor booked.
  *
- * THE THREE RULES, each of which was a real defect when written the other way:
+ * CLMS approves a number per man-day with no Project or Job Order on it. When the day has an
+ * OT booking, that booking's Project receives the whole figure (the supervisor's split is
+ * attribution, not arithmetic). When the day has none, the hours still have to appear
+ * somewhere — dropping them would make a report that disagrees with CLMS — so they land in
+ * this bucket, which the screens print as "OT not booked".
+ */
+export const OT_NOT_BOOKED_COLOR_KEY = "OT_NOT_BOOKED";
+
+/**
+ * The approved overtime of one employee-day, as CLMS states it.
+ *
+ * `hours` is the figure that is reported. `fetched` is false only when the day has never been
+ * read from CLMS: the arithmetic still counts 0 (a punch is never a substitute) and the
+ * screens say "not fetched yet" instead of implying the yard approved nothing.
+ */
+export type ApprovedOtAttribution = {
+  hours: number;
+  fetched: boolean;
+};
+
+/**
+ * Per-project regular and APPROVED overtime hours for one employee-day, plus that day's overhead.
+ *
+ * THE FIVE RULES, each of which was a real defect when written the other way:
  *   1. A row tagged to NEITHER a WBS nor a Job Order is not billable work — it is skipped, or the
  *      "hours" would appear in no project column while still inflating the day's total.
  *   2. The row's Project is the FROZEN SNAPSHOT (`entry.project`); the Job Order path is only the
@@ -75,11 +105,23 @@ export type ProjectHours = {
  *   3. A shift slot is 2h, a legacy hour slot is 1h — the same conversion the timesheet grid, the
  *      daily-max gate and the OT-excess rule use. A third interpretation here would make one screen
  *      disagree with the two that gate the data.
+ *   4. OVERTIME IS THE CLMS-APPROVED FIGURE, never the supervisor's punch. The punch only says WHICH
+ *      Project the OT is charged to; the hours come from `approvedOt`. A day CLMS approves no OT for
+ *      therefore reports zero overtime however many hours were punched — that is the point.
+ *   5. APPROVED OT WITH NO BOOKING IS STILL HOURS. When nobody booked OT that day, the figure lands in
+ *      `OT_NOT_BOOKED_COLOR_KEY` so a report total always equals what CLMS approved.
  */
-export function projectHoursFromEntries(entries: readonly BookingEntryLike[], maxDailyHours: number): ProjectHours {
-  // Keep regular and overtime hours under the project they are charged to.
+export function projectHoursFromEntries(
+  entries: readonly BookingEntryLike[],
+  maxDailyHours: number,
+  approvedOt: ApprovedOtAttribution
+): ProjectHours {
+  // Keep regular hours under the project they are charged to, and remember which project the
+  // day's OT booking points at — that Project receives the whole approved figure.
   const projectHours: Record<string, number> = {};
   const projectOtHours: Record<string, number> = {};
+  let punchedOtHours = 0;
+  let otCarrierKey: string | null = null;
   for (const e of entries) {
     if (e.projectWbsId == null && e.jobOrderId == null) continue;
     // The Project of a booking row is the frozen attribution snapshot; the Job
@@ -88,21 +130,48 @@ export function projectHoursFromEntries(entries: readonly BookingEntryLike[], ma
     if (!colorKey) continue;
     const key = String(colorKey).toUpperCase();
     if (e.otHours != null) {
-      projectOtHours[key] = (projectOtHours[key] || 0) + e.otHours;
+      // The punch is a REFERENCE: it names the project the approved OT is charged to and is
+      // reported separately, never added to the overtime.
+      punchedOtHours += e.otHours;
+      if (otCarrierKey == null) otCarrierKey = key;
       continue;
     }
     // A shift slot is 2h; a legacy hour slot is 1h.
     const hours = e.shiftSlot != null ? 2 : e.hourSlot != null ? 1 : 0;
     projectHours[key] = (projectHours[key] || 0) + hours;
   }
+
+  const approvedHours = Number.isFinite(approvedOt.hours) ? Math.max(0, round2(approvedOt.hours)) : 0;
+  let otNotBookedHours = 0;
+  if (approvedHours > 0) {
+    if (otCarrierKey != null) {
+      projectOtHours[otCarrierKey] = (projectOtHours[otCarrierKey] || 0) + approvedHours;
+    } else {
+      projectOtHours[OT_NOT_BOOKED_COLOR_KEY] = approvedHours;
+      otNotBookedHours = approvedHours;
+    }
+  }
+
   const regularTotalAlloc = Object.values(projectHours).reduce((a, b) => a + b, 0);
   const totalOtHours = Object.values(projectOtHours).reduce((a, b) => a + b, 0);
   // OT is normally additive. For an OT-only holiday booking, it represents
   // the whole attendance and must not create artificial regular overhead.
   const overhead = contractOverheadHours(maxDailyHours, regularTotalAlloc, totalOtHours);
   const totalAlloc = regularTotalAlloc + totalOtHours;
-  return { projectHours, projectOtHours, overhead, totalAlloc, regularTotalAlloc, totalOtHours };
+  return {
+    projectHours,
+    projectOtHours,
+    overhead,
+    totalAlloc,
+    regularTotalAlloc,
+    totalOtHours,
+    punchedOtHours: round2(punchedOtHours),
+    otFetched: approvedOt.fetched,
+    otNotBookedHours,
+  };
 }
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 /* --------------------------------------------------------------------------------------------- *
  *  Per-SLOT bookings, for the screens that must show WHICH Job Order sits in each shift slot.

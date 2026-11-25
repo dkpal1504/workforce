@@ -27,7 +27,7 @@ import { parseCsv } from "./csvParser";
  */
 
 /** Which day statuses a refresh may touch. A DRAFT sheet is still being written. */
-const NON_DRAFT_STATUSES = ["SUBMITTED", "SUP_APPROVED", "HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
+export const NON_DRAFT_STATUSES = ["SUBMITTED", "SUP_APPROVED", "HOD_APPROVED", "PM_APPROVED", "REJECTED", "FINAL_REJECTED", "PLANNING_RETURNED"];
 
 export type AttendanceSourceConfig = {
   /** `schema.view`, e.g. `dbo.Report_Attendance_Intermediate`. */

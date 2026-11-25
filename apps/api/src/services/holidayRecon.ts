@@ -58,7 +58,15 @@ export type ReconBooking = {
   dayType: DayType | null;
   registerStatus: RegisterStatus | null;
   clockedHours: number | null;
+  /** The register's approved overtime for this employee-day (`[AcceptedOT]`); null = no figure. */
   acceptedOt: number | null;
+  /** OT the supervisor punched on this row (null when the row is a shift slot, not OT). */
+  punchedOt: number | null;
+  /**
+   * What the CLMS sync last stamped on the employee-day (`timesheet_days.approved_ot_hours`), so the
+   * recon can prove the sync kept up with the yard's 2–15 day approval lag. null = never stamped.
+   */
+  stampedApprovedOt: number | null;
 };
 
 /** One row of the per-date table: the evidence behind every day type. */
@@ -95,7 +103,14 @@ export type ReconEmployeeDayRow = {
   attendanceClass: AttendanceClass | null;
   bookedHours: number;
   clockedHours: number | null;
+  /** The register's approved overtime for the employee-day (null = no figure). */
   acceptedOt: number | null;
+  /** OT the supervisor punched on this employee-day. */
+  punchedOtHours: number;
+  /** booked OT vs approved OT; positive = the yard approved more than was booked. */
+  otVariance: number;
+  /** The figure the sync last stamped on the day (null = never stamped). */
+  stampedApprovedOt: number | null;
   /** booked - clocked; null when the register has nothing to compare against. */
   variance: number | null;
   statuses: string;
@@ -117,6 +132,167 @@ export type ReconJobOrderRow = {
   holidayRows: number;
   unverifiedRows: number;
 };
+
+/**
+ * The overtime reconciliation: what supervisors booked, what CLMS approved, and where they disagree.
+ *
+ * THIS IS THE ONE PLACE THE TWO OT FIGURES MEET. Every report shows the approved figure and never the
+ * punch; this block is the evidence behind that rule — how many hours were punched, how many the yard
+ * approved, which days are still waiting for an approval (CLMS takes 2–15 days), which were approved
+ * for a day nobody booked (the "OT not booked" column), and whether the stamped column has kept up.
+ *
+ * COUNTED PER EMPLOYEE-DAY, NOT PER ROW: a man can appear on two supervisors' sheets for one date, and
+ * the approved figure belongs to the man-day. `approvedOnRow` hands it to the ONE row that booked the
+ * overtime — the same rule `attributeApprovedOt` applies to reports — so nothing is counted twice.
+ */
+export type OvertimeSummary = {
+  /** Rows that carry an OT booking. */
+  otRows: number;
+  /** Distinct employee-days with an OT booking. */
+  otDays: number;
+  /** OT hours the supervisors punched. */
+  punchedHours: number;
+  /** Approved OT stated by the register for those employee-days (0 when it approved none). */
+  approvedHours: number;
+  /** `approvedHours - punchedHours`; positive = the yard paid more than was booked. */
+  varianceHours: number;
+  /** Hours that would be paid for these employee-days: regular slots + APPROVED OT. */
+  paidHours: number;
+  /** Hours currently booked (regular slots + punched OT). */
+  bookedHours: number;
+  /** OT punched but not yet approved — the 2–15 day lag, made visible instead of looking like zero. */
+  pendingApprovalDays: number;
+  pendingApprovalHours: number;
+  /** Days where CLMS approved less than was punched. */
+  underApprovedDays: number;
+  underApprovedHours: number;
+  /** Days where CLMS approved more than was punched (a holiday, usually). */
+  overApprovedDays: number;
+  overApprovedHours: number;
+  /** Approved OT on days NOBODY booked: no Job Order to charge it to ("OT not booked"). */
+  unbookedDays: number;
+  unbookedHours: number;
+  /** Employee-days whose stamped `approved_ot_hours` differs from the register's figure. */
+  staleStampedDays: number;
+  /** Employee-days with a register figure that the sync has never stamped. */
+  neverStampedDays: number;
+};
+
+const EPSILON = 0.005;
+
+/** The approved figure of one employee-day, from the rows that mention it. */
+function overtimeByEmployeeDay(
+  bookings: readonly ReconBooking[]
+): Map<string, { approved: number | null; hasOtBooking: boolean; punched: number }> {
+  const byDay = new Map<string, { approved: number | null; hasOtBooking: boolean; punched: number }>();
+  for (const booking of bookings) {
+    const key = `${booking.employeeId}|${booking.workDate}`;
+    const entry = byDay.get(key) ?? { approved: null, hasOtBooking: false, punched: 0 };
+    if (booking.punchedOt != null) {
+      entry.hasOtBooking = true;
+      entry.punched += booking.punchedOt;
+    }
+    // Every row of the day carries the same register figure; keep the first non-null.
+    if (entry.approved == null && booking.acceptedOt != null) entry.approved = booking.acceptedOt;
+    byDay.set(key, entry);
+  }
+  return byDay;
+}
+
+/** Summarise the overtime reconciliation. PURE — no database, no environment. */
+export function summariseOvertime(bookings: readonly ReconBooking[]): OvertimeSummary {
+  const byDay = overtimeByEmployeeDay(bookings);
+  const summary: OvertimeSummary = {
+    otRows: 0,
+    otDays: 0,
+    punchedHours: 0,
+    approvedHours: 0,
+    varianceHours: 0,
+    paidHours: 0,
+    bookedHours: 0,
+    pendingApprovalDays: 0,
+    pendingApprovalHours: 0,
+    underApprovedDays: 0,
+    underApprovedHours: 0,
+    overApprovedDays: 0,
+    overApprovedHours: 0,
+    unbookedDays: 0,
+    unbookedHours: 0,
+    staleStampedDays: 0,
+    neverStampedDays: 0,
+  };
+
+  // Which OT row carries the day's approved figure (lowest entry id, so runs agree).
+  const carrierByDay = new Map<string, number>();
+  for (const booking of bookings) {
+    if (booking.punchedOt == null) continue;
+    const key = `${booking.employeeId}|${booking.workDate}`;
+    const current = carrierByDay.get(key);
+    if (current == null || booking.entryId < current) carrierByDay.set(key, booking.entryId);
+  }
+
+  for (const booking of bookings) {
+    const key = `${booking.employeeId}|${booking.workDate}`;
+    const day = byDay.get(key);
+    const isCarrier = carrierByDay.get(key) === booking.entryId;
+    const approvedOnRow = day?.approved ?? 0;
+    summary.bookedHours += booking.hours;
+    // Paid = booked minus the punch plus the approved figure, counted once.
+    summary.paidHours +=
+      booking.hours - (booking.punchedOt ?? 0) + (isCarrier ? approvedOnRow : 0);
+    if (booking.punchedOt != null) summary.otRows += 1;
+  }
+
+  for (const [, day] of byDay) {
+    const approved = day.approved ?? 0;
+    summary.punchedHours += day.punched;
+    if (day.hasOtBooking) {
+      summary.otDays += 1;
+      summary.approvedHours += approved;
+      if (approved <= EPSILON && day.punched > EPSILON) {
+        summary.pendingApprovalDays += 1;
+        summary.pendingApprovalHours += day.punched;
+      } else if (approved + EPSILON < day.punched) {
+        summary.underApprovedDays += 1;
+        summary.underApprovedHours += day.punched - approved;
+      } else if (approved > day.punched + EPSILON) {
+        summary.overApprovedDays += 1;
+        summary.overApprovedHours += approved - day.punched;
+      }
+    } else if (approved > EPSILON) {
+      summary.unbookedDays += 1;
+      summary.unbookedHours += approved;
+    }
+  }
+
+  // Did the sync keep up? A stamped row that disagrees with the register is a refresh that has not run
+  // yet; an approved figure with no stamp at all means the day was never reached.
+  const stampedByDay = new Map<string, number | null>();
+  for (const booking of bookings) {
+    const key = `${booking.employeeId}|${booking.workDate}`;
+    if (!stampedByDay.has(key)) stampedByDay.set(key, booking.stampedApprovedOt);
+  }
+  for (const [key, stamped] of stampedByDay) {
+    const approved = byDay.get(key)?.approved;
+    if (approved == null) continue;
+    if (stamped == null) {
+      if (approved > EPSILON) summary.neverStampedDays += 1;
+      continue;
+    }
+    if (Math.abs(stamped - approved) > EPSILON) summary.staleStampedDays += 1;
+  }
+
+  summary.punchedHours = round2(summary.punchedHours);
+  summary.approvedHours = round2(summary.approvedHours);
+  summary.varianceHours = round2(summary.approvedHours - summary.punchedHours);
+  summary.paidHours = round2(summary.paidHours);
+  summary.bookedHours = round2(summary.bookedHours);
+  summary.pendingApprovalHours = round2(summary.pendingApprovalHours);
+  summary.underApprovedHours = round2(summary.underApprovedHours);
+  summary.overApprovedHours = round2(summary.overApprovedHours);
+  summary.unbookedHours = round2(summary.unbookedHours);
+  return summary;
+}
 
 export type ReconSurfaces = {
   range: {
@@ -299,6 +475,8 @@ export function summariseEmployeeDays(bookings: readonly ReconBooking[]): ReconE
     booked: number;
     clocked: number | null;
     acceptedOt: number | null;
+    punchedOt: number;
+    stampedApprovedOt: number | null;
     statuses: Set<string>;
     jobOrders: Set<string>;
   };
@@ -318,6 +496,8 @@ export function summariseEmployeeDays(bookings: readonly ReconBooking[]): ReconE
         booked: 0,
         clocked: booking.clockedHours,
         acceptedOt: booking.acceptedOt,
+        punchedOt: 0,
+        stampedApprovedOt: booking.stampedApprovedOt,
         statuses: new Set(),
         jobOrders: new Set(),
       };
@@ -329,6 +509,8 @@ export function summariseEmployeeDays(bookings: readonly ReconBooking[]): ReconE
     // Keep a known clocked figure even if a later row for the same day carries none.
     if (acc.clocked == null) acc.clocked = booking.clockedHours;
     if (acc.acceptedOt == null) acc.acceptedOt = booking.acceptedOt;
+    if (acc.stampedApprovedOt == null) acc.stampedApprovedOt = booking.stampedApprovedOt;
+    if (booking.punchedOt != null) acc.punchedOt += booking.punchedOt;
   }
   return [...byKey.values()]
     .map((acc) => ({
@@ -341,6 +523,9 @@ export function summariseEmployeeDays(bookings: readonly ReconBooking[]): ReconE
       bookedHours: round2(acc.booked),
       clockedHours: acc.clocked == null ? null : round2(acc.clocked),
       acceptedOt: acc.acceptedOt,
+      punchedOtHours: round2(acc.punchedOt),
+      otVariance: round2((acc.acceptedOt ?? 0) - acc.punchedOt),
+      stampedApprovedOt: acc.stampedApprovedOt,
       variance: acc.clocked == null ? null : round2(acc.booked - acc.clocked),
       statuses: [...acc.statuses].sort().join(" + "),
       jobOrders: [...acc.jobOrders].sort().join(" + "),

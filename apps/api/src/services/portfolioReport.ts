@@ -36,6 +36,7 @@
 
 import { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../db";
+import { approvedOtForDays, attributeApprovedOt } from "./approvedOt";
 import {
   BOOKED_HOURS_NOTE,
   BOOKED_HOURS_STATUSES,
@@ -1032,21 +1033,55 @@ export async function buildPortfolioReport(
     },
   });
 
-  // 4. Booked hours per job order, in ONE grouped query.
+  // 4. Booked hours per job order. The SLOT counts come from one grouped query; the OVERTIME half
+  //    cannot, because the hours that count are the CLMS-APPROVED figure for the employee-day, not
+  //    the punch on the row. So the OT rows are fetched once and the approved hours are handed to
+  //    the row that carries them (see `services/approvedOt`).
   const bookedRows = await db.timesheetEntry.groupBy({
     by: ["jobOrderId"],
     where: { ...idFilter, status: { in: [...BOOKED_HOURS_STATUSES] } },
-    _sum: { otHours: true },
     _count: { shiftSlot: true, hourSlot: true },
   });
 
-  // 5. Unapproved hours per job order, in ONE grouped query.
+  // 5. Unapproved hours per job order: same rule, different status population.
   const unapprovedRows = await db.timesheetEntry.groupBy({
     by: ["jobOrderId"],
     where: { ...idFilter, status: { in: [...UNAPPROVED_STATUSES] } },
-    _sum: { otHours: true },
     _count: { shiftSlot: true, hourSlot: true },
   });
+
+  // 5b. Every OT row of those job orders, in ONE query, so the approved figure is attributed once
+  //     per employee-day to the booking that carries it — including rows of the OTHER status bucket,
+  //     which is what keeps the two buckets from both claiming the same day's approved OT.
+  const otRows = await db.timesheetEntry.findMany({
+    where: { ...idFilter, otHours: { not: null } },
+    select: { id: true, employeeId: true, workDate: true, jobOrderId: true, status: true, otHours: true },
+  });
+  const approvedOtByDay = otRows.length
+    ? approvedOtForDays(
+        await db.timesheetDay.findMany({
+          where: {
+            employeeId: { in: [...new Set(otRows.map((row) => row.employeeId))] },
+            workDate: { in: [...new Set(otRows.map((row) => row.workDate.toISOString()))].map((iso) => new Date(iso)) },
+          },
+          select: { employeeId: true, workDate: true, approvedOtHours: true, approvedOtSource: true },
+        })
+      )
+    : new Map();
+  const otAttribution = attributeApprovedOt(otRows, approvedOtByDay);
+  const bookedOtByJobOrder = new Map<number, number>();
+  const unapprovedOtByJobOrder = new Map<number, number>();
+  for (const row of otRows) {
+    if (row.jobOrderId == null) continue;
+    const hours = otAttribution.get(row.id) ?? 0;
+    const bucket = (BOOKED_HOURS_STATUSES as readonly string[]).includes(row.status)
+      ? bookedOtByJobOrder
+      : (UNAPPROVED_STATUSES as readonly string[]).includes(row.status)
+        ? unapprovedOtByJobOrder
+        : null;
+    if (!bucket) continue;
+    bucket.set(row.jobOrderId, (bucket.get(row.jobOrderId) ?? 0) + hours);
+  }
 
   // 6. The oldest unapproved date per job order, in ONE grouped query.
   const oldestUnapprovedRows = await db.timesheetEntry.groupBy({
@@ -1091,13 +1126,13 @@ export async function buildPortfolioReport(
   const bookedByJobOrder = new Map<number, number>();
   for (const row of bookedRows) {
     if (row.jobOrderId === null) continue;
-    bookedByJobOrder.set(row.jobOrderId, hoursOf(row._count, row._sum.otHours));
+    bookedByJobOrder.set(row.jobOrderId, hoursOf(row._count, bookedOtByJobOrder.get(row.jobOrderId) ?? 0));
   }
 
   const unapprovedByJobOrder = new Map<number, number>();
   for (const row of unapprovedRows) {
     if (row.jobOrderId === null) continue;
-    unapprovedByJobOrder.set(row.jobOrderId, hoursOf(row._count, row._sum.otHours));
+    unapprovedByJobOrder.set(row.jobOrderId, hoursOf(row._count, unapprovedOtByJobOrder.get(row.jobOrderId) ?? 0));
   }
 
   const oldestUnapprovedByJobOrder = new Map<number, Date>();

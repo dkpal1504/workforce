@@ -7,6 +7,7 @@ import { writeAudit } from "../audit";
 import { effectiveOrganisation } from "./roleAccess";
 import { supervisorAccountTransition } from "./supervisorAccountLifecycle";
 import { cardTypeFilter } from "./labourWorksCardTypes";
+import { refreshApprovedOtAfterSync } from "./approvedOt";
 
 /** One row from the LabourWorks BadgeView source. */
 export type BadgeViewRow = {
@@ -733,6 +734,21 @@ export async function syncBadgeViewRows(rows: BadgeViewRow[]): Promise<SyncResul
   }
 }
 
+/**
+ * Apply a validated snapshot, then IMMEDIATELY read the approved overtime.
+ *
+ * The approved OT is a separate fact from the worker roster, and it is read from the same
+ * CLMS server at the moment the roster sync finishes — which is what "when the CLMS sync is
+ * completed, immediately" means in practice. The call is non-fatal by construction: a slow
+ * or unavailable attendance view must never turn a good sync into a failed one, and the next
+ * trigger re-reads the whole window anyway.
+ */
+async function finishSync(snapshot: BadgeViewRow[]): Promise<SyncResult> {
+  const result = await syncBadgeViewRows(snapshot);
+  if (result.ok) await refreshApprovedOtAfterSync();
+  return result;
+}
+
 /** Fetch LabourWorks and apply the resulting staged snapshot. */
 export async function runBadgeViewSync(): Promise<SyncResult> {
   const startedAt = new Date();
@@ -749,7 +765,7 @@ export async function runBadgeViewSync(): Promise<SyncResult> {
         );
       }
     }
-    return await syncBadgeViewRows(snapshot);
+    return await finishSync(snapshot);
   } catch (error) {
     return {
       ok: false,

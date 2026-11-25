@@ -616,6 +616,20 @@ model TimesheetDay {
   /// still 0 after six checks is a regularization nobody has done yet, not a bug.
   inOutCheckedAt DateTime? @map("in_out_checked_at")
   inOutAttempts  Int       @default(0) @map("in_out_attempts")
+  /// The overtime CLMS has APPROVED for this employee-day, read from
+  /// `LabourWorks.dbo.Report_Attendance_View` `[AcceptedOT]` for the same `IDNo`
+  /// and `Date`. This is the OT figure the whole application reports: the
+  /// supervisor's booking is only a capture of what was worked, and CLMS decides
+  /// what is paid. 0 means "CLMS has approved no OT for this day", which is
+  /// deliberately NOT the same as the supervisor's punch and never falls back to it.
+  /// NULL means "not fetched yet" — no report may read NULL as zero OT, so every
+  /// refresh stamps an explicit value, including 0.
+  approvedOtHours    Float?    @map("approved_ot_hours")
+  /// Where `approvedOtHours` came from: null (never fetched), LABOURWORKS or MANUAL.
+  /// A MANUAL value is an Admin decision and no sync, settlement or refresh overwrites it.
+  approvedOtSource   String?   @map("approved_ot_source")
+  /// When a refresh last consulted CLMS for this day's approved OT.
+  approvedOtCheckedAt DateTime? @map("approved_ot_checked_at")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 

@@ -14,6 +14,7 @@ import {
   workingDatesFrom,
   type ReconBooking,
   type ReconPerson,
+  summariseOvertime,
 } from "./holidayRecon";
 
 /**
@@ -73,6 +74,8 @@ function booking(overrides: Partial<ReconBooking>): ReconBooking {
     registerStatus: "P",
     clockedHours: 8,
     acceptedOt: 0,
+    punchedOt: null,
+    stampedApprovedOt: null,
     ...overrides,
   };
 }
@@ -363,4 +366,67 @@ test("an HL status is the source's own classification and still decides the date
   const resolved = applyDateTypes(facts, dateTypesFrom(facts));
   assert.equal(resolved[0].attendanceClass, "WORKED_HOLIDAY");
   assert.equal(resolved[1].attendanceClass, "OFF");
+});
+
+
+/* ---- approved overtime: the 2–15 day approval lag, made visible ------------------------------ */
+
+test("OT punched but not yet approved is a PENDING day, not a zero", () => {
+  const overtime = summariseOvertime([
+    booking({ entryId: 1, workDate: "2026-10-05", hours: 10, punchedOt: 2, acceptedOt: 0 }),
+  ]);
+  assert.equal(overtime.otDays, 1);
+  assert.equal(overtime.punchedHours, 2);
+  assert.equal(overtime.approvedHours, 0);
+  assert.equal(overtime.pendingApprovalDays, 1);
+  assert.equal(overtime.pendingApprovalHours, 2);
+  assert.equal(overtime.paidHours, 8, "regular 8h stays; the unapproved 2h OT does not count");
+});
+
+test("approved OT above and below the punch are separated, never netted into one number", () => {
+  // The real shape: a shift row carries 8h and no OT; the OT row's hours ARE the punch.
+  const overtime = summariseOvertime([
+    booking({ entryId: 1, employeeId: 1, workDate: "2026-10-06", hours: 8, punchedOt: null, acceptedOt: 4 }),
+    booking({ entryId: 2, employeeId: 1, workDate: "2026-10-06", hours: 2, punchedOt: 2, acceptedOt: 4 }),
+    booking({ entryId: 3, employeeId: 2, workDate: "2026-10-06", hours: 8, punchedOt: null, acceptedOt: 1 }),
+    booking({ entryId: 4, employeeId: 2, workDate: "2026-10-06", hours: 4, punchedOt: 4, acceptedOt: 1 }),
+  ]);
+  assert.equal(overtime.overApprovedDays, 1);
+  assert.equal(overtime.overApprovedHours, 2);
+  assert.equal(overtime.underApprovedDays, 1);
+  assert.equal(overtime.underApprovedHours, 3);
+  assert.equal(overtime.approvedHours, 5);
+  assert.equal(overtime.punchedHours, 6);
+  assert.equal(overtime.varianceHours, -1);
+  assert.equal(overtime.paidHours, 21, "8+4 and 8+1");
+});
+
+test("approved OT nobody booked is reported as unbooked, not dropped and not paid twice", () => {
+  const overtime = summariseOvertime([
+    booking({ entryId: 1, workDate: "2026-10-07", hours: 8, punchedOt: null, acceptedOt: 5 }),
+  ]);
+  assert.equal(overtime.otDays, 0);
+  assert.equal(overtime.unbookedDays, 1);
+  assert.equal(overtime.unbookedHours, 5);
+  assert.equal(overtime.paidHours, 8, "the approved 5h has no booking, so it is not added to booked hours");
+});
+
+test("two sheets for one man-day have the approved figure counted ONCE", () => {
+  const overtime = summariseOvertime([
+    booking({ entryId: 3, employeeId: 1, workDate: "2026-10-08", hours: 10, punchedOt: 2, acceptedOt: 2 }),
+    booking({ entryId: 4, employeeId: 1, workDate: "2026-10-08", hours: 2, punchedOt: null, acceptedOt: 2 }),
+  ]);
+  assert.equal(overtime.otDays, 1);
+  assert.equal(overtime.approvedHours, 2);
+  assert.equal(overtime.punchedHours, 2);
+  assert.equal(overtime.paidHours, 12, "8 slot hours + 2 approved OT, counted once");
+});
+
+test("the recon proves whether the sync kept up: stale and never-stamped days are counted", () => {
+  const overtime = summariseOvertime([
+    booking({ entryId: 1, employeeId: 1, workDate: "2026-10-09", hours: 10, punchedOt: 2, acceptedOt: 2, stampedApprovedOt: 0 }),
+    booking({ entryId: 2, employeeId: 2, workDate: "2026-10-09", hours: 10, punchedOt: 2, acceptedOt: 2, stampedApprovedOt: null }),
+  ]);
+  assert.equal(overtime.staleStampedDays, 1);
+  assert.equal(overtime.neverStampedDays, 1);
 });
