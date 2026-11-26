@@ -279,6 +279,13 @@ attendanceHoursRouter.get("/approved-ot/config", (_req, res) => {
       enabled: String(process.env.APPROVED_OT_SCHEDULE_ENABLED ?? "true").toLowerCase() !== "false",
       cron: process.env.APPROVED_OT_CRON || "0 2 * * *",
       backfillDays: Number(process.env.APPROVED_OT_BACKFILL_DAYS || 30),
+      /**
+       * The self-healing half: dates OLDER than the window that still hold a non-draft sheet with no
+       * stamp at all. A month that closed before this feature was switched on is never inside a
+       * backwards-looking window, so without this it stays NULL ("never fetched") for ever.
+       */
+      catchUpDays: Number(process.env.APPROVED_OT_CATCHUP_DAYS || 120),
+      catchUpDatesPerNight: Number(process.env.APPROVED_OT_CATCHUP_DATES || 90),
       window,
     },
     /** The window the automatic triggers cover on the next pass. */

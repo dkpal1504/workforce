@@ -1,5 +1,5 @@
 import cron, { ScheduledTask } from "node-cron";
-import { refreshApprovedOt } from "./approvedOt";
+import { neverStampedApprovedOtDates, refreshApprovedOt } from "./approvedOt";
 
 /**
  * Nightly backfill of the CLMS-APPROVED overtime.
@@ -12,14 +12,26 @@ import { refreshApprovedOt } from "./approvedOt";
  * night, so an approval that arrives late (or a correction to one already written) is stamped by the
  * morning, with no operator action.
  *
+ * THE WINDOW ALONE IS NOT ENOUGH, AND THAT IS THE SECOND HALF OF THE JOB. Every writer looks backwards
+ * from TODAY, so a month that closed before this feature was switched on — or before a host was down
+ * for a few weeks — is never inside any window and stays NULL ("never fetched") for ever. Production
+ * showed exactly that: from 26-Oct onward every sheet was stamped, while September and 1-25 October
+ * sat at NULL and the reports read them as zero overtime. So after the window pass this job ALSO reads
+ * the older dates that still hold a non-draft sheet with no stamp at all (`neverStampedApprovedOtDates`),
+ * capped per night, until the hole is closed. `approved_ot_hours IS NULL` is what makes this safe:
+ * every successful read stamps an explicit figure, so a NULL is a date nobody ever asked about.
+ * A date CLMS cannot answer for stays NULL and is retried tomorrow — one bad date never hides the rest.
+ *
  * WHY IT IS CHEAP: the read is one query per date that actually holds a non-draft sheet, and the write
  * skips every day whose figure already matches. A 30-day window over a settled period therefore costs
- * 30 reads and zero writes — the same thing the sync does twice a day.
+ * 30 reads and zero writes — the same thing the sync does twice a day — and an empty catch-up costs
+ * ONE indexed query.
  *
  * WHY IT IS ON BY DEFAULT (unlike the other integrations here): it writes nothing but a figure CLMS has
  * ALREADY approved, and every screen now reports that figure — leaving it off would leave reports
  * showing zero overtime for days the yard had approved. It is still gated, and the Admin endpoints can
- * backfill by hand if it is ever switched off.
+ * backfill by hand if it is ever switched off. For a period older than the catch-up horizon (or a
+ * one-off repair), `apps/api/scripts/backfill-approved-ot.mjs --from … --to …` runs the same service.
  *
  * Overlap guard: a tick is skipped while the previous one is still reading, so a slow yard server cannot
  * stack two passes.
@@ -45,11 +57,37 @@ export function backfillDays(): number {
   return Math.min(Math.floor(raw), 400);
 }
 
+/**
+ * How far back a NEVER-STAMPED date is picked up. Older than the nightly window by definition (the
+ * window already covers the recent days), and wide enough to take in the month before a deployment.
+ * 400 is the service's own upper bound on a refresh range, so a wider setting could not be honoured.
+ */
+export function catchUpDays(): number {
+  const raw = Number(process.env.APPROVED_OT_CATCHUP_DAYS || 120);
+  if (!Number.isFinite(raw) || raw < 1) return 120;
+  return Math.min(Math.floor(raw), 400);
+}
+
+/** How many never-stamped DATES one night repairs. A long outage is closed over several nights. */
+export function catchUpDatesPerNight(): number {
+  const raw = Number(process.env.APPROVED_OT_CATCHUP_DATES || 90);
+  if (!Number.isFinite(raw) || raw < 1) return 90;
+  return Math.min(Math.floor(raw), 400);
+}
+
 /** The window the nightly job covers, ending today (the register clamps the future anyway). */
 export function backfillWindow(now: Date = new Date()): { dateFrom: string; dateTo: string } {
   const dateTo = now.toISOString().slice(0, 10);
   const dateFrom = new Date(now.getTime() - backfillDays() * 86_400_000).toISOString().slice(0, 10);
   return { dateFrom, dateTo };
+}
+
+/** The horizon the catch-up looks back over, ENDING THE DAY BEFORE the nightly window starts. */
+export function catchUpWindow(now: Date = new Date()): { dateFrom: string; dateTo: string } {
+  const window = backfillWindow(now);
+  const dayBefore = new Date(new Date(`${window.dateFrom}T00:00:00.000Z`).getTime() - 86_400_000);
+  const dateFrom = new Date(now.getTime() - catchUpDays() * 86_400_000).toISOString().slice(0, 10);
+  return { dateFrom, dateTo: dayBefore.toISOString().slice(0, 10) };
 }
 
 async function runOnce(): Promise<void> {
@@ -71,6 +109,28 @@ async function runOnce(): Promise<void> {
         `written=${result.updated} unchanged=${result.unchanged} manual=${result.manualSkipped} ` +
         `datesRead=${result.datesRead.length}`
     );
+
+    // The catch-up. Deliberately a SECOND pass over a different set of dates, not a widened window:
+    // a widened window would re-read 120 days of CLMS every night for ever, while this reads only
+    // the dates that have never been stamped and goes quiet as soon as the hole is closed.
+    const gap = catchUpWindow();
+    const missing = gap.dateFrom <= gap.dateTo
+      ? await neverStampedApprovedOtDates({ dateFrom: gap.dateFrom, dateTo: gap.dateTo, limit: catchUpDatesPerNight() })
+      : [];
+    if (!missing.length) return;
+    const caught = await refreshApprovedOt({
+      dateFrom: missing[0],
+      dateTo: missing[missing.length - 1],
+      dates: missing,
+    });
+    console.log(
+      `[approvedOt] catch-up ${gap.dateFrom}..${gap.dateTo}: ${missing.length} never-stamped date(s) ` +
+        `read=${caught.datesRead.length} written=${caught.updated} unchanged=${caught.unchanged} ` +
+        `manual=${caught.manualSkipped} errors=${caught.errors.length}`
+    );
+    if (caught.errors.length) {
+      console.error(`[approvedOt] catch-up: ${caught.errors[0].date} — ${caught.errors[0].message}`);
+    }
   } catch (error) {
     console.error("[approvedOt] Backfill failed:", error instanceof Error ? error.message : error);
   } finally {
@@ -92,8 +152,10 @@ export function startApprovedOtScheduler(): void {
   }
   scheduledTask = cron.schedule(expr, () => { void runOnce(); });
   const { dateFrom, dateTo } = backfillWindow();
+  const gap = catchUpWindow();
   console.log(
-    `[approvedOt] Backfill scheduled with cron "${expr}" over ${backfillDays()} day(s) (next window ${dateFrom}..${dateTo}).`
+    `[approvedOt] Backfill scheduled with cron "${expr}" over ${backfillDays()} day(s) (next window ${dateFrom}..${dateTo}); ` +
+      `catch-up horizon ${gap.dateFrom}..${gap.dateTo}, ${catchUpDatesPerNight()} date(s) per night.`
   );
 }
 

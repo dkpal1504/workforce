@@ -525,6 +525,18 @@ out. This screen puts the two figures side by side so contract attendance can be
   re-reads the last 30 days, so an approval that lands on its twelfth day is stamped by the next
   morning with nobody pressing anything. Every write is idempotent: a re-read of an unchanged day
   writes nothing.
+- **A month that closed before the sync existed fills itself in.** Every automatic read looks back
+  from *today*, so days older than the window are never visited — they keep `approved_ot_hours` NULL
+  ("never fetched"), which reports show as zero overtime. The nightly job therefore also reads the
+  older dates that still hold a non-draft sheet with **no stamp at all** (`APPROVED_OT_CATCHUP_DAYS`,
+  default 120, at most `APPROVED_OT_CATCHUP_DATES` = 90 dates a night), so a gap closes itself over a
+  night or two. For a period outside that horizon, an operator can repair an exact range with
+  `dc exec api node apps/api/scripts/backfill-approved-ot.mjs --month 2026-09` (add `--dry-run` to
+  see what would change, nothing is written; a `MANUAL` figure is never touched).
+- **Overtime is REPORTED in whole hours.** CLMS states `AcceptedOT` with a fraction on a few man-days
+  (7.58, 14.3 …); every screen, list and export prints the rounded whole hour, so a total never shows
+  a long decimal. The stored figure stays exactly what CLMS approved, so the audit trail and the
+  overtime reconciliation still show the yard's precise number.
 - **The value comes from LabourWorks.** The join key is the employee **`ecNo`**, which the source view
   calls `IDNo`; the hours field is `ManHours`, and the date is `Date` (all three confirmed against the
   live view on 2026-09-21). The screen reads the view named by `ATTENDANCE_DB_VIEW` (default

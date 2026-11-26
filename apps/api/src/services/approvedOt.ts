@@ -565,11 +565,36 @@ export function employeeDayKey(employeeId: number, workDate: Date | string): str
 }
 
 /**
+ * The overtime a REPORT prints, in whole hours.
+ *
+ * WHY THIS EXISTS: CLMS states `AcceptedOT` with a fractional part on a few man-days (7.58, 14.3,
+ * 23.53 …), and every report multiplied that fraction outward — the Summary page printed five
+ * decimals once a period's approvals were summed. Overtime is reported to people in whole hours, so
+ * the figure crosses ONE boundary here and every screen, list and export gets an integer from the
+ * same rule. It is applied on READ, not on write: `timesheet_days.approved_ot_hours` keeps exactly
+ * what CLMS approved, so the reconciliation report can still show the yard's precise number and a
+ * later CLMS correction is still visible.
+ *
+ * Rounding is half-up (`Math.round`) and never negative — the same `Math.max(0, …)` floor the
+ * project arithmetic applies. Rounding per employee-day (rather than per report total) is deliberate:
+ * a man-day is the unit CLMS approves and the unit an approver judges, so a list of days always adds
+ * up to the same total the report prints.
+ */
+export function reportedOtHours(hours: number | null | undefined): number {
+  if (hours == null || !Number.isFinite(hours)) return 0;
+  return Math.max(0, Math.round(hours));
+}
+
+/**
  * Collapse the approved OT of a day's sheets to ONE fact per employee-day.
  *
  * Several supervisors may hold a sheet for the same man on the same date; the approved
  * figure is the same on all of them, and summing the rows would count the man's overtime
  * two or three times. Anything that reports OT must go through this.
+ *
+ * The value handed out is the REPORTED figure (`reportedOtHours`), which is what a screen should
+ * print; the audit comparison inside `refreshApprovedOt` reads the stored column directly and is
+ * therefore unaffected.
  */
 export function approvedOtForDays(
   days: readonly {
@@ -587,12 +612,12 @@ export function approvedOtForDays(
       // The same employee-day appears more than once only because several supervisors
       // booked it. Prefer a fetched fact over a never-fetched one; the figures agree.
       if (!existing.fetched && day.approvedOtHours != null) {
-        byDay.set(key, { hours: day.approvedOtHours, source: day.approvedOtSource ?? null, fetched: true });
+        byDay.set(key, { hours: reportedOtHours(day.approvedOtHours), source: day.approvedOtSource ?? null, fetched: true });
       }
       continue;
     }
     byDay.set(key, {
-      hours: day.approvedOtHours ?? 0,
+      hours: reportedOtHours(day.approvedOtHours),
       source: day.approvedOtSource ?? null,
       fetched: day.approvedOtHours != null,
     });
@@ -769,6 +794,42 @@ export async function loadOtBookingDays(
     select: { employeeId: true, workDate: true },
   });
   return new Set(rows.map((row) => employeeDayKey(row.employeeId, row.workDate)));
+}
+
+/**
+ * The work dates in a period that hold a non-draft sheet whose approved OT has NEVER been fetched.
+ *
+ * `approved_ot_hours IS NULL` is the only honest signal for "nobody ever asked CLMS about this
+ * day": every refresh stamps an explicit value (0 included), so a NULL that survives a refresh
+ * window is a hole, not an approval of nothing. The automatic writers only look BACKWARDS from
+ * today (`APPROVED_OT_LOOKBACK_DAYS` on the sync, `APPROVED_OT_BACKFILL_DAYS` on the nightly job),
+ * so a month that closed before the feature was switched on is never revisited — exactly the
+ * failure this returns: September and most of October stayed NULL while the window kept stamping
+ * the last few weeks.
+ *
+ * One query, one row per DATE (`distinct`), oldest first, capped — a catch-up pass reads those
+ * dates and no others, so the cost is proportional to the hole rather than to the horizon.
+ */
+export async function neverStampedApprovedOtDates(options: {
+  dateFrom: string;
+  dateTo: string;
+  limit?: number;
+}): Promise<string[]> {
+  const rows = await prisma.timesheetDay.findMany({
+    where: {
+      approvedOtHours: null,
+      status: { in: [...NON_DRAFT_STATUSES] },
+      workDate: {
+        gte: new Date(`${options.dateFrom}T00:00:00.000Z`),
+        lte: new Date(`${options.dateTo}T00:00:00.000Z`),
+      },
+    },
+    select: { workDate: true },
+    distinct: ["workDate"],
+    orderBy: { workDate: "asc" },
+    take: Math.max(1, options.limit ?? 90),
+  });
+  return rows.map((row) => row.workDate.toISOString().slice(0, 10));
 }
 
 /* --------------------------------------------------------------------------- *

@@ -9,6 +9,7 @@ import {
   parseApprovedOtFixture,
   planApprovedOtUpdate,
   approvedOtDateRange,
+  reportedOtHours,
   type ApprovedOtForDate,
   type SheetForApprovedOt,
 } from "./approvedOt";
@@ -163,4 +164,37 @@ test("fixtures: JSON and CSV both mirror the SQL shape", () => {
 test("date ranges refuse a backwards range", () => {
   assert.deepEqual(approvedOtDateRange("2026-11-24", "2026-11-25"), ["2026-11-24", "2026-11-25"]);
   assert.throws(() => approvedOtDateRange("2026-11-25", "2026-11-24"));
+});
+
+test("reported overtime is a whole hour, and a never-fetched day is still zero", () => {
+  // CLMS states AcceptedOT with a fraction on a few man-days; every report printed it outward.
+  assert.equal(reportedOtHours(7.58), 8);
+  assert.equal(reportedOtHours(14.3), 14);
+  assert.equal(reportedOtHours(14.5), 15, "half rounds UP, the direction a man expects");
+  assert.equal(reportedOtHours(23.53), 24);
+  assert.equal(reportedOtHours(0), 0);
+  assert.equal(reportedOtHours(null), 0);
+  assert.equal(reportedOtHours(undefined), 0);
+  assert.equal(reportedOtHours(Number.NaN), 0);
+  assert.equal(reportedOtHours(-2), 0, "a negative correction is reported as no overtime, never as minus");
+});
+
+test("approvedOtForDays hands reports the ROUNDED figure, per employee-day", () => {
+  const byDay = approvedOtForDays([
+    // Two supervisors, one man-day: ONE fact, and the rounding happens after the dedupe, so a
+    // duplicated sheet can never contribute its fraction twice.
+    { employeeId: 10, workDate: "2026-11-24", approvedOtHours: 7.58, approvedOtSource: "LABOURWORKS" },
+    { employeeId: 10, workDate: "2026-11-24", approvedOtHours: 7.58, approvedOtSource: "LABOURWORKS" },
+    { employeeId: 11, workDate: "2026-11-24", approvedOtHours: null, approvedOtSource: null },
+    { employeeId: 12, workDate: "2026-11-24", approvedOtHours: 14.3, approvedOtSource: "LABOURWORKS" },
+  ]);
+  assert.equal(byDay.size, 3);
+  assert.equal(byDay.get("10|2026-11-24")?.hours, 8);
+  assert.equal(byDay.get("11|2026-11-24")?.hours, 0);
+  assert.equal(byDay.get("11|2026-11-24")?.fetched, false, "not fetched stays distinguishable from an approved zero");
+  assert.equal(byDay.get("12|2026-11-24")?.hours, 14);
+
+  // The total a report prints is therefore whole even when the stored days are not.
+  const total = [...byDay.values()].reduce((sum, fact) => sum + fact.hours, 0);
+  assert.equal(total, 22);
 });

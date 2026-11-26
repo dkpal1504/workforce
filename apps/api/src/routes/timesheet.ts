@@ -23,6 +23,7 @@ import {
   snapshotForBooking,
   snapshotsFromJobOrders,
 } from "../services/attributionSnapshot";
+import { reportedOtHours } from "../services/approvedOt";
 import {
   ROSTER_REFUSAL_TEXT,
   rosterEmployeeWhere,
@@ -893,8 +894,11 @@ timesheetRouter.get("/", async (req, res) => {
        * `null` means "not fetched yet" (no sync/settlement has touched this day), which is why the
        * grid must not print it as 0. The supervisor's own figure above stays editable: capture is
        * still his, the paid number is the yard's.
+       *
+       * Printed as a whole hour (`reportedOtHours`), the same figure the Summary reports — a sheet
+       * must not show 7.58 next to a report that says 8.
        */
-      approvedOtHours: day?.approvedOtHours ?? null,
+      approvedOtHours: day?.approvedOtHours == null ? null : reportedOtHours(day.approvedOtHours),
       approvedOtSource: day?.approvedOtSource ?? null,
       approvedOtCheckedAt: day?.approvedOtCheckedAt ? day.approvedOtCheckedAt.toISOString() : null,
       otJobOrderId: otEntry?.jobOrderId ?? null,

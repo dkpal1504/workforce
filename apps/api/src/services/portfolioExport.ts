@@ -129,7 +129,10 @@ function pct(value: number | null): string {
   return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
 }
 function hours(value: number): string {
-  return value.toFixed(2);
+  // WHOLE HOURS: the PDF is read beside the screen, and every hour figure in this app is a slot
+  // (2h) or an approved overtime already rounded to a whole hour. `toFixed(2)` printed "12.00" on
+  // one surface and "12" on another for the same row.
+  return String(Math.round(value));
 }
 /** A null date is rendered as a dash, never as an empty cell that reads as "zero". */
 function textOrDash(value: string | null): string {

@@ -156,19 +156,26 @@ function addTable<T>(
   if (startRow > 1) headerRow.font = { bold: true };
 }
 
-/** The detail columns: the operator's own layout, one Regular/OT pair per Project. */
+/**
+ * The detail columns: the operator's own layout, one Regular/OT pair per Project.
+ *
+ * HOUR COLUMNS PRINT WHOLE HOURS (`numFmt: "0"`): every quantity here is a slot (2h) or a CLMS
+ * approved overtime figure, which is rounded to a whole hour where it is read
+ * (`reportedOtHours`). A `0.00` format printed "8.00" beside a screen that said "8", and it made
+ * a fractional ApprovedOT look like a deliberate precision the report does not have.
+ */
 function detailColumns(report: TimesheetCoverageReport): SheetColumn<CoverageRow>[] {
   const projectColumns: SheetColumn<CoverageRow>[] = report.projects.flatMap((project) => [
     {
       header: `${project.name} — Regular`,
       width: 16,
-      numFmt: "0.00",
+      numFmt: "0",
       value: (row) => row.projectHours[project.colorKey] ?? 0,
     },
     {
       header: `${project.name} — OT`,
       width: 12,
-      numFmt: "0.00",
+      numFmt: "0",
       value: (row) => row.projectOtHours[project.colorKey] ?? 0,
     },
   ]);
@@ -181,11 +188,11 @@ function detailColumns(report: TimesheetCoverageReport): SheetColumn<CoverageRow
     { header: "EC No", width: 14, tone: "id", value: (row) => row.employee.ecNo },
     { header: "Employee name", width: 30, tone: "id", value: (row) => row.employee.name },
     ...projectColumns,
-    { header: "Total Project hours — Regular", width: 16, numFmt: "0.00", tone: "total", value: (row) => row.regularTotal },
-    { header: "Total Project hours — OT", width: 14, numFmt: "0.00", tone: "total", value: (row) => row.otTotal },
-    { header: "Total Project hours — Total", width: 14, numFmt: "0.00", tone: "total", value: (row) => row.totalHours },
-    { header: "Overheads", width: 12, numFmt: "0.00", tone: "overheads", value: (row) => row.overheads },
-    { header: "Combined Hours", width: 14, numFmt: "0.00", tone: "combined", value: (row) => row.combinedHours },
+    { header: "Total Project hours — Regular", width: 16, numFmt: "0", tone: "total", value: (row) => row.regularTotal },
+    { header: "Total Project hours — OT", width: 14, numFmt: "0", tone: "total", value: (row) => row.otTotal },
+    { header: "Total Project hours — Total", width: 14, numFmt: "0", tone: "total", value: (row) => row.totalHours },
+    { header: "Overheads", width: 12, numFmt: "0", tone: "overheads", value: (row) => row.overheads },
+    { header: "Combined Hours", width: 14, numFmt: "0", tone: "combined", value: (row) => row.combinedHours },
     { header: "Approval Status", width: 16, tone: "status", value: (row) => row.status },
     // Last, because it is the only free-text column: the numbers and the status keep their aligned block, and the
     // supervisor's reason sits at the edge where it does not disturb a scan down the hours. One row is one
