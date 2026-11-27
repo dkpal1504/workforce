@@ -99,6 +99,15 @@ model Department {
   /// only, never overwrites manual edits); 'MANUAL' = admin-managed (editable).
   source    String   @default("MANUAL")
   active    Boolean  @default(true)
+  /// The FACILITY this Department sits in, as the yard names it: EOU | SEZ. NULL when the name carries
+  /// no facility suffix (a Department that is not part of a plant split). Derived from the name by
+  /// `services/departmentIdentity.ts`; written when the row is created, editable by an Admin.
+  businessUnit String? @map("business_unit")
+  /// The FUNCTION this Department exercises, independent of the facility: "Yardservice", "Safety",
+  /// "Civil", "Administration", "Production - Piping" … One function is two Department rows (one per
+  /// plant), so this column is what lets a report roll Yardservice - EOU and Yardservice - SEZ together
+  /// as one function instead of treating them as unrelated departments.
+  functionGroup String? @map("function_group")
   createdAt DateTime @default(now()) @map("created_at")
 
   employees             Employee[]
@@ -115,6 +124,7 @@ model Department {
   employeeAllocations EmployeeAllocation[] @relation("EmployeeAllocationDepartment")
   slaPolicies         SlaPolicy[]
 
+  @@index([functionGroup, businessUnit])
   @@map("departments")
 }
 

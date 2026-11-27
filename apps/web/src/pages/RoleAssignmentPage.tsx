@@ -4,7 +4,6 @@ import { useAuth } from "../auth/AuthContext";
 import {
   assignmentNotice,
   changePending,
-  deriveScopeSections,
   hodScopeFromPicked,
   scopeConsequence,
   findSelection,
@@ -15,9 +14,18 @@ import {
   rowKey,
   targetSummary,
   unblocksByApprovingOthers,
-  scopeSelectionDiffers,
   type PersonRow,
 } from "./roleAssignmentSelection";
+import { HodScopeEditor } from "../components/HodScopeEditor";
+import {
+  grantsDiffer,
+  grantsFromAccount,
+  grantsSummary,
+  roleScopePayload,
+  type GrantDepartment,
+  type GrantSection,
+  type HodGrant,
+} from "./hodScopeGrants";
 import "../styles/supervisors.css";
 
 type Role = "EMPLOYEE" | "SUPERVISOR" | "HOD" | "DEPT_HEAD" | "PM" | "PROJECT_MANAGER" | "ADMIN" | "HR" | "FINANCE";
@@ -37,6 +45,8 @@ type AccountRow = {
   hodScope: HodScope | null;
   /** The Sections this account heads. EMPTY means the whole Department. */
   scopeSections?: number[];
+  /** Every Department this account heads IN FULL — the grant set behind a two-plant HOD. */
+  scopeDepartments?: { departmentId: number }[];
 };
 
 type EmployeeRow = {
@@ -127,6 +137,7 @@ function accountToRow(account: AccountRow): PersonRow {
     roleRefusals: {},
     hodScope: account.hodScope,
     scopeSections: account.scopeSections ?? [],
+    scopeDepartmentIds: (account.scopeDepartments ?? []).map((grant) => grant.departmentId).sort((a, b) => a - b),
     // The server's own counts for the guards, so a blocked move is explained BEFORE the click.
     blockers: account.blockers ?? { pendingApprovals: 0, returnedTimesheetDays: 0 },
   };
@@ -247,10 +258,18 @@ export function RoleAssignmentPage() {
   const [pickedRole, setPickedRole] = useState<Role | "">("");
   /** The Sections ticked for this account. The SET is the source of truth; the old scalar is derived below. */
   const [pickedSectionIds, setPickedSectionIds] = useState<number[]>([]);
-  /** The chosen Department's Sections. A Department is picked ONCE, so the ticks cannot cross one. */
-  const [sectionOptions, setSectionOptions] = useState<{ id: number; code: string; name: string }[]>([]);
-  /** Why the Section list is empty, when it is. An empty list must never be silent. */
-  const [sectionLoadError, setSectionLoadError] = useState("");
+  /**
+   * The Department GRANT SET for the selected HOD — the authority, not the legacy mirror. One entry per
+   * Department headed IN FULL (`sectionIds: []`) or by named Sections, which is how one person covers a
+   * function at both plants.
+   */
+  const [grants, setGrants] = useState<HodGrant[]>([]);
+  /** The set as the server last sent it, so "did anything change?" is a comparison, not a guess. */
+  const [savedGrants, setSavedGrants] = useState<HodGrant[]>([]);
+  /** Every Department and Section, for the scope picker: a two-plant grant needs BOTH plants listed. */
+  const [allDepartments, setAllDepartments] = useState<GrantDepartment[]>([]);
+  const [allSections, setAllSections] = useState<GrantSection[]>([]);
+  const [scopeLoadError, setScopeLoadError] = useState("");
   // Derived, ONE direction only (set -> scalar). `changePending`/`assignmentNotice`/`targetSummary`
   // are already tested in terms of this scalar, so it is computed from the set rather than the set
   // being inferred from it — the mirror is the FIRST Section and cannot count them.
@@ -322,39 +341,55 @@ export function RoleAssignmentPage() {
     setPickedRole(selected?.currentRole && SELECTABLE_ROLES.includes(selected.currentRole as Role)
       ? (selected.currentRole as Role)
       : "");
-    setPickedSectionIds(selected ? deriveScopeSections(selected) : []);
+    setPickedSectionIds(selected ? selected.scopeSections ?? [] : []);
+    // The grant set reopens from the server's own rows, never from a guess: a two-plant Head must come
+    // back with BOTH plants ticked, or the next save would silently narrow him to one.
+    const initial = selected
+      ? grantsFromAccount({
+          homeDepartmentId: selected.department?.id ?? null,
+          scopeDepartmentIds: selected.scopeDepartmentIds ?? [],
+          scopeSectionIds: selected.scopeSections ?? [],
+          sections: allSections,
+        })
+      : [];
+    setGrants(initial);
+    setSavedGrants(initial);
     setError("");
     if (selected && changePending(selected, selected.currentRole ?? "", selected.hodScope ?? "SECTION")) setNotice("");
-  }, [selected]);
+  }, [selected, allSections]);
 
-  /** The Department whose Sections the tick list must offer: the row's own, from the Employee mapping. */
-  const scopeDepartmentId = selected?.department?.id ?? null;
-
-  // The Section list arrives AFTER the first render, so it is fetched whenever the Department
-  // changes and cleared while it is unknown — a stale Department's Sections in the list would let
-  // an operator tick a Section the API will refuse.
+  /**
+   * Every Department and every Section, once.
+   *
+   * WHY ALL OF THEM AND NOT JUST THE PERSON'S: the scope is a SET. Offering only the Department on his
+   * Employee record is what made the second plant impossible to grant without a curl. The list is small
+   * (tens of Departments, tens of Sections) and is the same feed the rest of the masters screens use.
+   */
   useEffect(() => {
     let cancelled = false;
-    if (scopeDepartmentId == null) { setSectionOptions([]); setSectionLoadError(""); return; }
-    api<{ sections: { id: number; code: string; name: string }[] }>(`/sections?department_id=${scopeDepartmentId}`)
-      .then((data) => {
+    Promise.all([
+      api<{ departments: GrantDepartment[] }>("/departments"),
+      api<{ sections: GrantSection[] }>("/sections"),
+    ])
+      .then(([departments, sections]) => {
         if (cancelled) return;
-        setSectionOptions(data.sections ?? []);
-        setSectionLoadError("");
+        setAllDepartments(departments.departments ?? []);
+        setAllSections(sections.sections ?? []);
+        setScopeLoadError("");
       })
-      // A failed fetch must SAY so. Swallowing it renders "No Sections are available for this
-      // Department yet", which is a false statement about the database when the request simply
-      // failed — and an operator reading it would go and create Sections that already exist.
+      // A failed fetch must SAY so — an empty picker would read as "there are no Departments", which is a
+      // false statement about the master data and sends the operator off to create rows that exist.
       .catch((err) => {
         if (cancelled) return;
-        setSectionOptions([]);
-        setSectionLoadError(errorText(err));
+        setAllDepartments([]);
+        setAllSections([]);
+        setScopeLoadError(errorText(err));
       });
     return () => { cancelled = true; };
-  }, [scopeDepartmentId]);
+  }, []);
 
   const pending = changePending(selected, pickedRole, hodScope) ||
-    (selected != null && pickedRole === "HOD" && selected.kind === "ACCOUNT" && scopeSelectionDiffers(selected, pickedSectionIds));
+    (selected != null && pickedRole === "HOD" && grantsDiffer(savedGrants, grants));
   /**
    * Work that will make the server refuse this move. Computed from the counts the API sends with the
    * list, so the operator is told BEFORE clicking — and, because the banner sits at the top of a long
@@ -370,7 +405,12 @@ export function RoleAssignmentPage() {
     if (!selected || !pickedRole) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      const body = JSON.stringify({ role: pickedRole, ...(pickedRole === "HOD" ? { sectionIds: pickedSectionIds } : {}) });
+      const body = JSON.stringify({
+        role: pickedRole,
+        // The scope is the Department GRANT SET: whole Departments plus the named Sections of those granted
+        // only in part. Sending `sectionIds` alone is what used to limit an HOD to one Department.
+        ...(pickedRole === "HOD" ? roleScopePayload(grants) : {}),
+      });
       // An Employee with no account is addressed by Employee id and has the account CREATED;
       // an existing account is re-roled by User id. Two routes, one set of rules behind them.
       const path = selected.kind === "EMPLOYEE" ? `/admin/employees/${selected.id}/role` : `/admin/users/${selected.id}/role`;
@@ -526,24 +566,21 @@ export function RoleAssignmentPage() {
 
             {pickedRole === "HOD" && (
               <div className="panel" style={{ marginTop: 12, padding: 12, border: "1px solid var(--border-light)", borderRadius: 8 }}>
-                <strong>Approval scope — which Sections may this person approve?</strong>
+                <strong>Approval scope — which Departments may this person approve?</strong>
                 <div className="muted" style={{ marginBottom: 8 }}>
-                  Tick one or more Sections of {selected.department?.name ?? "this person's Department"}. Only
-                  Sections of that Department can be ticked, and they are the Sections he may approve work
-                  from — not a limit on where he records his own hours.
+                  He approves work from every Section of each Department ticked here. One function can be two
+                  Departments (one per plant), so tick both to give him EOU and SEZ on this one login — the
+                  scope is authority only, it does not move his own Employee record.
                 </div>
-                <HodSectionPicker
-                  sections={sectionOptions}
-                  picked={pickedSectionIds}
-                  onToggle={(sectionId) =>
-                    setPickedSectionIds((current) =>
-                      current.includes(sectionId) ? current.filter((id) => id !== sectionId) : [...current, sectionId].sort((a, b) => a - b),
-                    )
-                  }
-                  onAll={() => setPickedSectionIds((current) => (current.length === 0 ? (selected.section ? [selected.section.id] : []) : []))}
+                <HodScopeEditor
+                  departments={allDepartments}
+                  sections={allSections}
+                  grants={grants}
+                  onChange={setGrants}
+                  homeDepartmentId={selected.department?.id ?? null}
                   disabled={selected.self || !selected.active}
                   busy={busy}
-                  loadError={sectionLoadError}
+                  loadError={scopeLoadError}
                 />
               </div>
             )}
@@ -576,7 +613,8 @@ export function RoleAssignmentPage() {
                 disabled={busy}
                 onClick={() => {
                   setPickedRole(selected.currentRole ? (selected.currentRole as Role) : "");
-                  setPickedSectionIds(deriveScopeSections(selected));
+                  setPickedSectionIds(selected.scopeSections ?? []);
+                  setGrants(savedGrants);
                 }}
               >
                 Reset
@@ -593,7 +631,9 @@ export function RoleAssignmentPage() {
                   : pending
                   ? `This moves ${selected.name} from ${selected.currentRole} to ${pickedRole}` +
                     (pickedRole === "HOD"
-                      ? ` (${pickedSectionIds.length === 0 ? "every Section of the Department" : `Sections ${pickedSectionIds.map((id) => sectionOptions.find((s) => s.id === id)?.name ?? id).join(", ")}`})`
+                      ? ` (${grants.length === 0
+                          ? "no Department — nothing would match"
+                          : grantsSummary(grants, (id) => allDepartments.find((d) => d.id === id)?.name ?? String(id), (id) => allSections.find((s) => s.id === id)?.name ?? String(id))})`
                       : "") +
                     " and revokes their current sessions."
                   : "Tick a different role to enable the update."}

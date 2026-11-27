@@ -45,6 +45,12 @@ export type PersonRow = {
    */
   scopeSections?: number[];
   /**
+   * Every Department this account heads IN FULL — the grant set that lets one HOD cover a function at
+   * both plants (Yardservice - EOU and Yardservice - SEZ). Without it the panel would reopen a two-plant
+   * Head as a single-Department one and narrow him on the next save.
+   */
+  scopeDepartmentIds?: number[];
+  /**
    * Work the SERVER says would block the change — computed from the same numbers its guards use.
    *
    * WHY THE PANEL NEEDS THESE

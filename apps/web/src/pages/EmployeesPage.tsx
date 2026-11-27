@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { HodSectionPicker } from "./RoleAssignmentPage";
+import { HodScopeEditor } from "../components/HodScopeEditor";
+import { grantsFromAccount, scopeEndpointPayload, type HodGrant } from "./hodScopeGrants";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/supervisors.css";
 import "./EmployeesPage.css";
 
-type Department = { id: number; name: string };
+type Department = { id: number; name: string; businessUnit?: string | null; functionGroup?: string | null };
 type Section = { id: number; departmentId: number; code: string; name: string; costCenter: { code: string } | null };
 type Hod = {
   id: number; name: string; email: string; departmentId: number | null; sectionId: number | null;
   department: Department | null; scopeSection: Section | null; employeeId: number | null;
   /** The Sections this HOD heads. EMPTY means the whole Department. */
   scopeSections?: { sectionId: number }[];
+  /** Every Department he heads IN FULL — the grant set a two-plant HOD carries. */
+  scopeDepartments?: { departmentId: number }[];
 };
 type HodCandidate = {
   id: number; ecNo: string; name: string; designation: string; departmentId: number;
@@ -56,8 +60,8 @@ export function EmployeesPage() {
   const [targetSectionId, setTargetSectionId] = useState("");
   const [transferReason, setTransferReason] = useState("");
   const [hodMapping, setHodMapping] = useState<Hod | null>(null);
-  const [hodDepartmentId, setHodDepartmentId] = useState("");
-  const [hodSectionId, setHodSectionId] = useState("");
+  /** The Department grant set of the HOD being re-mapped. The authority — one entry per Department. */
+  const [hodGrants, setHodGrants] = useState<HodGrant[]>([]);
   const [hodCandidates, setHodCandidates] = useState<HodCandidate[]>([]);
   const [newHodId, setNewHodId] = useState("");
   const [newHodDepartmentId, setNewHodDepartmentId] = useState("");
@@ -93,7 +97,6 @@ export function EmployeesPage() {
 
   const eligible = sections.filter((section) => String(section.departmentId) === departmentId);
   const targetSections = sections.filter((section) => String(section.departmentId) === targetDepartmentId);
-  const hodSections = sections.filter((section) => String(section.departmentId) === hodDepartmentId);
   const newHodSections = sections.filter((section) => String(section.departmentId) === newHodDepartmentId);
   // Optional Section narrow-down so a PM/Admin can see exactly who occupies one section.
   const newHodCandidates = hodCandidates.filter((candidate) =>
@@ -162,9 +165,14 @@ export function EmployeesPage() {
 
   function openHodMapping(hod: Hod) {
     setHodMapping(hod);
-    setHodDepartmentId(String(hod.departmentId ?? ""));
-    setHodSectionId(String(hod.sectionId ?? ""));
-    setHodSectionIds(hodScopeIdsOf(hod));
+    setHodGrants(
+      grantsFromAccount({
+        homeDepartmentId: hod.departmentId ?? hod.department?.id ?? null,
+        scopeDepartmentIds: (hod.scopeDepartments ?? []).map((grant) => grant.departmentId),
+        scopeSectionIds: (hod.scopeSections ?? []).map((grant) => grant.sectionId),
+        sections: sections.map((section) => ({ id: section.id, code: section.code, name: section.name, departmentId: section.departmentId })),
+      })
+    );
   }
   /** Pre-fill the HOD form from an existing payroll employee (from the candidates list). */
   function openHodRegistration(candidate: HodCandidate) {
@@ -202,10 +210,15 @@ export function EmployeesPage() {
     setNotice(`Ready to register ${employee.name} (${employee.ecNo}) as HOD — confirm the Section below.`);
   }
   async function saveHodMapping() {
-    if (!hodMapping || !hodDepartmentId) return;
+    if (!hodMapping) return;
     setBusy(true); setError("");
     try {
-      await api(`/admin/users/${hodMapping.id}/hod-scope`, { method: "PUT", body: JSON.stringify({ departmentId: Number(hodDepartmentId), sectionIds: hodSectionIds }) });
+      // The GRANT SET is the authority: one entry per Department, `sectionIds: []` = that whole
+      // Department. This is what lets one HOD cover Yardservice - EOU and Yardservice - SEZ on one login.
+      await api(`/admin/users/${hodMapping.id}/hod-scope`, {
+        method: "PUT",
+        body: JSON.stringify(scopeEndpointPayload(hodGrants)),
+      });
       setNotice(`${hodMapping.name} scope updated.`); setHodMapping(null); await load();
     } catch (err) { setError(err instanceof Error ? err.message : "HOD mapping failed."); }
     finally { setBusy(false); }
@@ -271,24 +284,17 @@ export function EmployeesPage() {
       </tbody></table> : <div className="empty-state">No employees found.</div>}
     </div>
     {hodMapping && <div className="modal-backdrop" onClick={() => setHodMapping(null)}><div className="modal" onClick={(e) => e.stopPropagation()}>
-      <h3>Map HOD scope: {hodMapping.name}</h3><div className="sup-form__grid">
-      <div className="sup-field"><label>Department</label><select value={hodDepartmentId} onChange={(e) => { setHodDepartmentId(e.target.value); setHodSectionId(""); }}><option value="">Select Department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div>
-      </div>
-      <div style={{ marginTop: 12 }}>
-        <HodSectionPicker
-          sections={hodSections.map((section) => ({ id: section.id, code: section.code, name: section.name }))}
-          picked={hodSectionIds}
-          onToggle={(sectionId) =>
-            setHodSectionIds((current) =>
-              current.includes(sectionId) ? current.filter((id) => id !== sectionId) : [...current, sectionId].sort((a, b) => a - b),
-            )
-          }
-          onAll={() => setHodSectionIds((current) => (current.length === 0 ? (hodMapping?.sectionId != null ? [hodMapping.sectionId] : []) : []))}
-          disabled={!hodDepartmentId}
-          busy={busy}
-        />
-      </div>
-      <div className="modal-actions"><button className="btn btn-ghost" onClick={() => setHodMapping(null)}>Cancel</button><button className="btn btn-primary" disabled={busy || !hodDepartmentId} onClick={() => void saveHodMapping()}>Save Mapping</button></div>
+      <h3>Map HOD scope: {hodMapping.name}</h3>
+      <p className="muted" style={{ marginTop: 0 }}>The person&apos;s own Department/Section never changes here — this is approval authority only.</p>
+      <HodScopeEditor
+        departments={departments}
+        sections={sections.map((section) => ({ id: section.id, code: section.code, name: section.name, departmentId: section.departmentId }))}
+        grants={hodGrants}
+        onChange={setHodGrants}
+        homeDepartmentId={hodMapping.departmentId ?? hodMapping.department?.id ?? null}
+        busy={busy}
+      />
+      <div className="modal-actions"><button className="btn btn-ghost" onClick={() => setHodMapping(null)}>Cancel</button><button className="btn btn-primary" disabled={busy || hodGrants.length === 0} onClick={() => void saveHodMapping()}>Save Mapping</button></div>
     </div></div>}
     {transfer && <div className="modal-backdrop" onClick={() => setTransfer(null)}><div className="modal" onClick={(e) => e.stopPropagation()}>
       <h3>Transfer {transfer.name}</h3><p className="muted">{transfer.ecNo} · {transfer.user?.role === "SUPERVISOR" ? "Supervisor" : transfer.employmentType}</p>

@@ -7,6 +7,7 @@ import { writeAudit } from "../audit";
 import { effectiveOrganisation } from "./roleAccess";
 import { supervisorAccountTransition } from "./supervisorAccountLifecycle";
 import { cardTypeFilter } from "./labourWorksCardTypes";
+import { departmentIdentityColumns } from "./departmentIdentity";
 import { refreshApprovedOtAfterSync } from "./approvedOt";
 
 /** One row from the LabourWorks BadgeView source. */
@@ -112,7 +113,12 @@ async function departmentFor(tx: Tx, name: string, result: SyncResult) {
   const base = stableCode(name);
   const codeOwner = await tx.department.findUnique({ where: { code: base } });
   const code = codeOwner ? `${base}_${collisionSuffix(name)}` : base;
-  const department = await tx.department.create({ data: { name, code, source: "SYNC", active: true } });
+  // The plant / function are stored at CREATE time (not only by the backfill): the sync creates the
+  // missing half of a function ("Safety - SEZ" arriving after "Safety - EOU"), and a Department created
+  // without its functionGroup would be invisible to every roll-up until somebody re-ran the script.
+  const department = await tx.department.create({
+    data: { name, code, source: "SYNC", active: true, ...departmentIdentityColumns(name) },
+  });
   result.departmentsCreated += 1;
   return department;
 }

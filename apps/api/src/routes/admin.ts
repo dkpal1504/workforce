@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import { writeAudit } from "../audit";
+import { departmentIdentityColumns } from "../services/departmentIdentity";
 import {
   blockingDaysMessage,
   blockingDaysOf,
@@ -540,7 +541,17 @@ adminRouter.post("/departments", requireRoles("ADMIN"), async (req, res) => {
     return res.status(409).json({ error: "A department with this code already exists.", code: "DEPT_CODE_EXISTS" });
   }
   const department = await prisma.department.create({
-    data: { name: name.trim(), code: code.trim().toUpperCase(), source: "MANUAL" },
+    // The plant / function are derived from the name on create, so a hand-made Department joins the
+    // right roll-up without a second step. An explicit value in the body wins (an Admin correcting a
+    // name the parser cannot know better than he does).
+    data: {
+      name: name.trim(),
+      code: code.trim().toUpperCase(),
+      source: "MANUAL",
+      ...departmentIdentityColumns(name.trim()),
+      ...(typeof req.body?.businessUnit === "string" ? { businessUnit: req.body.businessUnit.trim().toUpperCase() || null } : {}),
+      ...(typeof req.body?.functionGroup === "string" ? { functionGroup: req.body.functionGroup.trim() || null } : {}),
+    },
   });
   await writeAudit(req.user!.id, "ADMIN_CREATE_DEPT", "department", department.id, { name, code, source: "MANUAL" });
   res.status(201).json({ department });
@@ -554,13 +565,33 @@ adminRouter.put("/departments/:id", requireRoles("ADMIN"), async (req, res) => {
   const { name, code } = req.body;
   const existing = await prisma.department.findUnique({ where: { id } });
   if (!existing) return res.status(404).json({ error: "Department not found" });
-  const data: { name?: string; code?: string; source?: string } = {};
-  if (name !== undefined) data.name = name.trim();
+  const data: {
+    name?: string;
+    code?: string;
+    source?: string;
+    businessUnit?: string | null;
+    functionGroup?: string | null;
+  } = {};
+  if (name !== undefined) {
+    const nextName = name.trim();
+    data.name = nextName;
+    // A renamed Department re-derives its plant / function: "Safety - EOU" renamed to "Safety - SEZ"
+    // must not keep claiming the EOU plant, which would put its hours in the wrong roll-up for ever.
+    Object.assign(data, departmentIdentityColumns(nextName));
+  }
   if (code !== undefined) {
     const newCode = code.trim().toUpperCase();
     const collides = await prisma.department.findFirst({ where: { code: newCode, id: { not: id } } });
     if (collides) return res.status(409).json({ error: "Department code already in use.", code: "DEPT_CODE_EXISTS" });
     data.code = newCode;
+  }
+  // An explicit plant / function in the body OVERRIDES the derivation (a real function name the parser
+  // cannot infer). `null` is accepted and means "no plant split for this Department".
+  if (req.body?.businessUnit !== undefined) {
+    data.businessUnit = req.body.businessUnit === null ? null : String(req.body.businessUnit).trim().toUpperCase() || null;
+  }
+  if (req.body?.functionGroup !== undefined) {
+    data.functionGroup = req.body.functionGroup === null ? null : String(req.body.functionGroup).trim() || null;
   }
   // Editing an auto-created (SYNC) dept flips it to MANUAL so the sync no longer owns it.
   data.source = "MANUAL";
@@ -979,10 +1010,17 @@ async function createAccountForEmployee(req: Request, res: Response, employeeId:
   // A brand-new account has no Employee-side workload and no approval queue by definition.
   const named = Array.isArray(req.body?.sectionIds) ? (req.body.sectionIds as unknown[]) : null;
   const candidates = named ? await loadNamedSections(named.map((value) => Number(value))) : [];
+  // The two-plant grant set, on the CREATE path too: without these the panel could offer both plants,
+  // the request would be accepted, and the second Department would simply not be written.
+  const departmentCandidates = Array.isArray(req.body?.departmentIds)
+    ? await prisma.department.findMany({ select: { id: true, active: true } })
+    : [];
   const plan = planRoleChange(req.user!.id, target, requestedRole, { returnedTimesheetDays: 0, pendingApprovals: 0 }, {
     hodScope: req.body?.hodScope,
     sectionIds: req.body?.sectionIds,
     sections: candidates,
+    departmentIds: req.body?.departmentIds,
+    departments: departmentCandidates,
   });
   if (!plan.ok) {
     // 409 is for a state CONFLICT (stranded work, an inactive account). A rejected request — an
@@ -1013,7 +1051,7 @@ async function createAccountForEmployee(req: Request, res: Response, employeeId:
       },
       select: { id: true, name: true, email: true, role: true, departmentId: true, sectionId: true },
     });
-    await writeUserScope(tx, user.id, plan.update.sectionIds);
+    await writeUserScope(tx, user.id, plan.update.sectionIds, plan.update.departmentGrants);
     await tx.credentialDelivery.create({
       data: { userId: user.id, recipient: workforceCredentialRecipient(), purpose: "ROLE_ASSIGNMENT" },
     });

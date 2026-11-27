@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import "../styles/supervisors.css";
 
-type Department = { id: number; name: string; code: string; source?: string | null; active?: boolean };
+type Department = {
+  id: number; name: string; code: string; source?: string | null; active?: boolean;
+  /** The facility and the function this Department belongs to (derived from the name on create). */
+  businessUnit?: string | null; functionGroup?: string | null;
+};
 type Section = { id: number; departmentId: number; code: string; name: string; source?: string; active?: boolean; department?: Department; costCenter?: CostCenter | null };
 type CostCenter = { id: number; sectionId: number; code: string; name: string; active?: boolean; section?: Section };
 type JobOrder = { id: number; code: string; name: string; departmentId: number | null; department?: Department | null; project?: { name: string } };
@@ -72,13 +76,13 @@ export function DepartmentsPage() {
     {loading ? <div className="loading-state">Loading organisation masters…</div> : visible.length === 0 ? <div className="empty-state">No {labels[tab].toLowerCase()} found.</div> :
       <table className="sup-table"><thead><tr>
         {tab !== "departments" && <th>{tab === "job-orders" ? "Job Order" : tab === "sections" ? "Section" : "Cost Center"}</th>}
-        {tab === "departments" && <><th>Department</th><th>Code</th><th>Source</th></>}
+        {tab === "departments" && <><th>Department</th><th>Code</th><th>Plant</th><th>Function</th><th>Source</th></>}
         {tab === "sections" && <><th>Department</th><th>Cost Center</th><th>Status</th></>}
         {tab === "cost-centers" && <><th>Section</th><th>Department</th><th>Status</th></>}
         {tab === "job-orders" && <><th>Project</th><th>Mapped Department</th></>}
         <th style={{ textAlign: "right" }}>Actions</th>
       </tr></thead><tbody>
-        {tab === "departments" && (visible as Department[]).map(x => <tr key={x.id}><td><strong>{x.name}</strong></td><td>{x.code}</td><td><span className={`badge badge--${x.source === "SYNC" ? "sync" : "manual"}`}>{x.source === "SYNC" ? "Sync" : "Manual"}</span></td><td><Actions onEdit={() => setEditor({ type: "department", item: x })} /></td></tr>)}
+        {tab === "departments" && (visible as Department[]).map(x => <tr key={x.id}><td><strong>{x.name}</strong></td><td>{x.code}</td><td>{x.businessUnit ?? "—"}</td><td>{x.functionGroup ?? "—"}</td><td><span className={`badge badge--${x.source === "SYNC" ? "sync" : "manual"}`}>{x.source === "SYNC" ? "Sync" : "Manual"}</span></td><td><Actions onEdit={() => setEditor({ type: "department", item: x })} /></td></tr>)}
         {tab === "sections" && (visible as Section[]).map(x => <tr key={x.id}><td><strong>{x.code}</strong><div className="muted">{x.name}</div></td><td>{x.department?.name ?? departments.find(d => d.id === x.departmentId)?.name ?? "—"}</td><td>{x.costCenter ? `${x.costCenter.code} · ${x.costCenter.name}` : "Not mapped"}</td><td>{x.active === false ? "Inactive" : "Active"}</td><td><Actions onEdit={() => setEditor({ type: "section", item: x })} onDelete={() => run(() => api(`/admin/sections/${x.id}`, { method: "DELETE" }))} busy={busy} /></td></tr>)}
         {tab === "cost-centers" && (visible as CostCenter[]).map(x => <tr key={x.id}><td><strong>{x.code}</strong><div className="muted">{x.name}</div></td><td>{x.section?.name ?? sections.find(s => s.id === x.sectionId)?.name ?? "—"}</td><td>{x.section?.department?.name ?? departments.find(d => d.id === sections.find(s => s.id === x.sectionId)?.departmentId)?.name ?? "—"}</td><td>{x.active === false ? "Inactive" : "Active"}</td><td><Actions onEdit={() => setEditor({ type: "cost-center", item: x })} onDelete={() => run(() => api(`/admin/cost-centers/${x.id}`, { method: "DELETE" }))} busy={busy} /></td></tr>)}
         {tab === "job-orders" && (visible as JobOrder[]).map(x => <tr key={x.id}><td><strong>{x.code}</strong><div className="muted">{x.name}</div></td><td>{x.project?.name ?? "—"}</td><td><select aria-label={`Department for ${x.code}`} disabled={busy} value={x.departmentId ?? ""} onChange={e => run(() => api(`/admin/job-orders/${x.id}/remap`, { method: "PUT", body: JSON.stringify({ departmentId: e.target.value ? Number(e.target.value) : null }) }))}><option value="">— Select combined Department —</option>{departments.filter(d => d.active !== false && d.name.includes(" - ")).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></td><td><span className={x.department?.name.includes(" - ") ? "muted" : "badge badge--sync"}>{x.department?.name.includes(" - ") ? "Mapped" : "Needs remap"}</span></td></tr>)}
@@ -95,10 +99,16 @@ function MasterModal({ type, item, departments, sections, busy, onClose, onSave 
   const [name, setName] = useState(item?.name ?? ""); const [code, setCode] = useState(item?.code ?? "");
   const [departmentId, setDepartmentId] = useState(type === "section" && item ? String((item as Section).departmentId) : "");
   const [sectionId, setSectionId] = useState(type === "cost-center" && item ? String((item as CostCenter).sectionId) : "");
+  // Plant / function are derived from the name when a Department is created; the Admin can correct them
+  // here (a real function name the parser cannot infer). Blank means "no plant split".
+  const [businessUnit, setBusinessUnit] = useState(type === "department" && item ? ((item as Department).businessUnit ?? "") : "");
+  const [functionGroup, setFunctionGroup] = useState(type === "department" && item ? ((item as Department).functionGroup ?? "") : "");
   const title = `${item ? "Edit" : "Add"} ${type === "cost-center" ? "Cost Center" : type[0].toUpperCase() + type.slice(1)}`;
-  return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={e => e.stopPropagation()}><div className="modal__header"><h2>{title}</h2><button type="button" className="modal__close" onClick={onClose}>×</button></div><form className="modal__body sup-form" onSubmit={e => { e.preventDefault(); if (!name.trim() || !code.trim()) return; onSave({ name: name.trim(), code: code.trim().toUpperCase(), ...(type === "section" ? { departmentId: Number(departmentId) } : {}), ...(type === "cost-center" ? { sectionId: Number(sectionId) } : {}) }); }}>
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={e => e.stopPropagation()}><div className="modal__header"><h2>{title}</h2><button type="button" className="modal__close" onClick={onClose}>×</button></div><form className="modal__body sup-form" onSubmit={e => { e.preventDefault(); if (!name.trim() || !code.trim()) return; onSave({ name: name.trim(), code: code.trim().toUpperCase(), ...(type === "department" ? { businessUnit: businessUnit.trim() ? businessUnit.trim().toUpperCase() : null, functionGroup: functionGroup.trim() ? functionGroup.trim() : null } : {}), ...(type === "section" ? { departmentId: Number(departmentId) } : {}), ...(type === "cost-center" ? { sectionId: Number(sectionId) } : {}) }); }}>
     <div className="sup-field"><label>Code</label><input required value={code} onChange={e => setCode(e.target.value)} autoFocus /></div>
     <div className="sup-field"><label>Name</label><input required value={name} onChange={e => setName(e.target.value)} /></div>
+    {type === "department" && <div className="sup-field"><label>Plant (from the name&apos;s suffix — blank if none)</label><select value={businessUnit} onChange={e => setBusinessUnit(e.target.value)}><option value="">— no plant split —</option><option value="EOU">EOU</option><option value="SEZ">SEZ</option></select></div>}
+    {type === "department" && <div className="sup-field"><label>Function (the Department without its plant, e.g. Yardservice)</label><input value={functionGroup} onChange={e => setFunctionGroup(e.target.value)} placeholder="Yardservice" /></div>}
     {type === "section" && <div className="sup-field"><label>Department</label><select required value={departmentId} onChange={e => setDepartmentId(e.target.value)}><option value="">Select department</option>{departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></div>}
     {type === "cost-center" && <div className="sup-field"><label>Section (one cost center per section)</label><select required value={sectionId} onChange={e => setSectionId(e.target.value)}><option value="">Select section</option>{sections.map(s => <option key={s.id} value={s.id}>{s.department?.name ?? departments.find(d => d.id === s.departmentId)?.name} · {s.name}</option>)}</select></div>}
     <div className="modal__footer" style={{ padding: 0, borderTop: "none" }}><button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button><button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Save"}</button></div>
