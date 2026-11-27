@@ -1,8 +1,16 @@
 # Runbook — one HOD over Yardservice EOU + SEZ (multi-Department scope)
 
+> **If you are deploying `5743cf9` or later, read §13 first.** It lists the two things this document's
+> step-by-step does not yet contain: one extra migration (`20261126130000_department_identity`) and one
+> backfill script. Everything below that §13 does not contradict is still the procedure.
+
 Release content: `user_scope_departments` (migration `20261119000000_user_scope_departments`),
 grant-aware HOD scope in the API, and a `PUT /api/admin/users/:id/hod-scope` that accepts
 `grants[]` **and no longer re-points the person's Employee**.
+
+Second release (`5743cf9`): the grants can be written **from the UI**, and a Department now stores its
+**plant** (`business_unit`) and **function** (`function_group`) so one function at two facilities is
+visible as one function. See §13.
 
 Target: production on **10.5.1.193** (Windows, Docker Desktop, checkout `C:\workforce`),
 PostgreSQL on **10.5.1.178**, UI on `http://10.5.1.193:8099`. API and database are never published.
@@ -301,5 +309,102 @@ The migration cannot be "rolled back" by Prisma — `20261119000000_user_scope_d
   across plants on `@@unique([departmentId, name])`.
 - The reporting rollup ("several Departments shown as one") is a **separate** structure
   (`department_groups`) that grants no approval rights and is not part of this release.
-- There is no UI yet for *setting* a second Department: the grant is written through the API above.
-  The Role Assignment screen only displays it.
+- There is no reporting rollup in the UI yet for *setting* a second Department by hand outside the
+  screen: use **Employees → HOD list → Map scope** or **Role Assignment → Approval scope** (both now
+  write the full grant set). The API below remains the scriptable path, and it is what §9 uses.
+
+---
+
+## 13. Release `5743cf9` — the scope is set from the UI, and a Department knows its plant and function
+
+Two differences from the procedure above, both small:
+
+1. **One more migration**: `20261126130000_department_identity` — `ALTER TABLE departments ADD COLUMN
+   business_unit TEXT`, `ADD COLUMN function_group TEXT`, one index. Nullable and additive: no row is
+   rewritten, no `UPDATE` runs, nothing is dropped. The API selects those two columns, so **this
+   migration must be applied before the new API image serves** — the old image is unaffected, so
+   applying it first is safe and reversing the app afterwards is safe too (the columns stay, harmless).
+2. **One backfill script** to fill the columns for the Departments that already exist. It is idempotent
+   and takes `--dry-run`.
+
+Ordering that keeps the site up: backup → pull → tag → `migrate status` → **migrate** → build →
+`up -d --force-recreate api web` → health → **backfill --dry-run** → **backfill** → UI check.
+
+```powershell
+cd C:\workforce
+$envFile = "infra\docker\.env.production"
+function wfc { docker compose --env-file "infra\docker\.env.production" -f "infra\docker\compose.production.yml" $args }
+
+git checkout -- apps/api/prisma/schema.prisma
+git checkout -- apps/api/src/services/defaultLoginCredentials.ts
+git pull origin main
+git checkout -- apps\api\prisma\schema.prisma
+git log --oneline -1                       # expect 5743cf9 (or later)
+
+$tag = git rev-parse --short HEAD
+(Get-Content $envFile) -replace '^IMAGE_TAG=.*$', "IMAGE_TAG=$tag" | Set-Content $envFile
+
+Test-Path apps\api\prisma\migrations\20261126130000_department_identity\migration.sql   # must be True
+
+wfc build --pull                                        # builds migrate + api + web for the new tag
+wfc run --rm migrate npx prisma migrate status --schema apps\api\prisma\schema.prisma    # exactly 1 pending
+wfc run --rm migrate                                                                    # applies it
+wfc up -d --force-recreate api web
+wfc ps
+curl.exe -fsS http://127.0.0.1:8099/healthz
+curl.exe -fsS http://127.0.0.1:8099/api/health/ready
+```
+
+`build` comes before `migrate` on purpose: the `migrate` service runs the image `workforce-migrate:<tag>`,
+so the tag has to exist before that image can be run. `api` also declares
+`depends_on: migrate: service_completed_successfully`, so `up -d` repeats the migrate step — it prints
+`No pending migrations to apply` and is a no-op the second time.
+
+Prove the columns exist and are still empty (expected `0` before the backfill):
+
+```powershell
+wfc exec api node -e 'const{PrismaClient}=require("@prisma/client");const p=new PrismaClient();(async()=>{console.log("departments:",await p.department.count(),"with plant:",await p.department.count({where:{businessUnit:{not:null}}}));await p.$disconnect()})()'
+```
+
+**Backfill — dry run first, and read it.** It prints every Department whose plant/function it would set
+or correct, and how many functions end up with both plants:
+
+```powershell
+wfc exec api node apps/api/scripts/backfill-department-identity.mjs --dry-run
+```
+
+Then write it, and re-run the dry run: it must report `to write: 0` / `unchanged: 30` (that is the
+idempotence check — the first run prints `to write: <departments>`):
+
+```powershell
+wfc exec api node apps/api/scripts/backfill-department-identity.mjs
+wfc exec api node apps/api/scripts/backfill-department-identity.mjs --dry-run
+```
+
+Check the split is what the yard means (one line per function, both plants listed):
+
+```powershell
+wfc exec api node -e 'const{PrismaClient}=require("@prisma/client");const p=new PrismaClient();(async()=>{const d=await p.department.findMany({select:{name:true,businessUnit:true,functionGroup:true},orderBy:[{functionGroup:"asc"},{businessUnit:"asc"}]});console.table(d);await p.$disconnect()})()'
+```
+
+Two things to look at in that table: a Department with **no** plant suffix must have
+`businessUnit = null` (it is not part of a plant split), and `functionGroup` must never swallow the
+plant (`Yardservice`, not `Yardservice - EOU`). If one row is wrong, correct it in
+**Organisation → Organisation** (the *Plant* and *Function* fields are editable in the row's dialog)
+rather than re-running SQL.
+
+**Then set the scope from the UI, no curl:**
+
+1. **Role Assignment** → pick the person → role `HOD` → the *Approval scope* panel lists every
+   Department grouped by **function**, with the plants side by side (EOU before SEZ).
+2. Tick `Yardservice - EOU` **and** `Yardservice - SEZ`, leave both on **Whole Department**.
+3. Read the sentence under the panel — it must name both plants — then **Apply**. He is signed out once
+   (`tokenVersion` bump), which is expected.
+4. The same panel is reachable afterwards from **Employees → HOD list → Map scope**; it reopens with
+   both plants ticked, so a later save cannot silently narrow him to one.
+
+Verify exactly as in §10 (the `hod-scope-report` script and the Employee-record check are unchanged).
+
+**Rollback** is §11: revert `IMAGE_TAG`, `up -d --force-recreate api web`. The two columns stay and the
+old image ignores them.
+
