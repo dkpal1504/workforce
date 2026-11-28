@@ -347,7 +347,15 @@ $tag = git rev-parse --short HEAD
 Test-Path apps\api\prisma\migrations\20261126130000_department_identity\migration.sql   # must be True
 
 wfc build --pull                                        # builds migrate + api + web for the new tag
-wfc run --rm migrate npx prisma migrate status --schema apps\api\prisma\schema.prisma    # exactly 1 pending
+wfc run --rm migrate npx prisma migrate status --schema apps/api/prisma/schema.prisma    # exactly 1 pending
+```
+
+The `--schema` argument runs INSIDE the Linux container: use forward slashes. `apps\api\prisma\schema.prisma`
+reaches Prisma as one literal filename and fails with `Could not load --schema ... file or directory not
+found` — harmless, because the applying command (`wfc run --rm migrate`, whose path is baked into the image)
+is what matters, but re-run it with forward slashes rather than assuming the check passed.
+
+```powershell
 wfc run --rm migrate                                                                    # applies it
 wfc up -d --force-recreate api web
 wfc ps
